@@ -15,7 +15,7 @@ const LEVELS: [Level; 5] = [
     Level::ERROR,
 ];
 
-actions!(log_window, [Close, FocusSearch]);
+actions!(log_window, [Close, FocusSearch, FocusLevel]);
 
 #[derive(Default)]
 struct LogWindowHandle(Option<WindowHandle<LogWindow>>);
@@ -36,13 +36,22 @@ pub(super) fn set_appearance(config: &Config, theme: &Theme, cx: &mut App) {
     });
 }
 
-fn severity_color(theme: &Theme, level: Level) -> u32 {
-    match level {
-        Level::ERROR => theme.palette[1],
-        Level::WARN => theme.palette[3],
-        Level::INFO => theme.foreground,
-        _ => theme.muted,
-    }
+fn palette_color(theme: &Theme, index: usize) -> Rgba {
+    // Terminal ANSI colors can have very low contrast against UI backgrounds.
+    rgb(theme.foreground).blend(rgba((theme.palette[index] << 8) | 0x70))
+}
+
+fn severity_color(theme: &Theme, level: Level) -> Rgba {
+    palette_color(
+        theme,
+        match level {
+            Level::ERROR => 1,
+            Level::WARN => 3,
+            Level::INFO => 2,
+            Level::DEBUG => 4,
+            Level::TRACE => 5,
+        },
+    )
 }
 
 pub(super) fn open(cx: &mut App) {
@@ -78,13 +87,16 @@ struct LogWindow {
     _appearance: Subscription,
     focus: FocusHandle,
     search: Entity<SearchInput>,
-    enabled: [bool; 5],
+    minimum: Level,
+    level_focus: FocusHandle,
+    menu_focus: FocusHandle,
+    level_menu: Option<usize>,
     rows: Vec<Arc<Record>>,
     retained: Vec<Arc<Record>>,
     generation: Option<u64>,
     dropped: u64,
     following: bool,
-    scroll: UniformListScrollHandle,
+    scroll: ListState,
     selected: Option<Arc<Record>>,
     status: String,
     exporting: bool,
@@ -92,48 +104,103 @@ struct LogWindow {
     _poll: Task<()>,
 }
 
-fn filtered(records: Vec<Arc<Record>>, query: &str, enabled: [bool; 5]) -> Vec<Arc<Record>> {
+fn filtered(records: Vec<Arc<Record>>, query: &str, minimum: Level) -> Vec<Arc<Record>> {
     let query = query.to_lowercase();
     records
         .into_iter()
         .filter(|record| {
-            LEVELS
-                .iter()
-                .zip(enabled)
-                .any(|(level, enabled)| enabled && *level == record.level)
-                && (query.is_empty() || record.line.to_lowercase().contains(&query))
+            // tracing orders ERROR < WARN < INFO < DEBUG < TRACE.
+            if record.level > minimum {
+                return false;
+            }
+            let mut text = None;
+            query.split_whitespace().all(|term| {
+                if let Some(namespace) = term.strip_prefix("namespace:") {
+                    record.namespace.eq_ignore_ascii_case(namespace)
+                } else if let Some(target) = term.strip_prefix("target:") {
+                    record.target.to_lowercase().contains(target)
+                } else {
+                    text.get_or_insert_with(|| record.line().to_lowercase())
+                        .contains(term)
+                }
+            })
         })
         .collect()
 }
 
-fn export_text(rows: &[Arc<Record>], dropped: u64) -> String {
-    let mut text = format!(
-        "Herdr GPUI {} | {} {}\nFiltered local client diagnostics; timestamps are UNIX seconds.\nEvicted/dropped records: {dropped}. Review before sharing.\n\n",
-        env!("CARGO_PKG_VERSION"),
-        std::env::consts::OS,
-        std::env::consts::ARCH
-    );
+fn export_text(rows: &[Arc<Record>], dropped: u64) -> serde_json::Result<String> {
+    let mut text = serde_json::to_string(&serde_json::json!({
+        "type": "metadata", "schema_version": 1,
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "os": std::env::consts::OS, "arch": std::env::consts::ARCH,
+        "dropped": dropped, "timestamp_format": "local [YYYY-MM-DD HH:MM:SS]"
+    }))?;
+    text.push('\n');
     for row in rows {
-        text.push_str(&row.line);
+        text.push_str(&serde_json::to_string(row.as_ref())?);
         text.push('\n');
     }
-    text
+    Ok(text)
 }
 
 impl LogWindow {
+    fn open_levels(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.level_menu = LEVELS.iter().position(|level| *level == self.minimum);
+        window.focus(&self.menu_focus);
+        cx.notify();
+    }
+
+    fn close_levels(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.level_menu = None;
+        window.focus(&self.level_focus);
+        cx.notify();
+    }
+
+    fn level_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.level_menu else { return };
+        cx.stop_propagation();
+        window.prevent_default();
+        match event.keystroke.key.as_str() {
+            "escape" | "tab" => self.close_levels(window, cx),
+            "up" => self.level_menu = Some((index + LEVELS.len() - 1) % LEVELS.len()),
+            "down" => self.level_menu = Some((index + 1) % LEVELS.len()),
+            "home" => self.level_menu = Some(0),
+            "end" => self.level_menu = Some(LEVELS.len() - 1),
+            "enter" | "space" => {
+                self.minimum = LEVELS[index];
+                self.generation = None;
+                self.close_levels(window, cx);
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.bind_keys([
             KeyBinding::new("cmd-w", Close, Some("LogWindow")),
             KeyBinding::new("cmd-f", FocusSearch, Some("LogWindow")),
+            KeyBinding::new("cmd-l", FocusLevel, Some("LogWindow")),
+            KeyBinding::new("tab", FocusLevel, Some("LogWindow")),
+            KeyBinding::new("shift-tab", FocusSearch, Some("LogWindow")),
         ]);
         let search = cx.new(SearchInput::new);
         let appearance = cx.default_global::<Appearance>().clone();
         search.update(cx, |input, cx| {
             input.set_appearance(appearance.config.ui.clone(), appearance.theme.clone(), cx);
-            input.set_placeholder("Search messages, targets, timings...", cx);
+            input.set_placeholder("Search, namespace:herdr_gpui target:terminal_painter", cx);
             window.focus(&input.focus);
         });
         let appearance_subscription = cx.observe_global::<Appearance>(|this, cx| {
+            let font = &cx.global::<Appearance>().config.terminal;
+            if font.family != this.appearance.config.terminal.family
+                || font.size != this.appearance.config.terminal.size
+            {
+                // Width changes are handled by GPUI; font changes need explicit invalidation.
+                let offset = this.scroll.logical_scroll_top();
+                this.scroll.reset(this.rows.len());
+                this.scroll.scroll_to(offset);
+            }
             this.appearance = cx.global::<Appearance>().clone();
             this.search.update(cx, |input, cx| {
                 input.set_appearance(
@@ -156,7 +223,7 @@ impl LogWindow {
                     .then(|| {
                         (
                             this.search.read(cx).text().to_owned(),
-                            this.enabled,
+                            this.minimum,
                             this.following,
                             (!this.following).then(|| {
                                 (
@@ -169,7 +236,7 @@ impl LogWindow {
                     })
                 });
                 let Ok(request) = request else { break };
-                if let Some((query, enabled, following, frozen)) = request {
+                if let Some((query, minimum, following, frozen)) = request {
                     let filter_query = query.clone();
                     let snapshot = cx
                         .background_executor()
@@ -178,7 +245,7 @@ impl LogWindow {
                                 |(generation, retained, dropped)| {
                                     (
                                         generation,
-                                        filtered(retained.clone(), &filter_query, enabled),
+                                        filtered(retained.clone(), &filter_query, minimum),
                                         retained,
                                         dropped,
                                     )
@@ -190,21 +257,20 @@ impl LogWindow {
                         && this
                             .update(cx, |this, cx| {
                                 if this.search.read(cx).text() != query
-                                    || this.enabled != enabled
+                                    || this.minimum != minimum
                                     || this.following != following
                                 {
                                     return;
                                 }
                                 this.generation = Some(generation);
+                                if rows.len() != this.rows.len()
+                                    || !rows.iter().zip(&this.rows).all(|(a, b)| Arc::ptr_eq(a, b))
+                                {
+                                    this.scroll.reset(rows.len());
+                                }
                                 this.rows = rows;
                                 this.retained = retained;
                                 this.dropped = dropped;
-                                if this.following && !this.rows.is_empty() {
-                                    this.scroll.scroll_to_item(
-                                        this.rows.len() - 1,
-                                        ScrollStrategy::Bottom,
-                                    );
-                                }
                                 cx.notify();
                             })
                             .is_err()
@@ -222,13 +288,16 @@ impl LogWindow {
             _appearance: appearance_subscription,
             focus: cx.focus_handle(),
             search,
-            enabled: [true; 5],
+            minimum: Level::TRACE,
+            level_focus: cx.focus_handle(),
+            menu_focus: cx.focus_handle(),
+            level_menu: None,
             rows: Vec::new(),
             retained: Vec::new(),
             generation: None,
             dropped: 0,
             following: true,
-            scroll: UniformListScrollHandle::new(),
+            scroll: ListState::new(0, ListAlignment::Top, px(100.)),
             selected: None,
             status: "Local only. Review logs before sharing.".into(),
             exporting: false,
@@ -250,10 +319,10 @@ impl LogWindow {
         .into();
         let records = self.retained.clone();
         let query = self.search.read(cx).text().to_owned();
-        let enabled = self.enabled;
+        let minimum = self.minimum;
         let dropped = self.dropped;
-        let picker =
-            save.then(|| cx.prompt_for_new_path(std::path::Path::new("."), Some("herdr-gpui.log")));
+        let picker = save
+            .then(|| cx.prompt_for_new_path(std::path::Path::new("."), Some("herdr-gpui.jsonl")));
         cx.spawn(async move |this, cx| {
             let path = match picker {
                 Some(picker) => match picker.await {
@@ -278,7 +347,8 @@ impl LogWindow {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let text = export_text(&filtered(records, &query, enabled), dropped);
+                    let text = export_text(&filtered(records, &query, minimum), dropped)
+                        .map_err(std::io::Error::other)?;
                     if let Some(path) = path {
                         std::fs::write(path, text).map(|()| None)
                     } else {
@@ -323,15 +393,76 @@ fn button(id: &'static str, label: impl Into<SharedString>, theme: &Theme) -> St
         .child(label.into())
 }
 
+fn styled_body(record: &Record, theme: &Theme) -> StyledText {
+    use std::fmt::Write;
+    let mut text = record.target.clone();
+    let target_end = text.len();
+    for span in &record.spans {
+        let _ = write!(text, " [{span}]");
+    }
+    let spans_end = text.len();
+    if !record.message.is_empty() {
+        let _ = write!(text, " {}", record.message);
+    }
+    let fields_start = text.len();
+    for (key, value) in &record.fields {
+        let _ = write!(text, " {key}={value}");
+    }
+    if record.truncated {
+        text.push_str(" [truncated]");
+    }
+    let end = text.len();
+    StyledText::new(text).with_highlights(
+        [
+            (
+                0..target_end,
+                HighlightStyle {
+                    color: Some(palette_color(theme, 6).into()),
+                    ..Default::default()
+                },
+            ),
+            (
+                target_end..spans_end,
+                HighlightStyle {
+                    color: Some(rgb(theme.muted).into()),
+                    ..Default::default()
+                },
+            ),
+            (
+                fields_start..end,
+                HighlightStyle {
+                    color: Some(palette_color(theme, 4).into()),
+                    ..Default::default()
+                },
+            ),
+        ]
+        .into_iter()
+        .filter(|(range, _)| !range.is_empty()),
+    )
+}
+
 impl Render for LogWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.following {
+            self.scroll.scroll_to(ListOffset {
+                item_ix: self.rows.len(),
+                offset_in_item: px(0.),
+            });
+        }
         let Appearance { config, theme } = &self.appearance;
         div()
             .key_context("LogWindow")
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, _: &Close, window, _| window.remove_window()))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
+                this.level_menu = None;
                 window.focus(&this.search.read(cx).focus);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &FocusLevel, window, cx| {
+                this.level_menu = None;
+                window.focus(&this.level_focus);
+                cx.notify();
             }))
             .size_full()
             .flex()
@@ -365,27 +496,47 @@ impl Render for LogWindow {
                             .flex_wrap()
                             .items_center()
                             .gap_2()
-                            .children(LEVELS.iter().enumerate().map(|(index, level)| {
-                                button(
-                                    match index {
-                                        0 => "trace",
-                                        1 => "debug",
-                                        2 => "info",
-                                        3 => "warn",
-                                        _ => "error",
-                                    },
-                                    level.as_str(),
-                                    theme,
-                                )
-                                .when(!self.enabled[index], |el| el.text_color(rgb(theme.muted)))
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.enabled[index] = !this.enabled[index];
-                                        this.generation = None;
-                                        cx.notify();
-                                    },
-                                ))
-                            }))
+                            .child(
+                                button("minimum-level", format!("Minimum: {} v", self.minimum), theme)
+                                    .track_focus(&self.level_focus)
+                                    .border_1()
+                                    .border_color(if self.level_focus.is_focused(window) { palette_color(theme, 4) } else { rgb(theme.active) })
+                                    .on_click(cx.listener(|this, _, window, cx| this.open_levels(window, cx)))
+                                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                                        if matches!(event.keystroke.key.as_str(), "enter" | "space" | "down" | "up") {
+                                            cx.stop_propagation();
+                                            window.prevent_default();
+                                            this.open_levels(window, cx);
+                                        }
+                                    }))
+                                    .when_some(self.level_menu, |el, selected| el.child(
+                                        deferred(
+                                            anchored().child(
+                                                div().id("level-menu").debug_selector(|| "level-menu".into())
+                                                    .absolute().top_full().left_0().w(px(180.))
+                                                    .p_1().bg(rgb(theme.surface)).border_1().border_color(rgb(theme.active))
+                                                    .occlude().track_focus(&self.menu_focus)
+                                                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                                    .on_click(|_, _, cx| cx.stop_propagation())
+                                                    .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close_levels(window, cx)))
+                                                    .on_key_down(cx.listener(Self::level_key))
+                                                    .children(LEVELS.iter().enumerate().map(|(index, level)| {
+                                                        let level = *level;
+                                                        div().id(("level-option", index)).debug_selector(move || format!("level-option-{index}"))
+                                                            .px_2().py_1().cursor_pointer()
+                                                            .when(index == selected, |el| el.bg(rgb(theme.active)))
+                                                            .child(format!("{} {}", if self.minimum == level { "*" } else { " " }, level))
+                                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                                cx.stop_propagation();
+                                                                this.minimum = level;
+                                                                this.generation = None;
+                                                                this.close_levels(window, cx);
+                                                            }))
+                                                    }))
+                                            )
+                                        ).with_priority(1)
+                                    )),
+                            )
                             .child(div().flex_1())
                             .child(
                                 button(
@@ -437,41 +588,58 @@ impl Render for LogWindow {
                     })
                     .when(!self.rows.is_empty(), |el| {
                         el.child(
-                            uniform_list(
-                                "logs",
-                                self.rows.len(),
-                                cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                                    range
-                                        .map(|index| {
-                                            let record = this.rows[index].clone();
-                                            let theme = &this.appearance.theme;
-                                            let font = &this.appearance.config.terminal;
-                                            let active = theme.active;
+                            list(
+                                self.scroll.clone(),
+                                cx.processor(|this, index: usize, _, cx| {
+                                    let record = this.rows[index].clone();
+                                    let theme = &this.appearance.theme;
+                                    let font = &this.appearance.config.terminal;
+                                    let active = theme.active;
+                                    div()
+                                        .id(index)
+                                        .debug_selector(move || format!("log-row-{index}"))
+                                        .flex()
+                                        .w_full()
+                                        .py(px(1.))
+                                        .px_3()
+                                        .text_color(rgb(theme.foreground))
+                                        .font_family(font.family.clone())
+                                        .text_size(px(font.size))
+                                        .line_height(px(font.line_height()))
+                                        .child(
                                             div()
-                                                .id(index)
-                                                .debug_selector(move || format!("log-row-{index}"))
-                                                .h(px(font.line_height() + 2.))
-                                                .px_3()
-                                                .text_color(rgb(severity_color(
+                                                .flex_none()
+                                                .whitespace_nowrap()
+                                                .text_color(rgb(theme.muted))
+                                                .child(format!("{} ", record.timestamp)),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .whitespace_nowrap()
+                                                .text_color(severity_color(
                                                     theme,
                                                     record.level,
-                                                )))
-                                                .font_family(font.family.clone())
-                                                .text_size(px(font.size))
-                                                .line_height(px(font.line_height()))
-                                                .truncate()
-                                                .child(record.line.clone())
-                                                .cursor_pointer()
-                                                .hover(move |style| style.bg(rgb(active)))
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.selected = Some(record.clone());
-                                                    cx.notify();
-                                                }))
-                                        })
-                                        .collect()
+                                                ))
+                                                .child(format!("{:<5} ", record.level.as_str())),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .whitespace_normal()
+                                                .debug_selector(move || format!("log-body-{index}"))
+                                                .child(styled_body(&record, theme)),
+                                        )
+                                        .cursor_pointer()
+                                        .hover(move |style| style.bg(rgb(active)))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.selected = Some(record.clone());
+                                            cx.notify();
+                                        }))
+                                        .into_any_element()
                                 }),
                             )
-                            .track_scroll(self.scroll.clone())
                             .size_full(),
                         )
                     }),
@@ -486,11 +654,11 @@ impl Render for LogWindow {
                         .overflow_y_scroll()
                         .p_3()
                         .bg(rgb(theme.surface))
-                        .text_color(rgb(severity_color(theme, record.level)))
+                        .text_color(severity_color(theme, record.level))
                         .font_family(config.terminal.family.clone())
                         .text_size(px(config.terminal.size))
                         .line_height(px(config.terminal.line_height()))
-                        .child(record.line.clone()),
+                        .child(record.line()),
                 )
             })
             .child(
@@ -519,17 +687,12 @@ mod tests {
 
     fn records() -> Vec<Arc<Record>> {
         [
-            (Level::WARN, "WARN slow paint elapsed_ms=32"),
-            (Level::INFO, "INFO slow transport elapsed_ms=8"),
-            (Level::WARN, "WARN unrelated message"),
+            (Level::WARN, "slow paint elapsed_ms=32"),
+            (Level::INFO, "slow transport elapsed_ms=8"),
+            (Level::WARN, "unrelated message"),
         ]
         .into_iter()
-        .map(|(level, line)| {
-            Arc::new(Record {
-                level,
-                line: line.into(),
-            })
-        })
+        .map(|(level, line)| Arc::new(Record::fixture(level, line)))
         .collect()
     }
 
@@ -565,6 +728,7 @@ mod tests {
             view.following = false;
             view.generation = Some(diagnostics::generation());
             view.rows = records();
+            view.scroll.reset(view.rows.len());
             view.selected = Some(view.rows[0].clone());
             view
         });
@@ -584,11 +748,26 @@ mod tests {
                 assert!(!view.following);
                 assert_eq!(view.rows.len(), 3);
                 assert!(view.selected.is_some());
-                assert_eq!(severity_color(&theme, Level::ERROR), theme.palette[1]);
-                assert_eq!(severity_color(&theme, Level::WARN), theme.palette[3]);
-                assert_eq!(severity_color(&theme, Level::INFO), theme.foreground);
-                assert_eq!(severity_color(&theme, Level::DEBUG), theme.muted);
-                assert_eq!(severity_color(&theme, Level::TRACE), theme.muted);
+                assert_eq!(
+                    severity_color(&theme, Level::ERROR),
+                    palette_color(&theme, 1)
+                );
+                assert_eq!(
+                    severity_color(&theme, Level::WARN),
+                    palette_color(&theme, 3)
+                );
+                assert_eq!(
+                    severity_color(&theme, Level::INFO),
+                    palette_color(&theme, 2)
+                );
+                assert_eq!(
+                    severity_color(&theme, Level::DEBUG),
+                    palette_color(&theme, 4)
+                );
+                assert_eq!(
+                    severity_color(&theme, Level::TRACE),
+                    palette_color(&theme, 5)
+                );
             });
             for (width, height) in [(1100., 650.), (620., 360.)] {
                 cx.simulate_resize(size(px(width), px(height)));
@@ -608,18 +787,15 @@ mod tests {
                     assert!(search.top() >= header.bottom());
                 }
                 let first = cx.debug_bounds("log-row-0").unwrap();
-                assert!(
-                    (f32::from(first.size.height) - (config.terminal.line_height() + 2.)).abs()
-                        < 1.
-                );
+                assert!(first.size.height >= px(config.terminal.line_height() + 1.));
                 assert!(first.top() >= search.bottom());
                 let detail = cx.debug_bounds("log-detail").unwrap();
                 assert_eq!(detail.size.height, px((height * 0.2).min(100.)));
-                assert!(detail.top() >= first.bottom());
+                view.read_with(cx, |view, _| {
+                    assert!(detail.top() >= view.scroll.viewport_bounds().bottom());
+                });
                 assert!(detail.bottom() <= px(height));
-                for selector in [
-                    "trace", "debug", "info", "warn", "error", "follow", "copy", "export",
-                ] {
+                for selector in ["minimum-level", "follow", "copy", "export"] {
                     let bounds = cx.debug_bounds(selector).unwrap();
                     assert!(bounds.left() >= px(0.) && bounds.right() <= px(width));
                     assert!(
@@ -638,14 +814,10 @@ mod tests {
             view.following = false;
             view.generation = Some(diagnostics::generation());
             view.retained = (0..5000)
-                .map(|index| {
-                    Arc::new(Record {
-                        level: Level::INFO,
-                        line: format!("INFO fixture row {index}"),
-                    })
-                })
+                .map(|index| Arc::new(Record::fixture(Level::INFO, format!("fixture row {index}"))))
                 .collect();
             view.rows = view.retained.clone();
+            view.scroll.reset(view.rows.len());
             view
         });
         cx.simulate_resize(size(px(620.), px(650.)));
@@ -662,9 +834,7 @@ mod tests {
         assert_eq!(tenth.top() - first.top(), px(220.));
         assert!(tenth.bottom() < px(650.));
         assert!(cx.debug_bounds("log-row-4999").is_none());
-        for selector in [
-            "trace", "debug", "info", "warn", "error", "follow", "copy", "export",
-        ] {
+        for selector in ["minimum-level", "follow", "copy", "export"] {
             let bounds = cx.debug_bounds(selector).unwrap();
             assert!(
                 bounds.left() >= px(0.) && bounds.right() <= px(620.),
@@ -672,8 +842,10 @@ mod tests {
             );
         }
         view.update(cx, |view, cx| {
-            assert!(view.scroll.is_scrollable());
-            view.scroll.scroll_to_item(4999, ScrollStrategy::Bottom);
+            view.scroll.scroll_to(ListOffset {
+                item_ix: 5000,
+                offset_in_item: px(0.),
+            });
             cx.notify();
         });
         cx.run_until_parked();
@@ -690,6 +862,124 @@ mod tests {
     }
 
     #[gpui::test]
+    fn wrapped_rows_reflow_keep_columns_and_tail_without_changing_exports(cx: &mut TestAppContext) {
+        let body = "x".repeat(160);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut view = LogWindow::new(window, cx);
+            view.following = false;
+            view.generation = Some(diagnostics::generation());
+            view.retained = (0..5000)
+                .map(|index| {
+                    Arc::new(Record::fixture(
+                        LEVELS[index % LEVELS.len()],
+                        if index == 1 || index == 4999 {
+                            body.clone()
+                        } else {
+                            "short".into()
+                        },
+                    ))
+                })
+                .collect();
+            view.rows = view.retained.clone();
+            view.scroll.reset(view.rows.len());
+            view
+        });
+        let mut heights = Vec::new();
+        for (width, font_size) in [(1100., 14.), (620., 14.), (620., 20.), (1100., 14.)] {
+            let mut config = Config::default();
+            config.terminal.size = font_size;
+            cx.update(|_, cx| set_appearance(&config, &Theme::default(), cx));
+            cx.simulate_resize(size(px(width), px(850.)));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear();
+            });
+            let short = cx.debug_bounds("log-row-0").unwrap();
+            let long = cx.debug_bounds("log-row-1").unwrap();
+            let short_body = cx.debug_bounds("log-body-0").unwrap();
+            let long_body = cx.debug_bounds("log-body-1").unwrap();
+            let info_body = cx.debug_bounds("log-body-2").unwrap();
+            assert!(long.size.height > short.size.height);
+            assert_eq!(long_body.left(), short_body.left());
+            assert_eq!(info_body.left(), short_body.left());
+            assert!(long_body.right() <= px(width));
+            assert_eq!(short.bottom(), long.top());
+            assert!(cx.debug_bounds("log-row-4999").is_none());
+            heights.push(long.size.height);
+        }
+        assert!(heights[1] > heights[0]);
+        assert!(heights[2] > heights[1]);
+        assert_eq!(heights[3], heights[0]);
+
+        // Tail must reach the bottom of the final wrapped row, not its first line.
+        view.update(cx, |view, cx| {
+            view.following = true;
+            cx.notify();
+        });
+        for width in [620., 1100.] {
+            cx.simulate_resize(size(px(width), px(850.)));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear();
+            });
+            let last = cx.debug_bounds("log-row-4999").unwrap();
+            view.read_with(cx, |view, _| {
+                assert!((last.bottom() - view.scroll.viewport_bounds().bottom()).abs() < px(1.));
+                assert!(view.scroll.bounds_for_item(0).is_none());
+            });
+        }
+        let offset = view.read_with(cx, |view, _| view.scroll.logical_scroll_top());
+        let follow = cx.debug_bounds("follow").unwrap();
+        cx.simulate_click(follow.center(), Modifiers::default());
+        cx.executor().advance_clock(Duration::from_millis(250));
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert!(!view.following);
+            let paused = view.scroll.logical_scroll_top();
+            assert_eq!(paused.item_ix, offset.item_ix);
+            assert_eq!(paused.offset_in_item, offset.offset_in_item);
+        });
+        cx.simulate_click(follow.center(), Modifiers::default());
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| assert!(view.following));
+        let position = view.read_with(cx, |view, _| view.scroll.viewport_bounds().center());
+        cx.simulate_event(ScrollWheelEvent {
+            position,
+            delta: ScrollDelta::Pixels(point(px(0.), px(120.))),
+            touch_phase: TouchPhase::Moved,
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert!(!view.following);
+            assert_eq!(view.retained.len(), 5000);
+        });
+        view.update(cx, |view, cx| {
+            view.search
+                .update(cx, |input, cx| input.set_text_selected("xxx", cx));
+        });
+        cx.executor().advance_clock(Duration::from_millis(250));
+        cx.run_until_parked();
+        view.update(cx, |view, cx| {
+            assert_eq!(view.rows.len(), 2);
+            assert_eq!(view.scroll.item_count(), 2);
+            assert!(Arc::ptr_eq(&view.rows[1], &view.retained[4999]));
+            view.share(false, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            let text = cx.read_from_clipboard().unwrap().text().unwrap();
+            let rows = exported_records(&text);
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].level, Level::DEBUG);
+            assert_eq!(rows[1].level, Level::ERROR);
+            assert!(rows.iter().all(|row| row.message == body));
+        });
+    }
+
+    #[gpui::test]
     fn paused_filter_changes_preserve_retained_snapshot(cx: &mut TestAppContext) {
         let retained = records();
         let (view, cx) = cx.add_window_view(|window, cx| {
@@ -698,6 +988,7 @@ mod tests {
             view.generation = Some(diagnostics::generation());
             view.retained = retained.clone();
             view.rows = retained.clone();
+            view.scroll.reset(view.rows.len());
             view.dropped = 17;
             view
         });
@@ -713,13 +1004,17 @@ mod tests {
             assert!(Arc::ptr_eq(&view.rows[1], &retained[1]));
         });
         cx.update(|window, cx| window.draw(cx).clear());
-        let info = cx.debug_bounds("info").unwrap();
-        cx.simulate_click(info.center(), Modifiers::default());
+        let select = cx.debug_bounds("minimum-level").unwrap();
+        cx.simulate_click(select.center(), Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+        let warn = cx.debug_bounds("level-option-3").unwrap();
+        cx.simulate_click(warn.center(), Modifiers::default());
         cx.executor().advance_clock(Duration::from_millis(250));
         cx.run_until_parked();
         view.read_with(cx, |view, _| {
             assert!(!view.following);
-            assert!(!view.enabled[2]);
+            assert_eq!(view.minimum, Level::WARN);
             assert_eq!(view.rows.len(), 1);
             assert!(Arc::ptr_eq(&view.rows[0], &retained[0]));
             assert_eq!(view.dropped, 17);
@@ -742,6 +1037,7 @@ mod tests {
             view.retained = records();
             // The visible rows deliberately omit the record the current filter wants.
             view.rows = vec![view.retained[2].clone()];
+            view.scroll.reset(view.rows.len());
             view.dropped = 23;
             view
         });
@@ -749,19 +1045,21 @@ mod tests {
         view.update(cx, |view, cx| {
             view.search
                 .update(cx, |input, cx| input.set_text_selected("SLOW", cx));
-            view.enabled = [false, false, false, true, false];
-            assert_eq!(view.rows[0].line, "WARN unrelated message");
+            view.minimum = Level::WARN;
+            assert_eq!(view.rows[0].message, "unrelated message");
             view.share(false, cx);
             assert!(view.exporting);
         });
         cx.run_until_parked();
         cx.update(|_, cx| {
             let text = cx.read_from_clipboard().unwrap().text().unwrap();
-            assert!(text.contains("Evicted/dropped records: 23"));
-            assert_eq!(
-                text.split_once("\n\n").unwrap().1,
-                "WARN slow paint elapsed_ms=32\n"
-            );
+            let metadata: serde_json::Value =
+                serde_json::from_str(text.lines().next().unwrap()).unwrap();
+            assert_eq!(metadata["dropped"], 23);
+            let rows = exported_records(&text);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].message, "slow paint elapsed_ms=32");
+            assert_eq!(rows[0].level, Level::WARN);
             assert!(!view.read(cx).exporting);
             assert_eq!(
                 view.read(cx).status,
@@ -806,19 +1104,102 @@ mod tests {
     #[test]
     fn search_levels_and_export_preserve_full_lines() {
         let records = vec![
-            Arc::new(Record {
-                level: Level::WARN,
-                line: "WARN slow paint elapsed_ms=32".into(),
-            }),
-            Arc::new(Record {
-                level: Level::TRACE,
-                line: "TRACE connected".into(),
-            }),
+            Arc::new(Record::fixture(Level::WARN, "slow paint elapsed_ms=32")),
+            Arc::new(Record::fixture(Level::TRACE, "connected")),
         ];
-        let rows = filtered(records.clone(), "SLOW", [true; 5]);
+        let rows = filtered(records.clone(), "SLOW", Level::TRACE);
         assert_eq!(rows.len(), 1);
-        assert!(export_text(&rows, 7).contains("Evicted/dropped records: 7"));
-        assert!(export_text(&rows, 7).ends_with("WARN slow paint elapsed_ms=32\n"));
-        assert!(filtered(records, "", [false; 5]).is_empty());
+        let text = export_text(&rows, 7).unwrap();
+        assert!(text.contains("\"dropped\":7"));
+        assert_eq!(exported_records(&text)[0], *rows[0]);
+        assert!(filtered(records, "", Level::ERROR).is_empty());
+    }
+
+    fn exported_records(text: &str) -> Vec<Record> {
+        text.lines()
+            .skip(1)
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn structured_filters_and_minimum_severity_apply_to_json_exports() {
+        let records: Vec<_> = LEVELS
+            .iter()
+            .map(|level| {
+                let mut record = Record::fixture(*level, "paint finished");
+                record.namespace = "herdr_gpui".into();
+                record.target = "herdr_gpui::terminal_painter".into();
+                record.fields.insert("elapsed_ms".into(), 32.into());
+                Arc::new(record)
+            })
+            .collect();
+        for (index, minimum) in LEVELS.iter().enumerate() {
+            let rows = filtered(
+                records.clone(),
+                "namespace:HERDR_GPUI target:terminal_painter elapsed_ms=32 finished",
+                *minimum,
+            );
+            assert_eq!(rows.len(), 5 - index);
+            assert_eq!(rows[0].level, *minimum);
+            let exported = exported_records(&export_text(&rows, 0).unwrap());
+            assert_eq!(exported.len(), 5 - index);
+            assert_eq!(exported[0].fields["elapsed_ms"], 32);
+        }
+        // Matching strings in message/fields must not satisfy structured filters.
+        let mut impostor = Record::fixture(Level::ERROR, "herdr_gpui::terminal_painter");
+        impostor.namespace = "herdr_client".into();
+        impostor.target = "herdr_client::worker".into();
+        let records = vec![Arc::new(impostor)];
+        assert!(filtered(records.clone(), "namespace:herdr_gpui", Level::TRACE).is_empty());
+        assert!(filtered(records.clone(), "target:terminal_painter", Level::TRACE).is_empty());
+        assert_eq!(filtered(records, "terminal_painter", Level::TRACE).len(), 1);
+        assert!(filtered(Vec::new(), "", Level::TRACE).is_empty());
+        let empty = export_text(&[], 0).unwrap();
+        assert_eq!(empty.lines().count(), 1);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(empty.trim()).unwrap()["type"],
+            "metadata"
+        );
+    }
+
+    #[gpui::test]
+    fn level_dropdown_keyboard_dismissal_focus_and_input_isolation(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(LogWindow::new);
+        cx.simulate_resize(size(px(620.), px(360.)));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("cmd-l enter");
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+            assert!(view.read(cx).menu_focus.is_focused(window));
+        });
+        let menu = cx.debug_bounds("level-menu").unwrap();
+        assert!(menu.left() >= px(0.) && menu.right() <= px(620.));
+        assert!(menu.top() >= px(0.) && menu.bottom() <= px(360.));
+        cx.simulate_keystrokes("down down enter");
+        cx.update(|window, cx| {
+            let view = view.read(cx);
+            assert_eq!(view.minimum, Level::INFO);
+            assert!(view.level_menu.is_none());
+            assert!(view.level_focus.is_focused(window));
+        });
+        cx.simulate_keystrokes("enter down x escape");
+        cx.update(|window, cx| {
+            let view = view.read(cx);
+            assert_eq!(view.minimum, Level::INFO);
+            assert!(view.level_menu.is_none());
+            assert_eq!(view.search.read(cx).text(), "");
+            assert!(view.level_focus.is_focused(window));
+        });
+        cx.simulate_keystrokes("enter end home down enter");
+        view.read_with(cx, |view, _| assert_eq!(view.minimum, Level::DEBUG));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+        cx.simulate_click(point(px(600.), px(340.)), Modifiers::default());
+        view.read_with(cx, |view, _| assert!(view.level_menu.is_none()));
+        cx.simulate_keystrokes("shift-tab");
+        cx.update(|window, cx| assert!(view.read(cx).search.read(cx).focus.is_focused(window)));
     }
 }
