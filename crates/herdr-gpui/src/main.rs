@@ -1,10 +1,12 @@
 // objc 0.2's selectors expand a legacy cargo-clippy cfg in the native test adapter.
 #![cfg_attr(feature = "integration-test", allow(unexpected_cfgs))]
 mod app_icon;
+mod close_modal;
 mod config;
 mod controls;
 mod input;
 mod menu;
+mod palette;
 #[cfg(feature = "integration-test")]
 mod performance;
 mod search_input;
@@ -26,20 +28,31 @@ use std::{
 };
 use terminal::*;
 
-actions!(
-    herdr,
-    [
-        Quit,
-        Reconnect,
-        NewWorkspace,
-        NewTab,
-        SplitRight,
-        SplitDown,
-        NextTab,
-        PreviousTab,
-        ShowKeybinds
-    ]
-);
+actions!(herdr, [Quit]);
+
+#[derive(Clone, PartialEq, serde::Deserialize, Action)]
+#[action(no_json)]
+struct RunCommand {
+    command: Command,
+}
+
+fn bind_keys(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+    cx.bind_keys(
+        controls::COMMANDS
+            .iter()
+            .filter(|info| !info.shortcut.is_empty() && info.command != Command::Quit)
+            .map(|info| {
+                KeyBinding::new(
+                    info.shortcut,
+                    RunCommand {
+                        command: info.command,
+                    },
+                    None,
+                )
+            }),
+    );
+}
 
 struct HerdrWindow {
     config: config::Config,
@@ -60,6 +73,7 @@ struct HerdrWindow {
     local_error: Option<String>,
     menu: menu::MenuState,
     collapsed_repos: std::collections::HashSet<String>,
+    sidebar_visible: bool,
     wheel: WheelAccumulator,
     #[cfg(feature = "integration-test")]
     input_probe: smoke::InputProbe,
@@ -145,6 +159,7 @@ impl HerdrWindow {
             local_error: None,
             menu: menu::MenuState::new(cx),
             collapsed_repos: Default::default(),
+            sidebar_visible: true,
             wheel: WheelAccumulator::default(),
             #[cfg(feature = "integration-test")]
             input_probe: smoke::InputProbe::default(),
@@ -284,6 +299,36 @@ impl HerdrWindow {
         #[cfg(feature = "integration-test")]
         {
             self.input_probe.actions += 1;
+        }
+        match command {
+            Command::ClosePane | Command::CloseTab => {
+                self.open_close_confirmation(command, window, cx);
+                return;
+            }
+            Command::Palette | Command::WorkspacePicker => {
+                self.open_palette(command == Command::WorkspacePicker, window, cx);
+                return;
+            }
+            Command::Keybinds => {
+                self.open_keybinds(window, cx);
+                return;
+            }
+            Command::Themes => {
+                self.open_theme_picker(window, cx);
+                return;
+            }
+            Command::Settings => {
+                self.open_menu(window, cx);
+                self.menu.page = Some(menu::Page::Preferences);
+                return;
+            }
+            Command::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
+            Command::Reconnect => self.reconnect(),
+            Command::Quit => {
+                cx.quit();
+                return;
+            }
+            _ => {}
         }
         if let (Some(handle), Some(snapshot)) = (&self.handle, &self.live.snapshot)
             && let Some((method, params)) = controls::request(command, snapshot)
@@ -545,34 +590,8 @@ impl Render for HerdrWindow {
             .map(|e| format!("{}: {e}", self.live.status))
             .unwrap_or_else(|| self.live.status.clone());
         div()
-            .on_action(cx.listener(|this, _: &ShowKeybinds, window, cx| {
-                this.open_keybinds(window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &Reconnect, window, cx| {
-                if this.menu.page.is_some() {
-                    return;
-                }
-                this.reconnect();
-                window.focus(&this.focus);
-                cx.notify();
-            }))
-            .on_action(cx.listener(|this, _: &NewWorkspace, window, cx| {
-                this.command(Command::Workspace, window, cx)
-            }))
-            .on_action(
-                cx.listener(|this, _: &NewTab, window, cx| this.command(Command::Tab, window, cx)),
-            )
-            .on_action(cx.listener(|this, _: &SplitRight, window, cx| {
-                this.command(Command::SplitRight, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SplitDown, window, cx| {
-                this.command(Command::SplitDown, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &NextTab, window, cx| {
-                this.command(Command::NextTab, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &PreviousTab, window, cx| {
-                this.command(Command::PreviousTab, window, cx)
+            .on_action(cx.listener(|this, action: &RunCommand, window, cx| {
+                this.command(action.command, window, cx);
             }))
             .size_full()
             .relative()
@@ -583,35 +602,40 @@ impl Render for HerdrWindow {
             .font_family(self.config.ui.family.clone())
             .text_size(px(self.config.ui.size))
             .child(
-                div().flex().flex_1().min_h_0().child(sidebar).child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_none()
-                                .bg(rgb(self.theme.surface))
-                                .text_color(rgb(self.theme.foreground))
-                                .child(tabs.flex_1().min_w_0())
-                                .child(
-                                    div()
-                                        .id("new-tab")
-                                        .px_4()
-                                        .flex()
-                                        .items_center()
-                                        .cursor_pointer()
-                                        .hover(|s| s.bg(rgb(self.theme.active)))
-                                        .child("+")
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.command(Command::Tab, window, cx)
-                                        })),
-                                ),
-                        )
-                        .child(terminal),
-                ),
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .when(self.sidebar_visible, |row| row.child(sidebar))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_none()
+                                    .bg(rgb(self.theme.surface))
+                                    .text_color(rgb(self.theme.foreground))
+                                    .child(tabs.flex_1().min_w_0())
+                                    .child(
+                                        div()
+                                            .id("new-tab")
+                                            .px_4()
+                                            .flex()
+                                            .items_center()
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(rgb(self.theme.active)))
+                                            .child("+")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.command(Command::Tab, window, cx)
+                                            })),
+                                    ),
+                            )
+                            .child(terminal),
+                    ),
             )
             .child(
                 div()
@@ -769,41 +793,115 @@ fn run() {
     Application::new().run(move |cx| {
         app_icon::install();
         cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([
-            KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("cmd-/", ShowKeybinds, None),
-            KeyBinding::new("cmd-n", NewWorkspace, None),
-            KeyBinding::new("cmd-t", NewTab, None),
-            KeyBinding::new("cmd-d", SplitRight, None),
-            KeyBinding::new("cmd-shift-d", SplitDown, None),
-            KeyBinding::new("cmd-shift-]", NextTab, None),
-            KeyBinding::new("cmd-shift-[", PreviousTab, None),
-        ]);
+        bind_keys(cx);
         cx.set_menus(vec![
             Menu {
                 name: "Herdr".into(),
                 items: vec![
-                    MenuItem::action("Keybinds", ShowKeybinds),
+                    MenuItem::action(
+                        "Command Palette",
+                        RunCommand {
+                            command: Command::Palette,
+                        },
+                    ),
+                    MenuItem::action(
+                        "Settings",
+                        RunCommand {
+                            command: Command::Settings,
+                        },
+                    ),
+                    MenuItem::action(
+                        "Keybinds",
+                        RunCommand {
+                            command: Command::Keybinds,
+                        },
+                    ),
                     MenuItem::action("Quit Herdr", Quit),
                 ],
             },
             Menu {
                 name: "File".into(),
                 items: vec![
-                    MenuItem::action("New Workspace", NewWorkspace),
-                    MenuItem::action("New Tab", NewTab),
+                    MenuItem::action(
+                        "New Workspace",
+                        RunCommand {
+                            command: Command::Workspace,
+                        },
+                    ),
+                    MenuItem::action(
+                        "New Tab",
+                        RunCommand {
+                            command: Command::Tab,
+                        },
+                    ),
+                    MenuItem::action(
+                        "Switch Workspace",
+                        RunCommand {
+                            command: Command::WorkspacePicker,
+                        },
+                    ),
+                    MenuItem::separator(),
+                    MenuItem::action(
+                        "Close Pane...",
+                        RunCommand {
+                            command: Command::ClosePane,
+                        },
+                    ),
+                    MenuItem::action(
+                        "Close Tab...",
+                        RunCommand {
+                            command: Command::CloseTab,
+                        },
+                    ),
                 ],
             },
             Menu {
                 name: "Terminal".into(),
                 items: vec![
-                    MenuItem::action("Split Vertically (Right)", SplitRight),
-                    MenuItem::action("Split Horizontally (Down)", SplitDown),
+                    MenuItem::action(
+                        "Split Vertically (Right)",
+                        RunCommand {
+                            command: Command::SplitRight,
+                        },
+                    ),
+                    MenuItem::action(
+                        "Split Horizontally (Down)",
+                        RunCommand {
+                            command: Command::SplitDown,
+                        },
+                    ),
                     MenuItem::separator(),
-                    MenuItem::action("Next Tab", NextTab),
-                    MenuItem::action("Previous Tab", PreviousTab),
+                    MenuItem::action(
+                        "Next Tab",
+                        RunCommand {
+                            command: Command::NextTab,
+                        },
+                    ),
+                    MenuItem::action(
+                        "Previous Tab",
+                        RunCommand {
+                            command: Command::PreviousTab,
+                        },
+                    ),
+                    MenuItem::action(
+                        "Toggle Pane Zoom",
+                        RunCommand {
+                            command: Command::Zoom,
+                        },
+                    ),
+                    MenuItem::action(
+                        "Toggle Sidebar",
+                        RunCommand {
+                            command: Command::ToggleSidebar,
+                        },
+                    ),
                     MenuItem::separator(),
-                    MenuItem::action("Reconnect", Reconnect),
+                    MenuItem::action(
+                        "Reconnect",
+                        RunCommand {
+                            command: Command::Reconnect,
+                        },
+                    ),
                 ],
             },
         ]);

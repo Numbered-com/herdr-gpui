@@ -162,7 +162,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                             return Err("native footer click did not open menu".into());
                         }
                         let before = state.input_probe;
-                        window.dispatch_action(Box::new(NewTab), cx);
+                        window.dispatch_action(Box::new(RunCommand { command: Command::Tab }), cx);
                         for key in ["down", "enter", "x", "escape"] {
                             window.dispatch_keystroke(
                                 Keystroke {
@@ -376,7 +376,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                 frames += 1;
                 let focused = view.read(cx).focus.is_focused(window);
                 let active = window.is_window_active();
-                let actions_ready = window.is_action_available(&NewTab, cx);
+                let actions_ready = window.is_action_available(&RunCommand { command: Command::Tab }, cx);
                 let probe = view.read(cx).input_probe;
                 let (live, local_error, options, sent_size, bounds) = {
                     let view = view.read(cx);
@@ -442,10 +442,10 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         let old = surface.panes.iter().find(|p| p.pane_id == split_pane).ok_or("original split pane missing")?;
                         let new = surface.panes.iter().find(|p| Some(&p.pane_id) == snapshot.focused_pane_id.as_ref()).ok_or("focused split missing")?;
                         if new.rect.y <= old.rect.y || new.rect.x != old.rect.x { return Err(format!("down split geometry: {}", diagnostic())); }
-                        window.dispatch_action(Box::new(PreviousTab), cx);
+                        window.dispatch_action(Box::new(RunCommand { command: Command::PreviousTab }), cx);
                     }
                     4 if focused_tab == first_tab && surface.panes.len() == 1 => {
-                        window.dispatch_action(Box::new(NextTab), cx);
+                        window.dispatch_action(Box::new(RunCommand { command: Command::NextTab }), cx);
                     }
                     5 if focused_tab == second_tab && surface.panes.len() == 3 => {
                         key("cmd-n", window, cx)?;
@@ -455,7 +455,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     }
                     7 if focused_workspace == workspace && focused_tab == second_tab && surface.panes.len() == 3 => {
                         // Use the full-width tab so the exact output row cannot wrap in a split.
-                        window.dispatch_action(Box::new(PreviousTab), cx);
+                        window.dispatch_action(Box::new(RunCommand { command: Command::PreviousTab }), cx);
                     }
                     8 if focused_tab == first_tab && surface.panes.len() == 1 => {
                         let command = format!("echo HERDR_GUI_{}\"_OK\"", std::process::id());

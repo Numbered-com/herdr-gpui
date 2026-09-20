@@ -51,6 +51,21 @@ Config and theme I/O is synchronous; GUI callers should schedule it accordingly.
   Cmd-Shift-D splits horizontally (new pane below). Cmd-Shift-] / Cmd-Shift-[
   cycles next/previous tab within the current workspace, wrapping at the ends.
   These shortcuts are native actions, not bytes sent to a terminal.
+- Cmd-1 through Cmd-9 focuses the corresponding numbered tab in the current
+  workspace. Cmd-Alt-Left/Right/Up/Down focuses a pane in that direction;
+  Cmd-Alt-] / Cmd-Alt-[ cycles next/previous pane within the current tab.
+  Cmd-Shift-Enter toggles focused pane zoom.
+- Cmd-W closes the focused pane and Cmd-Shift-W closes the focused tab only after
+  a confirmation dialog. **Cancel is selected by default**: Enter alone cancels;
+  Tab then Enter selects and confirms Close. Closing can terminate running
+  processes, unlike quitting the GUI, which only detaches.
+- Cmd-Shift-P opens the command palette with native actions and configured daemon
+  command entries, including native Themes and Reconnect actions without dedicated
+  shortcuts. Cmd-P opens the workspace picker instead.
+- Cmd-B toggles sidebar visibility locally without changing daemon state.
+  Cmd-, opens Settings; Cmd-/ opens the grouped native shortcut reference.
+  Native shortcut labels and keycaps come from the shared `controls::COMMANDS`
+  catalog, with Cmd-V semantic paste shown separately.
 - Creation omits `cwd`, labels, environment overrides, and split ratio: the
   daemon applies its existing defaults and directory policy. Workspace creation
   supplies the currently focused source workspace when available; tabs and splits
@@ -106,8 +121,8 @@ GPUI native action/menu/keybinding patterns.
   not synchronized from the host terminal's theme.
 - No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
   hyperlink activation, image rendering, or animated blinking.
-- No pane/tab/workspace close or delete actions (deferred until confirmation UI),
-  horizontal wheel handling, command palette, server-owned keybindings, SSH,
+- No rename dialogs, workspace close/delete actions, horizontal wheel handling,
+  server-owned keybindings, SSH,
   session picker, automatic reconnect, or daemon lifecycle management.
 - IME uses a minimal transient buffer, not a local editable terminal document;
   composition appears in the status bar rather than inline. Key releases and

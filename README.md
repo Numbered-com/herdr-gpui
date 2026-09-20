@@ -165,6 +165,16 @@ that an omitted cursor color follows the theme foreground.
 | Cmd-T | New tab |
 | Cmd-D / Cmd-Shift-D | Split right / below |
 | Cmd-Shift-] / Cmd-Shift-[ | Next / previous tab |
+| Cmd-1 through Cmd-9 | Focus the corresponding numbered tab in the current workspace |
+| Cmd-Alt-Left/Right/Up/Down | Focus a pane in that direction |
+| Cmd-Alt-] / Cmd-Alt-[ | Next / previous pane in the current tab |
+| Cmd-Shift-Enter | Toggle focused pane zoom |
+| Cmd-W / Cmd-Shift-W | Confirm closing the focused pane / tab |
+| Cmd-P | Workspace picker |
+| Cmd-Shift-P | Command palette: native actions and configured daemon entries |
+| Cmd-B | Toggle the sidebar locally |
+| Cmd-, | Settings |
+| Cmd-/ | Native shortcut reference |
 | Wheel / trackpad | Scroll the hovered terminal through Herdr |
 | Cmd-V | Semantic paste |
 | Cmd-Q | Quit the GUI, leaving terminals running |
@@ -172,6 +182,16 @@ that an omitted cursor color follows the theme foreground.
 The native File and Terminal menus expose the creation and navigation actions.
 Terminal keyboard input and committed Unicode text go directly to Herdr's
 semantic input protocol.
+
+The command palette includes native actions (including unbound Themes and
+Reconnect) and configured daemon command entries. Cmd-P opens the workspace
+picker, not the command palette. Cmd-B only changes this client's sidebar
+visibility; it does not change daemon state.
+
+Closing a pane or tab requires confirmation because it can terminate running
+processes. **Cancel is selected by default**: Enter alone cancels; press Tab then
+Enter to select and confirm Close. Quitting the GUI remains a detach operation,
+not a pane/tab close.
 
 ## Structure
 
@@ -271,7 +291,7 @@ active desktop. Run `just test-live` and `just test-gui` locally as shown above.
 ## Next Milestones
 
 - Selection/copy, hyperlink interaction, richer mouse support, and inline IME.
-- Rename/close dialogs and full worktree/agent management.
+- Rename dialogs, workspace deletion, and full worktree/agent management.
 - Resizable sidebar, editable settings and bundled fonts.
 - Automatic reconnect, optimized terminal painting and graphics support.
 - Signed macOS app packaging, then SSH endpoints.

@@ -9,6 +9,8 @@ pub(super) enum Page {
     Preferences,
     Keybinds,
     Themes,
+    Palette,
+    ConfirmClose,
     Update,
 }
 
@@ -19,6 +21,8 @@ pub(super) struct MenuState {
     selected: usize,
     keybinds_scroll: ScrollHandle,
     pub(super) themes: Option<crate::theme_picker::ThemePicker>,
+    pub(super) palette: Option<crate::palette::Palette>,
+    pub(super) close: Option<crate::close_modal::CloseConfirmation>,
 }
 
 impl MenuState {
@@ -30,6 +34,8 @@ impl MenuState {
             selected: 0,
             keybinds_scroll: ScrollHandle::new(),
             themes: None,
+            palette: None,
+            close: None,
         }
     }
 }
@@ -51,12 +57,20 @@ impl HerdrWindow {
 
     pub(super) fn dismiss_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu.page = None;
+        self.menu.close = None;
         window.focus(&self.focus);
         cx.notify();
     }
 
     fn menu_items(&self) -> Vec<&'static str> {
-        let mut items = vec!["settings", "keybinds", "themes", "reload GUI config"];
+        let mut items = vec![
+            "settings",
+            "keybinds",
+            "themes",
+            "commands",
+            "workspaces",
+            "reload GUI config",
+        ];
         if self.live.connected {
             items.push("reload daemon config");
         }
@@ -81,6 +95,8 @@ impl HerdrWindow {
             "settings" => self.menu.page = Some(Page::Preferences),
             "keybinds" => self.open_keybinds(window, cx),
             "themes" => self.open_theme_picker(window, cx),
+            "commands" => self.open_palette(false, window, cx),
+            "workspaces" => self.open_palette(true, window, cx),
             "update ready" => self.menu.page = Some(Page::Update),
             "reload GUI config" => {
                 // Load both before replacing either, so invalid themes preserve the UI.
@@ -155,17 +171,22 @@ impl HerdrWindow {
                     .w((viewport.width - px(32.)).max(px(0.)).min(px(480.)))
                     .max_h((viewport.height - px(32.)).max(px(0.)))
             })
-            .when(!matches!(page, Page::Keybinds | Page::Themes), |panel| {
-                panel.overflow_y_scroll().p(px(6.))
-            })
-            .when(matches!(page, Page::Keybinds | Page::Themes), |panel| {
-                panel
-                    .flex()
-                    .flex_col()
-                    .h(px(560. * (font.size / 12.)).min((viewport.height - px(32.)).max(px(0.))))
-                    .overflow_hidden()
-                    .shadow_lg()
-            })
+            .when(
+                !matches!(page, Page::Keybinds | Page::Themes | Page::Palette),
+                |panel| panel.overflow_y_scroll().p(px(6.)),
+            )
+            .when(
+                matches!(page, Page::Keybinds | Page::Themes | Page::Palette),
+                |panel| {
+                    panel
+                        .flex()
+                        .flex_col()
+                        .h(px(560. * (font.size / 12.))
+                            .min((viewport.height - px(32.)).max(px(0.))))
+                        .overflow_hidden()
+                        .shadow_lg()
+                },
+            )
             .rounded(px(5.))
             .border_1()
             .border_color(rgb(theme.active))
@@ -201,6 +222,10 @@ impl HerdrWindow {
             panel = panel.child(self.render_keybinds(cx));
         } else if page == Page::Themes {
             panel = panel.child(self.render_theme_picker(cx));
+        } else if page == Page::Palette {
+            panel = panel.child(self.render_palette(cx));
+        } else if page == Page::ConfirmClose {
+            panel = panel.child(self.render_close_confirmation(cx));
         } else {
             let (title, rows) = match page {
                 Page::Preferences => ("Preferences (read-only)", vec![
@@ -263,6 +288,14 @@ impl HerdrWindow {
             )
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.menu.page == Some(Page::Palette) {
+                    this.palette_key(event, window, cx);
+                    return;
+                }
+                if this.menu.page == Some(Page::ConfirmClose) {
+                    this.close_confirmation_key(event, window, cx);
+                    return;
+                }
                 if this.menu.page == Some(Page::Themes) {
                     this.theme_picker_key(event, window, cx);
                     return;
@@ -308,6 +341,8 @@ impl HerdrWindow {
     }
 
     fn render_keybinds(&self, cx: &mut Context<Self>) -> Div {
+        use crate::controls::{COMMANDS, Command};
+
         let theme = &self.theme;
         let font = &self.config.ui;
         // Mix the theme's blue with foreground so accents remain readable on dark themes.
@@ -321,29 +356,41 @@ impl HerdrWindow {
             .track_scroll(&self.menu.keybinds_scroll)
             .px(px(16.))
             .py(px(8.));
-        for (section, shortcuts) in [
-            (
-                "WORKSPACES & PANES",
-                vec![
-                    ("Cmd N", "New workspace"),
-                    ("Cmd T", "New tab"),
-                    ("Cmd D", "Split right"),
-                    ("Cmd Shift D", "Split down"),
-                ],
-            ),
-            (
-                "NAVIGATION",
-                vec![("Cmd Shift ]", "Next tab"), ("Cmd Shift [", "Previous tab")],
-            ),
-            (
-                "APPLICATION",
-                vec![
-                    ("Cmd V", "Paste into terminal"),
-                    ("Cmd /", "Show keybinds"),
-                    ("Cmd Q", "Quit GUI; daemon stays running"),
-                ],
-            ),
-        ] {
+        let mut groups = [
+            ("WORKSPACES & PANES", Vec::new()),
+            ("NAVIGATION", Vec::new()),
+            ("APPLICATION", vec![("cmd-v", "Paste into terminal")]),
+        ];
+        for info in COMMANDS.iter().filter(|info| !info.shortcut.is_empty()) {
+            let group = match info.command {
+                Command::Workspace
+                | Command::Tab
+                | Command::SplitRight
+                | Command::SplitDown
+                | Command::Zoom
+                | Command::ClosePane
+                | Command::CloseTab => 0,
+                Command::NextTab
+                | Command::PreviousTab
+                | Command::FocusLeft
+                | Command::FocusRight
+                | Command::FocusUp
+                | Command::FocusDown
+                | Command::NextPane
+                | Command::PreviousPane
+                | Command::TabNumber(_)
+                | Command::WorkspacePicker => 1,
+                Command::ToggleSidebar
+                | Command::Settings
+                | Command::Keybinds
+                | Command::Themes
+                | Command::Palette
+                | Command::Reconnect
+                | Command::Quit => 2,
+            };
+            groups[group].1.push((info.shortcut, info.label));
+        }
+        for (section, shortcuts) in groups {
             body = body.child(
                 div()
                     .pt(px(12.))
@@ -371,7 +418,14 @@ impl HerdrWindow {
                                 .flex()
                                 .flex_wrap()
                                 .gap(px(4.))
-                                .children(keys.split_whitespace().map(|key| {
+                                .children(keys.split('-').map(|key| {
+                                    let mut chars = key.chars();
+                                    let key: String = chars
+                                        .next()
+                                        .map(|first| first.to_ascii_uppercase())
+                                        .into_iter()
+                                        .chain(chars)
+                                        .collect();
                                     div()
                                         .flex_none()
                                         .px(px(6.))
@@ -382,7 +436,7 @@ impl HerdrWindow {
                                         .bg(rgb(theme.background))
                                         .text_size(px(font.size * 0.9))
                                         .font_weight(FontWeight::MEDIUM)
-                                        .child(key.to_owned())
+                                        .child(key)
                                 })),
                         )
                         .child(

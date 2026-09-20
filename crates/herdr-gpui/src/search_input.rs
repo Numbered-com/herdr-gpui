@@ -1,4 +1,4 @@
-//! A single-line, native-IME-aware input for the theme picker.
+//! A single-line, native-IME-aware input for searchable pickers.
 use std::ops::Range;
 
 use gpui::{
@@ -14,6 +14,7 @@ pub struct Changed;
 
 pub struct SearchInput {
     pub focus: FocusHandle,
+    placeholder: String,
     edit: Editing,
     font: FontConfig,
     theme: Theme,
@@ -118,6 +119,7 @@ impl SearchInput {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             focus: cx.focus_handle(),
+            placeholder: "Search themes...".into(),
             edit: Editing::default(),
             font: Config::default().ui,
             theme: Theme::default(),
@@ -130,6 +132,12 @@ impl SearchInput {
 
     pub fn text(&self) -> &str {
         &self.edit.text
+    }
+
+    pub fn set_placeholder(&mut self, value: &str, cx: &mut Context<Self>) {
+        self.placeholder = value.into();
+        self.layout = None;
+        cx.notify();
     }
 
     pub fn is_composing(&self) -> bool {
@@ -408,7 +416,7 @@ impl Render for SearchInput {
                         let input = input.read(cx);
                         let placeholder = input.text().is_empty();
                         let text: gpui::SharedString = if placeholder {
-                            "Search themes...".into()
+                            input.placeholder.clone().into()
                         } else {
                             input.text().to_owned().into()
                         };

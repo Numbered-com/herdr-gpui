@@ -11,7 +11,7 @@ use gpui::{
     SharedString, TextLayout, Window, prelude::*, px,
 };
 #[cfg(test)]
-use gpui::{Context, Entity, Task, div, size};
+use gpui::{Context, Entity, Task, size};
 use herdr_client::protocol::*;
 #[cfg(test)]
 use herdr_client::{ConnectOptions, ConnectTarget};
@@ -192,17 +192,8 @@ struct SidebarFixture(Entity<HerdrWindow>);
 
 #[cfg(test)]
 impl Render for SidebarFixture {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.0.update(cx, |view, cx| {
-            div()
-                .size_full()
-                .relative()
-                .flex()
-                .child(view.render_sidebar(cx))
-                .when(view.menu.page.is_some(), |root| {
-                    root.child(view.render_menu(window, cx))
-                })
-        })
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.0.clone()
     }
 }
 
@@ -236,6 +227,7 @@ pub(crate) fn snapshot(workspace_count: usize) -> ClientShellSnapshot {
 #[gpui::test]
 fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     let (fixture, cx) = cx.add_window_view(|window, cx| {
+        crate::bind_keys(cx);
         // Deliberately do not call HerdrWindow::new: it connects and starts polling.
         let view = cx.new(|cx| HerdrWindow {
             target: ConnectTarget::Socket("/unused-layout-test.sock".into()),
@@ -260,6 +252,7 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
             local_error: None,
             menu: crate::menu::MenuState::new(cx),
             collapsed_repos: Default::default(),
+            sidebar_visible: true,
             wheel: WheelAccumulator::default(),
             #[cfg(feature = "integration-test")]
             input_probe: crate::smoke::InputProbe::default(),
@@ -433,12 +426,12 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     let panel = cx.debug_bounds("menu-panel").unwrap();
     assert_eq!(panel.size.width, px(480.));
     assert_eq!(panel.center(), gpui::point(px(400.), px(300.)));
-    let first_description = cx.debug_bounds("description-New workspace").unwrap();
+    let first_description = cx.debug_bounds("description-New Workspace").unwrap();
     for (keys, label) in [
-        ("keys-New workspace", "description-New workspace"),
-        ("keys-New tab", "description-New tab"),
-        ("keys-Split right", "description-Split right"),
-        ("keys-Split down", "description-Split down"),
+        ("keys-New Workspace", "description-New Workspace"),
+        ("keys-New Tab", "description-New Tab"),
+        ("keys-Split Right", "description-Split Right"),
+        ("keys-Split Down", "description-Split Down"),
     ] {
         let keys = cx.debug_bounds(keys).unwrap();
         let label = cx.debug_bounds(label).unwrap();
@@ -461,10 +454,10 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     assert!(header.bottom() <= body.top());
     assert!(body.bottom() <= footer.top());
     assert!(footer.bottom() <= panel.bottom());
-    let first_row = cx.debug_bounds("shortcut-New workspace").unwrap();
+    let first_row = cx.debug_bounds("shortcut-New Workspace").unwrap();
     cx.simulate_keystrokes("pagedown");
     cx.update(|window, cx| window.draw(cx).clear());
-    assert!(cx.debug_bounds("shortcut-New workspace").unwrap().top() < first_row.top());
+    assert!(cx.debug_bounds("shortcut-New Workspace").unwrap().top() < first_row.top());
     assert_eq!(cx.debug_bounds("keybinds-header").unwrap(), header);
     assert_eq!(cx.debug_bounds("keybinds-footer").unwrap(), footer);
     let close = cx.debug_bounds("keybinds-close").unwrap();
@@ -476,7 +469,7 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
         window.draw(cx).clear();
     });
     assert_eq!(
-        cx.debug_bounds("shortcut-New workspace").unwrap(),
+        cx.debug_bounds("shortcut-New Workspace").unwrap(),
         first_row
     );
     cx.simulate_resize(size(px(800.), px(600.)));
@@ -596,4 +589,71 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
         });
     });
     cx.simulate_keystrokes("escape");
+
+    cx.simulate_keystrokes("cmd-shift-p");
+    let palette_search = cx.update(|window, cx| {
+        window.draw(cx).clear();
+        assert!(view.read(cx).menu.page == Some(crate::menu::Page::Palette));
+        view.read(cx).menu.palette.as_ref().unwrap().search.clone()
+    });
+    // Bound native commands must not fire while a search field has focus.
+    cx.simulate_keystrokes("cmd-b");
+    cx.update(|_, cx| assert!(view.read(cx).sidebar_visible));
+    cx.simulate_input("toggle sidebar");
+    cx.update(|_, cx| assert_eq!(palette_search.read(cx).text(), "toggle sidebar"));
+    cx.simulate_keystrokes("enter");
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        assert!(!view.read(cx).sidebar_visible);
+        assert!(view.read(cx).menu.page.is_none());
+        assert!(view.read(cx).focus.is_focused(window));
+    });
+    cx.simulate_keystrokes("cmd-b cmd-,");
+    cx.update(|_, cx| {
+        assert!(view.read(cx).sidebar_visible);
+        assert!(view.read(cx).menu.page == Some(crate::menu::Page::Preferences));
+    });
+    cx.simulate_keystrokes("escape cmd-p");
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        assert!(view.read(cx).menu.page == Some(crate::menu::Page::Palette));
+        let search = &view.read(cx).menu.palette.as_ref().unwrap().search;
+        assert!(search.read(cx).text().is_empty());
+    });
+    cx.simulate_input("no-workspace-matches-xyz");
+    cx.simulate_keystrokes("enter");
+    cx.update(|_, cx| assert!(view.read(cx).menu.page == Some(crate::menu::Page::Palette)));
+    cx.simulate_keystrokes("escape");
+
+    cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            view.live.snapshot = Some(Arc::new(
+                serde_json::from_str(include_str!(
+                    "../../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json"
+                ))
+                .unwrap(),
+            ));
+            cx.notify();
+        });
+    });
+    cx.simulate_keystrokes("cmd-w");
+    cx.update(|_, cx| assert!(view.read(cx).menu.page == Some(crate::menu::Page::ConfirmClose)));
+    cx.simulate_keystrokes("enter");
+    cx.update(|_, cx| {
+        assert!(
+            view.read(cx).menu.page.is_none(),
+            "Enter defaults to Cancel"
+        )
+    });
+    cx.simulate_keystrokes("cmd-shift-w tab enter");
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        assert!(
+            view.read(cx).menu.page == Some(crate::menu::Page::ConfirmClose),
+            "disconnected confirmation stays open with error"
+        );
+        assert!(view.read(cx).handle.is_none());
+    });
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| assert!(view.read(cx).focus.is_focused(window)));
 }
