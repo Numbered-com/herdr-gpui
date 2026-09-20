@@ -43,8 +43,8 @@ open a normal issue for those rather than a private advisory.
 
 ## Verifying a Release
 
-Each base artifact (universal DMG, experimental Linux archive, and CycloneDX
-SBOM) has checksums, a Sigstore signature/certificate, and GitHub provenance.
+Each base artifact (universal DMG, experimental x86_64 and ARM64 Linux archives,
+and CycloneDX SBOM) has checksums, a Sigstore signature/certificate, and GitHub provenance.
 Checksums alone are not authentication:
 
 | Files | Claim |
@@ -72,9 +72,9 @@ than trusting the current tag mapping. These are manual **main-branch** runs;
 the certificate identity is not a tag ref. Verification requires network access
 to GitHub and Sigstore; no transparency-log checks are disabled.
 
-`SHA256SUMS` contains exactly 15 entries: the three base files and each file's
+`SHA256SUMS` contains exactly 20 entries: the four base files and each file's
 `.sha256`, `.sha512`, `.sig`, and `.crt` sidecars. The immutable release has those
-15 files plus `SHA256SUMS`. Publication checks the complete set and downloaded
+20 files plus `SHA256SUMS`. Publication checks the complete set and downloaded
 draft bytes before making it public. Enable GitHub immutable releases before
 dispatch; the workflow never replaces a tag, release, or published asset.
 
@@ -118,8 +118,8 @@ for every base artifact, and checks the full actual signing fingerprint from
   hardened runtime with no entitlements, then notarized and stapled.
 - A secret-free metadata job generates the CycloneDX 1.5 SBOM using pinned
   cargo-cyclonedx 0.5.9. Its metadata calls enforce `--locked`; the graph unions
-  default-feature ARM macOS, Intel macOS, and x86_64 Linux dependencies, including
-  build-time dependencies. Platform scopes merge with `required` taking precedence
+  default-feature ARM macOS, Intel macOS, and x86_64/ARM64 Linux dependencies,
+  including build-time dependencies. Platform scopes merge with `required` taking precedence
   over `optional`, then `excluded`; absent scope is treated as `required`. Other
   component fields must match, including identities, hashes, and licenses.
   This is a Cargo dependency inventory, not an inventory

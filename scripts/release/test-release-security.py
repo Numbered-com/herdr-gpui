@@ -7,6 +7,7 @@ import itertools
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -24,6 +25,84 @@ SPEC = importlib.util.spec_from_file_location("sbom", ROOT / "scripts/release/ge
 SBOM = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SBOM)
 VERSION = "0.1.0"
+
+
+class ReleaseTargets(unittest.TestCase):
+    def test_ci_platform_checks_keep_owner_policy_and_required_gate(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        sections = re.split(r"^  ([a-z-]+):\n", workflow.split("\njobs:\n", 1)[1], flags=re.M)
+        jobs = dict(zip(sections[1::2], sections[2::2]))
+        for job in jobs.values():
+            for condition in ("github.repository == 'penso/herdr-gpui'",
+                              "github.actor == 'penso'", "github.triggering_actor == 'penso'"):
+                self.assertIn(condition, job)
+        for name in ("checks", "checks-passed"):
+            self.assertIn("github.event.pull_request.user.login == 'penso'", jobs[name])
+            self.assertIn("github.event.pull_request.head.repo.full_name == 'penso/herdr-gpui'", jobs[name])
+        self.assertIn("runner: [macos-15, ubuntu-24.04, ubuntu-24.04-arm]", jobs["checks"])
+        self.assertIn("    name: Format, lint, and test\n", jobs["checks-passed"])
+        self.assertIn("    needs: checks\n", jobs["checks-passed"])
+        self.assertIn("always()", jobs["checks-passed"])
+        self.assertIn('test "$RESULT" = success', jobs["checks-passed"])
+        self.assertIn("github.ref == 'refs/heads/main'", jobs["build"])
+        self.assertNotIn("github.event_name == 'pull_request'", jobs["build"])
+        for name in ("checks", "build"):
+            self.assertIn("bash scripts/install-linux-deps.sh", jobs[name])
+
+    def test_workflow_and_metadata_contract(self):
+        # Keep this offline and dependency-free; actionlint validates YAML syntax.
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        sections = re.split(r"^  ([a-z-]+):\n", workflow.split("\njobs:\n", 1)[1], flags=re.M)
+        jobs = dict(zip(sections[1::2], sections[2::2]))
+        targets = {"aarch64-apple-darwin", "x86_64-apple-darwin",
+                   "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"}
+        self.assertEqual(set(SBOM.TARGETS), targets)
+        self.assertEqual(set(tomllib.loads((ROOT / "deny.toml").read_text())["graph"]["targets"]), targets)
+        self.assertEqual(set(tomllib.loads((ROOT / "scripts/release/about.toml").read_text())["targets"]), targets)
+        self.assertEqual(set(re.findall(r"^            target: (\S+)$", workflow, re.M)), targets)
+        linux = jobs["linux"]
+        self.assertEqual(re.findall(r"- runner: (\S+)\n            target: (\S+)", linux), [
+            ("ubuntu-24.04", "x86_64-unknown-linux-gnu"),
+            ("ubuntu-24.04-arm", "aarch64-unknown-linux-gnu")])
+        for command in ('cargo build --locked --release -p herdr-gpui --target "$TARGET"',
+                        'cargo test --locked --release -p herdr-gpui --test cli --target "$TARGET"',
+                        'cargo clippy --locked --workspace --all-targets --all-features -- -D warnings',
+                        'cargo test --locked --workspace --all-features',
+                        'test "$(rustc -vV | sed -n \'s/^host: //p\')" = "$TARGET"',
+                        'name: linux-package-${{ matrix.target }}',
+                        'bash scripts/release/package-linux.sh "$VERSION" "$TARGET"'):
+            self.assertIn(command, linux)
+        for target in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"):
+            self.assertIn(f"name: linux-package-{target}\n", jobs["attest"])
+        attest = jobs["attest"].replace("${{ needs.validate.outputs.version }}", VERSION)
+        signed = re.search(r"^          files: (.+)$", attest, re.M)[1].split()
+        subjects = re.findall(r"^            dist/(\S+)$", attest, re.M)
+        self.assertEqual(sorted(signed), sorted(MANIFEST.base_names(VERSION)))
+        self.assertEqual(sorted(subjects), sorted(MANIFEST.base_names(VERSION)))
+        for script in ("verify-release.sh", "gpg-sign-release.sh"):
+            text = (ROOT / "scripts" / script).read_text().replace("$version", VERSION)
+            loop = text.split("for name in ", 1)[1].split("; do", 1)[0]
+            self.assertEqual(re.findall(r'"(Herdr-[^"]+)"', loop), MANIFEST.base_names(VERSION))
+        self.assertEqual(workflow.count('artifact-manifest.py create "$VERSION" dist'), 1)
+        self.assertNotIn("scripts/package-linux.sh", workflow)
+        self.assertNotIn("uses: actions/cache", workflow)
+        for name in ("macos-checks", "macos-build", "linux", "windows-protocol", "metadata"):
+            self.assertIn("    needs: validate\n", jobs[name])
+            self.assertNotIn("secrets.", jobs[name])
+            self.assertNotIn("environment:", jobs[name])
+        for name, job in jobs.items():
+            ref = "github.sha" if name in ("audit", "validate") else "needs.validate.outputs.sha"
+            self.assertIn("ref: ${{ " + ref + " }}", job)
+            self.assertIn("persist-credentials: false", job)
+        for name in ("audit", "validate", "sign", "attest", "publish", "homebrew"):
+            for condition in ("github.repository == 'penso/herdr-gpui'", "github.ref == 'refs/heads/main'",
+                              "github.actor == 'penso'", "github.triggering_actor == 'penso'"):
+                self.assertIn(condition, jobs[name])
+        for name in ("sign", "attest", "publish"):
+            self.assertIn("    environment: release\n", jobs[name])
+        self.assertIn("    environment: homebrew\n", jobs["homebrew"])
+        self.assertEqual(re.findall(r"^  (\w+):", workflow.split("permissions:", 1)[0], re.M),
+                         ["workflow_dispatch"])
 
 
 class SbomMerge(unittest.TestCase):
@@ -49,7 +128,7 @@ class SbomMerge(unittest.TestCase):
     def test_platform_scope_union(self):
         # Includes excluded macOS build-time / required Linux runtime, every
         # ordering, optional precedence, and the absent-scope required default.
-        for scopes in itertools.product(("excluded", "optional", "required", None), repeat=3):
+        for scopes in itertools.product(("excluded", "optional", "required", None), repeat=len(SBOM.TARGETS)):
             with self.subTest(scopes=scopes):
                 components = [{"bom-ref": "libloading", "name": "libloading", "version": "0.8.9",
                                **({"scope": scope} if scope is not None else {})} for scope in scopes]
@@ -60,6 +139,8 @@ class SbomMerge(unittest.TestCase):
                 self.assertEqual(bom["dependencies"], [
                     {"ref": "herdr", "dependsOn": ["libloading"]},
                     {"ref": "libloading", "dependsOn": []}])
+                self.assertEqual(bom["metadata"]["properties"], [
+                    {"name": "herdr:release:targets", "value": ",".join(SBOM.TARGETS)}])
 
     def test_non_scope_conflicts_rejected(self):
         component = {"bom-ref": "libloading", "name": "libloading", "version": "0.8.9",
@@ -72,12 +153,13 @@ class SbomMerge(unittest.TestCase):
             ("licenses", [{"license": {"id": "Apache-2.0"}}]),
         ):
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, "Conflicting SBOM component"):
-                self.generate([component, component, dict(component, scope="required", **{field: value})])
+                self.generate([component] * (len(SBOM.TARGETS) - 1) +
+                              [dict(component, scope="required", **{field: value})])
 
     def test_invalid_scope_rejected(self):
         for scope in (None, "unknown"):
             with self.subTest(scope=scope), self.assertRaisesRegex(ValueError, "Invalid SBOM component scope"):
-                self.generate([{"bom-ref": "libloading", "name": "libloading", "scope": scope}] * 3)
+                self.generate([{"bom-ref": "libloading", "name": "libloading", "scope": scope}] * len(SBOM.TARGETS))
 
 
 class ReleaseSecurity(unittest.TestCase):
@@ -103,7 +185,12 @@ class ReleaseSecurity(unittest.TestCase):
 
     def test_complete_set_and_homebrew(self):
         self.run_manifest("verify")
-        self.assertEqual(len((self.path / "SHA256SUMS").read_text().splitlines()), 15)
+        self.assertEqual(set(MANIFEST.base_names(VERSION)), {
+            "Herdr-0.1.0-universal-apple-darwin.dmg", "Herdr-0.1.0.cdx.json",
+            "Herdr-0.1.0-x86_64-unknown-linux-gnu.tar.gz",
+            "Herdr-0.1.0-aarch64-unknown-linux-gnu.tar.gz"})
+        self.assertEqual(len((self.path / "SHA256SUMS").read_text().splitlines()), 20)
+        self.assertEqual(len(self.run_manifest("names").splitlines()), 21)
         with tempfile.TemporaryDirectory() as temp:
             name = MANIFEST.base_names(VERSION)[0]
             for file in (name, "SHA256SUMS"):
@@ -111,9 +198,14 @@ class ReleaseSecurity(unittest.TestCase):
             self.assertEqual(self.run_manifest("dmg", directory=temp).strip(),
                              hashlib.sha256(name.encode()).hexdigest())
 
-    def test_missing_signature(self):
-        (self.path / (MANIFEST.base_names(VERSION)[0] + ".sig")).unlink()
-        self.run_manifest("verify", False)
+    def test_missing_base_or_sidecar(self):
+        for name in MANIFEST.asset_names(VERSION):
+            with self.subTest(name=name):
+                path = self.path / name
+                data = path.read_bytes()
+                path.unlink()
+                self.run_manifest("verify", False)
+                path.write_bytes(data)
 
     def test_extra_asset(self):
         (self.path / "unexpected").write_text("extra")
@@ -160,10 +252,12 @@ set -eu
 if [[ $1 == api ]]; then
     printf '%040d\\n' 1
 elif [[ $1 == attestation && $2 == verify ]]; then
+    printf '%s\\n' "${3##*/}" >> "$ATTEST_LOG"
     [[ "$*" == *"--source-ref refs/heads/main"* ]]
     [[ "$*" == *"--source-digest 0000000000000000000000000000000000000001"* ]]
     [[ "$*" == *"--signer-digest 0000000000000000000000000000000000000001"* ]]
     [[ "$*" == *"--cert-identity https://github.com/penso/herdr-gpui/.github/workflows/release.yml@refs/heads/main"* ]]
+    if [[ ${FAIL_ARM_ATTEST:-0} == 1 && $3 == *aarch64-unknown-linux-gnu.tar.gz ]]; then exit 1; fi
     exit "${FAIL_ATTEST:-0}"
 else
     exit 99
@@ -172,21 +266,27 @@ fi
             (tools / "cosign").write_text('''#!/usr/bin/env bash
 set -eu
 [[ $1 == verify-blob ]]
+printf '%s\\n' "${!#}" >> "$COSIGN_LOG"
 [[ "$*" == *"--certificate-identity https://github.com/penso/herdr-gpui/.github/workflows/release.yml@refs/heads/main"* ]]
 [[ "$*" == *"--certificate-oidc-issuer https://token.actions.githubusercontent.com"* ]]
 [[ "$*" == *"--certificate-github-workflow-sha 0000000000000000000000000000000000000001"* ]]
+if [[ ${FAIL_ARM_COSIGN:-0} == 1 && ${!#} == *aarch64-unknown-linux-gnu.tar.gz ]]; then exit 1; fi
 exit "${FAIL_COSIGN:-0}"
 ''')
             (tools / "gpg").write_text('''#!/usr/bin/env bash
 set -eu
 [[ $1 == --homedir && -d $2 && $2 == */keyring ]]
 if [[ "$*" == *"--verify"* ]]; then
+    printf '%s\\n' "${!#}" >> "$GPG_LOG"
+    if [[ ${FAIL_ARM_GPG:-0} == 1 && ${!#} == *aarch64-unknown-linux-gnu.tar.gz ]]; then exit 1; fi
     printf '[GNUPG:] VALIDSIG %s 2026-09-20 0 0 4 0 1 10 00 %040d\\n' "$TEST_SIGNER" 2
 fi
 ''')
             for tool in tools.iterdir():
                 tool.chmod(0o755)
-            env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}")
+            env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}",
+                       ATTEST_LOG=str(tools / "attest.log"), COSIGN_LOG=str(tools / "cosign.log"),
+                       GPG_LOG=str(tools / "gpg.log"))
             command = ["bash", str(ROOT / "scripts/verify-release.sh"),
                        "--version", "v0.1.0", "--directory", str(self.path)]
             for extra, updates, success in (
@@ -194,15 +294,26 @@ fi
                 (["--sha", "2" * 40], {}, False),
                 ([], {"FAIL_COSIGN": "1"}, False),
                 ([], {"FAIL_ATTEST": "1"}, False),
+                ([], {"FAIL_ARM_COSIGN": "1"}, False),
+                ([], {"FAIL_ARM_ATTEST": "1"}, False),
             ):
                 result = subprocess.run(command + extra, env=dict(env, **updates), capture_output=True)
                 self.assertEqual(result.returncode == 0, success, result.stderr.decode())
+                if success:
+                    for log in ("cosign.log", "attest.log"):
+                        self.assertEqual([Path(line).name for line in (tools / log).read_text().splitlines()],
+                                         MANIFEST.base_names(VERSION))
             key = tools / "public.asc"
             key.write_text("mock public key")
             command += ["--gpg-key", str(key), "--gpg-fingerprint", "1" * 40]
-            for signer, success in (("1" * 40, True), ("2" * 40, False)):
-                result = subprocess.run(command, env=dict(env, TEST_SIGNER=signer), capture_output=True)
+            for signer, fail_arm, success in (("1" * 40, "0", True), ("2" * 40, "0", False),
+                                             ("1" * 40, "1", False)):
+                result = subprocess.run(command, env=dict(env, TEST_SIGNER=signer, FAIL_ARM_GPG=fail_arm),
+                                        capture_output=True)
                 self.assertEqual(result.returncode == 0, success, result.stderr.decode())
+                if success:
+                    self.assertEqual([Path(line).name for line in (tools / "gpg.log").read_text().splitlines()],
+                                     MANIFEST.base_names(VERSION))
 
     @unittest.skipUnless(os.environ.get("HERDR_TEST_SBOM") == "1", "opt-in real metadata generation")
     def test_real_sbom(self):
@@ -222,6 +333,8 @@ fi
             bom = json.loads((workspace / "release.cdx.json").read_text())
             names = {component["name"] for component in bom["components"]}
             self.assertTrue({"gpui", "metal", "wayland-client", "cc"} <= names)
+            self.assertEqual(bom["metadata"]["properties"], [
+                {"name": "herdr:release:targets", "value": ",".join(SBOM.TARGETS)}])
             manifest = workspace / "Cargo.toml"
             text = manifest.read_text()
             version = tomllib.loads(text)["workspace"]["package"]["version"]

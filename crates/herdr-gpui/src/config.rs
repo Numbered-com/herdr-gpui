@@ -32,10 +32,10 @@ impl FontConfig {
 
 impl Default for Config {
     fn default() -> Self {
-        let monospace = if cfg!(target_os = "macos") {
-            "Menlo"
+        let (monospace, ui) = if cfg!(target_os = "linux") {
+            ("DejaVu Sans Mono", "DejaVu Sans")
         } else {
-            "DejaVu Sans Mono"
+            ("Menlo", ".SystemUIFont")
         };
         let font = |family: &str, size| FontConfig {
             family: family.into(),
@@ -44,9 +44,9 @@ impl Default for Config {
         Self {
             theme: "Default".into(),
             sidebar: font(monospace, 12.0),
-            tabs: font(".SystemUIFont", 14.0),
+            tabs: font(ui, 14.0),
             terminal: font(monospace, 14.0),
-            ui: font(".SystemUIFont", 12.0),
+            ui: font(ui, 12.0),
         }
     }
 }
@@ -666,26 +666,61 @@ mod tests {
 
     #[test]
     fn defaults_and_partial_settings() -> Result<(), String> {
-        let config = Config::parse(DEFAULT_CONFIG)?;
-        let monospace = if cfg!(target_os = "macos") {
-            "Menlo"
-        } else {
-            "DejaVu Sans Mono"
-        };
-        assert_eq!(config.sidebar.family, monospace);
-        assert_eq!(config.terminal.family, monospace);
-        assert_eq!(Config::parse("")?.terminal.family, monospace);
-        assert_eq!(config.theme()?, Theme::default());
-        assert_eq!(config.sidebar.size, 12.0);
-        assert_eq!(config.tabs.family, ".SystemUIFont");
-        assert_eq!(config.terminal.line_height(), 20.0);
-        assert_eq!(config.ui.size, 12.0);
-        let config = Config::parse("[tabs]\nsize = 18\n[terminal]\nfamily = 'Monaco'")?;
-        assert_eq!(config.tabs.family, ".SystemUIFont");
-        assert_eq!(config.tabs.size, 18.0);
-        assert_eq!(config.terminal.size, 14.0);
-        assert_eq!(config.terminal.family, "Monaco");
-        assert_eq!(Config::parse("")?.theme, "Default");
+        #[cfg(target_os = "linux")]
+        let families = [
+            "DejaVu Sans Mono",
+            "DejaVu Sans",
+            "DejaVu Sans Mono",
+            "DejaVu Sans",
+        ];
+        #[cfg(not(target_os = "linux"))]
+        let families = ["Menlo", ".SystemUIFont", "Menlo", ".SystemUIFont"];
+
+        for config in [
+            Config::default(),
+            Config::parse("")?,
+            Config::parse(DEFAULT_CONFIG)?,
+        ] {
+            assert_eq!(config.theme()?, Theme::default());
+            assert_eq!(config.terminal.line_height(), 20.0);
+            for ((font, family), size) in [config.sidebar, config.tabs, config.terminal, config.ui]
+                .into_iter()
+                .zip(families)
+                .zip([12.0, 14.0, 14.0, 12.0])
+            {
+                assert_eq!(font.family, family);
+                assert_eq!(font.size, size);
+            }
+        }
+
+        for settings in ["", "size = 18", "family = 'Custom Font'"] {
+            let text = ["sidebar", "tabs", "terminal", "ui"]
+                .map(|section| format!("[{section}]\n{settings}\n"))
+                .join("\n");
+            let config = Config::parse(&text)?;
+            for ((font, family), size) in [config.sidebar, config.tabs, config.terminal, config.ui]
+                .into_iter()
+                .zip(families)
+                .zip([12.0, 14.0, 14.0, 12.0])
+            {
+                assert_eq!(
+                    font.family,
+                    if settings.starts_with("family") {
+                        "Custom Font"
+                    } else {
+                        family
+                    }
+                );
+                assert_eq!(
+                    font.size,
+                    if settings.starts_with("size") {
+                        18.0
+                    } else {
+                        size
+                    }
+                );
+            }
+        }
         Ok(())
     }
 
