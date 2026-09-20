@@ -155,7 +155,8 @@ pub(super) fn clean(text: &str) -> String {
         .collect()
 }
 
-type Result = std::result::Result<Option<PullRequest>, String>;
+type Result = crate::Result<Option<PullRequest>>;
+use crate::Error;
 
 const CACHE_LIMIT: usize = 128;
 const REFRESH: Duration = Duration::from_secs(90);
@@ -411,7 +412,7 @@ impl Lookup {
                                 self.value = value;
                                 self.message = None;
                             }
-                            Err(error) => self.message = Some(error),
+                            Err(error) => self.message = Some(error.to_string()),
                         }
                         changed = true;
                     }
@@ -485,7 +486,7 @@ fn fetch_with_backoff(
     let (owner, repo) = local_repository(input, deadline, &cancelled)?;
     let timeout = deadline
         .checked_duration_since(Instant::now())
-        .ok_or("PR lookup timed out (15 seconds).")?;
+        .ok_or(Error::PrTimeout)?;
     let response = crate::github::graphql(
         token,
         QUERY,
@@ -501,20 +502,20 @@ pub(super) fn local_repository(
     input: &Input,
     deadline: Instant,
     cancelled: &impl Fn() -> bool,
-) -> std::result::Result<(String, String), String> {
+) -> crate::Result<(String, String)> {
     if input
         .checkout
         .as_ref()
         .is_some_and(|path| !Path::new(path).is_absolute())
         || !Path::new(&input.repo_key).is_absolute()
     {
-        return Err("Daemon did not provide an absolute checkout and repository key.".into());
+        return Err(Error::PrAbsolutePath);
     }
     if input.branch.is_empty()
         || input.branch.len() > 1024
         || input.branch.chars().any(char::is_control)
     {
-        return Err("No supported branch available.".into());
+        return Err(Error::PrBranch);
     }
     let checkout = match &input.checkout {
         Some(path) => path.clone(),
@@ -534,7 +535,7 @@ pub(super) fn local_repository(
             ]);
             let (ok, output) = run(&mut command, deadline, cancelled)?;
             if !ok {
-                return Err("Local repository unavailable for worktree lookup.".into());
+                return Err(Error::PrWorktreeLookup);
             }
             worktree_checkout(&output, &input.branch)?
         }
@@ -548,7 +549,7 @@ pub(super) fn local_repository(
             if ok {
                 Ok(output.trim_end_matches(['\r', '\n']).to_owned())
             } else {
-                Err("Local checkout unavailable or not a trusted Git repository.".into())
+                Err(Error::PrCheckout)
             }
         })
     };
@@ -560,28 +561,25 @@ pub(super) fn local_repository(
         .zip(Path::new(&input.repo_key).canonicalize().ok())
         .is_none_or(|(actual, expected)| actual != expected)
     {
-        return Err("Local repository does not match daemon metadata.".into());
+        return Err(Error::PrRepositoryMismatch);
     }
     if git(&["symbolic-ref", "--quiet", "--short", "HEAD"])? != input.branch {
-        return Err("Checkout branch changed. Waiting for daemon metadata.".into());
+        return Err(Error::PrBranchChanged);
     }
     let remote = git(&["config", "--get", "remote.origin.url"])?;
-    crate::avatars::github_repo(&remote)
-        .ok_or_else(|| "PR lookup supports GitHub.com origins only.".into())
+    crate::avatars::github_repo(&remote).ok_or(Error::PrOrigin)
 }
 
-fn worktree_checkout(output: &str, branch: &str) -> std::result::Result<String, String> {
+fn worktree_checkout(output: &str, branch: &str) -> crate::Result<String> {
     let branch = format!("branch refs/heads/{branch}");
     let mut paths = output.split("\0\0").filter_map(|record| {
         let mut fields = record.split('\0');
         let path = fields.next()?.strip_prefix("worktree ")?;
         (Path::new(path).is_absolute() && fields.any(|field| field == branch)).then_some(path)
     });
-    let path = paths
-        .next()
-        .ok_or("No local worktree matches the daemon branch.")?;
+    let path = paths.next().ok_or(Error::PrMissingWorktree)?;
     if paths.next().is_some() {
-        return Err("Multiple local worktrees match the daemon branch.".into());
+        return Err(Error::PrAmbiguousWorktree);
     }
     Ok(path.into())
 }
@@ -589,7 +587,7 @@ fn worktree_checkout(output: &str, branch: &str) -> std::result::Result<String, 
 fn parse_graphql(response: serde_json::Value, owner: &str, repo: &str, branch: &str) -> Result {
     let mut nodes = response["data"]["repository"]["pullRequests"]["nodes"]
         .as_array()
-        .ok_or("GitHub repository unavailable. Check repository access and token permissions.")?
+        .ok_or(Error::PrRepository)?
         .clone();
     let mut incomplete = false;
     for pr in &mut nodes {
@@ -602,7 +600,7 @@ fn parse_graphql(response: serde_json::Value, owner: &str, repo: &str, branch: &
         }
     }
     let mut result = parse(
-        &serde_json::to_string(&nodes).map_err(|_| "Invalid GitHub PR response.")?,
+        &serde_json::to_string(&nodes).map_err(Error::github_json)?,
         owner,
         repo,
         branch,
@@ -616,15 +614,14 @@ fn parse_graphql(response: serde_json::Value, owner: &str, repo: &str, branch: &
 
 fn parse(text: &str, owner: &str, repo: &str, branch: &str) -> Result {
     if text.len() > OUTPUT_LIMIT {
-        return Err("PR response exceeded the size limit.".into());
+        return Err(Error::PrSize);
     }
-    let mut values: Vec<PullRequest> =
-        serde_json::from_str(text).map_err(|_| "Invalid GitHub PR response.")?;
+    let mut values: Vec<PullRequest> = serde_json::from_str(text).map_err(Error::github_json)?;
     if values.is_empty() {
         return Ok(None);
     }
     if values.len() != 1 {
-        return Err("Multiple PRs match this branch; no PR selected.".into());
+        return Err(Error::PrAmbiguous);
     }
     let Some(mut pr) = values.pop() else {
         return Ok(None);
@@ -636,7 +633,7 @@ fn parse(text: &str, owner: &str, repo: &str, branch: &str) -> Result {
         || pr.head_ref_name != branch
         || !pr.head_repository_owner.login.eq_ignore_ascii_case(owner)
     {
-        return Err("PR identity does not match the repository and branch.".into());
+        return Err(Error::PrIdentity);
     }
     pr.url = expected;
     pr.title = clean(&pr.title);
@@ -654,18 +651,24 @@ fn run(
     command: &mut Command,
     deadline: Instant,
     cancelled: &impl Fn() -> bool,
-) -> std::result::Result<(bool, String), String> {
+) -> crate::Result<(bool, String)> {
     if cancelled() {
-        return Err("PR lookup cancelled.".into());
+        return Err(Error::PrCancelled);
     }
-    let (mut reader, writer) =
-        UnixStream::pair().map_err(|_| "Could not create process output channel.")?;
+    let (mut reader, writer) = UnixStream::pair().map_err(|source| Error::PrProcess {
+        operation: "create process output channel",
+        source,
+    })?;
     reader
         .set_nonblocking(true)
-        .map_err(|_| "Could not configure process output.")?;
-    let error_writer = writer
-        .try_clone()
-        .map_err(|_| "Could not configure process errors.")?;
+        .map_err(|source| Error::PrProcess {
+            operation: "configure process output",
+            source,
+        })?;
+    let error_writer = writer.try_clone().map_err(|source| Error::PrProcess {
+        operation: "configure process errors",
+        source,
+    })?;
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("GIT_") {
             command.env_remove(key);
@@ -684,9 +687,10 @@ fn run(
         .stdin(Stdio::null())
         .stdout(Stdio::from(OwnedFd::from(writer)))
         .stderr(Stdio::from(OwnedFd::from(error_writer)));
-    let mut child = command
-        .spawn()
-        .map_err(|_| "Could not launch Git. Install git on PATH.")?;
+    let mut child = command.spawn().map_err(|source| Error::PrProcess {
+        operation: "launch Git (install git on PATH)",
+        source,
+    })?;
     // Command retains Stdio descriptors after spawn; release them so EOF is observable.
     command.stdout(Stdio::null()).stderr(Stdio::null());
     let result = (|| {
@@ -695,32 +699,37 @@ fn run(
         let mut eof = false;
         loop {
             if cancelled() {
-                return Err("PR lookup cancelled.".into());
+                return Err(Error::PrCancelled);
             }
             if Instant::now() >= deadline {
-                return Err("PR lookup timed out (15 seconds).".into());
+                return Err(Error::PrTimeout);
             }
             match reader.read(&mut buffer) {
                 Ok(0) => eof = true,
                 Ok(n) => {
                     if output.len() + n > OUTPUT_LIMIT {
-                        return Err("PR response exceeded the size limit.".into());
+                        return Err(Error::PrSize);
                     }
                     output.extend_from_slice(&buffer[..n]);
                     continue;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => return Err("Could not read PR process output.".into()),
+                Err(source) => {
+                    return Err(Error::PrProcess {
+                        operation: "read process output",
+                        source,
+                    });
+                }
             }
-            if let Some(status) = child
-                .try_wait()
-                .map_err(|_| "Could not wait for PR process.")?
-                && eof
+            if let Some(status) = child.try_wait().map_err(|source| Error::PrProcess {
+                operation: "wait for process",
+                source,
+            })? && eof
             {
                 return String::from_utf8(output)
                     .map(|text| (status.success(), text))
-                    .map_err(|_| "Invalid process text.".into());
+                    .map_err(|error| Error::PrEncoding(error.utf8_error()));
             }
             thread::sleep(Duration::from_millis(10));
         }
@@ -733,7 +742,7 @@ fn run(
 }
 
 #[cfg(any(test, feature = "integration-test"))]
-pub(super) fn fixture() -> std::result::Result<PullRequest, String> {
+pub(super) fn fixture() -> crate::Result<PullRequest> {
     parse(&serde_json::json!([{
         "number": 8, "url": "https://github.com/example/project/pull/8",
         "title": "Improve workspace context menus with a deliberately long PR title for narrow native layouts",
@@ -746,7 +755,7 @@ pub(super) fn fixture() -> std::result::Result<PullRequest, String> {
             {"__typename": "StatusContext", "state": "FAILURE"},
             {"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": null}
         ]
-    }]).to_string(), "example", "project", "feature")?.ok_or("Missing fixture PR".into())
+    }]).to_string(), "example", "project", "feature")?.ok_or(Error::PrRepository)
 }
 
 #[cfg(test)]
@@ -819,7 +828,11 @@ mod tests {
             view.value.is_some(),
             "refresh does not replace cached data with loading"
         );
-        peer.complete(due, Err("network unavailable".into()), None);
+        peer.complete(
+            due,
+            Err(std::io::Error::other("network unavailable").into()),
+            None,
+        );
         peer.cache.present(&input, &mut view, due);
         assert!(view.value.is_some());
         assert!(view.message.is_some());
@@ -946,14 +959,13 @@ mod tests {
         );
         peer.cache.poll(now);
         assert_eq!(
-            peer.complete(now, Err("unsupported origin".into()), None)
-                .branch,
+            peer.complete(now, Err(Error::PrOrigin), None).branch,
             "local-error"
         );
         assert_eq!(
             peer.complete(
                 now,
-                Err("rate limit".into()),
+                Err(Error::GitHubRateLimit),
                 Some(Duration::from_secs(3600))
             )
             .branch,
@@ -1163,6 +1175,7 @@ mod tests {
         assert!(
             worktree_checkout(&entry.repeat(2), "feature")
                 .unwrap_err()
+                .to_string()
                 .contains("Multiple")
         );
         for invalid in [
@@ -1202,6 +1215,7 @@ mod tests {
         assert!(
             run(&mut Command::new("/usr/bin/yes"), deadline(), &|| false)
                 .unwrap_err()
+                .to_string()
                 .contains("size limit")
         );
         let mut sleep = Command::new("/bin/sleep");
@@ -1213,6 +1227,7 @@ mod tests {
                 &|| false
             )
             .unwrap_err()
+            .to_string()
             .contains("timed out")
         );
         assert!(
@@ -1220,6 +1235,7 @@ mod tests {
                 true
             })
             .unwrap_err()
+            .to_string()
             .contains("cancelled")
         );
         assert!(
@@ -1227,7 +1243,8 @@ mod tests {
                 false
             })
             .unwrap_err()
-            .contains("Install git")
+            .to_string()
+            .contains("install git")
         );
         let calls = std::cell::Cell::new(0);
         let mut sleep = Command::new("/bin/sleep");
@@ -1238,6 +1255,7 @@ mod tests {
                 calls.get() > 1
             })
             .unwrap_err()
+            .to_string()
             .contains("cancelled")
         );
     }
@@ -1278,6 +1296,7 @@ mod tests {
         assert!(
             fetch(&input, &"fixture".into(), || false)
                 .unwrap_err()
+                .to_string()
                 .contains("GitHub.com origins only")
         );
         let mut registry_input = input.clone();
@@ -1285,6 +1304,7 @@ mod tests {
         assert!(
             fetch(&registry_input, &"fixture".into(), || false)
                 .unwrap_err()
+                .to_string()
                 .contains("GitHub.com origins only")
         );
         git(&[
@@ -1301,24 +1321,28 @@ mod tests {
         assert!(
             local_repository(&registry_input, Instant::now() + TIMEOUT, &|| false)
                 .unwrap_err()
+                .to_string()
                 .contains("No local worktree")
         );
         input.branch = "other".into();
         assert!(
             fetch(&input, &"fixture".into(), || false)
                 .unwrap_err()
+                .to_string()
                 .contains("branch changed")
         );
         input.repo_key = directory.0.to_str().unwrap().into();
         assert!(
             fetch(&input, &"fixture".into(), || false)
                 .unwrap_err()
+                .to_string()
                 .contains("does not match daemon metadata")
         );
         input.checkout = Some("relative".into());
         assert!(
             fetch(&input, &"fixture".into(), || false)
                 .unwrap_err()
+                .to_string()
                 .contains("absolute checkout")
         );
     }

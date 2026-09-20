@@ -1,4 +1,5 @@
 //! Native GitHub transport and device authorization. No credential subprocesses.
+use crate::{Error, Result};
 use secrecy::{ExposeSecret, ExposeSecretMut, SecretBox as Secret, SecretString};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -29,15 +30,13 @@ fn agent(timeout: Duration) -> ureq::Agent {
         .into()
 }
 
-fn response<T: DeserializeOwned>(
-    mut response: ureq::http::Response<ureq::Body>,
-) -> Result<T, String> {
+fn response<T: DeserializeOwned>(mut response: ureq::http::Response<ureq::Body>) -> Result<T> {
     match response.status().as_u16() {
-        200..=299 => {},
-        401 => return Err("GitHub authentication required. Open GitHub sign-in, or replace your environment token.".into()),
-        403 => return Err("GitHub denied access: check token permissions, SSO authorization, or rate limits.".into()),
-        429 => return Err("GitHub rate limit reached. Retry later.".into()),
-        _ => return Err("GitHub request failed. Check network and repository access.".into()),
+        200..=299 => {}
+        401 => return Err(Error::GitHubAuthentication),
+        403 => return Err(Error::GitHubForbidden),
+        429 => return Err(Error::GitHubRateLimit),
+        status => return Err(Error::GitHubStatus(status)),
     }
     // Allocate the bounded capacity up front: no reallocations leave old body
     // fragments behind, and partial reads are wiped even on I/O errors.
@@ -47,11 +46,11 @@ fn response<T: DeserializeOwned>(
         .as_reader()
         .take(LIMIT + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| "GitHub response could not be read within the size/time limit.")?;
+        .map_err(Error::GitHubRead)?;
     if bytes.len() > LIMIT as usize {
-        return Err("GitHub response could not be read within the size/time limit.".into());
+        return Err(Error::GitHubSize);
     }
-    serde_json::from_slice(&bytes).map_err(|_| "Invalid GitHub JSON response.".into())
+    serde_json::from_slice(&bytes).map_err(Error::github_json)
 }
 
 fn valid_token(token: &str) -> bool {
@@ -61,8 +60,8 @@ fn valid_token(token: &str) -> bool {
 fn resolve_token(
     gh: Option<SecretString>,
     github: Option<SecretString>,
-    saved: impl FnOnce() -> Result<Option<SecretString>, String>,
-) -> Result<SecretString, String> {
+    saved: impl FnOnce() -> Result<Option<SecretString>>,
+) -> Result<SecretString> {
     let token = match gh
         .filter(|s| !s.expose_secret().trim().is_empty())
         .or_else(|| github.filter(|s| !s.expose_secret().trim().is_empty()))
@@ -70,12 +69,10 @@ fn resolve_token(
         Some(token) => Some(token),
         None => saved()?,
     }
-    .ok_or(
-        "GitHub authentication required. Use menu > GitHub sign-in or set GH_TOKEN / GITHUB_TOKEN.",
-    )?;
+    .ok_or(Error::GitHubAuthentication)?;
     let trimmed = token.expose_secret().trim();
     if !valid_token(trimmed) {
-        return Err("Invalid GitHub token. Replace the configured credential.".into());
+        return Err(Error::GitHubToken);
     }
     if trimmed.len() == token.expose_secret().len() {
         Ok(token)
@@ -84,15 +81,15 @@ fn resolve_token(
     }
 }
 
-fn credential_bytes(bytes: Vec<u8>) -> Result<SecretString, String> {
+fn credential_bytes(bytes: Vec<u8>) -> Result<SecretString> {
     let bytes = Zeroizing::new(bytes);
     // Validate by borrowing so invalid UTF-8 never escapes in FromUtf8Error.
     std::str::from_utf8(&bytes)
         .map(SecretString::from)
-        .map_err(|_| "Invalid GitHub credential encoding.".into())
+        .map_err(Error::GitHubEncoding)
 }
 
-fn environment_token(name: &str) -> Result<Option<SecretString>, String> {
+fn environment_token(name: &str) -> Result<Option<SecretString>> {
     // Own and wipe even non-Unicode environment values. The process environment
     // itself is outside this allocation's lifetime and is not erased here.
     std::env::var_os(name)
@@ -101,17 +98,15 @@ fn environment_token(name: &str) -> Result<Option<SecretString>, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn saved_token() -> Result<Option<SecretString>, String> {
+fn saved_token() -> Result<Option<SecretString>> {
     match security_framework::passwords::get_generic_password(SERVICE, ACCOUNT) {
         Ok(bytes) => credential_bytes(bytes).map(Some),
         Err(e) if e.code() == -25300 => Ok(None),
-        Err(_) => Err(
-            "Cannot read GitHub Keychain entry. Unlock your login Keychain or set GH_TOKEN.".into(),
-        ),
+        Err(error) => Err(Error::KeychainRead(error)),
     }
 }
 
-fn load_token(plaintext: bool) -> Result<Option<SecretString>, String> {
+fn load_token(plaintext: bool) -> Result<Option<SecretString>> {
     let gh = environment_token("GH_TOKEN")?;
     let github = if gh
         .as_ref()
@@ -151,19 +146,19 @@ fn load_token(plaintext: bool) -> Result<Option<SecretString>, String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn credential_directory() -> Result<std::path::PathBuf, String> {
+fn credential_directory() -> Result<std::path::PathBuf> {
     crate::config::Config::path()?
         .parent()
         .map(std::path::Path::to_owned)
-        .ok_or("Missing credential directory.".into())
+        .ok_or(Error::CredentialDirectory)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn saved_token() -> Result<Option<SecretString>, String> {
+fn saved_token() -> Result<Option<SecretString>> {
     Ok(None)
 }
 
-fn store(token: Option<&SecretString>, plaintext: bool) -> Result<(), String> {
+fn store(token: Option<&SecretString>, plaintext: bool) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let _ = plaintext;
@@ -175,9 +170,7 @@ fn store(token: Option<&SecretString>, plaintext: bool) -> Result<(), String> {
         match result {
             Ok(()) => Ok(()),
             Err(e) if token.is_none() && e.code() == -25300 => Ok(()),
-            Err(_) => Err(
-                "GitHub Keychain update failed. Unlock your login Keychain and try again.".into(),
-            ),
+            Err(error) => Err(Error::KeychainWrite(error)),
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -194,18 +187,18 @@ pub(super) fn graphql(
     timeout: Duration,
     cancelled: impl Fn() -> bool,
     cooldown: &mut Option<Duration>,
-) -> Result<Value, String> {
+) -> Result<Value> {
     let deadline = Instant::now() + timeout;
     if cancelled() {
-        return Err("PR lookup cancelled.".into());
+        return Err(Error::PrCancelled);
     }
     if cancelled() {
-        return Err("PR lookup cancelled.".into());
+        return Err(Error::PrCancelled);
     }
     let body = serde_json::json!({"query":query,"variables":variables}).to_string();
     let timeout = deadline
         .checked_duration_since(Instant::now())
-        .ok_or("PR lookup timed out (15 seconds).")?;
+        .ok_or(Error::PrTimeout)?;
     let reply = agent(timeout)
         .post("https://api.github.com/graphql")
         .header("User-Agent", "Herdr-GPUI")
@@ -213,7 +206,7 @@ pub(super) fn graphql(
         .header("Content-Type", "application/json")
         .header("Authorization", authorization(token)?)
         .send(body.as_bytes())
-        .map_err(|_| "GitHub network request failed or timed out.")?;
+        .map_err(Error::GitHubNetwork)?;
     *cooldown = pr_cooldown(
         reply.status().as_u16(),
         reply.headers(),
@@ -221,7 +214,7 @@ pub(super) fn graphql(
     );
     let result: Value = response(reply)?;
     if cancelled() {
-        return Err("PR lookup cancelled.".into());
+        return Err(Error::PrCancelled);
     }
     if result.get("errors").is_some() {
         if result["errors"].as_array().is_some_and(|errors| {
@@ -234,21 +227,19 @@ pub(super) fn graphql(
         }) {
             *cooldown = Some(Duration::from_secs(3600));
         }
-        return Err(
-            "GitHub query failed. Check token repository permissions and rate limits.".into(),
-        );
+        return Err(Error::GitHubQuery);
     }
     Ok(result)
 }
 
-fn authorization(token: &SecretString) -> Result<ureq::http::HeaderValue, String> {
+fn authorization(token: &SecretString) -> Result<ureq::http::HeaderValue> {
     let mut text = Secret::new(Box::new(String::with_capacity(
         7 + token.expose_secret().len(),
     )));
     text.expose_secret_mut().push_str("Bearer ");
     text.expose_secret_mut().push_str(token.expose_secret());
-    let mut header = ureq::http::HeaderValue::from_str(text.expose_secret())
-        .map_err(|_| "Invalid GitHub authorization header.")?;
+    let mut header =
+        ureq::http::HeaderValue::from_str(text.expose_secret()).map_err(Error::GitHubHeader)?;
     header.set_sensitive(true);
     Ok(header)
 }
@@ -284,11 +275,7 @@ fn pr_cooldown(
     ))
 }
 
-fn oauth<T: DeserializeOwned>(
-    path: &str,
-    fields: &[(&str, &str)],
-    timeout: Duration,
-) -> Result<T, String> {
+fn oauth<T: DeserializeOwned>(path: &str, fields: &[(&str, &str)], timeout: Duration) -> Result<T> {
     // ureq owns form serialization and HTTP/TLS buffers; their copies cannot be
     // zeroized by this module. Never log request fields or raw response errors.
     response(
@@ -297,7 +284,7 @@ fn oauth<T: DeserializeOwned>(
             .header("User-Agent", "Herdr-GPUI")
             .header("Accept", "application/json")
             .send_form(fields.iter().copied())
-            .map_err(|_| "GitHub sign-in request failed or timed out.")?,
+            .map_err(Error::GitHubNetwork)?,
     )
 }
 
@@ -315,7 +302,7 @@ fn default_interval() -> u64 {
 }
 
 impl Device {
-    fn validate(self) -> Result<Self, String> {
+    fn validate(self) -> Result<Self> {
         let user_code = self.user_code.expose_secret();
         if !valid_token(self.device_code.expose_secret())
             || user_code.len() > 32
@@ -327,7 +314,7 @@ impl Device {
             || !(1..=900).contains(&self.expires_in)
             || !(1..=900).contains(&self.interval)
         {
-            return Err("Invalid GitHub device authorization response.".into());
+            return Err(Error::GitHubDevice);
         }
         Ok(self)
     }
@@ -348,7 +335,7 @@ pub(super) struct Profile {
     avatar_updates: Option<crate::avatars::AvatarUpdates>,
 }
 
-fn profile(token: Arc<SecretString>) -> Result<Profile, String> {
+fn profile(token: Arc<SecretString>) -> Result<Profile> {
     #[derive(Deserialize)]
     struct User {
         login: String,
@@ -361,11 +348,11 @@ fn profile(token: Arc<SecretString>) -> Result<Profile, String> {
             .header("Accept", "application/vnd.github+json")
             .header("Authorization", authorization(&token)?)
             .call()
-            .map_err(|_| "GitHub profile request failed or timed out.")?,
+            .map_err(Error::GitHubNetwork)?,
     )?;
     if crate::avatars::github_repo(&format!("https://github.com/{}/profile", user.login)).is_none()
     {
-        return Err("Invalid GitHub profile response.".into());
+        return Err(Error::GitHubProfile);
     }
     // The image transport receives no Authorization header and follows no redirects.
     let (avatar, avatar_updates) = crate::avatars::profile_avatar(&user.avatar_url);
@@ -384,24 +371,24 @@ struct TokenResponse {
     error: Option<String>,
 }
 
-fn token_reply(value: TokenResponse) -> Result<Reply, String> {
+fn token_reply(value: TokenResponse) -> Result<Reply> {
     match value.error.as_deref() {
         Some("authorization_pending") => Ok(Reply::Pending(false)),
         Some("slow_down") => Ok(Reply::Pending(true)),
-        Some("expired_token") => Err("GitHub code expired. Sign in again.".into()),
-        Some("access_denied") => Err("GitHub authorization denied.".into()),
-        Some(_) => Err("GitHub authorization failed. Check OAuth application settings.".into()),
+        Some("expired_token") => Err(Error::GitHubExpired),
+        Some("access_denied") => Err(Error::GitHubDenied),
+        Some(_) => Err(Error::GitHubAuthorization),
         None => {
             let token = value
                 .access_token
                 .filter(|t| valid_token(t.expose_secret()))
-                .ok_or("Invalid GitHub access token response.")?;
+                .ok_or(Error::GitHubToken)?;
             if value
                 .token_type
                 .as_deref()
                 .is_none_or(|t| !t.eq_ignore_ascii_case("bearer"))
             {
-                return Err("Unsupported GitHub token type.".into());
+                return Err(Error::GitHubTokenType);
             }
             Ok(Reply::Token(token))
         }
@@ -420,7 +407,7 @@ struct Flow {
 #[derive(Default)]
 pub(super) struct Auth {
     flow: Option<Flow>,
-    incoming: Option<mpsc::Receiver<Result<Reply, String>>>,
+    incoming: Option<mpsc::Receiver<Result<Reply>>>,
     cancelled: bool,
     committing: bool,
     signout_pending: bool,
@@ -428,7 +415,7 @@ pub(super) struct Auth {
     signed_out: bool,
     reload_pending: bool,
     plaintext: bool,
-    profile_incoming: Option<mpsc::Receiver<Result<Option<Profile>, String>>>,
+    profile_incoming: Option<mpsc::Receiver<Result<Option<Profile>>>>,
     pub profile: Option<Profile>,
     pub message: Option<String>,
     pub failed: bool,
@@ -477,9 +464,7 @@ impl Auth {
     fn load_profile_with(
         &mut self,
         token: Option<Arc<SecretString>>,
-        load: impl FnOnce(Option<Arc<SecretString>>, bool) -> Result<Option<Profile>, String>
-        + Send
-        + 'static,
+        load: impl FnOnce(Option<Arc<SecretString>>, bool) -> Result<Option<Profile>> + Send + 'static,
     ) {
         self.failed = false;
         let plaintext = self.plaintext;
@@ -559,7 +544,7 @@ impl Auth {
         flow.copied_until = Some(Instant::now() + Duration::from_secs(3));
         Some(flow.device.user_code.expose_secret())
     }
-    fn launch(&mut self, work: impl FnOnce() -> Result<Reply, String> + Send + 'static) {
+    fn launch(&mut self, work: impl FnOnce() -> Result<Reply> + Send + 'static) {
         let (tx, rx) = mpsc::sync_channel(1);
         match thread::Builder::new()
             .name("herdr-github-auth".into())
@@ -596,7 +581,7 @@ impl Auth {
             }
             Err(error) => {
                 self.failed = true;
-                self.message = Some(error);
+                self.message = Some(error.to_string());
                 return;
             }
         };
@@ -651,7 +636,7 @@ impl Auth {
     }
     fn poll_with_store(
         &mut self,
-        persist: impl FnOnce(Option<&SecretString>) -> Result<(), String> + Send + 'static,
+        persist: impl FnOnce(Option<&SecretString>) -> Result<()> + Send + 'static,
     ) -> bool {
         self.poll_with(persist, |token, plaintext| {
             let token = match token {
@@ -663,10 +648,8 @@ impl Auth {
     }
     fn poll_with(
         &mut self,
-        persist: impl FnOnce(Option<&SecretString>) -> Result<(), String> + Send + 'static,
-        load: impl FnOnce(Option<Arc<SecretString>>, bool) -> Result<Option<Profile>, String>
-        + Send
-        + 'static,
+        persist: impl FnOnce(Option<&SecretString>) -> Result<()> + Send + 'static,
+        load: impl FnOnce(Option<Arc<SecretString>>, bool) -> Result<Option<Profile>> + Send + 'static,
     ) -> bool {
         if self.signout_pending && !self.committing {
             self.signout_pending = false;
@@ -701,9 +684,7 @@ impl Auth {
             let result = match rx.try_recv() {
                 Ok(result) => Some(result),
                 Err(mpsc::TryRecvError::Empty) => None,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    Some(Err("GitHub profile worker stopped.".into()))
-                }
+                Err(mpsc::TryRecvError::Disconnected) => Some(Err(Error::GitHubWorker("profile"))),
             };
             if let Some(result) = result {
                 self.profile_incoming = None;
@@ -718,7 +699,7 @@ impl Auth {
                             self.credential_cleanup = true;
                             self.profile = None;
                             self.failed = true;
-                            self.message = Some(error);
+                            self.message = Some(error.to_string());
                         }
                     }
                 }
@@ -730,7 +711,7 @@ impl Auth {
                 Ok(reply) => Some(reply),
                 Err(mpsc::TryRecvError::Empty) => None,
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    Some(Err("GitHub authentication worker stopped.".into()))
+                    Some(Err(Error::GitHubWorker("authentication")))
                 }
             };
             if let Some(reply) = reply {
@@ -798,7 +779,7 @@ impl Auth {
                             self.flow = None;
                             self.committing = false;
                             self.failed = true;
-                            self.message = Some(error);
+                            self.message = Some(error.to_string());
                         }
                     }
                 }
@@ -1043,7 +1024,7 @@ mod tests {
         assert!(!auth.loading_profile());
         auth.poll_with_store(|token| {
             assert!(token.is_none());
-            Err("mock removal failure".into())
+            Err(std::io::Error::other("mock removal failure").into())
         });
         let reply = auth
             .incoming
@@ -1099,7 +1080,7 @@ mod tests {
         let mut auth = Auth::default();
         for result in [
             Ok(Auth::connected_fixture().profile),
-            Err("mock profile failure".into()),
+            Err(std::io::Error::other("mock profile failure").into()),
             Ok(None),
         ] {
             let (tx, rx) = mpsc::sync_channel(1);
@@ -1126,10 +1107,10 @@ mod tests {
         assert!(SETUP_MESSAGE.contains("HERDR_GITHUB_OAUTH_CLIENT_ID"));
         assert!(SETUP_MESSAGE.contains("GitHub App or OAuth App public client ID"));
     }
-    fn token_reply(value: Value) -> Result<Reply, String> {
+    fn token_reply(value: Value) -> Result<Reply> {
         super::token_reply(serde_json::from_value(value).unwrap())
     }
-    fn deliver(auth: &mut Auth, reply: Result<Reply, String>) {
+    fn deliver(auth: &mut Auth, reply: Result<Reply>) {
         let (tx, rx) = mpsc::sync_channel(1);
         tx.send(reply).ok().unwrap();
         auth.incoming = Some(rx);
@@ -1174,10 +1155,13 @@ mod tests {
         assert!(
             resolve_token(None, None, || Ok(None))
                 .unwrap_err()
+                .to_string()
                 .contains("authentication required")
         );
         assert_eq!(
-            resolve_token(None, None, || Err("locked".into())).unwrap_err(),
+            resolve_token(None, None, || Err(std::io::Error::other("locked").into()))
+                .unwrap_err()
+                .to_string(),
             "locked"
         );
         assert!(resolve_token(Some("bad\nsecret".into()), None, || panic!()).is_err());
@@ -1212,7 +1196,8 @@ mod tests {
         assert!(!debug.contains("fixture-device"));
         assert!(!debug.contains("ABCD-1234"));
         let error = credential_bytes(b"private-invalid-secret\xff".to_vec()).unwrap_err();
-        assert_eq!(error, "Invalid GitHub credential encoding.");
+        assert!(matches!(error, Error::GitHubEncoding(_)));
+        assert_eq!(error.to_string(), "Invalid GitHub credential encoding.");
         assert!(authorization(&SecretString::from("private\nsecret")).is_err());
     }
     #[test]
@@ -1238,7 +1223,9 @@ mod tests {
             b"private-invalid-secret\xff",
         ] {
             assert_eq!(
-                response::<TokenResponse>(reply(body)).unwrap_err(),
+                response::<TokenResponse>(reply(body))
+                    .unwrap_err()
+                    .to_string(),
                 "Invalid GitHub JSON response."
             );
         }
@@ -1305,8 +1292,8 @@ mod tests {
         ] {
             let error =
                 response::<Value>(reply(status, b"private-error-secret".to_vec())).unwrap_err();
-            assert!(error.contains(message));
-            assert!(!error.contains("private-error-secret"));
+            assert!(error.to_string().contains(message));
+            assert!(!error.to_string().contains("private-error-secret"));
         }
         assert_eq!(
             response::<Value>(reply(200, b"{\"ok\":true}".to_vec())).unwrap()["ok"],
@@ -1324,6 +1311,7 @@ mod tests {
                 &mut None
             )
             .unwrap_err()
+            .to_string()
             .contains("cancelled")
         );
     }
@@ -1364,6 +1352,7 @@ mod tests {
                 )
                 .err()
                 .unwrap()
+                .to_string()
                 .find("private-secret")
                 .is_none()
             );
@@ -1412,7 +1401,7 @@ mod tests {
                 Some("fixture-token")
             );
             assert_eq!(thread::current().name(), Some("herdr-github-auth"));
-            Err("mock Keychain locked".into())
+            Err(std::io::Error::other("mock Keychain locked").into())
         });
         auth.cancel(); // Accepted commits cannot be cancelled halfway through Keychain I/O.
         let reply = auth

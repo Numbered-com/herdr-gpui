@@ -17,6 +17,8 @@ pub(super) enum Page {
     ConfirmClose,
     Update,
     Install,
+    Tab,
+    RenameTab,
     Workspace,
     GitHub,
     Dialog(WorkspaceAction),
@@ -82,18 +84,18 @@ impl WorkspaceTarget {
         snapshot: &ClientShellSnapshot,
         action: WorkspaceAction,
         text: &str,
-    ) -> Result<(&'static str, serde_json::Value), &'static str> {
+    ) -> crate::Result<(&'static str, serde_json::Value)> {
         let workspace = snapshot
             .workspaces
             .iter()
             .find(|w| w.workspace_id == self.id)
             .filter(|_| snapshot.boot_id == self.boot_id)
-            .ok_or("Workspace is no longer available. Dismiss and reopen the menu.")?;
+            .ok_or(crate::Error::StaleWorkspace)?;
         let params = match action {
             WorkspaceAction::Rename => {
                 let label = text.trim();
                 if label.is_empty() {
-                    return Err("Workspace label must not be empty.");
+                    return Err(crate::Error::EmptyWorkspaceLabel);
                 }
                 (
                     "workspace.rename",
@@ -104,7 +106,7 @@ impl WorkspaceTarget {
                 if self.worktree != workspace.worktree
                     || self.close_members != close_members(snapshot, workspace)
                 {
-                    return Err("Workspace group changed. Dismiss and review the group again.");
+                    return Err(crate::Error::WorkspaceGroupChanged);
                 }
                 (
                     "workspace.close",
@@ -113,7 +115,7 @@ impl WorkspaceTarget {
             }
             WorkspaceAction::NewWorktree => {
                 if !self.can_create() || self.worktree != workspace.worktree {
-                    return Err("Repository changed. Dismiss and reopen the menu.");
+                    return Err(crate::Error::WorkspaceRepositoryChanged);
                 }
                 let mut params = serde_json::json!({"workspace_id": self.id, "base": "HEAD", "focus": true, "trust_repository": false});
                 if !text.trim().is_empty() {
@@ -123,7 +125,7 @@ impl WorkspaceTarget {
             }
             WorkspaceAction::DeleteWorktree => {
                 if !self.can_delete() || self.worktree != workspace.worktree {
-                    return Err("Checkout changed. Dismiss and reopen the menu.");
+                    return Err(crate::Error::WorkspaceCheckoutChanged);
                 }
                 (
                     "worktree.remove",
@@ -173,6 +175,7 @@ pub(super) struct MenuState {
     pub(super) themes: Option<crate::theme_picker::ThemePicker>,
     pub(super) palette: Option<crate::palette::Palette>,
     pub(super) close: Option<crate::close_modal::CloseConfirmation>,
+    pub(super) tab: Option<crate::tab_menu::TabMenu>,
     pub(super) pr: crate::pull_request::Lookup,
     pr_cache: crate::pull_request::Cache,
     pr_cache_connection: Option<std::sync::Weak<std::sync::Mutex<crate::state::LiveState>>>,
@@ -198,7 +201,7 @@ impl Deletion {
 }
 
 impl MenuState {
-    fn apply_deletion_response(&mut self, id: &str, result: Result<serde_json::Value, String>) {
+    fn apply_deletion_response(&mut self, id: &str, result: crate::state::DialogResponse) {
         let Some(deletion) = &mut self.deletion else {
             return;
         };
@@ -209,7 +212,7 @@ impl MenuState {
         let response = match result {
             Ok(response) => response,
             Err(error) => {
-                self.error = Some(error);
+                self.error = Some(error.to_string());
                 return;
             }
         };
@@ -291,10 +294,12 @@ impl MenuState {
             github_selected: None,
             github_scroll: ScrollHandle::new(),
             pr_connection: None,
+            tab: None,
         }
     }
 
     pub fn reset(&mut self) {
+        self.tab = None;
         self.github_selected = None;
         self.github_scroll.set_offset(Point::default());
         if self.github.busy() {
@@ -358,7 +363,7 @@ impl HerdrWindow {
 
     fn load_gui_config_with(
         &mut self,
-        load: impl FnOnce() -> Result<(Config, crate::config::Theme), String> + Send + 'static,
+        load: impl FnOnce() -> crate::Result<(Config, crate::config::Theme)> + Send + 'static,
         cx: &mut Context<Self>,
     ) {
         if self.config_load.is_some() {
@@ -379,6 +384,7 @@ impl HerdrWindow {
                         }
                         this.config = config;
                         this.theme = theme;
+                        crate::log_window::set_appearance(&this.config, &this.theme, cx);
                         this.wheel = Default::default();
                         this.last_queued_options = None;
                         this.local_error = None;
@@ -493,7 +499,7 @@ impl HerdrWindow {
                 path: None,
                 force: false,
             });
-            self.menu.error = result.err();
+            self.menu.error = result.err().map(|error| error.to_string());
         }
         cx.notify();
     }
@@ -553,21 +559,21 @@ impl HerdrWindow {
         }
         let result = (|| {
             if !self.menu_target_current() {
-                return Err("Host changed. Reopen the menu.".to_owned());
+                return Err(crate::Error::StaleConnection);
             }
             if !self.live.status.is_connected() {
-                return Err("Disconnected. Dismiss and reconnect before trying again.".to_owned());
+                return Err(crate::Error::NotConnected);
             }
             let target = self
                 .menu
                 .target
                 .as_ref()
-                .ok_or("Workspace is no longer available.")?;
+                .ok_or(crate::Error::StaleWorkspace)?;
             let snapshot = self
                 .live
                 .snapshot
                 .as_ref()
-                .ok_or("Waiting for workspace state.")?;
+                .ok_or(crate::Error::NoSnapshot)?;
             let text = self
                 .menu
                 .input
@@ -580,12 +586,12 @@ impl HerdrWindow {
                     .menu
                     .deletion
                     .as_ref()
-                    .ok_or("Reopen the deletion dialog.")?;
+                    .ok_or(crate::Error::MissingDeletion)?;
                 if deletion.pending.is_some() {
                     return Ok(false);
                 }
                 if deletion.path.is_none() {
-                    return Err("Checkout lookup failed. Dismiss and reopen the menu.".into());
+                    return Err(crate::Error::DeletionLookup);
                 }
                 let confirmation = if deletion.force {
                     "FORCE DELETE"
@@ -593,7 +599,7 @@ impl HerdrWindow {
                     "DELETE"
                 };
                 if !deletion.confirmed(text) {
-                    return Err(format!("Type {confirmation} to confirm."));
+                    return Err(crate::Error::DeletionConfirmation(confirmation));
                 }
                 params["force"] = deletion.force.into();
                 let id = self.endpoints[self.selected_endpoint]
@@ -609,11 +615,11 @@ impl HerdrWindow {
                 .connection
                 .handle
                 .as_ref()
-                .ok_or("Disconnected.")?;
+                .ok_or(crate::Error::NotConnected)?;
             handle
                 .request(&target.boot_id, method, params)
                 .map(|_| action != WorkspaceAction::Rename)
-                .map_err(|error| format!("{method}: {error}"))
+                .map_err(|source| crate::Error::Request { method, source })
         })();
         match result {
             Ok(focus_changed) => {
@@ -628,7 +634,7 @@ impl HerdrWindow {
                 }
             }
             Err(error) => {
-                self.menu.error = Some(error);
+                self.menu.error = Some(error.to_string());
                 cx.notify();
             }
         }
@@ -718,14 +724,17 @@ impl HerdrWindow {
 
     pub(super) fn render_menu(&self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let page = self.menu.page.unwrap_or(Page::Menu);
-        let pointer_anchored = matches!(page, Page::Workspace | Page::Dialog(_));
         let font = &self.config.ui;
         let theme = &self.theme;
         let viewport = window.viewport_size();
+        let pointer_anchored = matches!(
+            page,
+            Page::Workspace | Page::Dialog(_) | Page::Tab | Page::RenameTab
+        );
         let mut panel = div()
             .id("menu-panel")
             .debug_selector(|| "menu-panel".into())
-            .when(pointer_anchored, |panel| {
+            .when(matches!(page, Page::Workspace | Page::Dialog(_)), |panel| {
                 panel
                     .w(px(if page == Page::Workspace {
                         340.
@@ -755,6 +764,13 @@ impl HerdrWindow {
                     .w(px(180.))
                     .max_h((viewport.height / 2. - px(12.)).max(px(0.)))
             })
+            .when(matches!(page, Page::Tab | Page::RenameTab), |panel| {
+                panel
+                    .w((viewport.width - px(24.))
+                        .max(px(0.))
+                        .min(px(if page == Page::Tab { 180. } else { 360. })))
+                    .max_h((viewport.height - px(24.)).max(px(0.)))
+            })
             .when(page != Page::Menu && !pointer_anchored, |panel| {
                 panel
                     .w((viewport.width - px(32.)).max(px(0.)).min(px(480.)))
@@ -774,11 +790,7 @@ impl HerdrWindow {
             .when(
                 matches!(
                     page,
-                    Page::Keybinds
-                        | Page::Themes
-                        | Page::Palette
-                        | Page::Preferences
-                        | Page::GitHub
+                    Page::Keybinds | Page::Themes | Page::Palette | Page::Preferences
                 ),
                 |panel| {
                     panel
@@ -790,6 +802,14 @@ impl HerdrWindow {
                         .shadow_lg()
                 },
             )
+            .when(page == Page::GitHub, |panel| {
+                panel
+                    .w((viewport.width - px(32.)).max(px(0.)).min(px(400.)))
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .shadow_lg()
+            })
             .when(page == Page::Install, |panel| {
                 panel
                     .w((viewport.width - px(24.)).max(px(0.)).min(px(420.)))
@@ -939,6 +959,8 @@ impl HerdrWindow {
                         ),
                 );
             }
+        } else if matches!(page, Page::Tab | Page::RenameTab) {
+            panel = panel.child(self.render_tab_menu(cx));
         } else if page == Page::Keybinds {
             panel = panel.child(self.render_keybinds(cx));
         } else if page == Page::Themes {
@@ -1069,6 +1091,10 @@ impl HerdrWindow {
                     {
                         return;
                     }
+                }
+                if matches!(this.menu.page, Some(Page::Tab | Page::RenameTab)) {
+                    this.tab_menu_key(event, window, cx);
+                    return;
                 }
                 if this.menu.page == Some(Page::Palette) {
                     this.palette_key(event, window, cx);
@@ -1290,7 +1316,7 @@ pub(crate) mod workspace_tests {
                 view.submit_workspace_dialog(window, cx);
                 assert_eq!(
                     view.menu.error.as_deref(),
-                    Some("Host changed. Reopen the menu.")
+                    Some("The selected connection changed or is not ready. Cancel and try again.")
                 );
                 assert!(view.select_endpoint("ssh:fixture", cx));
                 assert!(view.menu.page.is_none());
@@ -1602,14 +1628,14 @@ pub(crate) mod workspace_tests {
             assert!(!deletion.confirmed("DELETE"));
             assert!(deletion.confirmed("FORCE DELETE"));
             deletion.pending = Some("forced".into());
-            menu.apply_deletion_response("forced", Err("unsupported method".into()));
-            assert_eq!(menu.error.as_deref(), Some("unsupported method"));
+            menu.apply_deletion_response("forced", Err(std::sync::Arc::new(crate::Error::Client(herdr_client::Error::UnsupportedMethod))));
+            assert_eq!(menu.error.as_deref(), Some("method not advertised by endpoint"));
             menu.deletion.as_mut().unwrap().pending = Some("success".into());
             menu.apply_deletion_response("success", Ok(serde_json::json!({"result":{"type":"worktree_removed", "workspace_id":"w4", "path":"/daemon/checkout", "forced":true}})));
             assert!(menu.page.is_none());
             menu.deletion = Some(super::Deletion { pending: Some("late".into()), path: None, force: false });
             menu.reset();
-            menu.apply_deletion_response("late", Err("late error".into()));
+            menu.apply_deletion_response("late", Err(std::sync::Arc::new(crate::Error::Client(herdr_client::Error::Disconnected))));
             assert!(menu.deletion.is_none());
             assert!(menu.error.is_none());
         });
@@ -1756,10 +1782,10 @@ pub(crate) mod workspace_tests {
         let snapshot = sidebar::layout_tests::snapshot(7);
         let target = WorkspaceTarget::new(&snapshot, &snapshot.workspaces[3]);
         for text in ["", " \t\r\n", "\u{2003}\u{3000}"] {
-            assert_eq!(
+            assert!(matches!(
                 target.request(&snapshot, WorkspaceAction::Rename, text),
-                Err("Workspace label must not be empty.")
-            );
+                Err(crate::Error::EmptyWorkspaceLabel)
+            ));
         }
         assert_eq!(
             target
@@ -1830,7 +1856,8 @@ impl HerdrWindow {
                 | Command::Themes
                 | Command::Palette
                 | Command::Reconnect
-                | Command::Quit => 2,
+                | Command::Quit
+                | Command::Logs => 2,
             };
             groups[group].1.push((info.shortcut, info.label));
         }
@@ -2053,7 +2080,7 @@ mod tests {
             assert_eq!(view.config.theme, "Nord");
             assert_eq!(view.theme, view.config.theme().unwrap());
             assert!(view.config_load.is_none());
-            view.load_gui_config_with(|| Err("invalid theme fixture".into()), cx);
+            view.load_gui_config_with(|| Err(crate::Error::EmptyTheme), cx);
         });
         cx.run_until_parked();
         view.update(cx, |view, cx| {
@@ -2063,7 +2090,7 @@ mod tests {
                 view.local_error
                     .as_deref()
                     .unwrap()
-                    .contains("invalid theme fixture")
+                    .contains("theme must not be empty")
             );
             view.load_gui_config_with(|| Ok((Default::default(), Default::default())), cx);
             // Same cancellation used after an explicit theme selection.

@@ -9,15 +9,19 @@ impl HerdrWindow {
             return;
         }
         let result = (|| {
-            let target = self.menu.target.as_ref().ok_or("Workspace unavailable.")?;
+            let target = self
+                .menu
+                .target
+                .as_ref()
+                .ok_or(crate::Error::StaleWorkspace)?;
             if target.worktree.is_none() || target.branch.as_deref().is_none_or(str::is_empty) {
-                return Err("No Git branch/repository metadata available.".into());
+                return Err(crate::Error::PrMetadata);
             }
             if self.selected_endpoint != 0 || !self.live.local_daemon_peer {
-                return Err("PR lookup requires your owned local session socket. Select Local using its standard socket; SSH and other socket locations are unsupported.".into());
+                return Err(crate::Error::PrUntrustedEndpoint);
             }
             if !self.workspace_pr_target_current() {
-                return Err("Workspace changed or disconnected. Reopen the menu.".into());
+                return Err(crate::Error::StaleWorkspace);
             }
             repository_input(target.worktree.as_ref(), target.branch.as_deref())
         })();
@@ -31,7 +35,7 @@ impl HerdrWindow {
                     .pr_cache
                     .present(&input, &mut self.menu.pr, std::time::Instant::now());
             }
-            Err(error) => self.menu.pr.message = Some(error),
+            Err(error) => self.menu.pr.message = Some(error.to_string()),
         }
     }
 
@@ -331,8 +335,12 @@ impl HerdrWindow {
     pub(crate) fn workspace_pr_fixture(
         &mut self,
         value: crate::pull_request::PullRequest,
-    ) -> Result<(), String> {
-        let target = self.menu.target.as_ref().ok_or("Missing fixture target")?;
+    ) -> crate::Result<()> {
+        let target = self
+            .menu
+            .target
+            .as_ref()
+            .ok_or(crate::Error::StaleWorkspace)?;
         let input = repository_input(target.worktree.as_ref(), target.branch.as_deref())?;
         self.menu.github = crate::github::Auth::connected_fixture();
         self.live.local_daemon_peer = true;
@@ -364,7 +372,7 @@ fn checkout_input(
     id: &str,
     worktree: Option<&ClientShellWorktree>,
     branch: Option<&str>,
-) -> Result<Input, String> {
+) -> crate::Result<Input> {
     let result = &response["result"];
     let workspace = &result["workspace"];
     let tree = &workspace["worktree"];
@@ -374,12 +382,12 @@ fn checkout_input(
         || workspace["workspace_id"] != id
         || tree["repo_key"] != input.repo_key
     {
-        return Err("Daemon did not identify the requested checkout. Reopen the menu.".into());
+        return Err(crate::Error::WorkspaceCheckoutChanged);
     }
     let checkout = tree["checkout_path"]
         .as_str()
         .filter(|s| std::path::Path::new(s).is_absolute())
-        .ok_or("Daemon did not provide an absolute checkout path.")?;
+        .ok_or(crate::Error::PrAbsolutePath)?;
     input.checkout = Some(checkout.into());
     Ok(input)
 }
@@ -409,17 +417,17 @@ fn workspace_pr_inputs<'a>(
 fn repository_input(
     worktree: Option<&ClientShellWorktree>,
     branch: Option<&str>,
-) -> Result<Input, String> {
+) -> crate::Result<Input> {
     let key = worktree
         .map(|tree| tree.key.as_str())
-        .ok_or("No repository metadata.")?;
+        .ok_or(crate::Error::PrMetadata)?;
     let branch = branch
         .filter(|branch| {
             !branch.is_empty() && branch.len() <= 1024 && !branch.chars().any(char::is_control)
         })
-        .ok_or("No supported branch available.")?;
+        .ok_or(crate::Error::PrBranch)?;
     if !std::path::Path::new(key).is_absolute() {
-        return Err("No absolute repository key available.".into());
+        return Err(crate::Error::PrAbsolutePath);
     }
     Ok(Input {
         checkout: None,
@@ -491,16 +499,18 @@ mod tests {
                 assert_eq!(view.menu.pr.value.as_ref().unwrap().number, 8);
                 assert!(!view.menu.pr.loading);
                 assert_eq!(view.menu.workspace_selected, None);
-                assert_eq!(view.live.dialog_response, pending);
-                assert_eq!(
-                    view.endpoints[0]
+                assert!(
+                    matches!(&view.live.dialog_response, Some((id, None)) if id == "delete-request")
+                );
+                assert!(matches!(
+                    &view.endpoints[0]
                         .connection
                         .inbox
                         .lock()
                         .unwrap()
                         .dialog_response,
-                    pending
-                );
+                    Some((id, None)) if id == "delete-request"
+                ));
                 // Switching repository/branch never reuses this cached PR.
                 view.dismiss_menu(window, cx);
                 view.open_workspace_menu("w4", Default::default(), window, cx);
@@ -706,8 +716,10 @@ mod tests {
                         request_id,
                         response,
                     } if request_id == id => break response,
-                    ClientEvent::Disconnected { reason }
-                    | ClientEvent::CommandRejected { reason, .. } => {
+                    ClientEvent::Disconnected { reason } => {
+                        panic!("read-only workspace request failed: {reason}");
+                    }
+                    ClientEvent::CommandRejected { reason, .. } => {
                         panic!("read-only workspace request failed: {reason}");
                     }
                     _ => {}

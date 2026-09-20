@@ -2,8 +2,39 @@ use super::*;
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::Action;
     use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn connected_panel_is_content_sized_with_only_header_close(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        for (width, height) in [(320., 400.), (640., 780.), (1200., 1000.)] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+            cx.update(|window, cx| {
+                cx.default_global::<crate::sidebar::layout_tests::PaintedProbes>()
+                    .0
+                    .clear();
+                view.update(cx, |view, cx| {
+                    view.github_fixture(false, window, cx);
+                    view.menu.github = crate::github::Auth::connected_fixture();
+                });
+                window.draw(cx).clear();
+            });
+            let panel = cx.debug_bounds("menu-panel").unwrap();
+            assert!(panel.size.width <= gpui::px(400.));
+            assert!(panel.size.height <= gpui::px(230.));
+            assert!(cx.debug_bounds("github-status").is_none());
+            assert!(cx.debug_bounds("github-close").is_none());
+            assert!(cx.debug_bounds("github-header-close").is_some());
+            cx.simulate_keystrokes("tab tab enter");
+            cx.update(|window, cx| {
+                assert!(view.read(cx).menu.page.is_none());
+                assert!(view.read(cx).menu.github.connected());
+                assert!(view.read(cx).focus.is_focused(window));
+            });
+        }
+    }
 
     #[gpui::test]
     fn actions_follow_state_and_focus_cannot_become_signout(cx: &mut TestAppContext) {
@@ -57,7 +88,7 @@ impl Action {
             Self::Open => "github-open",
             Self::Start => "github-start",
             Self::SignOut => "github-sign-out",
-            Self::Close => "github-close",
+            Self::Close => "github-header-close",
         }
     }
 }
@@ -233,7 +264,6 @@ impl HerdrWindow {
         let mut body = div()
             .id("github-body")
             .debug_selector(|| "github-body".into())
-            .flex_1()
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&self.menu.github_scroll)
@@ -244,7 +274,6 @@ impl HerdrWindow {
                     .flex()
                     .items_center()
                     .gap(px(12.))
-                    .mb(px(16.))
                     .child(
                         div()
                             .size(px(40.))
@@ -318,20 +347,22 @@ impl HerdrWindow {
             }
             .into()
         });
-        body = body.child(
-            div()
-                .debug_selector(|| "github-status".into())
-                .mt(px(16.))
-                .p(px(10.))
-                .rounded(px(5.))
-                .bg(rgb(theme.background))
-                .text_color(rgb(if auth.failed {
-                    theme.palette[1]
-                } else {
-                    theme.muted
-                }))
-                .child(message),
-        );
+        if !auth.connected() || auth.failed {
+            body = body.child(
+                div()
+                    .debug_selector(|| "github-status".into())
+                    .mt(px(16.))
+                    .p(px(10.))
+                    .rounded(px(5.))
+                    .bg(rgb(theme.background))
+                    .text_color(rgb(if auth.failed {
+                        theme.palette[1]
+                    } else {
+                        theme.muted
+                    }))
+                    .child(message),
+            );
+        }
         if !cfg!(target_os = "macos") && self.config.github.allow_plaintext_credentials {
             body = body.child(
                 div()
@@ -352,25 +383,26 @@ impl HerdrWindow {
             .flex_wrap()
             .justify_end()
             .gap(px(8.));
+        let mut has_footer = false;
         for action in self
             .github_actions()
             .into_iter()
-            .filter(|action| *action != Action::Copy)
+            .filter(|action| !matches!(action, Action::Copy | Action::Close))
         {
+            has_footer = true;
             let label = match action {
                 Action::Open => "Open GitHub (O)",
                 Action::Start if auth.failed => "Try again (S)",
                 Action::Start => "Sign in (S)",
                 Action::SignOut => "Sign out (D)",
-                Action::Close if auth.busy() && !auth.can_sign_out() => "Cancel (Esc)",
-                _ => "Close (Esc)",
+                Action::Copy | Action::Close => continue,
             };
             footer = footer.child(self.github_button(action, label, cx));
         }
         div()
             .flex()
             .flex_col()
-            .size_full()
+            .w_full()
             .min_h_0()
             .child(
                 div()
@@ -387,36 +419,32 @@ impl HerdrWindow {
                             .flex_none(),
                     )
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .text_size(px(font.size * 1.35))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("GitHub"),
-                            )
-                            .child(
-                                div()
-                                    .text_color(rgb(theme.muted))
-                                    .child("Connect your account for pull requests"),
-                            ),
+                        div().flex_1().min_w_0().child(
+                            div()
+                                .text_size(px(font.size * 1.35))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("GitHub"),
+                        ),
                     )
                     .child(
                         div()
                             .id("github-header-close")
+                            .debug_selector(|| "github-header-close".into())
                             .cursor_pointer()
                             .px(px(8.))
                             .py(px(4.))
                             .rounded(px(4.))
+                            .when(self.menu.github_selected == Some(Action::Close), |style| {
+                                style.bg(rgb(theme.active))
+                            })
                             .hover(|style| style.bg(rgb(theme.active)))
-                            .child("Close")
+                            .child(crate::sidebar::label_text("Close"))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.dismiss_menu(window, cx)),
                             ),
                     ),
             )
             .child(body)
-            .child(footer)
+            .when(has_footer, |panel| panel.child(footer))
     }
 }

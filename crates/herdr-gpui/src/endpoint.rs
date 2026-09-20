@@ -4,6 +4,7 @@ use super::{
     HerdrWindow, LiveState, NavigationTarget, WheelAccumulator, connection::ConnectionBridge,
     state::ConnectionStatus,
 };
+use crate::{Error, Result};
 use gpui::Context;
 use herdr_client::{ClientHandle, ConnectOptions, ConnectTarget, SavedHost};
 use std::{
@@ -160,13 +161,13 @@ impl Drop for Endpoint {
 
 pub(super) struct Catalog {
     development: Option<bool>,
-    pending: Option<mpsc::Receiver<Result<CatalogUpdate, String>>>,
+    pending: Option<mpsc::Receiver<Result<CatalogUpdate>>>,
     next_poll: Instant,
     desired: Option<String>,
     initialized: bool,
     restore_pending: bool,
     queued_write: Option<Option<String>>,
-    writing: Option<mpsc::Receiver<Result<(), String>>>,
+    writing: Option<mpsc::Receiver<Result<()>>>,
 }
 
 struct CatalogUpdate {
@@ -192,7 +193,7 @@ impl Catalog {
         }
     }
 
-    fn poll(&mut self) -> Option<Result<CatalogUpdate, String>> {
+    fn poll(&mut self) -> Option<Result<CatalogUpdate>> {
         let development = self.development?;
         if let Some(result) = self.pending.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.pending = None;
@@ -219,12 +220,12 @@ impl Catalog {
                             selection: None,
                         })
                     };
-                    let _ = tx.send(result.map_err(|e| e.to_string()));
+                    let _ = tx.send(result.map_err(Error::from));
                 })
             {
                 self.pending = None;
                 self.next_poll = Instant::now() + Duration::from_secs(2);
-                return Some(Err(error.to_string()));
+                return Some(Err(error.into()));
             }
         }
         None
@@ -257,7 +258,7 @@ impl Catalog {
         }
     }
 
-    fn poll_write(&mut self) -> Option<String> {
+    fn poll_write(&mut self) -> Option<Error> {
         let development = self.development?;
         let mut error = None;
         if let Some(result) = self.writing.as_ref().and_then(|rx| rx.try_recv().ok()) {
@@ -274,11 +275,11 @@ impl Catalog {
                 .spawn(move || {
                     let _ = tx.send(
                         herdr_client::store_saved_host_selection(development, selected.as_deref())
-                            .map_err(|e| e.to_string()),
+                            .map_err(Error::from),
                     );
                 }) {
                 Ok(_) => self.writing = Some(rx),
-                Err(e) => error = Some(e.to_string()),
+                Err(e) => error = Some(e.into()),
             }
         }
         error
@@ -733,8 +734,11 @@ mod tests {
         assert_eq!(catalog.queued_write, Some(Some("last".into())));
         // Simulate a failed worker without accessing the real user's state root.
         catalog.queued_write = None;
-        tx.send(Err("disk unavailable".into())).unwrap();
-        assert_eq!(catalog.poll_write().as_deref(), Some("disk unavailable"));
+        tx.send(Err(std::io::Error::other("disk unavailable").into()))
+            .unwrap();
+        assert!(
+            matches!(catalog.poll_write(), Some(Error::Io(error)) if error.to_string() == "disk unavailable")
+        );
         assert!(catalog.writing.is_none());
         assert_eq!(catalog.desired.as_deref(), Some("last"));
         assert!(!catalog.restore_pending);

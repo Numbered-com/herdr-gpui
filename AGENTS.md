@@ -46,7 +46,11 @@ Closing or detaching the GUI must leave the daemon and its terminals running.
 - Parse strings at boundaries, then match on domain types. Prefer `From`, `TryFrom`, `Into`, and `TryInto` for conversions.
 - Prefer typed request/result structures when shapes are known. Preserve genuinely open-ended protocol envelopes rather than forcing a speculative schema.
 - Derive standard traits such as `Default`, `PartialEq`, and `Eq` where their semantics are valid. Compare complete values when deduplicating operations.
-- Propagate errors with `?`; retain actionable categories and source/context until the display boundary. Implement meaningful `Display` and `Error`, not debug-only user messages. Do not add error-framework dependencies for trivial wrapping.
+- Every crate must expose its own root `Error` and `Result<T>` (`pub use error::{Error, Result}`), with errors defined using `thiserror`. Use meaningful typed variants for internal failures and match on variants, never error text.
+- Use `anyhow::Result` and context at application/reporting and test-harness boundaries, not as a replacement for typed internal errors. Keep dependency versions in workspace dependencies.
+- Never use `String` or `&str` as an error type, including `Result<(), String>`, worker-channel results, and intermediate operation state. Strings are allowed as diagnostic payloads, unchanged wire-protocol fields, and final UI display text, not as catch-all internal error wrappers.
+- Propagate errors with `?`; preserve original causes with `#[from]`/`#[source]` and retain structured operation/path context until the display boundary. Do not flatten sources with `to_string()` or `format!()` during propagation. Keep `io::Result` where an actual I/O trait or connector contract requires it, preserving typed sources when adapting errors.
+- Test error variants and source chains as well as user-facing diagnostics. Preserve redaction, bounded remote diagnostics, retry/cancellation classification, and protocol compatibility when changing error handling.
 - No `unwrap()` or `expect()` in production. Test-only allowances must be scoped to test code.
 - Prefer safe Rust. Do not introduce `unsafe` unless there is no practical safe alternative; investigate standard-library APIs and maintained safe wrappers first. Any unavoidable exception must be tightly scoped and document both why safe alternatives are insufficient and the safety invariants.
 - Prefer guard clauses and readable iterators. Avoid clones, allocations, helper layers, and generic parameters that provide no benefit.

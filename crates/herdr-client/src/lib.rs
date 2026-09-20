@@ -4,10 +4,14 @@
 #![doc = include_str!("../README.md")]
 mod catalog;
 mod discovery;
+mod error;
 mod ssh;
 pub use catalog::{
     SavedHost, load_saved_host_selection, load_saved_hosts, store_saved_host_selection,
 };
+/// Error returned when queueing commands; also available as the crate's `Error`.
+pub use error::Error as SendError;
+pub use error::{Error, Result, StorageOperation};
 pub mod presentation;
 pub use crossbeam_channel::Receiver;
 use crossbeam_channel::{SendTimeoutError, Sender, TrySendError, bounded};
@@ -31,6 +35,8 @@ const EVENT_CAPACITY: usize = 8;
 const POLL: Duration = Duration::from_millis(10);
 const TIMEOUT: Duration = Duration::from_secs(10);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+// Completed API round trips over 250 ms are noteworthy; queue wait is excluded.
+const SLOW_REQUEST: Duration = Duration::from_millis(250);
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +69,7 @@ pub enum ClientEvent {
     /// Queued command was not sent (stale boot, unsupported method, or busy).
     CommandRejected {
         request_id: Option<String>,
-        reason: String,
+        reason: Error,
     },
     /// Notifications, clipboard, title, bell, and other non-surface wire events.
     Message(ServerMessage),
@@ -96,25 +102,8 @@ struct Command {
     request: Option<(String, String)>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SendError {
-    Full,
-    Disconnected,
-    Invalid(String),
-}
-impl std::fmt::Display for SendError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Full => f.write_str("client command queue is full"),
-            Self::Disconnected => f.write_str("client is disconnected"),
-            Self::Invalid(reason) => write!(f, "invalid client command: {reason}"),
-        }
-    }
-}
-impl std::error::Error for SendError {}
-
 /// Returns immediately after spawning. Connection/handshake errors arrive as events.
-pub fn connect(target: ConnectTarget, options: ConnectOptions) -> io::Result<Client> {
+pub fn connect(target: ConnectTarget, options: ConnectOptions) -> Result<Client> {
     connect_with_surface_active(target, options, true)
 }
 
@@ -125,9 +114,12 @@ pub fn connect_with_surface_active(
     target: ConnectTarget,
     options: ConnectOptions,
     surface_active: bool,
-) -> io::Result<Client> {
+) -> Result<Client> {
     connect_with_connector(target, options, surface_active, |target, _| {
-        target.socket_path().and_then(UnixStream::connect)
+        let path = target
+            .socket_path()
+            .map_err(|error| io::Error::new(error.kind(), error))?;
+        UnixStream::connect(path)
     })
 }
 
@@ -139,7 +131,7 @@ pub fn connect_with_connector(
     options: ConnectOptions,
     surface_active: bool,
     connector: impl FnOnce(&ConnectTarget, &AtomicBool) -> io::Result<UnixStream> + Send + 'static,
-) -> io::Result<Client> {
+) -> Result<Client> {
     validate_options(options)?;
     if let ConnectTarget::Ssh { target, session } = &target {
         catalog::validate_target(target)?;
@@ -152,6 +144,10 @@ pub fn connect_with_connector(
     thread::Builder::new()
         .name("herdr-client-io".into())
         .spawn(move || {
+            let transport = if matches!(target, ConnectTarget::Ssh { .. }) { "ssh" } else { "local" };
+            let span = tracing::info_span!("connection", transport);
+            let _entered = span.enter();
+            tracing::info!(transport, "connection starting");
             let result = (|| {
                 let (stream, child) = match &target {
                     ConnectTarget::Ssh { target, session } => {
@@ -171,6 +167,13 @@ pub fn connect_with_connector(
                 )
                 // The child guard is dropped before delivering a disconnect event.
             })();
+            if worker_stop.load(Ordering::Acquire) {
+                tracing::debug!("connection cancelled");
+            } else if let Err(error) = &result {
+                tracing::warn!(kind = ?error.kind(), "connection ended with transport or protocol failure");
+            } else {
+                tracing::info!("connection ended");
+            }
             if !worker_stop.load(Ordering::Acquire) {
                 let reason = result
                     .err()
@@ -200,6 +203,7 @@ pub fn connect_with_connector(
 
 impl ClientHandle {
     pub fn disconnect(&self) {
+        tracing::debug!("disconnect requested");
         self.inner.stop.store(true, Ordering::Release);
     }
     pub fn is_disconnected(&self) -> bool {
@@ -211,15 +215,14 @@ impl ClientHandle {
         boot_id: &str,
         message: ClientMessage,
         request: Option<(String, String)>,
-    ) -> Result<(), SendError> {
+    ) -> Result<()> {
         if self.is_disconnected() {
             return Err(SendError::Disconnected);
         }
         if boot_id.is_empty() {
-            return Err(SendError::Invalid("snapshot boot ID required".into()));
+            return Err(Error::MissingBootId);
         }
-        let bytes = encode_message(&message, MAX_FRAME_SIZE)
-            .map_err(|e| SendError::Invalid(e.to_string()))?;
+        let bytes = encode_message(&message, MAX_FRAME_SIZE)?;
         self.inner
             .commands
             .try_send(Command {
@@ -228,7 +231,10 @@ impl ClientHandle {
                 request,
             })
             .map_err(|e| match e {
-                TrySendError::Full(_) => SendError::Full,
+                TrySendError::Full(_) => {
+                    tracing::warn!(category = "command_queue", "client backpressure");
+                    SendError::Full
+                }
                 TrySendError::Disconnected(_) => SendError::Disconnected,
             })
     }
@@ -237,7 +243,7 @@ impl ClientHandle {
         boot_id: &str,
         pane_id: &str,
         events: impl IntoIterator<Item = ClientPaneInputEvent>,
-    ) -> Result<(), SendError> {
+    ) -> Result<()> {
         self.enqueue(
             boot_id,
             ClientMessage::ClientShellPaneInput {
@@ -252,7 +258,7 @@ impl ClientHandle {
         boot_id: &str,
         terminal_id: &str,
         events: impl IntoIterator<Item = ClientPaneInputEvent>,
-    ) -> Result<(), SendError> {
+    ) -> Result<()> {
         self.enqueue(
             boot_id,
             ClientMessage::ClientShellPopupInput {
@@ -262,8 +268,8 @@ impl ClientHandle {
             None,
         )
     }
-    pub fn resize(&self, boot_id: &str, options: ConnectOptions) -> Result<(), SendError> {
-        validate_options(options).map_err(|e| SendError::Invalid(e.to_string()))?;
+    pub fn resize(&self, boot_id: &str, options: ConnectOptions) -> Result<()> {
+        validate_options(options)?;
         self.enqueue(
             boot_id,
             ClientMessage::ClientShellResize {
@@ -275,12 +281,12 @@ impl ClientHandle {
             None,
         )
     }
-    pub fn set_focus(&self, boot_id: &str, focused: bool) -> Result<(), SendError> {
+    pub fn set_focus(&self, boot_id: &str, focused: bool) -> Result<()> {
         self.enqueue(boot_id, ClientMessage::ClientShellFocus { focused }, None)
     }
     /// Queue upstream's surface-interest API, not window focus. Wait for the
     /// matching Response before considering a host activation/deactivation complete.
-    pub fn set_surface_active(&self, boot_id: &str, active: bool) -> Result<String, SendError> {
+    pub fn set_surface_active(&self, boot_id: &str, active: bool) -> Result<String> {
         self.request(
             boot_id,
             "client_shell.surface.set",
@@ -289,7 +295,7 @@ impl ClientHandle {
     }
     /// Serialize the API envelope, generate an ID, and queue on the ordered writer.
     /// Only methods advertised in Connected are sent. Responses retain API errors.
-    pub fn request(&self, boot_id: &str, method: &str, params: Value) -> Result<String, SendError> {
+    pub fn request(&self, boot_id: &str, method: &str, params: Value) -> Result<String> {
         let id = format!(
             "gpui-{}",
             self.inner.next_request.fetch_add(1, Ordering::Relaxed)
@@ -305,13 +311,13 @@ impl ClientHandle {
         )?;
         Ok(id)
     }
-    pub fn focus_pane(&self, boot_id: &str, pane_id: &str) -> Result<String, SendError> {
+    pub fn focus_pane(&self, boot_id: &str, pane_id: &str) -> Result<String> {
         self.request(boot_id, "pane.focus", json!({"pane_id": pane_id}))
     }
-    pub fn focus_tab(&self, boot_id: &str, tab_id: &str) -> Result<String, SendError> {
+    pub fn focus_tab(&self, boot_id: &str, tab_id: &str) -> Result<String> {
         self.request(boot_id, "tab.focus", json!({"tab_id": tab_id}))
     }
-    pub fn focus_workspace(&self, boot_id: &str, workspace_id: &str) -> Result<String, SendError> {
+    pub fn focus_workspace(&self, boot_id: &str, workspace_id: &str) -> Result<String> {
         self.request(
             boot_id,
             "workspace.focus",
@@ -320,13 +326,10 @@ impl ClientHandle {
     }
 }
 
-fn invalid(reason: impl ToString) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, reason.to_string())
-}
-fn validate_options(options: ConnectOptions) -> io::Result<()> {
+fn validate_options(options: ConnectOptions) -> Result<()> {
     let size = options.surface_size;
     if size.cols == 0 || size.rows == 0 {
-        return Err(invalid("surface dimensions must be nonzero"));
+        return Err(Error::EmptySurface);
     }
     if size.cols > 4096
         || size.rows > 4096
@@ -334,7 +337,7 @@ fn validate_options(options: ConnectOptions) -> io::Result<()> {
         || options.cell_width_px > 4096
         || options.cell_height_px > 4096
     {
-        return Err(invalid("surface geometry exceeds endpoint limits"));
+        return Err(Error::GeometryLimit);
     }
     Ok(())
 }
@@ -342,19 +345,23 @@ fn validate_options(options: ConnectOptions) -> io::Result<()> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests;
-fn deliver(tx: &Sender<ClientEvent>, mut event: ClientEvent, stop: &AtomicBool) -> io::Result<()> {
+fn deliver(tx: &Sender<ClientEvent>, mut event: ClientEvent, stop: &AtomicBool) -> Result<()> {
+    let mut reported_backpressure = false;
     loop {
         if stop.load(Ordering::Acquire) {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "client stopped"));
+            return Err(Error::Cancelled);
         }
         match tx.send_timeout(event, POLL) {
             Ok(()) => return Ok(()),
-            Err(SendTimeoutError::Timeout(e)) => event = e,
+            Err(SendTimeoutError::Timeout(e)) => {
+                if !reported_backpressure {
+                    tracing::debug!(category = "event_queue", "client backpressure");
+                    reported_backpressure = true;
+                }
+                event = e;
+            }
             Err(SendTimeoutError::Disconnected(_)) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "event receiver dropped",
-                ));
+                return Err(Error::EventReceiverDropped);
             }
         }
     }
@@ -375,18 +382,16 @@ impl FrameReader {
             started: None,
         }
     }
-    fn poll(&mut self, stream: &mut (impl Read + ?Sized)) -> io::Result<Option<ServerMessage>> {
+    fn poll(&mut self, stream: &mut (impl Read + ?Sized)) -> Result<Option<ServerMessage>> {
         if self.started.is_some_and(|t| t.elapsed() > TIMEOUT) {
-            return Err(invalid("partial frame timed out"));
+            tracing::warn!(category = "partial_frame", "client timeout");
+            return Err(Error::PartialFrameTimeout);
         }
         let mut buf = [0; 8192];
         let len = buf.len().min(self.target - self.bytes.len());
         match stream.read(&mut buf[..len]) {
             Ok(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "socket closed",
-                ));
+                return Err(Error::SocketClosed);
             }
             Ok(n) => {
                 self.started.get_or_insert_with(Instant::now);
@@ -402,7 +407,7 @@ impl FrameReader {
             {
                 return Ok(None);
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         }
         if self.bytes.len() != self.target {
             return Ok(None);
@@ -412,10 +417,10 @@ impl FrameReader {
                 .bytes
                 .as_slice()
                 .try_into()
-                .map_err(|_| invalid("invalid frame prefix"))?;
+                .map_err(|_| Error::FramePrefix)?;
             let len = u32::from_le_bytes(prefix) as usize;
             if len == 0 || len > MAX_GRAPHICS_FRAME_SIZE {
-                return Err(invalid("invalid frame length"));
+                return Err(Error::FrameLength);
             }
             self.target += len;
             return Ok(None);
@@ -452,15 +457,13 @@ impl Health {
         self.received = now;
         self.ping = None;
     }
-    fn tick(&mut self, now: Instant) -> io::Result<bool> {
+    fn tick(&mut self, now: Instant) -> Result<bool> {
         if self
             .ping
             .is_some_and(|sent| now.saturating_duration_since(sent) >= Duration::from_secs(10))
         {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "endpoint health check timed out",
-            ));
+            tracing::warn!(category = "health_check", "client timeout");
+            return Err(Error::HealthTimeout);
         }
         if self.ping.is_none()
             && now.saturating_duration_since(self.received) >= Duration::from_secs(5)
@@ -497,34 +500,36 @@ impl Session {
         }
     }
 
-    fn check_timeouts(&self) -> io::Result<()> {
+    fn check_timeouts(&self) -> Result<()> {
         if self.snapshot.is_none() && self.started.elapsed() > TIMEOUT {
-            return Err(invalid("handshake/snapshot timed out"));
+            tracing::warn!(category = "initial_snapshot", "client timeout");
+            return Err(Error::HandshakeTimeout);
         }
         if self
             .pending
             .as_ref()
             .is_some_and(|p| p.started.elapsed() > COMMAND_TIMEOUT)
         {
-            return Err(invalid("endpoint request timed out; not replayed"));
+            tracing::warn!(category = "request", "client timeout; request not replayed");
+            return Err(Error::RequestTimeout);
         }
         Ok(())
     }
 
-    fn rejection_reason(&self, command: &Command) -> Option<&'static str> {
+    fn rejection_reason(&self, command: &Command) -> Option<Error> {
         if self
             .snapshot
             .as_ref()
             .is_none_or(|s| s.boot_id != command.boot_id)
         {
-            Some("command does not match a ready snapshot boot")
+            Some(Error::CommandBoot)
         } else if let Some((_, method)) = &command.request
             && self
                 .welcome
                 .as_ref()
                 .is_none_or(|w| !w.methods.contains(method))
         {
-            Some("method not advertised by endpoint")
+            Some(Error::UnsupportedMethod)
         } else if let Some((_, method)) = &command.request
             && method == "client_shell.surface.set"
             && self
@@ -532,7 +537,7 @@ impl Session {
                 .as_ref()
                 .is_none_or(|w| !supports_surface_interest(w))
         {
-            Some("surface interest capabilities not advertised by endpoint")
+            Some(Error::UnsupportedSurfaceInterest)
         } else {
             None
         }
@@ -547,7 +552,7 @@ fn run_connection(
     commands: Receiver<Command>,
     tx: &Sender<ClientEvent>,
     stop: &AtomicBool,
-) -> io::Result<()> {
+) -> Result<()> {
     stream.set_read_timeout(Some(POLL))?;
     stream.set_write_timeout(Some(Duration::from_secs(1)))?;
     let hello = EndpointClientHello {
@@ -605,11 +610,12 @@ fn run_connection(
                 return Ok(());
             }
             if let Some(reason) = session.rejection_reason(&command) {
+                tracing::debug!(category = "session_policy", "command rejected");
                 deliver(
                     tx,
                     ClientEvent::CommandRejected {
                         request_id: command.request.map(|r| r.0),
-                        reason: reason.into(),
+                        reason,
                     },
                     stop,
                 )?;
@@ -623,6 +629,7 @@ fn run_connection(
             }
             stream.write_all(&command.bytes)?;
             if let Some((id, _)) = command.request {
+                tracing::trace!(category = "api", "request sent");
                 session.pending = Some(Pending {
                     id,
                     bytes: Vec::new(),
@@ -643,8 +650,8 @@ impl Session {
     fn handle_message(
         &mut self,
         message: ServerMessage,
-        mut emit: impl FnMut(ClientEvent) -> io::Result<()>,
-    ) -> io::Result<()> {
+        mut emit: impl FnMut(ClientEvent) -> Result<()>,
+    ) -> Result<()> {
         if let Some(health) = &mut self.health {
             health.received(Instant::now());
         }
@@ -660,14 +667,17 @@ impl Session {
         } = self;
         if welcome.is_none() {
             let ServerMessage::EndpointControl { kind, data } = message else {
-                return Err(invalid("expected stable endpoint welcome"));
+                return Err(Error::ExpectedWelcome);
             };
             if kind != ENDPOINT_WELCOME_KIND {
-                return Err(invalid("expected endpoint.welcome.v1"));
+                return Err(Error::WelcomeKind);
             }
             let w: EndpointServerWelcome = serde_json::from_str(&data)?;
             if let Some(error) = &w.error {
-                return Err(invalid(format!("{}: {}", error.code, error.message)));
+                return Err(Error::WelcomeRejected {
+                    code: error.code.clone(),
+                    message: error.message.clone(),
+                });
             }
             if w.generation != ENDPOINT_PROTOCOL_GENERATION
                 || w.snapshot_codec != SNAPSHOT_CODEC_V1
@@ -675,14 +685,14 @@ impl Session {
                 || w.input_codec != INPUT_CODEC_V1
                 || w.blob_codec != BLOB_CODEC_V1
             {
-                return Err(invalid("incompatible endpoint generation/codecs"));
+                return Err(Error::IncompatibleCodecs);
             }
             if (*remote || !*surface_active) && !supports_surface_interest(&w) {
-                return Err(invalid("endpoint lacks safe surface interest support"));
+                return Err(Error::MissingSurfaceInterest);
             }
             if *remote {
                 if !w.capabilities.iter().any(|c| c == "health_check") {
-                    return Err(invalid("SSH endpoint lacks health_check capability"));
+                    return Err(Error::MissingHealthCheck);
                 }
                 *health = Some(Health {
                     received: Instant::now(),
@@ -690,6 +700,7 @@ impl Session {
                 });
             }
             emit(ClientEvent::Connected(w.clone()))?;
+            tracing::info!("endpoint handshake accepted");
             *welcome = Some(w);
             return Ok(());
         }
@@ -701,11 +712,12 @@ impl Session {
                         .as_ref()
                         .is_some_and(|s| s.boot_id != next.boot_id || next.revision < s.revision)
                 {
-                    return Err(invalid(
-                        "endpoint boot changed or snapshot revision regressed; reconnect required",
-                    ));
+                    return Err(Error::SnapshotIdentity);
                 }
                 let next = Arc::new(next);
+                if snapshot.is_none() {
+                    tracing::debug!("initial snapshot ready");
+                }
                 let revision_changed = snapshot
                     .as_ref()
                     .is_none_or(|s| s.revision != next.revision);
@@ -721,15 +733,13 @@ impl Session {
             }
             ServerMessage::EndpointControl { .. } => {} // Unknown optional named controls are ignored.
             ServerMessage::PaneSurface(next) => {
-                let s = snapshot
-                    .as_ref()
-                    .ok_or_else(|| invalid("surface before snapshot"))?;
+                let s = snapshot.as_ref().ok_or(Error::SurfaceBeforeSnapshot)?;
                 if next.boot_id != s.boot_id
                     || surface
                         .as_ref()
                         .is_some_and(|old| next.surface_revision <= old.surface_revision)
                 {
-                    return Err(invalid("invalid surface identity/revision"));
+                    return Err(Error::SurfaceIdentity);
                 }
                 next.frame.validate()?;
                 if let Some(popup) = &next.popup {
@@ -742,9 +752,7 @@ impl Session {
                 *surface = Some(next);
             }
             ServerMessage::PaneSurfacePatch(patch) => {
-                let current = surface
-                    .as_mut()
-                    .ok_or_else(|| invalid("patch before baseline"))?;
+                let current = surface.as_mut().ok_or(Error::PatchBeforeBaseline)?;
                 Arc::make_mut(current).apply_patch(patch)?;
                 if snapshot
                     .as_ref()
@@ -760,24 +768,32 @@ impl Session {
                 data,
             } => {
                 if snapshot.as_ref().is_none_or(|s| s.boot_id != boot_id) {
-                    return Err(invalid("response boot mismatch"));
+                    return Err(Error::ResponseBoot);
                 }
                 let total = pending.as_ref().map_or(0, |p| p.bytes.len());
                 if data.len() > MAX_RESPONSE_BYTES.saturating_sub(total) {
-                    return Err(invalid("response limit exceeded"));
+                    return Err(Error::ResponseLimit);
                 }
                 let p = pending
                     .as_mut()
                     .filter(|p| p.id == request_id)
-                    .ok_or_else(|| invalid("unsolicited response"))?;
+                    .ok_or(Error::UnsolicitedResponse)?;
                 p.bytes.extend(data);
                 if final_chunk {
-                    let p = pending
-                        .take()
-                        .ok_or_else(|| invalid("unsolicited response"))?;
+                    let p = pending.take().ok_or(Error::UnsolicitedResponse)?;
                     let response: Value = serde_json::from_slice(&p.bytes)?;
                     if response.get("id").and_then(Value::as_str) != Some(&request_id) {
-                        return Err(invalid("response ID mismatch"));
+                        return Err(Error::ResponseId);
+                    }
+                    let elapsed = p.started.elapsed();
+                    let elapsed_ms = elapsed.as_millis() as u64;
+                    let api_error = response.get("error").is_some_and(|error| !error.is_null());
+                    if api_error {
+                        tracing::warn!(elapsed_ms, "API request failed");
+                    } else if elapsed > SLOW_REQUEST {
+                        tracing::warn!(elapsed_ms, api_error, "slow API request completed");
+                    } else {
+                        tracing::trace!(elapsed_ms, api_error, "API request completed");
                     }
                     emit(ClientEvent::Response {
                         request_id,
@@ -786,7 +802,9 @@ impl Session {
                 }
             }
             ServerMessage::ServerShutdown { reason } => {
-                return Err(invalid(reason.unwrap_or_else(|| "server shutdown".into())));
+                return Err(Error::ServerShutdown(
+                    reason.unwrap_or_else(|| "server shutdown".into()),
+                ));
             }
             other => emit(ClientEvent::Message(other))?,
         }

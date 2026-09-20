@@ -3,8 +3,62 @@ use crate::terminal::*;
 use gpui::*;
 use herdr_client::protocol::{CellData, FrameData};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 const CACHE_LIMIT: usize = 4096;
+const REPORT_INTERVAL: Duration = Duration::from_secs(5);
+const SLOW_PAINT: Duration = Duration::from_millis(16);
+
+#[derive(Default)]
+struct PaintTiming {
+    count: u64,
+    total: Duration,
+    max: Duration,
+    slow_count: u64,
+}
+
+struct PaintDiagnostics {
+    since: Instant,
+    timing: PaintTiming,
+    last_error: Option<Instant>,
+    errors: u64,
+}
+
+impl PaintDiagnostics {
+    fn new(now: Instant) -> Self {
+        Self {
+            since: now,
+            timing: PaintTiming::default(),
+            last_error: None,
+            errors: 0,
+        }
+    }
+
+    fn record(&mut self, now: Instant, elapsed: Duration) -> Option<PaintTiming> {
+        self.timing.count += 1;
+        self.timing.total += elapsed;
+        self.timing.max = self.timing.max.max(elapsed);
+        self.timing.slow_count += u64::from(elapsed > SLOW_PAINT);
+        if now.duration_since(self.since) < REPORT_INTERVAL {
+            return None;
+        }
+        self.since = now;
+        Some(std::mem::take(&mut self.timing))
+    }
+
+    fn take_errors(&mut self, now: Instant, errors: u64) -> Option<u64> {
+        self.errors = self.errors.saturating_add(errors);
+        if self.errors == 0
+            || self
+                .last_error
+                .is_some_and(|last| now.duration_since(last) < REPORT_INTERVAL)
+        {
+            return None;
+        }
+        self.last_error = Some(now);
+        Some(std::mem::take(&mut self.errors))
+    }
+}
 
 pub(crate) struct TerminalPainter {
     font_size: f32,
@@ -16,6 +70,7 @@ pub(crate) struct TerminalPainter {
     lines: HashMap<(u32, u16), HashMap<String, ShapedLine>>,
     entries: usize,
     cell_width: Option<f32>,
+    diagnostics: PaintDiagnostics,
     #[cfg(feature = "integration-test")]
     pub uncached: bool,
 }
@@ -30,6 +85,7 @@ impl Default for TerminalPainter {
             lines: HashMap::new(),
             entries: 0,
             cell_width: None,
+            diagnostics: PaintDiagnostics::new(Instant::now()),
             #[cfg(feature = "integration-test")]
             uncached: false,
         }
@@ -87,9 +143,9 @@ impl TerminalPainter {
     }
 
     #[cfg(feature = "integration-test")]
-    pub fn verify_native_cache(&self, window: &Window) -> Result<usize, String> {
+    pub fn verify_native_cache(&self, window: &Window) -> Result<usize> {
         let Some(base) = &self.config else {
-            return Err("missing font config".into());
+            anyhow::bail!("missing font config");
         };
         for ((color, flags), lines) in &self.lines {
             let mut font = base.clone();
@@ -115,7 +171,7 @@ impl TerminalPainter {
                 );
                 // Includes native glyph IDs/positions, font IDs, metrics and colors.
                 if format!("{fresh:?}") != format!("{cached:?}") {
-                    return Err(format!("cached glyph/style mismatch: {symbol:?}"));
+                    anyhow::bail!("cached glyph/style mismatch: {symbol:?}");
                 }
             }
         }
@@ -176,6 +232,9 @@ impl TerminalPainter {
         if frame.width == 0 {
             return;
         }
+        // CPU scene construction only: this does not measure GPU completion.
+        let started = Instant::now();
+        let mut paint_errors = 0_u64;
         self.configure(font);
         let cached = true;
         #[cfg(feature = "integration-test")]
@@ -264,8 +323,7 @@ impl TerminalPainter {
                     px((index / usize::from(frame.width)) as f32 * self.cell_height),
                 );
             let result = shaped.paint(position, px(self.cell_height), window, cx);
-            #[cfg(not(feature = "integration-test"))]
-            let _ = result;
+            paint_errors += u64::from(result.is_err());
             #[cfg(feature = "integration-test")]
             {
                 counts.glyphs += shaped.runs.iter().map(|r| r.glyphs.len()).sum::<usize>();
@@ -329,6 +387,31 @@ impl TerminalPainter {
             total.paint_errors += counts.paint_errors;
             total.paints += 1;
         }
+        let now = Instant::now();
+        if let Some(timing) = self.diagnostics.record(now, now.duration_since(started)) {
+            let mean_ms = timing.total.as_secs_f64() * 1000. / timing.count as f64;
+            let max_ms = timing.max.as_secs_f64() * 1000.;
+            if timing.slow_count > 0 {
+                tracing::warn!(
+                    count = timing.count,
+                    mean_ms,
+                    max_ms,
+                    slow_count = timing.slow_count,
+                    "Terminal CPU paint timing"
+                );
+            } else {
+                tracing::debug!(
+                    count = timing.count,
+                    mean_ms,
+                    max_ms,
+                    slow_count = timing.slow_count,
+                    "Terminal CPU paint timing"
+                );
+            }
+        }
+        if let Some(count) = self.diagnostics.take_errors(now, paint_errors) {
+            tracing::warn!(category = "glyph_paint", count, "Terminal paint failed");
+        }
     }
 }
 
@@ -336,6 +419,54 @@ impl TerminalPainter {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn paint_timing_threshold_interval_and_reset() {
+        let start = Instant::now();
+        let mut diagnostics = PaintDiagnostics::new(start);
+        assert!(diagnostics.record(start, SLOW_PAINT).is_none());
+        assert!(
+            diagnostics
+                .record(
+                    start + REPORT_INTERVAL - Duration::from_nanos(1),
+                    Duration::from_millis(17)
+                )
+                .is_none()
+        );
+        let timing = diagnostics
+            .record(start + REPORT_INTERVAL, Duration::from_millis(3))
+            .unwrap();
+        assert_eq!(timing.count, 3);
+        assert_eq!(timing.total, Duration::from_millis(36));
+        assert_eq!(timing.max, Duration::from_millis(17));
+        assert_eq!(timing.slow_count, 1);
+        let timing = diagnostics
+            .record(start + REPORT_INTERVAL * 2, Duration::from_millis(2))
+            .unwrap();
+        assert_eq!(timing.count, 1);
+        assert_eq!(timing.total, Duration::from_millis(2));
+        assert_eq!(timing.max, Duration::from_millis(2));
+        assert_eq!(timing.slow_count, 0);
+    }
+
+    #[test]
+    fn paint_errors_report_immediately_then_coalesce() {
+        let start = Instant::now();
+        let mut diagnostics = PaintDiagnostics::new(start);
+        assert_eq!(diagnostics.take_errors(start, 0), None);
+        assert_eq!(diagnostics.take_errors(start, 2), Some(2));
+        assert_eq!(diagnostics.take_errors(start, 3), None);
+        assert_eq!(
+            diagnostics.take_errors(start + REPORT_INTERVAL - Duration::from_nanos(1), 4),
+            None
+        );
+        assert_eq!(diagnostics.take_errors(start + REPORT_INTERVAL, 0), Some(7));
+        assert_eq!(
+            diagnostics.take_errors(start + REPORT_INTERVAL * 2, 0),
+            None
+        );
+    }
 
     fn cell(symbol: &str) -> CellData {
         CellData {

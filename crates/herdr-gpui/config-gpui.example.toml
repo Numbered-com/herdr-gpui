@@ -1,6 +1,8 @@
 # Herdr GUI settings, independent of the daemon config.
 # Save at $XDG_CONFIG_HOME/herdr/config-gpui.toml (default ~/.config/herdr/).
 # Omitted settings use defaults. Font sizes are logical pixels, inclusive 8..48.
+# Font families below are examples; leave them commented to use platform defaults.
+# Fonts must be installed locally; none are bundled.
 # Restart the GUI or use its GUI config reload action after editing.
 
 # Built-ins: Default, Nord, Dracula, Catppuccin Mocha, Catppuccin Latte.
@@ -8,19 +10,23 @@
 theme = "Default"
 
 [sidebar]
-family = "Menlo"
+# Default: "Menlo" on macOS, "DejaVu Sans Mono" on Linux.
+# family = "DejaVu Sans Mono"
 size = 12
 
 [tabs]
-family = ".SystemUIFont"
+# Default: ".SystemUIFont" on macOS, "DejaVu Sans" on Linux.
+# family = "DejaVu Sans"
 size = 14
 
 [terminal]
-family = "Menlo"
+# Default: "Menlo" on macOS, "DejaVu Sans Mono" on Linux.
+# family = "DejaVu Sans Mono"
 size = 14
 
 [ui]
-family = ".SystemUIFont"
+# Default: ".SystemUIFont" on macOS, "DejaVu Sans" on Linux.
+# family = "DejaVu Sans"
 size = 12
 
 # Native GitHub sign-in uses the public Herdr GPUI GitHub App by default.

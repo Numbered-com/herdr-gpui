@@ -257,10 +257,7 @@ fn dialog_response_survives_initial_surface_activation(cx: &mut gpui::TestAppCon
         view.reset_selected();
         view.poll_endpoints(cx);
         assert!(view.live.activation.is_some());
-        assert_eq!(
-            view.live.dialog_response,
-            Some(("lookup".into(), Some(Ok(response))))
-        );
+        assert!(matches!(&view.live.dialog_response, Some((id, Some(Ok(value)))) if id == "lookup" && value == &response));
         assert!(
             view.endpoints[1]
                 .connection

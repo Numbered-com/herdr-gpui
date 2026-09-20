@@ -1,6 +1,7 @@
 # Herdr Native Shell
 
-A macOS GPUI 0.2.2 client for a Local daemon and saved SSH hosts.
+A GPUI 0.2.2 client for a Local daemon and saved SSH hosts, with macOS support
+and experimental Linux x86_64/ARM64 builds.
 It starts an installed local `herdr server` when absent; explicit socket and
 development targets remain attach-only. It does not link or install Herdr, stop
 daemons, spawn a local PTY, or emulate a terminal. Herdr's remote bridge may start
@@ -72,8 +73,8 @@ font defaults, theme lookup order, and reload behavior, and
 Font sizes use logical pixels (finite 8..48), not typographic points. Restart the
 GUI or invoke GUI config reload after edits; daemon config reload is separate.
 
-The standalone `src/config.rs` module exposes `Config::load()` and
-`Config::path()`, both returning errors as strings. `Config::theme()` resolves
+The `src/config.rs` module exposes `Config::load()` and
+`Config::path()`, both returning the crate's typed `Result`. `Config::theme()` resolves
 built-ins or Ghostty files into a `Theme` with packed 24-bit RGB colors and all
 256 palette entries. Theme resolution is a separate fallible step from loading
 and validating TOML. Font sections can override either family or size without
@@ -82,6 +83,43 @@ Config and theme I/O is synchronous; startup and reload schedule it on the GPUI
 background executor and apply the validated pair together. Failed reloads retain
 current settings. Theme selection cancels pending reload application so a delayed
 load cannot overwrite the newer selection.
+
+Production operations use the root `Error`/`Result` types (`src/error.rs`) with
+`thiserror` variants for validation and source-preserving I/O/parser failures.
+Catalog channels retain typed errors, and rename results share errors with `Arc`
+across cloned UI snapshots. Strings are produced at presentation boundaries, not
+as internal error transport. `anyhow` is reserved for framework boundaries and
+test harnesses, not internal catch-all errors.
+
+## Title Bar
+
+macOS keeps `Some(TitlebarOptions)` and the native Herdr window title/traffic lights,
+with transparent chrome and lights positioned at (9, 9) logical pixels. A full-width
+34px header blends `theme.surface` roughly 10% toward white, subtly lifting dark
+themes while keeping light themes light. It sits above the sidebar and tabs: 80px
+of traffic-light clearance, an empty flexible center, and a 40px upper-right slot.
+The slot centers a 16px circular user avatar with a 12px SVG in a 28px hover target, tinted from
+the theme foreground. This placeholder for future GitHub sign-in has no account
+action, network requests, personal identity, or tooltip. It consumes clicks so
+double-clicking it does not invoke the title-bar action.
+The header and clearance remain in fullscreen so the body layout stays stable.
+Windows/Linux keep the existing native frame and do not render this header.
+
+The reference is Zed's `crates/platform_title_bar/src/platform_title_bar.rs` and
+window options in `crates/zed/src/zed.rs`, not a build dependency. Double-click calls
+`Window::titlebar_double_click()` to honor the OS preference. Unlike newer Zed,
+registry GPUI 0.2.2 has no macOS `start_window_move` implementation and ignores
+`WindowControlArea::Drag`. We leave `is_movable` unchanged and rely on native AppKit
+dragging, rather than adding ineffective custom drag handlers or platform patches.
+
+Headless tests check the actual root header/center/account-slot bounds at wide,
+minimum, and narrow sizes, including mock fullscreen entry/exit, and that the
+avatar and hit target stay centered. An SVG decoding test checks the embedded user
+icon produces a nonempty mask. These do not verify AppKit behavior. Native QA remains
+required for dragging across the header, traffic-light alignment and actions,
+double-click preferences (zoom/minimize/do nothing), fullscreen transitions and
+auto-hidden controls, theme changes, and modal/focus/IME behavior. Windows/Linux
+native-frame appearance also remains unverified by these macOS tests.
 
 ## Supported
 
@@ -170,9 +208,17 @@ load cannot overwrite the newer selection.
   no follow-up focus request or local Git subprocess is used.
 - Title-only tabs, without an added tab number. Externally created workspaces
   arrive through pushed snapshots without manual refresh.
+- Right-click any tab without focusing it to open Rename.
+  Actions retain the clicked tab/workspace and reject stale connections or targets.
+  Rename selects the current label in a native IME-aware field, with inline errors;
+  Close uses the existing cancel-by-default confirmation. Escape or an outside
+  left/right click dismisses the menu without sending terminal input.
 - Click workspace, tab, agent, or a visible split pane to focus through the API.
 - Native File/Terminal menus and creation buttons: **+ New Workspace** in the
-  sidebar and a persistent **+** beside the horizontally scrolling tab strip.
+  sidebar and a persistent 18px SVG **+** in a 44px-wide button beside the horizontally
+  scrolling tab strip. Each tab has a 16px SVG close cross in a 24px hit target;
+  it opens the same cancel-by-default confirmation without focusing an inactive tab.
+  Both icons use the current theme's foreground tint.
 - Cmd-N creates and focuses a workspace; Cmd-T creates and focuses a tab.
   Cmd-D splits the focused pane vertically (new pane on the right);
   Cmd-Shift-D splits horizontally (new pane below). Cmd-Shift-] / Cmd-Shift-[
@@ -246,12 +292,13 @@ GPUI native action/menu/keybinding patterns.
 
 ## Deliberate Limitations
 
-- macOS first; defaults to system Menlo and system font fallback, no bundled Nerd Font.
+- macOS defaults to Menlo and the system font; Linux defaults to DejaVu Sans Mono
+  and DejaVu Sans. No bundled Nerd Font.
   Private-use icons may be missing. Fonts and palettes are configured locally,
   not synchronized from the host terminal's theme.
 - No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
   hyperlink activation, image rendering, or animated blinking.
-- No horizontal wheel handling,
+- No pane rename dialogs or horizontal wheel handling,
   server-owned keybindings, session picker, saved-host editing, or daemon
   stop/upgrade management.
 - IME uses a minimal transient buffer, not a local editable terminal document;
@@ -271,9 +318,15 @@ cargo clippy -p herdr-gpui --all-targets -- -D warnings
 cargo fmt -p herdr-gpui -- --check
 ```
 
-Requires the normal macOS Rust/Xcode development environment. GPUI's
+Requires the normal macOS Rust/Xcode development environment or the
+[Linux build dependencies](../../README.md#linux-builds). Registry GPUI's default
+X11/Wayland backends are retained. Linux uses Vulkan; macOS GPUI's
 `runtime_shaders` feature compiles native Metal shaders at app launch, avoiding
-the separate downloadable build-time Metal compiler. Tests cover wire colors,
+the separate downloadable build-time Metal compiler. Integrated Linux ARM64
+compilation, Clippy, default/all-feature tests, and release CLI checks were
+verified in Ubuntu 24.04, not native desktop rendering or input. Linux Cmd bindings mean
+Super and can conflict with desktop shortcuts; global macOS menus are not
+available. Tests cover wire colors,
 cell modifiers, viewport bounds, semantic key selection, revision coherence,
 creation request parameters, workspace-local tab cycling, wheel accumulation,
 pane-relative hit testing, and popup routing.

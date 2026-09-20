@@ -1,5 +1,6 @@
 //! Exact-window, main-thread-only AppKit events for the isolated fixture.
 #![allow(unsafe_code, deprecated, unexpected_cfgs)]
+use anyhow::{Context as _, Result, bail};
 use cocoa::{
     base::{id, nil},
     foundation::{NSPoint, NSRect},
@@ -13,6 +14,11 @@ use foreign_types::ForeignType;
 use objc::{class, msg_send, sel, sel_impl};
 use std::{marker::PhantomData, rc::Rc};
 
+// raw-window-handle does not implement Error without its optional std feature.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct NativeHandleError(raw_window_handle::HandleError);
+
 #[derive(Debug)]
 pub(crate) struct Target {
     view: id,
@@ -21,23 +27,24 @@ pub(crate) struct Target {
 }
 
 impl Target {
-    pub(crate) fn acquire(window: &gpui::Window) -> Result<Self, String> {
-        let handle =
-            raw_window_handle::HasWindowHandle::window_handle(window).map_err(|e| e.to_string())?;
+    pub(crate) fn acquire(window: &gpui::Window) -> Result<Self> {
+        let handle = raw_window_handle::HasWindowHandle::window_handle(window)
+            .map_err(NativeHandleError)
+            .context("acquiring native fixture window handle")?;
         let raw_window_handle::RawWindowHandle::AppKit(handle) = handle.as_raw() else {
-            return Err("fixture is not AppKit".into());
+            bail!("fixture is not AppKit");
         };
         // GPUI supplies this live view on the UI thread. Retain both objects only
         // across the update boundary: native callbacks reenter GPUI there.
         unsafe {
             let main: bool = msg_send![class!(NSThread), isMainThread];
             if !main {
-                return Err("native fixture target requires main thread".into());
+                bail!("native fixture target requires main thread");
             }
             let view = handle.ns_view.as_ptr().cast();
             let window: id = msg_send![view, window];
             if window == nil {
-                return Err("fixture view has no window".into());
+                bail!("fixture view has no window");
             }
             let _: id = msg_send![view, retain];
             let _: id = msg_send![window, retain];
@@ -53,7 +60,7 @@ impl Target {
         unsafe { msg_send![self.window, isKeyWindow] }
     }
 
-    pub(crate) fn click(&self, x: f64, y: f64) -> Result<(), String> {
+    pub(crate) fn click(&self, x: f64, y: f64) -> Result<()> {
         unsafe {
             let bounds: NSRect = msg_send![self.view, bounds];
             let flipped: bool = msg_send![self.view, isFlipped];
@@ -69,7 +76,7 @@ impl Target {
                     windowNumber: number context: nil eventNumber: 0_isize
                     clickCount: 1_isize pressure: 1_f32];
                 if event == nil {
-                    return Err("cannot create fixture click".into());
+                    bail!("cannot create fixture click");
                 }
                 if kind == 1 {
                     let _: () = msg_send![self.view, mouseDown: event];
@@ -81,7 +88,7 @@ impl Target {
         Ok(())
     }
 
-    pub(crate) fn right_click(&self, x: f64, y: f64) -> Result<(), String> {
+    pub(crate) fn right_click(&self, x: f64, y: f64) -> Result<()> {
         // CGEvent supplies the right-button number that mouseEventWithType omits.
         // Dispatch directly to the retained fixture view, never the key window.
         unsafe {
@@ -97,17 +104,17 @@ impl Target {
             let frame: NSRect = msg_send![screen, frame];
             for kind in [CGEventType::RightMouseDown, CGEventType::RightMouseUp] {
                 let source = CGEventSource::new(CGEventSourceStateID::Private)
-                    .map_err(|_| "event source")?;
+                    .map_err(|_| anyhow::anyhow!("event source"))?;
                 let event = CGEvent::new_mouse_event(
                     source,
                     kind,
                     CGPoint::new(location.x, frame.size.height - location.y),
                     CGMouseButton::Right,
                 )
-                .map_err(|_| "right mouse event")?;
+                .map_err(|_| anyhow::anyhow!("right mouse event"))?;
                 let native: id = msg_send![class!(NSEvent), eventWithCGEvent: event.as_ptr()];
                 if native == nil {
-                    return Err("cannot create native right mouse event".into());
+                    bail!("cannot create native right mouse event");
                 }
                 if matches!(kind, CGEventType::RightMouseDown) {
                     let _: () = msg_send![self.view, rightMouseDown: native];
@@ -126,5 +133,30 @@ impl Drop for Target {
             let _: () = msg_send![self.view, release];
             let _: () = msg_send![self.window, release];
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NativeHandleError;
+    use anyhow::Context as _;
+
+    #[test]
+    fn native_handle_error_retains_typed_cause() -> anyhow::Result<()> {
+        let error = Err::<(), _>(NativeHandleError(
+            raw_window_handle::HandleError::Unavailable,
+        ))
+        .context("acquiring native fixture window handle")
+        .err()
+        .context("fixture unexpectedly succeeded")?;
+        let cause = error
+            .downcast_ref::<NativeHandleError>()
+            .context("missing typed native handle error")?;
+        assert!(matches!(
+            cause.0,
+            raw_window_handle::HandleError::Unavailable
+        ));
+        assert_eq!(error.chain().count(), 2);
+        Ok(())
     }
 }

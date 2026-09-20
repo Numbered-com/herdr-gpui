@@ -166,8 +166,9 @@ the code. **Copy code** (or Cmd-C) copies only the displayed one-time code on
 request, with brief **Copied** feedback; it never copies an access token. The
 browser and clipboard are never opened or changed automatically. Tab/Shift-Tab
 select the visible buttons, Enter/Space activate them, and Escape closes the
-panel and cancels pending authorization. The header and action footer stay
-visible while long status or storage messages scroll. Background polling respects
+panel and cancels pending authorization. The panel sizes to its content; its only
+Close button is in the header. The header and available actions stay visible while
+long status or storage messages scroll. Background polling respects
 GitHub's interval and `slow_down` responses, expires within 15 minutes, and stops
 on **Cancel (C)**, dismissal, reconnect, denial, or expiry. Each HTTP request has
 a maximum 15-second timeout. Once the UI accepts authorization, the Keychain
@@ -280,14 +281,78 @@ the dialog, but cannot cancel an operation already queued to the daemon.
 See [deletion safety](crates/herdr-gpui/WORKTREE-DELETION.md) for the API contract
 and upstream source references.
 
-This is an initial working macOS client, not complete TUI feature parity.
+This is an initial working macOS client with experimental Linux builds, not
+complete TUI feature parity. The integrated Linux build and headless tests have
+been verified on Ubuntu 24.04 ARM64; native Linux desktop behavior is not yet
+verified.
 Herdr owns terminal processes and session state; closing this app only detaches.
 The Herdr checkout does not need to be modified or linked into this build.
 
+## Installation
+
+### macOS With Homebrew
+
+Requires [Homebrew](https://brew.sh/) and macOS 15 Sequoia or newer, on Apple
+Silicon or Intel. The cask installs the signed, notarized universal app.
+
+**Availability:** the tap is created, but the cask becomes installable only after
+the first successful release. Until then, use the [source build](#run).
+
+```sh
+brew install --cask penso/herdr-gpui/herdr-gpui
+open -a Herdr
+```
+
+The fully qualified name automatically adds the
+[`penso/herdr-gpui` tap](https://github.com/penso/homebrew-herdr-gpui).
+You can also launch **Herdr** from Applications. To update or uninstall:
+
+```sh
+brew update
+brew upgrade --cask penso/herdr-gpui/herdr-gpui
+# Remove only the GUI app:
+brew uninstall --cask herdr-gpui
+```
+
+Install the [Herdr daemon](https://herdr.dev/) separately. The cask does not
+install or manage it; uninstalling the GUI leaves daemon sessions and shared
+Herdr configuration intact.
+
+### Direct macOS Download
+
+Alternatively, download `Herdr-VERSION-universal-apple-darwin.dmg` from
+[Releases](https://github.com/penso/herdr-gpui/releases), open it, and drag Herdr
+to Applications. This installs only the GUI. Install the Herdr daemon separately;
+the app can start an installed local daemon as described below, while the cask
+does not manage it.
+
+### Linux And Windows
+
+Linux releases are experimental x86_64/ARM64 GNU/Linux tarballs built on Ubuntu 24.04,
+not static or broadly portable binaries. Download
+`Herdr-VERSION-x86_64-unknown-linux-gnu.tar.gz` or
+`Herdr-VERSION-aarch64-unknown-linux-gnu.tar.gz` and `SHA256SUMS`, verify the archive
+against its checksum entry, and extract its tree into a chosen prefix with `bin`
+on `PATH`. The archive includes a desktop entry, icon, license and attribution.
+An active X11 or Wayland desktop, Vulkan-capable driver, system fonts, glibc 2.39+
+and the usual XCB/xkbcommon, Wayland, fontconfig, FreeType and OpenSSL runtime
+libraries are required. On Ubuntu 24.04 a starting runtime set is:
+
+```sh
+sudo apt install libxcb1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 \
+  libx11-xcb1 libxcb-xkb1 libxcb-randr0 libxcb-shape0 libxcb-xfixes0 \
+  libfontconfig1 libfreetype6 libssl3t64 libvulkan1 mesa-vulkan-drivers fonts-dejavu-core
+```
+
+This is not a tested compatibility promise for every Linux desktop or GPU.
+Native Linux launch/input/IME QA is pending. Windows runs protocol tests only;
+Windows GUI packaging, transport support, and installers are deferred.
+
 ## Run
 
-Install Rust/rustup and the macOS Xcode command-line tools. The repository pins
-Rust 1.96.1 and GPUI 0.2.2. Install Herdr, then:
+Install Rust/rustup and, on macOS, the Xcode command-line tools. For Linux,
+see the dependencies below. The repository pins Rust 1.96.1 and GPUI 0.2.2.
+Install Herdr, then:
 
 ```sh
 cargo run --locked --release -p herdr-gpui
@@ -349,7 +414,56 @@ manual refresh. The native integration test checks creation by a separate client
 including preservation of the GUI's current selection and connection. Observed
 latency is tens of milliseconds locally, not an instant-delivery guarantee.
 
+### Linux Builds
+
+CI and releases target `x86_64-unknown-linux-gnu` and
+`aarch64-unknown-linux-gnu` on native Ubuntu 24.04 runners. These are dynamically
+linked GNU/Linux builds, not portable static binaries or AppImages; older glibc
+distributions are not supported by this build baseline. Windows builds do not
+currently exist.
+
+On Ubuntu 24.04, install build dependencies with:
+
+```sh
+bash scripts/install-linux-deps.sh
+just ci
+just test-build
+```
+
+The script uses sudo/apt to install a C/C++ compiler, pkg-config, XKB/XCB,
+FreeType/Fontconfig development libraries, and DejaVu fonts. Pinned registry
+GPUI's default features enable both X11 and Wayland; no alternate GPUI fork,
+nightly toolchain, or cross-compilation SDK is used.
+
+Running the GUI requires an active X11 or Wayland desktop and working Vulkan
+loader/driver, plus XKB/XCB, Fontconfig/FreeType, and DejaVu fonts. On Ubuntu,
+runtime packages include `libxkbcommon0`, `libxkbcommon-x11-0`, `libxcb1`,
+`libfontconfig1`, `libfreetype6`, `libwayland-client0`, `libvulkan1`, and
+`fonts-dejavu-core`; install a Vulkan driver appropriate for your GPU
+(`mesa-vulkan-drivers` for supported Mesa hardware). These libraries, drivers,
+fonts, and Herdr itself are not bundled in release archives.
+
+Extract the matching versioned Linux `.tar.gz` and run `bin/herdr-gpui` inside
+the extracted directory. Linux defaults use DejaVu Sans Mono for terminal/sidebar
+and DejaVu Sans for other UI text. Explicit font configuration is preserved.
+The shortcuts documented as Cmd use **Super** on Linux, not Control, and may
+conflict with desktop shortcuts. macOS global menus and Dock integration do not
+exist on Linux; use the in-app controls and command palette.
+
+Native Linux X11/Wayland launch, Vulkan rendering, clipboard, keyboard/IME,
+scaling, and desktop shortcut behavior still need manual verification. Headless
+tests and successful linking do not establish native desktop support.
+
 ### macOS App Bundle
+
+On macOS, a Zed-style integrated title bar lightly blends the theme's surface toward white
+above both the sidebar and tabs, retaining native traffic lights and the Herdr
+window identity. Its upper-right circular user avatar is a placeholder for future
+GitHub sign-in, with no authentication, network requests, or personal identity.
+Double-click outside the avatar uses the macOS title-bar preference;
+window dragging remains owned by AppKit. Windows/Linux retain their native frame
+without an extra header. See the [native shell notes](crates/herdr-gpui/README.md#title-bar)
+for layout coverage and remaining desktop QA.
 
 `cargo run` and `just run` use an embedded original Herdr Dock icon, with no runtime
 asset paths or image-generation processes. To create a local Finder-launchable app:
@@ -368,6 +482,11 @@ in `assets/macos/Info.plist` and should be updated for releases.
 The original charcoal/blue connected-H artwork and provenance are in
 [`assets/icons`](assets/icons/README.md). `just icons` regenerates the checked-in
 PNG and ICNS from the SVG with macOS Swift/CoreGraphics and `iconutil`.
+
+For a local signed/notarized universal DMG, use `just dmg 0.1.0` (matching the
+manifest version). This requires both Rust macOS targets and ignored local signing
+configuration; see [local DMG setup](scripts/release/README.md#local-dmg).
+Artifacts go to `target/distribution/VERSION`; nothing is published.
 
 ## GUI Configuration
 
@@ -408,12 +527,12 @@ family = "Menlo"
 size = 14
 ```
 
-| Section | Default Font Family | Default Size |
-| --- | --- | --- |
-| `sidebar` | `Menlo` | 12 |
-| `tabs` | `.SystemUIFont` | 14 |
-| `terminal` | `Menlo` | 14 |
-| `ui` | `.SystemUIFont` | 12 |
+| Section | macOS Font Family | Linux Font Family | Default Size |
+| --- | --- | --- | --- |
+| `sidebar` | `Menlo` | `DejaVu Sans Mono` | 12 |
+| `tabs` | `.SystemUIFont` | `DejaVu Sans` | 14 |
+| `terminal` | `Menlo` | `DejaVu Sans Mono` | 14 |
+| `ui` | `.SystemUIFont` | `DejaVu Sans` | 12 |
 
 Sizes are **logical pixels**, not points or physical display pixels. Fractional
 sizes are supported; values must be finite and between 8 and 48 inclusive. Line
@@ -455,6 +574,89 @@ ignored, including includes and commands: theme loading does not execute them.
 Repeated colors use the last value. Unspecified colors retain defaults, except
 that an omitted cursor color follows the theme foreground.
 
+## Client Diagnostics
+
+Open **Window > GPUI Logs** in the macOS menu, or **GPUI Logs** in the command
+palette. This separate console tails this client's structured `TRACE`, `DEBUG`,
+`INFO`, `WARN`, and `ERROR` events, including its client transport library, not
+the Herdr daemon's logs. The **Minimum** dropdown selects the least severe level
+to show: `TRACE` includes everything, `DEBUG` excludes trace, and `INFO` includes
+info, warnings and errors. `WARN` and `ERROR` narrow it further. `Cmd-L` or Tab
+focuses the selector; Enter/Space/Up/Down opens it, arrows navigate, and Enter
+selects. The current threshold is marked `*`; Escape or clicking outside cancels.
+Shift-Tab returns to search. Scroll or use
+**Pause** to freeze the view, then **Resume tail** to catch up. Click a row to
+read its full message in the detail area. Rows wrap (including long unbroken data)
+in a variable-height virtual list; message content aligns after fixed-width levels.
+`Cmd-F` focuses search; `Cmd-W` closes only the log window.
+
+Search terms are whitespace-separated, case-insensitive, and combined with AND:
+`namespace:herdr_gpui` matches the exact namespace, while
+`target:herdr_gpui::terminal_painter` matches a target substring. Namespace is the
+first `::`-separated component of the tracing target, not a span or message field.
+Other terms match the message, field names/values (for example `elapsed_ms=32`),
+target, span names, timestamp or level. These structured filters inspect record
+properties, so a target mentioned only in a message does not satisfy `target:`.
+Use the dropdown, rather than a `level:` query, for minimum severity.
+
+The console follows the active GUI theme, including theme changes and successful
+GUI config reloads while it is open. It shares the main window's integrated macOS
+title bar. Controls and search use the configured UI font; log rows and details
+use the terminal font (Menlo on macOS or DejaVu Sans Mono on Linux by default).
+Timestamps are muted, levels use severity colors, targets use the theme's cyan,
+and event fields use its blue; messages use the foreground color. Palette colors
+are blended with the foreground for readability on the UI background.
+
+**Copy** and **Export...** share the currently filtered snapshot as newline-delimited
+JSON (NDJSON). Export suggests `herdr-gpui.jsonl`, uses a native save dialog, and
+serializes/writes in the background. Both use the query and minimum level at the
+time of the click, even before the displayed rows refresh. Paused filtering and
+export use the frozen snapshot, not newly arriving events. Clear search and select
+`TRACE` to export all retained records. Nothing is uploaded or automatically saved.
+Review exports before sharing them in an issue.
+
+The first JSON line has `type: "metadata"`, `schema_version: 1`, `app_version`,
+`os`, `arch`, `dropped`, and `timestamp_format`. Every subsequent line is an event
+with `type: "event"`, uppercase `level`, `timestamp`, `target`, `namespace`,
+`message`, `fields` (an object), `spans` (leaf-first names), and `truncated`.
+There are no prose headers or display wrap breaks. An empty export still contains
+the metadata record. For example, an event line is:
+
+```json
+{"type":"event","level":"INFO","timestamp":"[2025-09-26 15:03:45]","target":"herdr_gpui::terminal_painter","namespace":"herdr_gpui","message":"Paint complete","fields":{"elapsed_ms":8,"ready":true},"spans":["paint"],"truncated":false}
+```
+
+Records, not parsed display text, are the source of truth. Booleans, supported
+integers, finite floats and strings retain their JSON types. Debug-formatted
+values, nonfinite floats and integers outside JSON's supported numeric range are
+strings. Span fields are never captured.
+
+Logging starts before client connections and stays enabled even when the console
+is closed. It is local, in memory, and limited to the latest 5,000 records with
+4 KiB of serialized JSON per record (excluding the NDJSON newline), plus bounded
+in-memory collection overhead. The shared budget includes JSON escaping and
+field/key overhead; capture keeps at most 32 event fields (including message),
+16 span names (64 encoded bytes each), and 256 encoded target bytes. Oversized
+field names are omitted; exhausted budgets set `truncated: true`. Control
+characters are replaced with spaces. Debug formatters must cooperate with
+formatting errors; the capture writer stops accepting data when full. Capture
+uses nonblocking locks, drops on contention/reentrancy, and accepts only the
+`herdr_gpui`, `herdr_client`, and `herdr_protocol` target namespaces.
+The console reports evicted/dropped records; logs are lost when
+the app exits unless exported. Dependency logs, daemon payloads, terminal text,
+keystrokes, connection paths and credentials are not captured. Timestamps are
+local time at capture in `[YYYY-MM-DD HH:MM:SS]` format, for example
+`[2025-09-26 15:03:45] INFO  herdr_gpui Connected`. Levels are
+left-aligned in a five-character display column. Copy/export retain the exact
+captured timestamp as a JSON string, without display padding.
+
+Performance diagnostics include request/response elapsed time (excluding queue
+wait), warnings above 250 ms, event-delivery backpressure, and CPU terminal paint
+summaries approximately every five seconds while painting. Paint summaries report
+count, mean, maximum and frames above 16 ms, warning when any exceeded that
+threshold. These measure CPU scene construction, not GPU completion or actual
+display latency. Use a release build for meaningful performance measurements.
+
 ## Controls
 
 | Control | Action |
@@ -462,6 +664,9 @@ that an omitted cursor color follows the theme foreground.
 | Sidebar workspace/agent | Focus its workspace or pane |
 | Right-click sidebar workspace | Rename, confirmed close, new worktree on Git parents, delete linked checkout |
 | Top tab / terminal pane | Focus the tab or pane |
+| Persistent + beside tabs | New tab in the current workspace |
+| Tab close cross | Confirm closing that tab without focusing it |
+| Right-click tab | Rename |
 | Cmd-N | New workspace using daemon directory policy |
 | Cmd-T | New tab |
 | Cmd-D / Cmd-Shift-D | Split right / below |
@@ -556,9 +761,18 @@ comparison or OS-level keyboard/IME delivery testing.
 ### Continuous Integration
 
 GitHub Actions checks formatting, denies Clippy warnings, and runs the tests with
-both default and all features. The tests include real executable CLI checks for
+both default and all features on macOS and native Ubuntu 24.04 x86_64/ARM64.
+The tests include real executable CLI checks for
 help, malformed arguments, conflicting options, and test-mode gating, with a
 timeout to catch startup hangs. These checks do not open windows.
+
+CI jobs run only for `penso` in this repository: owner-authored internal PRs can
+run audit/test jobs, but optimized release builds run only on `main`, never PRs.
+Outside-contributor and Dependabot PR jobs are skipped; review changes and bring
+them onto an owner-controlled branch for validation. Do not interpret skipped jobs
+as a successful test run. GitHub also requires approval for all external contributors.
+The required PR checks are `Workflow Security` and `Format, lint, and test`;
+the main-only `Release (arm64)` / `Release (x86_64)` jobs are not PR requirements.
 
 A headless GPUI layout regression also renders the actual sidebar with 40
 workspaces and short/long agent labels. It checks shaped text, not just container
@@ -618,10 +832,11 @@ remain opt-in rather than imposing machine-dependent timings on hosted CI.
 See [PERFORMANCE.md](crates/herdr-gpui/PERFORMANCE.md) for the before/after results,
 reference mode, workload, deterministic checks, and remaining limitations.
 
-Separate Apple Silicon and Intel macOS jobs build optimized executables and run
-the CLI tests against those release binaries. Regular CI validates builds without
-publishing; the separate tagged release workflow packages, signs, notarizes, and
-publishes distributable binaries as described under Releases.
+Separate Apple Silicon/Intel macOS and x86_64/ARM64 Linux jobs build optimized
+executables and run the CLI tests against those release binaries. CI validates
+builds but does not publish distributable binaries. The separate manual release
+workflow described below handles packaging, dependency notices, signing, and
+notarization.
 GPUI compiles its Metal shaders at runtime, so CI does not need the separate
 build-time Metal compiler download.
 
@@ -654,31 +869,190 @@ alive. App exit does not wait for pending writes, so the latest change may be lo
 The width applies to all host groups in the window; narrow sidebars hide host
 status text to leave room for labels.
 
+## Release Operations
+
+Releases are **manual only**. `.github/workflows/release.yml` has no push, tag,
+pull-request, or release-event trigger. Both the original actor and rerun actor
+must be `penso`, the repository must be `penso/herdr-gpui`, and the workflow must
+run from `main`. A tag push alone cannot publish anything.
+
+### Protection Setup
+
+Before the first dispatch, configure these settings on GitHub. Environment names
+in YAML alone do **not** enforce approval; do not dispatch until protection is set.
+
+1. Protect `main` against unreviewed changes, deletion, and force pushes. Review
+   changes to this workflow, packaging scripts, cask template, and dependencies
+   before merging. Only trusted code from `main` may reach a signing runner.
+2. Create the `release` environment with `penso` as its sole required reviewer,
+   selected deployment branches restricted to `main` (no tags), and administrator
+   bypass disabled. Allow self-review: the only permitted dispatcher is also the
+   required owner reviewer. Signing and publication both use this environment;
+   inspect the run and immutable SHA before approving pending deployments.
+3. Put `MACOS_CERTIFICATE_P12_BASE64`, `MACOS_CERTIFICATE_PASSWORD`, and
+   `APPLE_API_PRIVATE_KEY` in **release environment secrets**. The private key is
+   literal multiline `.p8` contents. Put `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID`,
+   and `MACOS_SIGNING_IDENTITY` in **release environment variables**, using the full
+   Developer ID Application signing identity. Do not put signing credentials in
+   repository-wide secrets. See the [script interfaces](scripts/release/README.md)
+   for credential formats and temporary-keychain cleanup constraints.
+4. Create a separate `homebrew` environment with the same owner review, main-only
+   branch policy, self-review allowance, and no administrator bypass. Create the
+    public `penso/homebrew-herdr-gpui` tap with an initialized default branch.
+    Disable Actions in the tap and do not add workflows there. Generate a dedicated
+    Ed25519 SSH key (never reuse a personal key), register its public key as a
+    write-enabled deploy key **only on that tap**, and store its literal multiline
+    private key as `HOMEBREW_TAP_SSH_KEY` **only in the homebrew environment**.
+    No PAT is needed. The deploy key grants repository-wide write access to the tap,
+    not path-level access, and grants no access to the source repository or other
+    repositories. The final step alone receives it, clones with strict GitHub host
+    verification using HTTPS API metadata, stages only `Casks/herdr-gpui.rb`, and
+    pushes a conventional commit to the resolved default branch (skipping unchanged
+    content). Temporary key files are permission-restricted and trap-cleaned; no
+    Git credentials or global author configuration are persisted. Its built-in
+    token remains Contents read-only. Ensure tap branch rules permit this update;
+    revoke the tap deploy key and replace the environment secret when rotating it.
+5. Ensure repository policy permits the publication job's built-in token to write
+   contents and create `vX.Y.Z` tags/releases. All other jobs have Contents read
+   only; the workflow default is `permissions: {}`. Use disposable hosted runners,
+   not shared self-hosted runners with untrusted processes or concurrent keychain
+   operations. If your GitHub plan cannot enforce required environment reviewers,
+    do not treat this pipeline as approval-protected or enable production secrets.
+6. Enable immutable releases and protect `v*` tags against updates and deletion,
+   without preventing creation of new version tags. Upload and verify every asset
+   while the release is still a draft: published immutable assets cannot be replaced
+   or extended. Restrict `main` updates to trusted administrators and retain its
+   PR/audit/test rules; do not add additional administrators without reviewing this
+   trust boundary.
+
+### Dispatch And Recovery
+
+Update `[workspace.package].version` in `Cargo.toml` and its lockfile metadata as
+needed, review and merge all release inputs into `main`, then use a clean local
+`main` checkout at exactly GitHub's current main HEAD. With `gh` authenticated as
+`penso`, `git`, `jq`, `openssl`, and `just` installed:
+
+```sh
+just release-check
+just release 0.1.0
+```
+
+The helper rejects nonnumeric `X.Y.Z` versions, leading zeros, dirty trees,
+non-main checkouts, a different origin, or a HEAD differing from GitHub's main.
+It queries GitHub without fetching, moving branches, or editing files. The
+exported recipe argument is passed as data, not interpolated shell. It dispatches
+`release.yml` explicitly on `main` with `VERSION`, `expected_sha`, and a random
+`request_id`; matches the unique run name plus SHA; and watches that run through
+its conclusion. Approval waits may require a second browser/terminal session.
+The Actions UI can also dispatch with the version and full SHA; `request_id` is
+optional there. A concurrent main update causes validation to fail rather than
+silently releasing a different commit.
+
+The workflow checks the version against the workspace manifest and freezes the
+validated SHA for every checkout. Secret-free jobs run macOS formatting, Clippy,
+default/all-feature tests, native ARM/Intel optimized builds with a macOS 15.0
+deployment target, and release CLI tests. Native Ubuntu 24.04 x86_64/ARM64 runners
+run the same Rust gates and release CLI tests before packaging; Windows tests only
+`herdr-protocol`.
+No opt-in live-daemon or desktop tests are enabled. Signing downloads only the
+current run's two macOS binaries into separate paths and calls the existing
+packaging/signing scripts without launching either executable. Signing secrets
+are scoped only to the signing step, not tests or builds.
+
+The distinct `Release Workflow Security` audit gates validation and all subsequent
+jobs without replacing CI's required `Workflow Security` check. A secret-free
+metadata job generates a locked CycloneDX SBOM covering the four release targets
+and their build dependencies. A separate owner-approved OIDC job signs the final
+DMG, both Linux archives, and SBOM with Sigstore and attests their provenance. Builds
+restore no caches; Apple credentials are unavailable to metadata/OIDC jobs.
+
+Publication requires exactly those four base files and their `.sha256`, `.sha512`,
+`.sig`, and `.crt` sidecars, plus `SHA256SUMS` covering all 20 files. It refuses any
+existing `vVERSION` tag or release, creates a tag at the validated SHA, and uploads
+all 21 assets into a draft. Enable GitHub immutable releases before dispatch.
+It checks the exact
+draft asset set and downloads it again to verify checksums before making it
+public. The separately approved Homebrew job runs only after publication and
+renders its cask using the checksum of the **downloaded published DMG**, verified
+against the published checksum manifest. No draft or unsigned artifact is used
+by the tap.
+
+Do not blindly redispatch after a timeout or partial failure. The helper prints
+its unique request ID; inspect Actions for that request before trying again.
+Failed publication may leave a tag and/or draft and intentionally will not
+overwrite either. Inspect the artifact set and failure, then explicitly decide
+how to recover the tag/draft or choose a new version. If only the tap update
+fails, the published release remains valid; review and rerun only the failed job
+as `penso` and approve its environment again. Do not rerun successful publication.
+Tap reruns reject downgrades and skip only byte-identical same-version casks.
+If the tap is newer, leave it intact; changed same-version assets require a new
+release version. Review and repair malformed existing cask versions before retrying.
+Concurrency serializes releases and does not cancel an active signer, but GitHub
+may replace an older pending run with a newer dispatch, so dispatch one at a time.
+
+### Release Validation
+
+To verify a published release, install Python 3.11+, `gh`, and cosign 2.x, then:
+
+```sh
+bash scripts/verify-release.sh --version v0.1.0
+# Prefer pinning the independently reviewed source commit:
+bash scripts/verify-release.sh --version v0.1.0 --sha FULL_COMMIT_SHA
+# Basic GitHub provenance check:
+gh attestation verify Herdr-0.1.0-universal-apple-darwin.dmg --repo penso/herdr-gpui
+```
+
+The script checks the exact asset/checksum set and requires Sigstore and provenance
+from this repository's `release.yml` at `refs/heads/main`, bound to the release tag's
+commit. It fails on missing sidecars or verification errors. Checksums alone do
+not authenticate a download. See [SECURITY.md](SECURITY.md#verifying-a-release) for
+the trust policy and optional local-only GPG approval. Supplemental `.asc` files
+are shared separately, never uploaded after publication to an immutable release;
+no private GPG key is placed in CI.
+
+`just release-check` requires Python 3.11+, `jq`, `actionlint`, and `zizmor`. It
+runs shell syntax checks, mocked packaging and artifact/security tests, workflow
+lint/audits, and diff whitespace checks without remote mutation. See
+[`scripts/release/README.md`](scripts/release/README.md) for tool prerequisites.
+
+Before this merge, local release validation on 2026-09-20 built both macOS
+architectures and produced a signed/notarized/stapled universal DMG. The mounted
+app and DMG passed signature,
+ticket, and Gatekeeper checks; CLI checks and a three-second isolated process-start
+smoke passed. This was not visual/input QA or a published GitHub release.
+Ubuntu 24.04 amd64 Docker validation passed Clippy, release linking/CLI tests, and
+archive extraction. Default/all-feature tests each hit one emulation-specific
+nonexistent-executable spawn failure (`missing_executable_is_actionable`); all
+remaining tests passed. Native x86_64 hosted CI must confirm the unmodified test.
+After integration, the combined branch passed formatting, Clippy,
+default/all-feature tests, release linking and all six release CLI checks on
+macOS and native Ubuntu 24.04 ARM64 (isolated container). These checks do not
+validate native Linux desktop behavior or hosted release publication.
+Hosted publication, Sigstore/provenance verification of published artifacts,
+Homebrew install/upgrade/uninstall, and native Linux UI QA remain pending.
+No release is triggered by adding these files.
+
+Release trust/manifest regression tests run without credentials or signing:
+
+```sh
+python3 scripts/release/test-release-security.py
+# Also exercise installed cargo-cyclonedx 0.5.9 in an isolated workspace:
+HERDR_TEST_SBOM=1 python3 scripts/release/test-release-security.py
+```
+
 ## Next Milestones
 
 - Selection/copy, hyperlink interaction, richer mouse support, and inline IME.
-- Full worktree/agent management.
+- Pane rename dialogs and full worktree/agent management.
 - Editable settings and bundled fonts.
 - Optimized terminal painting and graphics support.
-- Broader remote-platform support and release validation across both architectures.
+- First approved signed release, native distribution QA, and broader remote-platform support.
+- Native Linux desktop verification.
 
-Current rendering defaults to Menlo with configurable fonts and themes. Images and terminal
+Current rendering defaults to Menlo on macOS and DejaVu Sans Mono on Linux,
+with configurable fonts and themes. Images and terminal
 notifications/clipboard writes are deliberately not executed. See
 [`crates/herdr-gpui/README.md`](crates/herdr-gpui/README.md) for the detailed scope.
-
-## Releases
-
-Tagged builds (`YYYYMMDD.NN`) publish a universal `Herdr.app` bundle, signed
-with a Developer ID certificate and notarized by Apple, alongside per-architecture
-executables and a CycloneDX SBOM. Every asset ships SHA256/SHA512 checksums, a
-Sigstore keyless signature, and GitHub build provenance; detached GPG
-signatures from the maintainer's key are added shortly after publication.
-
-```sh
-just verify-release --version 20260920.01 --checksums
-```
-
-See [SECURITY.md](SECURITY.md) for what each of those claims actually proves.
 
 ## License
 

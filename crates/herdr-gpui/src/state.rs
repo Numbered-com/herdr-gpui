@@ -5,6 +5,8 @@ use herdr_client::{
 };
 use std::sync::Arc;
 
+pub(crate) type DialogResponse = Result<serde_json::Value, Arc<crate::Error>>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectionStatus {
     Connecting,
@@ -45,11 +47,19 @@ pub struct LiveState {
     pub(crate) local_daemon_peer: bool,
     pub(crate) supports_workspace_get: bool,
     pub dirty: bool,
-    pub(crate) dialog_response: Option<(String, Option<Result<serde_json::Value, String>>)>,
+    pub(crate) dialog_response: Option<(String, Option<DialogResponse>)>,
     agent_presentation: AgentPresentation,
     outer_focused: Option<bool>,
     pub activation: Option<SurfaceActivation>,
     pub supports_surface: bool,
+    // One modal request, retained across coalesced snapshots until the UI observes it.
+    pub tab_rename: Option<TabRenameResult>,
+}
+
+#[derive(Clone)]
+pub struct TabRenameResult {
+    pub request: String,
+    pub result: Option<Result<(), Arc<crate::Error>>>,
 }
 
 #[derive(Clone)]
@@ -78,6 +88,7 @@ impl Default for LiveState {
             outer_focused: None,
             activation: None,
             supports_surface: false,
+            tab_rename: None,
         }
     }
 }
@@ -227,22 +238,40 @@ impl LiveState {
                 self.agent_presentation = AgentPresentation::default();
             }
             ClientEvent::CommandRejected { request_id, reason } => {
+                self.error = Some(reason.to_string());
+                let reason = Arc::new(crate::Error::Client(reason));
                 if let Some((id, result)) = &mut self.dialog_response
                     && request_id.as_ref() == Some(id)
                 {
                     *result = Some(Err(reason.clone()));
+                }
+                if let Some(rename) = &mut self.tab_rename
+                    && request_id.as_ref() == Some(&rename.request)
+                {
+                    rename.result = Some(Err(reason));
                 }
                 if let Some(activation) = &mut self.activation
                     && request_id.as_ref() == Some(&activation.request)
                 {
                     activation.failed = true;
                 }
-                self.error = Some(reason);
             }
             ClientEvent::Response {
                 request_id,
                 response,
             } => {
+                if let Some(rename) = &mut self.tab_rename
+                    && request_id == rename.request
+                {
+                    rename.result = Some(
+                        match response.get("error").filter(|error| !error.is_null()) {
+                            Some(error) => {
+                                Err(Arc::new(crate::Error::DaemonResponse(error.clone())))
+                            }
+                            None => Ok(()),
+                        },
+                    );
+                }
                 if let Some(activation) = &mut self.activation
                     && request_id == activation.request
                 {
@@ -312,23 +341,117 @@ mod tests {
             response: serde_json::json!({"result":{}}),
         });
         state.apply(ClientEvent::Snapshot(snapshot()));
-        assert_eq!(
-            state.dialog_response,
-            Some(("remove".into(), Some(Ok(response))))
+        assert!(
+            matches!(&state.dialog_response, Some((id, Some(Ok(value)))) if id == "remove" && value == &response)
         );
         state.dialog_response = Some(("next".into(), None));
         state.apply(ClientEvent::CommandRejected {
             request_id: Some("other".into()),
-            reason: "unrelated".into(),
+            reason: herdr_client::Error::Disconnected,
         });
-        assert_eq!(state.dialog_response, Some(("next".into(), None)));
+        assert!(matches!(&state.dialog_response, Some((id, None)) if id == "next"));
         state.apply(ClientEvent::CommandRejected {
             request_id: Some("next".into()),
-            reason: "stale boot".into(),
+            reason: herdr_client::Error::CommandBoot,
         });
+        assert!(
+            matches!(&state.dialog_response, Some((id, Some(Err(error)))) if id == "next" && matches!(error.as_ref(), crate::Error::Client(herdr_client::Error::CommandBoot)))
+        );
+    }
+
+    #[test]
+    fn rename_failures_stay_typed_and_shared_across_mailbox_clones() {
+        let mut state = LiveState {
+            tab_rename: Some(TabRenameResult {
+                request: "rename".into(),
+                result: None,
+            }),
+            ..LiveState::default()
+        };
+        let payload = serde_json::json!({"code": "invalid_label", "message": "Invalid label"});
+        state.apply(ClientEvent::Response {
+            request_id: "other".into(),
+            response: serde_json::json!({"error": payload}),
+        });
+        assert!(state.tab_rename.as_ref().unwrap().result.is_none());
+        state.apply(ClientEvent::Response {
+            request_id: "rename".into(),
+            response: serde_json::json!({"error": payload}),
+        });
+        let cloned = state.clone();
+        let error = state
+            .tab_rename
+            .as_ref()
+            .unwrap()
+            .result
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap_err();
+        let shared = cloned
+            .tab_rename
+            .as_ref()
+            .unwrap()
+            .result
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap_err();
+        assert!(Arc::ptr_eq(error, shared));
+        assert!(matches!(error.as_ref(), crate::Error::DaemonResponse(value) if value == &payload));
+        assert_eq!(error.to_string(), payload.to_string());
+        state.apply(ClientEvent::CommandRejected {
+            request_id: Some("rename".into()),
+            reason: herdr_client::Error::CommandBoot,
+        });
+        assert!(matches!(
+            state
+                .tab_rename
+                .as_ref()
+                .unwrap()
+                .result
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap_err()
+                .as_ref(),
+            crate::Error::Client(herdr_client::Error::CommandBoot)
+        ));
         assert_eq!(
-            state.dialog_response,
-            Some(("next".into(), Some(Err("stale boot".into()))))
+            state.error.as_deref(),
+            Some("command does not match a ready snapshot boot")
+        );
+        state.apply(ClientEvent::CommandRejected {
+            request_id: Some("rename".into()),
+            reason: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied").into(),
+        });
+        let cloned = state.clone();
+        let error = state
+            .tab_rename
+            .as_ref()
+            .unwrap()
+            .result
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap_err();
+        let shared = cloned
+            .tab_rename
+            .as_ref()
+            .unwrap()
+            .result
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap_err();
+        assert!(Arc::ptr_eq(error, shared));
+        use std::error::Error as _;
+        assert!(
+            error
+                .source()
+                .and_then(|source| source.source())
+                .and_then(|source| source.downcast_ref::<std::io::Error>())
+                .is_some_and(|source| source.kind() == std::io::ErrorKind::PermissionDenied)
         );
     }
 
@@ -784,7 +907,7 @@ mod tests {
         };
         state.apply(ClientEvent::CommandRejected {
             request_id: Some("activate-1".into()),
-            reason: "unsupported".into(),
+            reason: herdr_client::Error::UnsupportedMethod,
         });
         assert!(state.activation.as_ref().unwrap().failed);
     }

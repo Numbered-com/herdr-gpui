@@ -9,25 +9,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::{fs::File, io::Write, path::Path};
 
 const NAME: &std::ffi::CStr = c"github-credentials";
-const ERROR: &str = "Cannot access private GitHub credential file. Require an owned directory and regular 0600 file; symlinks are rejected.";
-
-fn directory(path: &Path) -> Result<File, String> {
+fn directory(path: &Path) -> Result<File> {
     let dir = File::from(
         open(
             path,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         )
-        .map_err(|_| ERROR)?,
+        .map_err(|error| Error::CredentialIo(error.into()))?,
     );
-    let metadata = dir.metadata().map_err(|_| ERROR)?;
+    let metadata = dir.metadata().map_err(Error::CredentialIo)?;
     if metadata.uid() != geteuid().as_raw() || metadata.mode() & 0o022 != 0 {
-        return Err(ERROR.into());
+        return Err(Error::CredentialPermissions);
     }
     Ok(dir)
 }
 
-fn existing(dir: &File) -> Result<Option<File>, String> {
+fn existing(dir: &File) -> Result<Option<File>> {
     // Keep access relative to the validated directory, even if its path is replaced.
     let file = match openat(
         dir,
@@ -37,57 +35,56 @@ fn existing(dir: &File) -> Result<Option<File>, String> {
     ) {
         Ok(fd) => File::from(fd),
         Err(rustix::io::Errno::NOENT) => return Ok(None),
-        Err(_) => return Err(ERROR.into()),
+        Err(error) => return Err(Error::CredentialIo(error.into())),
     };
-    let metadata = file.metadata().map_err(|_| ERROR)?;
+    let metadata = file.metadata().map_err(Error::CredentialIo)?;
     if !metadata.is_file()
         || metadata.uid() != geteuid().as_raw()
         || metadata.mode() & 0o777 != 0o600
         || metadata.nlink() != 1
         || metadata.len() > 4096
     {
-        return Err(ERROR.into());
+        return Err(Error::CredentialPermissions);
     }
     Ok(Some(file))
 }
 
-pub(super) fn read(path: &Path) -> Result<Option<SecretString>, String> {
+pub(super) fn read(path: &Path) -> Result<Option<SecretString>> {
     let dir = directory(path)?;
     let Some(file) = existing(&dir)? else {
         return Ok(None);
     };
     let mut bytes = Zeroizing::new(Vec::with_capacity(4097));
-    file.take(4097).read_to_end(&mut bytes).map_err(|_| ERROR)?;
-    let text = std::str::from_utf8(&bytes).map_err(|_| ERROR)?;
+    file.take(4097)
+        .read_to_end(&mut bytes)
+        .map_err(Error::CredentialIo)?;
+    let text = std::str::from_utf8(&bytes).map_err(Error::GitHubEncoding)?;
     if !valid_token(text) {
-        return Err(ERROR.into());
+        return Err(Error::GitHubToken);
     }
     Ok(Some(text.into()))
 }
 
-pub(super) fn store(
-    path: &Path,
-    token: Option<&SecretString>,
-    plaintext: bool,
-) -> Result<(), String> {
+pub(super) fn store(path: &Path, token: Option<&SecretString>, plaintext: bool) -> Result<()> {
     if token.is_some() && !plaintext {
-        return Err("No secure credential store configured. Explicitly opt in with [github] allow_plaintext_credentials = true, or use GH_TOKEN / GITHUB_TOKEN.".into());
+        return Err(Error::CredentialPolicy);
     }
     // Explicit removal is allowed even after opting out of plaintext storage.
     write(path, token)
 }
 
-fn write(path: &Path, token: Option<&SecretString>) -> Result<(), String> {
+fn write(path: &Path, token: Option<&SecretString>) -> Result<()> {
     let dir = directory(path)?;
     let present = existing(&dir)?.is_some();
     let Some(token) = token else {
         if present {
-            unlinkat(&dir, NAME, AtFlags::empty()).map_err(|_| ERROR)?;
+            unlinkat(&dir, NAME, AtFlags::empty())
+                .map_err(|error| Error::CredentialIo(error.into()))?;
         }
-        return dir.sync_all().map_err(|_| ERROR.into());
+        return dir.sync_all().map_err(Error::CredentialIo);
     };
     if !valid_token(token.expose_secret()) {
-        return Err("Invalid GitHub credential.".into());
+        return Err(Error::GitHubToken);
     }
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let name = format!(
@@ -102,16 +99,17 @@ fn write(path: &Path, token: Option<&SecretString>) -> Result<(), String> {
             OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::RUSR | Mode::WUSR,
         )
-        .map_err(|_| ERROR)?,
+        .map_err(|error| Error::CredentialIo(error.into()))?,
     );
     let result = (|| {
         file.write_all(token.expose_secret().as_bytes())
-            .map_err(|_| ERROR)?;
-        file.sync_all().map_err(|_| ERROR)?;
+            .map_err(Error::CredentialIo)?;
+        file.sync_all().map_err(Error::CredentialIo)?;
         existing(&dir)?;
         // Replace the directory entry atomically, never a symlink's target.
-        renameat(&dir, name.as_str(), &dir, NAME).map_err(|_| ERROR)?;
-        dir.sync_all().map_err(|_| ERROR.into())
+        renameat(&dir, name.as_str(), &dir, NAME)
+            .map_err(|error| Error::CredentialIo(error.into()))?;
+        dir.sync_all().map_err(Error::CredentialIo)
     })();
     let _ = unlinkat(&dir, name.as_str(), AtFlags::empty());
     result
@@ -138,7 +136,7 @@ mod tests {
         let token: SecretString = "fixture-not-a-real-token".into();
         assert!(read(&path).unwrap().is_none());
         let error = store(&path, Some(&token), false).unwrap_err();
-        assert!(!error.contains(token.expose_secret()));
+        assert!(!error.to_string().contains(token.expose_secret()));
         assert!(read(&path).unwrap().is_none());
         store(&path, Some(&token), true).unwrap();
         store(&path, None, false).unwrap();

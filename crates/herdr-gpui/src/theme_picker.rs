@@ -36,7 +36,7 @@ impl HerdrWindow {
                     .iter()
                     .map(|name| (*name).to_owned())
                     .collect(),
-                Some(error),
+                Some(error.to_string()),
             ),
         };
         let mut picker = if let Some(picker) = self.menu.themes.take() {
@@ -86,11 +86,12 @@ impl HerdrWindow {
                 self.config_load = None;
                 self.config.theme = name.into();
                 self.theme = theme;
+                crate::log_window::set_appearance(&self.config, &self.theme, cx);
                 self.dismiss_menu(window, cx);
             }
             Err(error) => {
                 if let Some(picker) = &mut self.menu.themes {
-                    picker.error = Some(error);
+                    picker.error = Some(error.to_string());
                 }
                 cx.notify();
             }

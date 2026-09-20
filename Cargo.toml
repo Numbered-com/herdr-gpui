@@ -19,6 +19,9 @@ unwrap_used = "deny"
 expect_used = "deny"
 
 [workspace.dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+thiserror = "2"
 herdr-protocol = { path = "crates/herdr-protocol" }
 herdr-client = { path = "crates/herdr-client" }
 gpui = "=0.2.2"
@@ -38,6 +41,8 @@ bincode = { version = "2", default-features = false, features = ["std", "serde"]
 crossbeam-channel = "0.5"
 rustix = { version = "=1.1.5", features = ["fs", "process"] }
 nix = { version = "=0.31.3", default-features = false, features = ["socket", "user"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 cocoa = "0.26"
 objc = "0.2"
 core-graphics = "0.24"

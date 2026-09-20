@@ -1,8 +1,9 @@
 //! Local socket rules adapted from herdr src/server/socket_paths.rs and
 //! src/session.rs (Apache-2.0; see ../../herdr-protocol/NOTICE.md).
 //! Modified: explicit release/dev selection, no server spawning or global state.
+use crate::{Error, Result};
 use std::{
-    env, io,
+    env,
     path::{Path, PathBuf},
 };
 
@@ -19,7 +20,7 @@ pub enum ConnectTarget {
     Ssh { target: String, session: String },
 }
 
-pub fn session_socket(config_dir: &Path, name: &str) -> io::Result<PathBuf> {
+pub fn session_socket(config_dir: &Path, name: &str) -> Result<PathBuf> {
     if name.is_empty()
         || name.len() > 64
         || matches!(name, "." | "..")
@@ -27,10 +28,7 @@ pub fn session_socket(config_dir: &Path, name: &str) -> io::Result<PathBuf> {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "invalid session name",
-        ));
+        return Err(Error::InvalidSession);
     }
     Ok(if name == "default" {
         config_dir.to_owned()
@@ -41,20 +39,20 @@ pub fn session_socket(config_dir: &Path, name: &str) -> io::Result<PathBuf> {
 }
 
 impl ConnectTarget {
-    pub fn socket_path(&self) -> io::Result<PathBuf> {
+    pub fn socket_path(&self) -> Result<PathBuf> {
         self.socket_path_with(|name| env::var_os(name))
     }
 
     /// Standard session endpoint, ignoring socket overrides (including `Socket`).
     /// This identifies a user-configured local location, not a daemon executable.
-    pub fn local_session_socket_path(&self) -> io::Result<PathBuf> {
+    pub fn local_session_socket_path(&self) -> Result<PathBuf> {
         self.local_session_socket_path_with(|name| env::var_os(name))
     }
 
     fn local_session_socket_path_with(
         &self,
         var: impl Fn(&str) -> Option<std::ffi::OsString>,
-    ) -> io::Result<PathBuf> {
+    ) -> Result<PathBuf> {
         let target = if matches!(self, Self::Socket(_)) {
             &Self::Local
         } else {
@@ -69,12 +67,9 @@ impl ConnectTarget {
     fn socket_path_with(
         &self,
         var: impl Fn(&str) -> Option<std::ffi::OsString>,
-    ) -> io::Result<PathBuf> {
+    ) -> Result<PathBuf> {
         if matches!(self, Self::Ssh { .. }) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "SSH has no local socket path",
-            ));
+            return Err(Error::NoLocalSocket);
         }
         if let Self::Socket(path) = self {
             return Ok(path.clone());

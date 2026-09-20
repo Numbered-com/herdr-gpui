@@ -1,5 +1,5 @@
 //! Upstream client/endpoint/catalog.rs schema and config/io.rs paths.
-use crate::{invalid, session_socket};
+use crate::{Error, Result, StorageOperation, session_socket};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -33,7 +33,7 @@ struct Catalog {
 
 /// Load profiles only, like upstream `load_profiles`; selection is client-local.
 /// This performs bounded filesystem I/O; call it from a background task.
-pub fn load_saved_hosts(development: bool) -> io::Result<Vec<SavedHost>> {
+pub fn load_saved_hosts(development: bool) -> Result<Vec<SavedHost>> {
     load_path(&catalog_path(
         development,
         env::var("XDG_STATE_HOME").ok(),
@@ -51,9 +51,7 @@ struct Selection {
 /// Load the startup catalog and desired profile (None means Local). Missing,
 /// malformed or stale selection files retain the catalog's legacy selection.
 /// Live clients should subsequently use `load_saved_hosts`, not reload selection.
-pub fn load_saved_host_selection(
-    development: bool,
-) -> io::Result<(Vec<SavedHost>, Option<String>)> {
+pub fn load_saved_host_selection(development: bool) -> Result<(Vec<SavedHost>, Option<String>)> {
     load_with_selection(&catalog_path(
         development,
         env::var("XDG_STATE_HOME").ok(),
@@ -61,7 +59,7 @@ pub fn load_saved_host_selection(
     ))
 }
 
-fn load_with_selection(path: &Path) -> io::Result<(Vec<SavedHost>, Option<String>)> {
+fn load_with_selection(path: &Path) -> Result<(Vec<SavedHost>, Option<String>)> {
     let catalog = load_catalog(path)?;
     let mut selected = catalog.selected_profile;
     // Selection errors must never discard an otherwise valid catalog.
@@ -78,24 +76,47 @@ fn load_with_selection(path: &Path) -> io::Result<(Vec<SavedHost>, Option<String
     Ok((catalog.ssh, selected))
 }
 
-fn read_selection(path: &Path) -> io::Result<Option<Selection>> {
+fn read_selection(path: &Path) -> Result<Option<Selection>> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
+        Err(error) => return Err(Error::storage(StorageOperation::Open, path, error)),
     };
-    if !file.metadata()?.is_file() {
-        return Err(invalid("endpoint selection is not a regular file"));
+    if !file
+        .metadata()
+        .map_err(|error| Error::storage(StorageOperation::Metadata, path, error))?
+        .is_file()
+    {
+        return Err(Error::storage(
+            StorageOperation::Validate,
+            path,
+            Error::SelectionNotFile,
+        ));
     }
     let mut bytes = Vec::new();
-    file.take(65537).read_to_end(&mut bytes)?;
+    file.take(65537)
+        .read_to_end(&mut bytes)
+        .map_err(|error| Error::storage(StorageOperation::Read, path, error))?;
     if bytes.len() > 65536 {
-        return Err(invalid("endpoint selection exceeds storage limit"));
+        return Err(Error::storage(
+            StorageOperation::Validate,
+            path,
+            Error::SelectionLimit,
+        ));
     }
-    let selection: Selection =
-        serde_json::from_slice(&bytes).map_err(|_| invalid("invalid endpoint selection schema"))?;
+    let selection: Selection = serde_json::from_slice(&bytes).map_err(|error| {
+        Error::storage(
+            StorageOperation::Decode,
+            path,
+            Error::SelectionSchema(error),
+        )
+    })?;
     if selection.version != 1 {
-        return Err(invalid("unsupported endpoint selection version"));
+        return Err(Error::storage(
+            StorageOperation::Validate,
+            path,
+            Error::SelectionVersion,
+        ));
     }
     Ok(Some(selection))
 }
@@ -103,7 +124,7 @@ fn read_selection(path: &Path) -> io::Result<Option<Selection>> {
 /// Persist an explicit choice without rewriting profiles. Validates against the
 /// current catalog, atomically replaces a private file, and syncs its directory.
 /// All selection APIs perform filesystem I/O and belong on a background worker.
-pub fn store_saved_host_selection(development: bool, selected: Option<&str>) -> io::Result<()> {
+pub fn store_saved_host_selection(development: bool, selected: Option<&str>) -> Result<()> {
     store_selection(
         &catalog_path(
             development,
@@ -114,25 +135,43 @@ pub fn store_saved_host_selection(development: bool, selected: Option<&str>) -> 
     )
 }
 
-fn store_selection(catalog: &Path, selected: Option<&str>) -> io::Result<()> {
+fn store_selection(catalog: &Path, selected: Option<&str>) -> Result<()> {
     let hosts = load_path(catalog)?;
     if selected.is_some_and(|id| !hosts.iter().any(|host| host.enabled && host.id == id)) {
-        return Err(invalid("selected endpoint is absent or disabled"));
+        return Err(Error::storage(
+            StorageOperation::Validate,
+            catalog,
+            Error::SelectionUnavailable,
+        ));
     }
+    let path = catalog.with_file_name("endpoint-selection.json");
     let content = serde_json::to_vec_pretty(&Selection {
         version: 1,
         selected_profile: selected.map(str::to_owned),
+    })
+    .map_err(|error| {
+        Error::storage(
+            StorageOperation::Encode,
+            &path,
+            Error::SelectionSchema(error),
+        )
     })?;
-    let path = catalog.with_file_name("endpoint-selection.json");
     let parent = path
         .parent()
-        .ok_or_else(|| invalid("invalid selection path"))?;
-    fs::create_dir_all(parent)?;
+        .ok_or_else(|| Error::storage(StorageOperation::Validate, &path, Error::SelectionPath))?;
+    fs::create_dir_all(parent)
+        .map_err(|error| Error::storage(StorageOperation::CreateDirectory, parent, error))?;
     match fs::symlink_metadata(&path) {
         Ok(metadata) if !metadata.is_file() => {
-            return Err(invalid("selection path is not a regular file"));
+            return Err(Error::storage(
+                StorageOperation::Validate,
+                &path,
+                Error::SelectionDestinationNotFile,
+            ));
         }
-        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+        Err(error) if error.kind() != io::ErrorKind::NotFound => {
+            return Err(Error::storage(StorageOperation::Metadata, &path, error));
+        }
         _ => {}
     }
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
@@ -145,13 +184,27 @@ fn store_selection(catalog: &Path, selected: Option<&str>) -> io::Result<()> {
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(&temp)?;
+        .open(&temp)
+        .map_err(|error| Error::storage(StorageOperation::Create, &temp, error))?;
     let result = (|| {
-        file.write_all(&content)?;
-        file.sync_all()?;
+        file.write_all(&content)
+            .map_err(|error| Error::storage(StorageOperation::Write, &temp, error))?;
+        file.sync_all()
+            .map_err(|error| Error::storage(StorageOperation::Sync, &temp, error))?;
         drop(file);
-        fs::rename(&temp, &path)?;
-        File::open(parent)?.sync_all()
+        fs::rename(&temp, &path).map_err(|error| {
+            Error::storage(
+                StorageOperation::Replace {
+                    destination: path.clone(),
+                },
+                &temp,
+                error,
+            )
+        })?;
+        File::open(parent)
+            .map_err(|error| Error::storage(StorageOperation::Open, parent, error))?
+            .sync_all()
+            .map_err(|error| Error::storage(StorageOperation::Sync, parent, error))
     })();
     if result.is_err() {
         let _ = fs::remove_file(temp);
@@ -168,11 +221,11 @@ fn catalog_path(development: bool, xdg: Option<String>, home: Option<String>) ->
         .join("client/endpoints.json")
 }
 
-fn load_path(path: &Path) -> io::Result<Vec<SavedHost>> {
+fn load_path(path: &Path) -> Result<Vec<SavedHost>> {
     load_catalog(path).map(|catalog| catalog.ssh)
 }
 
-fn load_catalog(path: &Path) -> io::Result<Catalog> {
+fn load_catalog(path: &Path) -> Result<Catalog> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -182,30 +235,39 @@ fn load_catalog(path: &Path) -> io::Result<Catalog> {
                 ssh: Vec::new(),
             });
         }
-        Err(e) => return Err(e),
+        Err(e) => return Err(Error::storage(StorageOperation::Open, path, e)),
     };
-    if !file.metadata()?.is_file() {
-        return Err(invalid("endpoint catalog is not a regular file"));
+    if !file
+        .metadata()
+        .map_err(|error| Error::storage(StorageOperation::Metadata, path, error))?
+        .is_file()
+    {
+        return Err(Error::storage(
+            StorageOperation::Validate,
+            path,
+            Error::CatalogNotFile,
+        ));
     }
     let mut bytes = Vec::new();
-    file.take(65537).read_to_end(&mut bytes)?;
-    parse_catalog(&bytes)
+    file.take(65537)
+        .read_to_end(&mut bytes)
+        .map_err(|error| Error::storage(StorageOperation::Read, path, error))?;
+    parse_catalog(&bytes).map_err(|error| Error::storage(StorageOperation::Decode, path, error))
 }
 
 #[cfg(test)]
-fn parse(bytes: &[u8]) -> io::Result<Vec<SavedHost>> {
+fn parse(bytes: &[u8]) -> Result<Vec<SavedHost>> {
     parse_catalog(bytes).map(|catalog| catalog.ssh)
 }
 
-fn parse_catalog(bytes: &[u8]) -> io::Result<Catalog> {
+fn parse_catalog(bytes: &[u8]) -> Result<Catalog> {
     if bytes.len() > 65536 {
-        return Err(invalid("endpoint catalog exceeds storage limit"));
+        return Err(Error::CatalogLimit);
     }
     // Do not include serde's error text: unknown field names can contain secrets.
-    let catalog: Catalog =
-        serde_json::from_slice(bytes).map_err(|_| invalid("invalid endpoint catalog schema"))?;
+    let catalog: Catalog = serde_json::from_slice(bytes).map_err(Error::CatalogSchema)?;
     if catalog.version != 1 || catalog.ssh.len() > 64 {
-        return Err(invalid("unsupported catalog version or too many profiles"));
+        return Err(Error::CatalogVersionOrCount);
     }
     let mut ids = HashSet::new();
     for host in &catalog.ssh {
@@ -216,11 +278,11 @@ fn parse_catalog(bytes: &[u8]) -> io::Result<Catalog> {
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
             || !ids.insert(&host.id)
         {
-            return Err(invalid("invalid or duplicate endpoint profile id"));
+            return Err(Error::ProfileId);
         }
         let label = host.label.trim();
         if label.is_empty() || label.len() > 128 || label.chars().any(char::is_control) {
-            return Err(invalid("invalid endpoint label"));
+            return Err(Error::ProfileLabel);
         }
         validate_target(&host.target)?;
         session_socket(Path::new(""), &host.session)?;
@@ -230,12 +292,12 @@ fn parse_catalog(bytes: &[u8]) -> io::Result<Catalog> {
         .as_ref()
         .is_some_and(|id| !catalog.ssh.iter().any(|h| &h.id == id && h.enabled))
     {
-        return Err(invalid("selected endpoint is absent or disabled"));
+        return Err(Error::SelectionUnavailable);
     }
     Ok(catalog)
 }
 
-pub(crate) fn validate_target(target: &str) -> io::Result<()> {
+pub(crate) fn validate_target(target: &str) -> Result<()> {
     let authority = target.strip_prefix("ssh://").unwrap_or(target);
     if target.is_empty()
         || target.starts_with('-')
@@ -245,10 +307,7 @@ pub(crate) fn validate_target(target: &str) -> io::Result<()> {
             .rsplit_once('@')
             .is_some_and(|(user, _)| user.contains(':'))
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "invalid SSH target (options, controls, and passwords are forbidden)",
-        ));
+        return Err(Error::InvalidSshTarget);
     }
     Ok(())
 }
@@ -258,6 +317,115 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn storage_errors_retain_operation_paths_sources_and_redacted_display() {
+        use std::error::Error as _;
+        let root = env::temp_dir().join(format!("herdr-storage-errors-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let catalog = root.join("endpoints.json");
+        let selection = root.join("endpoint-selection.json");
+        let bytes = br#"{"version":1,"secret-field":true}"#;
+        fs::write(&catalog, bytes).unwrap();
+        fs::write(&selection, bytes).unwrap();
+        for (path, error, display) in [
+            (
+                &catalog,
+                load_path(&catalog).unwrap_err(),
+                "invalid endpoint catalog schema",
+            ),
+            (
+                &selection,
+                read_selection(&selection).err().unwrap(),
+                "invalid endpoint selection schema",
+            ),
+        ] {
+            let Error::Storage {
+                operation,
+                path: actual,
+                source,
+            } = &error
+            else {
+                panic!("missing storage context")
+            };
+            assert_eq!(*operation, StorageOperation::Decode);
+            assert_eq!(actual, path);
+            assert!(matches!(
+                source.as_ref(),
+                Error::CatalogSchema(_) | Error::SelectionSchema(_)
+            ));
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(error.to_string(), display);
+            let source = error
+                .source()
+                .unwrap()
+                .source()
+                .unwrap()
+                .downcast_ref::<serde_json::Error>()
+                .unwrap();
+            assert!(source.to_string().contains("secret-field"));
+        }
+        let impossible = catalog.join("child.json");
+        let error = load_path(&impossible).unwrap_err();
+        let Error::Storage {
+            operation, path, ..
+        } = &error
+        else {
+            panic!("missing storage context")
+        };
+        assert_eq!(*operation, StorageOperation::Open);
+        assert_eq!(*path, impossible);
+        let source = error
+            .source()
+            .unwrap()
+            .source()
+            .unwrap()
+            .downcast_ref::<io::Error>()
+            .unwrap();
+        assert_eq!(error.kind(), source.kind());
+        assert!(source.raw_os_error().is_some());
+        assert!(!error.to_string().contains(root.to_str().unwrap()));
+
+        fs::write(&catalog, br#"{"version":1}"#).unwrap();
+        fs::remove_file(&selection).unwrap();
+        std::os::unix::fs::symlink(&catalog, &selection).unwrap();
+        let error = store_selection(&catalog, None).unwrap_err();
+        assert!(
+            matches!(&error, Error::Storage { operation: StorageOperation::Validate, path, source }
+            if path == &selection && matches!(source.as_ref(), Error::SelectionDestinationNotFile))
+        );
+        assert_eq!(error.to_string(), "selection path is not a regular file");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn schema_errors_keep_sources_but_redact_display() {
+        use std::error::Error as _;
+        let bytes = br#"{"version":1,"secret-field":true}"#;
+        let error = parse(bytes).unwrap_err();
+        assert!(matches!(error, Error::CatalogSchema(_)));
+        assert_eq!(error.to_string(), "invalid endpoint catalog schema");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let source = error
+            .source()
+            .unwrap()
+            .downcast_ref::<serde_json::Error>()
+            .unwrap();
+        assert!(source.to_string().contains("secret-field"));
+
+        let source = serde_json::from_slice::<Selection>(bytes).err().unwrap();
+        let error = Error::SelectionSchema(source);
+        assert_eq!(error.to_string(), "invalid endpoint selection schema");
+        assert!(error.source().unwrap().is::<serde_json::Error>());
+        assert!(matches!(
+            parse(&vec![b' '; 65537]),
+            Err(Error::CatalogLimit)
+        ));
+        assert!(matches!(
+            validate_target("-oSecret"),
+            Err(Error::InvalidSshTarget)
+        ));
+    }
 
     #[test]
     fn selection_roundtrip_fallbacks_and_independent_clients() {

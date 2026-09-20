@@ -1,5 +1,5 @@
 use crate::{
-    HerdrWindow,
+    Error, HerdrWindow, Result,
     controls::{self, Command},
     menu::Page,
 };
@@ -18,6 +18,19 @@ pub(super) struct CloseConfirmation {
 }
 
 impl CloseConfirmation {
+    pub(super) fn capture_tab(snapshot: &ClientShellSnapshot, id: &str) -> Option<Self> {
+        let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == id)?;
+        Some(Self {
+            boot: snapshot.boot_id.clone(),
+            workspace: tab.workspace_id.clone(),
+            tab: tab.tab_id.clone(),
+            pane: None,
+            label: tab.label.clone(),
+            confirm_selected: false,
+            error: None,
+        })
+    }
+
     fn capture(command: Command, snapshot: &ClientShellSnapshot) -> Option<Self> {
         if !matches!(command, Command::ClosePane | Command::CloseTab) {
             return None;
@@ -50,7 +63,7 @@ impl CloseConfirmation {
         })
     }
 
-    fn request(&self, snapshot: &ClientShellSnapshot) -> Result<(&'static str, Value), String> {
+    fn request(&self, snapshot: &ClientShellSnapshot) -> Result<(&'static str, Value)> {
         if snapshot.boot_id != self.boot
             || !snapshot
                 .workspaces
@@ -68,9 +81,7 @@ impl CloseConfirmation {
                 })
             })
         {
-            return Err(
-                "The original target changed or no longer exists. Cancel and try again.".into(),
-            );
+            return Err(Error::StaleCloseTarget);
         }
         Ok(if let Some(id) = &self.pane {
             ("pane.close", json!({"pane_id": id}))
@@ -81,6 +92,20 @@ impl CloseConfirmation {
 }
 
 impl HerdrWindow {
+    pub(super) fn open_tab_close(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(close) = self
+            .live
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| CloseConfirmation::capture_tab(snapshot, id))
+        else {
+            return;
+        };
+        self.open_menu(window, cx);
+        self.menu.close = Some(close);
+        self.menu.page = Some(Page::ConfirmClose);
+    }
+
     pub(super) fn open_close_confirmation(
         &mut self,
         command: Command,
@@ -106,15 +131,9 @@ impl HerdrWindow {
         };
         let result = (|| {
             if !self.menu_target_current() || !self.input_ready() {
-                return Err(
-                    "The selected connection changed or is not ready. Cancel and try again.".into(),
-                );
+                return Err(Error::StaleConnection);
             }
-            let snapshot = self
-                .live
-                .snapshot
-                .as_ref()
-                .ok_or("Not connected to a daemon.")?;
+            let snapshot = self.live.snapshot.as_ref().ok_or(Error::NotConnected)?;
             close.request(snapshot)
         })();
         match result {
@@ -126,7 +145,7 @@ impl HerdrWindow {
             }
             Err(error) => {
                 if let Some(close) = &mut self.menu.close {
-                    close.error = Some(error);
+                    close.error = Some(error.to_string());
                 }
                 cx.notify();
             }
@@ -193,16 +212,120 @@ impl HerdrWindow {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use core::prelude::v1::test;
+    use std::sync::Arc;
+
+    #[gpui::test]
+    fn tab_icon_bounds_and_inactive_cross_confirmation(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            crate::bind_keys(cx);
+            let mut view = crate::sidebar::layout_tests::fixture_window(window, cx);
+            let mut snapshot: ClientShellSnapshot = serde_json::from_str(include_str!(
+                "../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json"
+            ))
+            .unwrap();
+            let mut tab = snapshot.tabs[0].clone();
+            tab.tab_id = "inactive".into();
+            tab.focused = false;
+            snapshot.tabs.push(tab);
+            view.live.snapshot = Some(Arc::new(snapshot));
+            view
+        });
+        for width in [800., 360.] {
+            cx.simulate_resize(size(px(width), px(600.)));
+            cx.update(|window, cx| window.draw(cx).clear());
+            let button = cx.debug_bounds("new-tab").unwrap();
+            let icon = cx.debug_bounds("new-tab-icon").unwrap();
+            assert!(button.size.width >= px(44.));
+            assert_eq!(button.size.height, px(32.));
+            assert_eq!(icon.size, size(px(18.), px(18.)));
+            assert_eq!(button.center(), icon.center());
+            assert!(button.right() <= px(width));
+        }
+        cx.simulate_resize(size(px(800.), px(600.)));
+        cx.update(|window, cx| window.draw(cx).clear());
+        let original_focus = view.read_with(cx, |view, _| {
+            view.live.snapshot.as_ref().unwrap().focused_tab_id.clone()
+        });
+        let button = cx.debug_bounds("close-tab-inactive").unwrap();
+        let icon = cx.debug_bounds("close-tab-icon-inactive").unwrap();
+        assert_eq!(button.size, size(px(24.), px(24.)));
+        assert_eq!(icon.size, size(px(16.), px(16.)));
+        assert_eq!(button.center(), icon.center());
+        for fence in ["cancel", "selection", "generation", "boot"] {
+            cx.simulate_mouse_down(button.center(), MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_up(button.center(), MouseButton::Left, Modifiers::default());
+            view.read_with(cx, |view, _| {
+                assert!(view.menu.page == Some(Page::ConfirmClose));
+                let close = view.menu.close.as_ref().unwrap();
+                assert_eq!(close.tab, "inactive");
+                assert!(!close.confirm_selected);
+                assert_eq!(
+                    close.request(view.live.snapshot.as_ref().unwrap()).unwrap(),
+                    ("tab.close", json!({"tab_id": "inactive"}))
+                );
+                assert_eq!(
+                    view.live.snapshot.as_ref().unwrap().focused_tab_id,
+                    original_focus
+                );
+                assert!(view.pending_navigation.is_none());
+            });
+            if fence != "cancel" {
+                cx.update(|window, cx| {
+                    view.update(cx, |view, cx| {
+                        match fence {
+                            "selection" => view.selection_epoch += 1,
+                            "generation" => view.endpoints[0].generation += 1,
+                            _ => {
+                                let snapshot = Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+                                snapshot.boot_id.push_str("-new");
+                                assert!(
+                                    view.menu.close.as_ref().unwrap().request(snapshot).is_err()
+                                );
+                            }
+                        }
+                        view.confirm_close(window, cx);
+                        assert!(view.menu.close.as_ref().unwrap().error.is_some());
+                        assert!(view.pending_navigation.is_none());
+                    });
+                });
+            }
+            cx.simulate_keystrokes("enter");
+            assert!(view.read_with(cx, |view, _| view.menu.page.is_none()));
+            cx.update(|window, cx| window.draw(cx).clear());
+        }
+    }
+
     #[test]
-    fn close_retains_original_target_and_rejects_replaced_sessions() -> Result<(), String> {
+    fn explicit_tab_close_does_not_follow_focus() -> anyhow::Result<()> {
         let mut snapshot: ClientShellSnapshot = serde_json::from_str(include_str!(
             "../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json"
-        ))
-        .map_err(|error| error.to_string())?;
+        ))?;
+        let mut inactive = snapshot.tabs[0].clone();
+        inactive.tab_id = "inactive".into();
+        inactive.focused = false;
+        snapshot.tabs.push(inactive);
+        let close = CloseConfirmation::capture_tab(&snapshot, "inactive")
+            .ok_or_else(|| anyhow::anyhow!("missing tab"))?;
+        assert!(!close.confirm_selected);
+        assert_eq!(
+            close.request(&snapshot)?,
+            ("tab.close", json!({"tab_id":"inactive"}))
+        );
+        snapshot.tabs.retain(|tab| tab.tab_id != "inactive");
+        assert!(close.request(&snapshot).is_err());
+        Ok(())
+    }
+    #[test]
+    fn close_retains_original_target_and_rejects_replaced_sessions() -> anyhow::Result<()> {
+        let mut snapshot: ClientShellSnapshot = serde_json::from_str(include_str!(
+            "../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json"
+        ))?;
         for command in [Command::ClosePane, Command::CloseTab] {
-            let close = CloseConfirmation::capture(command, &snapshot).ok_or("missing target")?;
+            let close = CloseConfirmation::capture(command, &snapshot)
+                .ok_or_else(|| anyhow::anyhow!("missing target"))?;
             assert!(!close.confirm_selected, "Cancel is the safe default");
             let expected = close.request(&snapshot)?;
             let original = snapshot.clone();

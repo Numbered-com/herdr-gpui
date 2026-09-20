@@ -971,7 +971,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     cx.update(|window, cx| assert!(view.read(cx).focus.is_focused(window)));
     for width in [320., 640., 1200.] {
         cx.simulate_resize(size(px(width), px(400.)));
-        for state in 0..4 {
+        for state in 0..5 {
             cx.update(|window, cx| {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string("unchanged".into()));
                 cx.default_global::<PaintedProbes>().0.clear();
@@ -1000,11 +1000,23 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
             let panel = cx.debug_bounds("menu-panel").unwrap();
             assert!(panel.left() >= px(0.) && panel.right() <= px(width));
             assert!(panel.bottom() <= px(400.));
+            assert!(panel.size.width <= px(400.));
+            assert!(cx.debug_bounds("github-close").is_none());
+            let close = cx.debug_bounds("github-header-close").unwrap();
+            assert!(close.top() >= panel.top() && close.bottom() <= panel.bottom());
+            if state == 3 {
+                assert!(panel.size.height <= px(230.));
+            }
             let footer = cx.debug_bounds("github-footer").unwrap();
             let body = cx.debug_bounds("github-body").unwrap();
             assert!(body.size.height > px(0.));
-            assert!(body.bottom() <= footer.top());
-            assert!(footer.bottom() <= panel.bottom());
+            if state != 4 {
+                // Content-sized layouts can round adjacent edges to half pixels.
+                assert!(body.bottom() <= footer.top() + px(1.));
+                assert!(footer.bottom() <= panel.bottom() + px(1.));
+            } else {
+                assert!(body.bottom() <= panel.bottom() + px(1.));
+            }
             if state == 1 {
                 let code = cx.debug_bounds("github-device-code").unwrap();
                 assert!(code.left() >= panel.left() && code.right() <= panel.right());
