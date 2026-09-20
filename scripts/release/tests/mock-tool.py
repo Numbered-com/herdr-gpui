@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Apple-tool stand-ins: never access a keychain, network, or executable."""
+import base64
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,10 @@ import sys
 
 tool = Path(sys.argv[0]).name
 args = sys.argv[1:]
+if tool == "uname":
+    assert args == ["-s"], args
+    print(os.environ.get("MOCK_OS", "Darwin"))
+    sys.exit(0)
 with open(os.environ["MOCK_LOG"], "a") as log:
     log.write(json.dumps([tool, *args]) + "\n")
 if os.environ.get("MOCK_FAIL") == tool:
@@ -21,6 +26,9 @@ if tool == "security":
         Path(args[-1]).unlink()
 elif tool == "openssl":
     print("dummy-temporary-password")
+elif tool == "base64":
+    assert args == ["-D"], args
+    sys.stdout.buffer.write(base64.b64decode(sys.stdin.buffer.read(), validate=True))
 elif tool == "plutil" and args[0] == "-extract":
     print("15.0" if args[1] == "LSMinimumSystemVersion" else "1.2.3")
 elif tool == "lipo":

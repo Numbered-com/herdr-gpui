@@ -1,6 +1,7 @@
 # Herdr Native Shell
 
-A macOS GPUI 0.2.2 client for a Local daemon and saved SSH hosts.
+A GPUI 0.2.2 client for a Local daemon and saved SSH hosts, with macOS support
+and experimental Linux x86_64/ARM64 builds.
 It starts an installed local `herdr server` when absent; explicit socket and
 development targets remain attach-only. It does not link or install Herdr, stop
 daemons, spawn a local PTY, or emulate a terminal. Herdr's remote bridge may start
@@ -216,8 +217,8 @@ GPUI native action/menu/keybinding patterns.
 
 ## Deliberate Limitations
 
-- macOS first; defaults to Menlo on macOS and DejaVu Sans Mono elsewhere, with
-  system font fallback and no bundled Nerd Font.
+- macOS defaults to Menlo and the system font; Linux defaults to DejaVu Sans Mono
+  and DejaVu Sans. No bundled Nerd Font.
   Private-use icons may be missing. Fonts and palettes are configured locally,
   not synchronized from the host terminal's theme.
 - No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
@@ -242,9 +243,15 @@ cargo clippy -p herdr-gpui --all-targets -- -D warnings
 cargo fmt -p herdr-gpui -- --check
 ```
 
-Requires the normal macOS Rust/Xcode development environment. GPUI's
+Requires the normal macOS Rust/Xcode development environment or the
+[Linux build dependencies](../../README.md#linux-builds). Registry GPUI's default
+X11/Wayland backends are retained. Linux uses Vulkan; macOS GPUI's
 `runtime_shaders` feature compiles native Metal shaders at app launch, avoiding
-the separate downloadable build-time Metal compiler. Tests cover wire colors,
+the separate downloadable build-time Metal compiler. Integrated Linux ARM64
+compilation, Clippy, default/all-feature tests, and release CLI checks were
+verified in Ubuntu 24.04, not native desktop rendering or input. Linux Cmd bindings mean
+Super and can conflict with desktop shortcuts; global macOS menus are not
+available. Tests cover wire colors,
 cell modifiers, viewport bounds, semantic key selection, revision coherence,
 creation request parameters, workspace-local tab cycling, wheel accumulation,
 pane-relative hit testing, and popup routing.

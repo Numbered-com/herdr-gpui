@@ -66,7 +66,8 @@ if [[ -n $gpg_key ]]; then
     gpg --homedir "$tmp/keyring" --batch --import "$gpg_key"
 fi
 for name in "Herdr-$version-universal-apple-darwin.dmg" \
-    "Herdr-$version-x86_64-unknown-linux-gnu.tar.gz" "Herdr-$version.cdx.json"; do
+    "Herdr-$version-x86_64-unknown-linux-gnu.tar.gz" \
+    "Herdr-$version-aarch64-unknown-linux-gnu.tar.gz" "Herdr-$version.cdx.json"; do
     file=$tmp/assets-to-check/$name
     cosign verify-blob --signature "$file.sig" --certificate "$file.crt" \
         --certificate-identity "$identity" \
