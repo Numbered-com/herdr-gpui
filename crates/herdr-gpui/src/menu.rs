@@ -149,6 +149,8 @@ fn close_members(snapshot: &ClientShellSnapshot, workspace: &ClientShellWorkspac
 
 pub(super) struct MenuState {
     pub page: Option<Page>,
+    // Selection epoch and connection generation fence captured modal actions.
+    endpoint_target: (u64, u64),
     pub anchor: Point<Pixels>,
     pub focus: FocusHandle,
     selected: Option<usize>,
@@ -253,6 +255,7 @@ impl MenuState {
     pub fn new(cx: &App) -> Self {
         Self {
             page: None,
+            endpoint_target: (0, 0),
             anchor: Point::default(),
             focus: cx.focus_handle(),
             selected: None,
@@ -343,6 +346,10 @@ impl HerdrWindow {
 
     pub(super) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu.reset();
+        self.menu.endpoint_target = (
+            self.selection_epoch,
+            self.endpoints[self.selected_endpoint].generation,
+        );
         self.menu.page = Some(Page::Menu);
         self.marked.clear();
         window.focus(&self.menu.focus);
@@ -378,6 +385,10 @@ impl HerdrWindow {
             return;
         };
         self.menu.reset();
+        self.menu.endpoint_target = (
+            self.selection_epoch,
+            self.endpoints[self.selected_endpoint].generation,
+        );
         self.menu.target = Some(WorkspaceTarget::new(snapshot, workspace));
         self.menu.anchor = anchor;
         self.menu.page = Some(Page::Workspace);
@@ -420,11 +431,13 @@ impl HerdrWindow {
         self.menu.pr_connection = None;
         self.menu.error = None;
         if action == WorkspaceAction::DeleteWorktree {
-            let result = self.connection.request_dialog(
-                &target.boot_id,
-                "worktree.list",
-                serde_json::json!({"workspace_id": target.id, "trust_repository": false}),
-            );
+            let result = self.endpoints[self.selected_endpoint]
+                .connection
+                .request_dialog(
+                    &target.boot_id,
+                    "worktree.list",
+                    serde_json::json!({"workspace_id": target.id, "trust_repository": false}),
+                );
             self.menu.deletion = Some(Deletion {
                 pending: result.as_ref().ok().cloned(),
                 path: None,
@@ -439,7 +452,8 @@ impl HerdrWindow {
         if self.menu.deletion.is_none() {
             return;
         }
-        if !self.live.status.is_connected()
+        if !self.menu_target_current()
+            || !self.live.status.is_connected()
             || self.menu.target.as_ref().is_some_and(|target| {
                 self.live
                     .snapshot
@@ -469,6 +483,9 @@ impl HerdrWindow {
             return;
         }
         let result = (|| {
+            if !self.menu_target_current() {
+                return Err("Host changed. Reopen the menu.".to_owned());
+            }
             if !self.live.status.is_connected() {
                 return Err("Disconnected. Dismiss and reconnect before trying again.".to_owned());
             }
@@ -496,7 +513,7 @@ impl HerdrWindow {
                     .as_ref()
                     .ok_or("Reopen the deletion dialog.")?;
                 if deletion.pending.is_some() {
-                    return Ok(());
+                    return Ok(false);
                 }
                 if deletion.path.is_none() {
                     return Err("Checkout lookup failed. Dismiss and reopen the menu.".into());
@@ -510,24 +527,31 @@ impl HerdrWindow {
                     return Err(format!("Type {confirmation} to confirm."));
                 }
                 params["force"] = deletion.force.into();
-                let id = self
+                let id = self.endpoints[self.selected_endpoint]
                     .connection
                     .request_dialog(&target.boot_id, method, params)?;
                 if let Some(deletion) = &mut self.menu.deletion {
                     deletion.pending = Some(id);
                 }
                 self.menu.error = None;
-                return Ok(());
+                return Ok(true);
             }
-            let handle = self.connection.handle.as_ref().ok_or("Disconnected.")?;
+            let handle = self.endpoints[self.selected_endpoint]
+                .connection
+                .handle
+                .as_ref()
+                .ok_or("Disconnected.")?;
             handle
                 .request(&target.boot_id, method, params)
-                .map(|_| ())
+                .map(|_| action != WorkspaceAction::Rename)
                 .map_err(|error| format!("{method}: {error}"))
         })();
         match result {
-            Ok(_) => {
+            Ok(focus_changed) => {
                 self.local_error = None;
+                if focus_changed {
+                    self.fence_focus_change(None);
+                }
                 if action != WorkspaceAction::DeleteWorktree {
                     self.dismiss_menu(window, cx);
                 } else {
@@ -539,6 +563,14 @@ impl HerdrWindow {
                 cx.notify();
             }
         }
+    }
+
+    pub(super) fn menu_target_current(&self) -> bool {
+        self.menu.endpoint_target
+            == (
+                self.selection_epoch,
+                self.endpoints[self.selected_endpoint].generation,
+            )
     }
 
     fn menu_items(&self) -> Vec<&'static str> {
@@ -562,11 +594,17 @@ impl HerdrWindow {
         {
             items.push("update ready");
         }
-        items.push(if self.connection.handle.is_some() {
-            "detach"
-        } else {
-            "reconnect"
-        });
+        items.push(
+            if self.endpoints[self.selected_endpoint]
+                .connection
+                .handle
+                .is_some()
+            {
+                "detach"
+            } else {
+                "reconnect"
+            },
+        );
         items
     }
 
@@ -581,9 +619,10 @@ impl HerdrWindow {
             "update ready" => self.menu.page = Some(Page::Update),
             "reload GUI config" => self.reload_gui_config(window, cx),
             "reload daemon config" => {
-                if let (Some(handle), Some(snapshot)) =
-                    (&self.connection.handle, &self.live.snapshot)
-                {
+                if let (Some(handle), Some(snapshot)) = (
+                    &self.endpoints[self.selected_endpoint].connection.handle,
+                    &self.live.snapshot,
+                ) {
                     self.local_error = handle
                         .request(
                             &snapshot.boot_id,
@@ -596,10 +635,7 @@ impl HerdrWindow {
                 self.dismiss_menu(window, cx);
             }
             "detach" => {
-                self.connection.detach(self.active);
-                self.live = self.connection.take_update().unwrap_or_default();
-                self.local_error = None;
-                self.marked.clear();
+                self.detach_endpoint();
                 self.dismiss_menu(window, cx);
             }
             "reconnect" => {
@@ -1093,6 +1129,102 @@ pub(crate) mod workspace_tests {
     use super::{WorkspaceAction, WorkspaceTarget};
     use crate::sidebar;
 
+    pub(crate) fn submit_focus_change(
+        view: &mut super::HerdrWindow,
+        method: &str,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<super::HerdrWindow>,
+    ) {
+        let action = match method {
+            "workspace.close" => WorkspaceAction::Close,
+            "worktree.create" => WorkspaceAction::NewWorktree,
+            "worktree.remove" => WorkspaceAction::DeleteWorktree,
+            _ => panic!("unexpected fixture action"),
+        };
+        let snapshot = std::sync::Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+        snapshot.workspaces = sidebar::layout_tests::snapshot(7).workspaces;
+        let index = if action == WorkspaceAction::DeleteWorktree {
+            4
+        } else {
+            3
+        };
+        let target = WorkspaceTarget::new(snapshot, &snapshot.workspaces[index]);
+        view.open_menu(window, cx);
+        view.menu.target = Some(target);
+        view.menu.page = Some(super::Page::Dialog(action));
+        if action == WorkspaceAction::DeleteWorktree {
+            view.menu.input = Some(super::DialogInput::new("DELETE".into()));
+            view.menu.deletion = Some(super::Deletion {
+                pending: None,
+                path: Some("/fixture/checkout".into()),
+                force: false,
+            });
+        }
+        view.submit_workspace_dialog(window, cx);
+        assert!(view.menu.error.is_none());
+        if action == WorkspaceAction::DeleteWorktree {
+            let inbox = view.endpoints[view.selected_endpoint]
+                .connection
+                .inbox
+                .lock()
+                .unwrap();
+            assert_eq!(
+                inbox.dialog_response.as_ref().map(|(id, _)| id),
+                view.menu.deletion.as_ref().unwrap().pending.as_ref()
+            );
+        }
+        view.dismiss_menu(window, cx);
+    }
+
+    #[gpui::test]
+    fn workspace_dialogs_and_prs_are_fenced_by_host_and_generation(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(sidebar::layout_tests::fixture_window);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.live.status = crate::state::ConnectionStatus::Connected;
+                view.endpoints[0].live = view.live.clone();
+                view.endpoints[0].live.supports_surface = true;
+                let mut remote = crate::endpoint::Endpoint::new(
+                    "ssh:fixture".into(),
+                    "Remote".into(),
+                    herdr_client::ConnectTarget::Ssh {
+                        target: "unused".into(),
+                        session: "default".into(),
+                    },
+                    true,
+                );
+                // Identical boot/workspace IDs must not make different hosts interchangeable.
+                remote.live = view.live.clone();
+                remote.live.local_daemon_peer = true;
+                view.endpoints.push(remote);
+                view.open_workspace_menu("w3", Default::default(), window, cx);
+                view.open_workspace_dialog(WorkspaceAction::Rename, cx);
+                view.endpoints[0].generation += 1;
+                view.submit_workspace_dialog(window, cx);
+                assert_eq!(
+                    view.menu.error.as_deref(),
+                    Some("Host changed. Reopen the menu.")
+                );
+                assert!(view.select_endpoint("ssh:fixture", cx));
+                assert!(view.menu.page.is_none());
+                assert!(view.menu.input.is_none());
+                view.open_workspace_menu("w3", Default::default(), window, cx);
+                assert!(
+                    view.menu
+                        .pr
+                        .message
+                        .as_deref()
+                        .unwrap()
+                        .contains("could not be verified")
+                );
+                view.open_workspace_dialog(WorkspaceAction::DeleteWorktree, cx);
+                assert!(view.select_endpoint(crate::endpoint::LOCAL, cx));
+                assert!(view.menu.deletion.is_none());
+                assert!(view.menu.pr_pending.is_none());
+            });
+        });
+    }
+
     pub(crate) fn check_pr_fences(
         view: &gpui::Entity<super::HerdrWindow>,
         cx: &mut gpui::VisualTestContext,
@@ -1101,13 +1233,16 @@ pub(crate) mod workspace_tests {
         cx.update(|_, cx| {
             view.update(cx, |view, _| {
                 let snapshot = view.live.snapshot.clone();
-                let inbox = view.connection.inbox.clone();
+                let inbox = view.endpoints[view.selected_endpoint]
+                    .connection
+                    .inbox
+                    .clone();
                 let status = view.live.status;
                 let target_id = view.menu.target.as_ref().unwrap().id.clone();
                 for change in 0..5 {
                     view.live.snapshot = snapshot.clone();
                     view.live.status = status;
-                    view.connection.inbox = inbox.clone();
+                    view.endpoints[view.selected_endpoint].connection.inbox = inbox.clone();
                     view.menu.pr_connection = Some(Arc::downgrade(&inbox));
                     view.menu.pr.value = Some(crate::pull_request::fixture().unwrap());
                     view.menu.pr.message = None;
@@ -1126,7 +1261,10 @@ pub(crate) mod workspace_tests {
                                 .unwrap()
                                 .branch = Some("other".into())
                         }
-                        3 => view.connection.inbox = Arc::new(Mutex::new(Default::default())),
+                        3 => {
+                            view.endpoints[view.selected_endpoint].connection.inbox =
+                                Arc::new(Mutex::new(Default::default()))
+                        }
                         _ => view.live.status = crate::state::ConnectionStatus::Detached,
                     }
                     assert!(view.update_workspace_pr());
@@ -1135,16 +1273,19 @@ pub(crate) mod workspace_tests {
                 }
                 view.live.snapshot = snapshot;
                 view.live.status = status;
-                view.connection.inbox = inbox;
+                view.endpoints[view.selected_endpoint].connection.inbox = inbox;
                 view.menu.pr_connection = None;
                 view.menu.pr.clear();
-                let connection_target = view.connection.target.clone();
+                let connection_target = view.endpoints[view.selected_endpoint]
+                    .connection
+                    .target
+                    .clone();
                 let local_peer = view.live.local_daemon_peer;
                 for target in [
                     herdr_client::ConnectTarget::Local,
                     herdr_client::ConnectTarget::Socket("/local-or-forwarded.sock".into()),
                 ] {
-                    view.connection.target = target;
+                    view.endpoints[view.selected_endpoint].connection.target = target;
                     view.live.local_daemon_peer = false;
                     view.refresh_workspace_pr();
                     assert!(
@@ -1161,7 +1302,7 @@ pub(crate) mod workspace_tests {
                     // proves the verified peer passed the guard in both modes.
                     assert_eq!(view.menu.pr.message.as_deref(), Some("Disconnected."));
                 }
-                view.connection.target = connection_target;
+                view.endpoints[view.selected_endpoint].connection.target = connection_target;
                 view.live.local_daemon_peer = local_peer;
                 view.menu.pr.clear();
             })

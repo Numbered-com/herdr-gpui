@@ -53,11 +53,11 @@ pub fn connect(
             command.arg("server");
             command
         },
-        !matches!(
+        matches!(
             target,
-            ConnectTarget::Socket(_)
+            ConnectTarget::Local
                 | ConnectTarget::Session {
-                    development: true,
+                    development: false,
                     ..
                 }
         ),
@@ -302,6 +302,21 @@ mod tests {
             .unwrap_err();
             assert_eq!(error.kind(), kind);
             assert!(!is_missing_installation(&error));
+        }
+    }
+
+    #[test]
+    fn explicit_and_remote_targets_never_start_local_daemon() {
+        for target in [
+            ConnectTarget::Socket(socket()),
+            ConnectTarget::Ssh {
+                target: "unused".into(),
+                session: "default".into(),
+            },
+        ] {
+            let _ = connect(&target, &AtomicBool::new(false), || {
+                panic!("attach-only targets must not launch a local daemon")
+            });
         }
     }
 

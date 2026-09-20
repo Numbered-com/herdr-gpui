@@ -2470,6 +2470,7 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "herdr-protocol",
+ "serde",
  "serde_json",
 ]
 
@@ -2487,6 +2488,7 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "raw-window-handle",
  "secrecy",
  "security-framework",
  "serde",

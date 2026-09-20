@@ -94,6 +94,9 @@ impl EntityInputHandler for HerdrWindow {
             }
             return;
         }
+        if !self.input_ready() {
+            return;
+        }
         self.marked = text.into();
         cx.notify();
     }

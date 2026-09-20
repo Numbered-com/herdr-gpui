@@ -105,21 +105,25 @@ impl HerdrWindow {
             return;
         };
         let result = (|| {
+            if !self.menu_target_current() || !self.input_ready() {
+                return Err(
+                    "The selected connection changed or is not ready. Cancel and try again.".into(),
+                );
+            }
             let snapshot = self
                 .live
                 .snapshot
                 .as_ref()
                 .ok_or("Not connected to a daemon.")?;
-            let (method, params) = close.request(snapshot)?;
-            self.connection
-                .handle
-                .as_ref()
-                .ok_or("Not connected to a daemon.")?
-                .request(&close.boot, method, params)
-                .map_err(|error| error.to_string())
+            close.request(snapshot)
         })();
         match result {
-            Ok(_) => self.dismiss_menu(window, cx),
+            Ok((method, params)) => {
+                self.request_focus_change(method, None, |handle, boot| {
+                    handle.request(boot, method, params)
+                });
+                self.dismiss_menu(window, cx);
+            }
             Err(error) => {
                 if let Some(close) = &mut self.menu.close {
                     close.error = Some(error);

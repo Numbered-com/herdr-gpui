@@ -6,12 +6,16 @@ use herdr_client::{
     ClientEvent, ClientHandle, ConnectOptions, ConnectTarget, connect_with_connector,
     protocol::ClientPaneInputEvent,
 };
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 pub(crate) struct ConnectionBridge {
     pub target: ConnectTarget,
     pub handle: Option<ClientHandle>,
     pub inbox: Arc<Mutex<LiveState>>,
+    pub drained: Arc<AtomicBool>,
 }
 
 impl ConnectionBridge {
@@ -20,6 +24,7 @@ impl ConnectionBridge {
             target,
             handle: None,
             inbox: Arc::new(Mutex::new(LiveState::default())),
+            drained: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -32,15 +37,16 @@ impl ConnectionBridge {
         state.set_outer_focus(active);
         // Old readers and deferred paint acknowledgements retain only the old inbox.
         self.inbox = Arc::new(Mutex::new(state));
+        self.drained = Arc::new(AtomicBool::new(true));
     }
 
     pub fn detach(&mut self, active: bool) {
         self.reset(ConnectionStatus::Detached, active);
     }
 
-    pub fn reconnect(&mut self, options: ConnectOptions, active: bool) {
+    pub fn reconnect(&mut self, options: ConnectOptions, active: bool, surface_active: bool) {
         self.reset(ConnectionStatus::Connecting, active);
-        self.start(options, |events| {
+        self.start(options, surface_active, |events| {
             std::thread::Builder::new()
                 .name("herdr-gui-events".into())
                 .spawn(events)
@@ -51,50 +57,55 @@ impl ConnectionBridge {
     fn start(
         &mut self,
         options: ConnectOptions,
+        surface_active: bool,
         spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
     ) {
+        self.drained = Arc::new(AtomicBool::new(false));
         let target = self.target.clone();
         let startup_inbox = self.inbox.clone();
-        let result = connect_with_connector(options, move |stop| {
-            let result = crate::daemon::connect(&target, stop, || {
-                if let Ok(mut state) = startup_inbox.lock()
-                    && state.status == ConnectionStatus::Connecting
-                {
-                    state.daemon_starting();
+        let result =
+            connect_with_connector(target, options, surface_active, move |target, stop| {
+                let result = crate::daemon::connect(target, stop, || {
+                    if let Ok(mut state) = startup_inbox.lock()
+                        && state.status == ConnectionStatus::Connecting
+                    {
+                        state.daemon_starting();
+                    }
+                });
+                if let Ok(stream) = &result {
+                    let local = crate::daemon::is_local_peer(stream);
+                    if let Ok(mut state) = startup_inbox.lock() {
+                        state.local_daemon_peer = local;
+                        state.dirty = true;
+                    }
                 }
-            });
-            if let Ok(stream) = &result {
-                let local = crate::daemon::is_local_peer(stream);
-                if let Ok(mut state) = startup_inbox.lock() {
-                    state.local_daemon_peer = local;
+                if result
+                    .as_ref()
+                    .is_err_and(crate::daemon::is_missing_installation)
+                    && let Ok(mut state) = startup_inbox.lock()
+                    && state.status == ConnectionStatus::StartingDaemon
+                {
+                    state.missing_installation = true;
                     state.dirty = true;
                 }
-            }
-            if result
-                .as_ref()
-                .is_err_and(crate::daemon::is_missing_installation)
-                && let Ok(mut state) = startup_inbox.lock()
-                && state.status == ConnectionStatus::StartingDaemon
-            {
-                state.missing_installation = true;
-                state.dirty = true;
-            }
-            result
-        })
-        .and_then(|client| {
-            self.handle = Some(client.handle);
-            let inbox = self.inbox.clone();
-            // Drain ordered events even while GPUI is busy; retain only coherent state.
-            spawn(Box::new(move || {
-                while let Ok(event) = client.events.recv() {
-                    let Ok(mut state) = inbox.lock() else {
-                        break;
-                    };
-                    state.apply(event);
-                }
-            }))
-        });
+                result
+            })
+            .and_then(|client| {
+                self.handle = Some(client.handle);
+                let inbox = self.inbox.clone();
+                let drained = self.drained.clone();
+                // Drain ordered events even while GPUI is busy; retain only coherent state.
+                spawn(Box::new(move || {
+                    while let Ok(event) = client.events.recv() {
+                        if let Ok(mut state) = inbox.lock() {
+                            state.apply(event);
+                        }
+                    }
+                    drained.store(true, Ordering::Release);
+                }))
+            });
         if let Err(error) = result {
+            self.drained.store(true, Ordering::Release);
             if let Some(handle) = self.handle.take() {
                 handle.disconnect();
             }
@@ -182,7 +193,7 @@ mod tests {
         let mut bridge = bridge();
         let mut options = ConnectOptions::default();
         options.surface_size.cols = 0;
-        bridge.reconnect(options, true);
+        bridge.reconnect(options, true, true);
         let failed = bridge.take_update().unwrap();
         assert_eq!(failed.status, ConnectionStatus::Disconnected);
         assert!(failed.error.is_some());
@@ -197,7 +208,7 @@ mod tests {
     #[test]
     fn event_reader_startup_failure_is_authoritative() {
         let mut bridge = bridge();
-        bridge.start(ConnectOptions::default(), |_| {
+        bridge.start(ConnectOptions::default(), true, |_| {
             Err(std::io::Error::other("reader startup failed"))
         });
         let state = bridge.take_update().unwrap();
@@ -237,7 +248,7 @@ mod tests {
         old.lock().unwrap().local_daemon_peer = true;
         let mut options = ConnectOptions::default();
         options.surface_size.cols = 0;
-        bridge.reconnect(options, false);
+        bridge.reconnect(options, false, true);
         old.lock().unwrap().apply(ClientEvent::Disconnected {
             reason: "detached connection".into(),
         });

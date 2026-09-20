@@ -12,22 +12,26 @@ impl HerdrWindow {
             if target.worktree.is_none() || target.branch.as_deref().is_none_or(str::is_empty) {
                 return Err("No Git branch/repository metadata available.".into());
             }
-            if !self.live.local_daemon_peer {
+            if self.selected_endpoint != 0 || !self.live.local_daemon_peer {
                 return Err("PR lookup unavailable: socket peer could not be verified as the local Herdr installation. Forwarders and daemons running a removed/replaced executable are unsupported.".into());
             }
             if !self.workspace_pr_target_current() {
                 return Err("Workspace changed or disconnected. Reopen the menu.".into());
             }
-            self.connection.request_dialog(
-                &target.boot_id,
-                "workspace.get",
-                serde_json::json!({"workspace_id": target.id}),
-            )
+            self.endpoints[self.selected_endpoint]
+                .connection
+                .request_dialog(
+                    &target.boot_id,
+                    "workspace.get",
+                    serde_json::json!({"workspace_id": target.id}),
+                )
         })();
         match result {
             Ok(id) => {
                 self.menu.pr_pending = Some(id);
-                self.menu.pr_connection = Some(Arc::downgrade(&self.connection.inbox));
+                self.menu.pr_connection = Some(Arc::downgrade(
+                    &self.endpoints[self.selected_endpoint].connection.inbox,
+                ));
                 self.menu.pr.loading = true;
                 self.menu.pr.message = None;
             }
@@ -36,10 +40,15 @@ impl HerdrWindow {
     }
 
     fn workspace_pr_target_current(&self) -> bool {
-        self.live.status.is_connected()
+        self.menu_target_current()
+            && self.live.status.is_connected()
             && self.menu.pr_connection.as_ref().is_none_or(|old| {
-                old.upgrade()
-                    .is_some_and(|old| Arc::ptr_eq(&old, &self.connection.inbox))
+                old.upgrade().is_some_and(|old| {
+                    Arc::ptr_eq(
+                        &old,
+                        &self.endpoints[self.selected_endpoint].connection.inbox,
+                    )
+                })
             })
             && self.menu.target.as_ref().is_some_and(|target| {
                 self.live.snapshot.as_ref().is_some_and(|snapshot| {

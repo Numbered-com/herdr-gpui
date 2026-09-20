@@ -46,6 +46,18 @@ pub struct LiveState {
     pub(crate) dialog_response: Option<(String, Option<Result<serde_json::Value, String>>)>,
     agent_presentation: AgentPresentation,
     outer_focused: Option<bool>,
+    pub activation: Option<SurfaceActivation>,
+    pub supports_surface: bool,
+}
+
+#[derive(Clone)]
+pub struct SurfaceActivation {
+    pub request: String,
+    pub boot: String,
+    pub revision: Option<u64>,
+    pub failed: bool,
+    pub focus: Option<crate::OwnedNavigationTarget>,
+    pub active: bool,
 }
 
 impl Default for LiveState {
@@ -61,11 +73,39 @@ impl Default for LiveState {
             dialog_response: None,
             agent_presentation: AgentPresentation::default(),
             outer_focused: None,
+            activation: None,
+            supports_surface: false,
         }
     }
 }
 
 impl LiveState {
+    pub fn surface_ready(&self) -> bool {
+        let (Some(snapshot), Some(surface)) = (&self.snapshot, &self.surface) else {
+            return false;
+        };
+        coherent(snapshot, surface)
+            && self.activation.as_ref().is_none_or(|activation| {
+                !activation.failed
+                    && activation.active
+                    && activation.boot == snapshot.boot_id
+                    && activation
+                        .revision
+                        .is_some_and(|revision| surface.projection_revision >= revision)
+                    && activation.focus.as_ref().is_none_or(|target| match target {
+                        crate::NavigationTarget::Workspace(id) => {
+                            snapshot.focused_workspace_id.as_ref() == Some(id)
+                        }
+                        crate::NavigationTarget::Tab(id) => {
+                            snapshot.focused_tab_id.as_ref() == Some(id)
+                        }
+                        crate::NavigationTarget::Pane(id) => {
+                            snapshot.focused_pane_id.as_ref() == Some(id)
+                        }
+                    })
+            })
+    }
+
     pub fn daemon_starting(&mut self) {
         self.status = ConnectionStatus::StartingDaemon;
         self.dirty = true;
@@ -98,6 +138,9 @@ impl LiveState {
         surface: &PaneSurfaceFrame,
         focused: bool,
     ) -> bool {
+        if self.activation.is_some() && !self.surface_ready() {
+            return false;
+        }
         let Some(snapshot) = self.snapshot.as_mut() else {
             return false;
         };
@@ -127,12 +170,26 @@ impl LiveState {
 
     pub fn apply(&mut self, event: ClientEvent) {
         match event {
-            ClientEvent::Connected(_) => {
+            ClientEvent::Connected(welcome) => {
+                self.supports_surface = welcome
+                    .methods
+                    .iter()
+                    .any(|method| method == "client_shell.surface.set")
+                    && ["surface_interest", "presentation_effects_fence"]
+                        .iter()
+                        .all(|capability| {
+                            welcome.capabilities.iter().any(|value| value == capability)
+                        });
                 self.missing_installation = false;
                 self.status = ConnectionStatus::AwaitingSnapshot;
                 self.error = None;
             }
             ClientEvent::Snapshot(mut snapshot) => {
+                if let Some(activation) = &mut self.activation
+                    && activation.boot != snapshot.boot_id
+                {
+                    activation.failed = true;
+                }
                 self.missing_installation = false;
                 if self
                     .surface
@@ -168,13 +225,34 @@ impl LiveState {
                 {
                     *result = Some(Err(reason.clone()));
                 }
+                if let Some(activation) = &mut self.activation
+                    && request_id.as_ref() == Some(&activation.request)
+                {
+                    activation.failed = true;
+                }
                 self.error = Some(reason);
             }
             ClientEvent::Response {
                 request_id,
                 response,
             } => {
-                if let Some(error) = response.get("error") {
+                if let Some(activation) = &mut self.activation
+                    && request_id == activation.request
+                {
+                    let result = &response["result"];
+                    activation.revision = (response.get("error").is_none_or(|e| e.is_null())
+                        && result["type"] == "client_shell_surface_set"
+                        && result["active"] == activation.active)
+                        .then(|| result["projection_revision"].as_u64())
+                        .flatten();
+                    activation.failed = activation.revision.is_none();
+                    if activation.failed {
+                        self.error = Some("Invalid surface activation acknowledgement".into());
+                    }
+                }
+                if let Some(error) = response.get("error")
+                    && !error.is_null()
+                {
                     self.error = Some(error.to_string());
                 }
                 if let Some((id, result)) = &mut self.dialog_response
@@ -187,6 +265,14 @@ impl LiveState {
                 self.error = Some(message)
             }
             _ => return,
+        }
+        // Focus is evidence for completing one navigation, not a permanent
+        // constraint on later server-driven focus changes. Settle in the inbox
+        // reducer so coalesced updates cannot miss the successful transition.
+        if self.surface_ready()
+            && let Some(activation) = &mut self.activation
+        {
+            activation.focus = None;
         }
         self.dirty = true;
     }
@@ -540,6 +626,160 @@ mod tests {
             ))
             .unwrap(),
         )
+    }
+
+    fn activating(snapshot: &ClientShellSnapshot) -> SurfaceActivation {
+        SurfaceActivation {
+            request: "activate-1".into(),
+            boot: snapshot.boot_id.clone(),
+            revision: None,
+            failed: false,
+            focus: None,
+            active: true,
+        }
+    }
+
+    #[test]
+    fn completed_navigation_retires_focus_in_inbox_before_later_focus_changes() {
+        for kind in ["pane", "tab", "workspace"] {
+            for ack_first in [false, true] {
+                let snapshot = snapshot();
+                let id = match kind {
+                    "workspace" => snapshot.focused_workspace_id.clone().unwrap(),
+                    "tab" => snapshot.focused_tab_id.clone().unwrap(),
+                    _ => snapshot.focused_pane_id.clone().unwrap(),
+                };
+                let mut state = LiveState::default();
+                state.apply(ClientEvent::Snapshot(snapshot.clone()));
+                state.activation = Some(SurfaceActivation {
+                    focus: Some(match kind {
+                        "workspace" => crate::NavigationTarget::Workspace(id),
+                        "tab" => crate::NavigationTarget::Tab(id),
+                        _ => crate::NavigationTarget::Pane(id),
+                    }),
+                    ..activating(&snapshot)
+                });
+                let ack = ClientEvent::Response {
+                    request_id: "activate-1".into(),
+                    response: serde_json::json!({"result": {
+                        "type": "client_shell_surface_set", "active": true,
+                        "projection_revision": snapshot.revision
+                    }}),
+                };
+                let frame = ClientEvent::Surface(surface(&snapshot));
+                let events = if ack_first {
+                    [ack, frame]
+                } else {
+                    [frame, ack]
+                };
+                for (index, event) in events.into_iter().enumerate() {
+                    state.apply(event);
+                    assert_eq!(state.surface_ready(), index == 1);
+                    assert_eq!(
+                        state.activation.as_ref().unwrap().focus.is_none(),
+                        index == 1
+                    );
+                }
+                // No UI poll between completion and the split/tab/workspace's
+                // next projection: the authoritative reducer must already settle.
+                let mut next = snapshot.clone();
+                let next_snapshot = Arc::make_mut(&mut next);
+                next_snapshot.revision += 1;
+                next_snapshot.focused_pane_id = Some("split-pane".into());
+                next_snapshot.focused_tab_id = Some("created-tab".into());
+                next_snapshot.focused_workspace_id = Some("created-workspace".into());
+                state.apply(ClientEvent::Snapshot(next.clone()));
+                assert!(!state.surface_ready());
+                state.apply(ClientEvent::Surface(surface(&next)));
+                assert!(state.surface_ready());
+                let settled = state.activation.as_ref().unwrap();
+                assert_eq!(settled.revision, Some(snapshot.revision));
+                assert_eq!(settled.boot, snapshot.boot_id);
+                assert!(settled.active && !settled.failed);
+            }
+        }
+    }
+
+    #[test]
+    fn deferred_paint_cannot_acknowledge_while_surface_activation_is_pending() {
+        let mut state = LiveState::default();
+        state.set_outer_focus(true);
+        state.apply(ClientEvent::Snapshot(agent_snapshot(
+            AgentStatus::Working,
+            9,
+        )));
+        let idle = agent_snapshot(AgentStatus::Idle, 10);
+        let frame = agent_surface(&idle);
+        state.apply(ClientEvent::Snapshot(idle.clone()));
+        state.apply(ClientEvent::Surface(frame.clone()));
+        state.activation = Some(activating(&idle));
+        assert!(!state.acknowledge_presented_surface(&idle, &frame, true));
+        assert_status(&state, AgentStatus::Done);
+    }
+
+    #[test]
+    fn activation_requires_matching_ack_coherent_revision_and_focus() {
+        let snapshot = snapshot();
+        let mut state = LiveState::default();
+        state.apply(ClientEvent::Snapshot(snapshot.clone()));
+        state.activation = Some(activating(&snapshot));
+        state.apply(ClientEvent::Surface(surface(&snapshot)));
+        assert!(!state.surface_ready());
+        let response = serde_json::json!({"result": {
+            "type": "client_shell_surface_set", "active": true, "projection_revision": snapshot.revision
+        }});
+        state.apply(ClientEvent::Response {
+            request_id: "stale".into(),
+            response: response.clone(),
+        });
+        assert!(!state.surface_ready());
+        state.apply(ClientEvent::Response {
+            request_id: "activate-1".into(),
+            response,
+        });
+        assert!(state.surface_ready());
+        state.activation.as_mut().unwrap().focus =
+            Some(crate::NavigationTarget::Pane("wrong-pane".into()));
+        assert!(!state.surface_ready());
+        state.activation.as_mut().unwrap().focus = None;
+        state.activation.as_mut().unwrap().revision = Some(snapshot.revision + 1);
+        assert!(!state.surface_ready());
+        let mut reboot = snapshot.clone();
+        Arc::make_mut(&mut reboot).boot_id = "reboot".into();
+        state.apply(ClientEvent::Snapshot(reboot.clone()));
+        state.apply(ClientEvent::Surface(surface(&reboot)));
+        assert!(state.activation.as_ref().unwrap().failed);
+        assert!(!state.surface_ready());
+    }
+
+    #[test]
+    fn rejected_malformed_and_wrong_direction_acks_never_enable_input() {
+        let snapshot = snapshot();
+        for response in [
+            serde_json::json!({"error": {"message": "unsupported"}}),
+            serde_json::json!({"result": {"type": "other", "active": true, "projection_revision": 0}}),
+            serde_json::json!({"result": {"type": "client_shell_surface_set", "active": false, "projection_revision": 0}}),
+        ] {
+            let mut state = LiveState::default();
+            state.apply(ClientEvent::Snapshot(snapshot.clone()));
+            state.apply(ClientEvent::Surface(surface(&snapshot)));
+            state.activation = Some(activating(&snapshot));
+            state.apply(ClientEvent::Response {
+                request_id: "activate-1".into(),
+                response,
+            });
+            assert!(state.activation.as_ref().unwrap().failed);
+            assert!(!state.surface_ready());
+        }
+        let mut state = LiveState {
+            activation: Some(activating(&snapshot)),
+            ..Default::default()
+        };
+        state.apply(ClientEvent::CommandRejected {
+            request_id: Some("activate-1".into()),
+            reason: "unsupported".into(),
+        });
+        assert!(state.activation.as_ref().unwrap().failed);
     }
 
     fn surface(snapshot: &ClientShellSnapshot) -> Arc<PaneSurfaceFrame> {

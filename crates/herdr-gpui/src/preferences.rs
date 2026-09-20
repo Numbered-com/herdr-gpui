@@ -151,7 +151,7 @@ impl HerdrWindow {
             .child(row(
                 "preferences-connection-target",
                 "Target",
-                format!("{:?}", self.connection.target),
+                format!("{:?}", self.endpoints[self.selected_endpoint].connection.target),
             ));
 
         div()
@@ -237,7 +237,8 @@ impl HerdrWindow {
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Asynchronous, endpoint-local preferences. Dropping drains all queued saves.
+/// Asynchronous, endpoint-local preferences. Dropping lets the worker drain queued
+/// saves without waiting; process exit may interrupt pending writes.
 pub struct Preferences {
     saves: Option<Sender<Option<f32>>>,
     loaded: Option<Receiver<Option<f32>>>,
@@ -331,13 +332,10 @@ impl Preferences {
 
 impl Drop for Preferences {
     fn drop(&mut self) {
-        // Disconnect before joining so the worker drains the queue and exits.
+        // Disconnect and detach: the worker drains queued saves while the process
+        // remains alive, without making the UI wait for disk I/O.
         self.saves.take();
-        if let Some(worker) = self.worker.take()
-            && worker.join().is_err()
-        {
-            eprintln!("GPUI preferences worker panicked");
-        }
+        drop(self.worker.take());
     }
 }
 
@@ -468,7 +466,7 @@ mod tests {
     }
 
     #[core::prelude::v1::test]
-    fn roundtrip_and_reset_drain_on_drop() {
+    fn roundtrip_and_reset_drain_after_drop() {
         let directory = TestDirectory::new();
         let path = endpoint_path(&directory.0, Path::new("/tmp/test.sock"));
         let mut preferences = Preferences::start(Ok(path.clone()));
@@ -476,14 +474,56 @@ mod tests {
         for width in 1..=100 {
             preferences.save(Some(width as f32));
         }
+        let worker = preferences.worker.take().unwrap();
         drop(preferences);
+        // Only the test waits for persistence before reading or removing files.
+        worker.join().unwrap();
         let mut preferences = Preferences::start(Ok(path.clone()));
         assert_eq!(await_loaded(&mut preferences), Some(100.0));
         preferences.save(None);
+        let worker = preferences.worker.take().unwrap();
         drop(preferences);
+        worker.join().unwrap();
         assert_eq!(read_width(&path).unwrap(), None);
         let mut preferences = Preferences::start(Ok(path));
         assert_eq!(await_loaded(&mut preferences), None);
+    }
+
+    #[core::prelude::v1::test]
+    fn drop_does_not_wait_for_blocked_worker_and_queued_saves_still_drain() {
+        let (saves, requests) = mpsc::channel();
+        let (ready_tx, ready) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let (drained_tx, drained) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            blocked.recv().unwrap();
+            drained_tx
+                .send(requests.into_iter().collect::<Vec<_>>())
+                .unwrap();
+        });
+        let preferences = Preferences {
+            saves: Some(saves),
+            loaded: None,
+            worker: Some(worker),
+        };
+        let queued = [Some(160.), Some(400.), None];
+        for width in queued {
+            preferences.save(width);
+        }
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (dropped_tx, dropped) = mpsc::channel();
+        let dropper = thread::spawn(move || {
+            drop(preferences);
+            dropped_tx.send(()).unwrap();
+        });
+        let result = dropped.recv_timeout(Duration::from_secs(5));
+        // Release even on failure so a regressed join does not strand the threads.
+        release.send(()).unwrap();
+        let saved = drained.recv_timeout(Duration::from_secs(5)).unwrap();
+        dropper.join().unwrap();
+        assert!(result.is_ok(), "drop waited for the blocked worker");
+        assert_eq!(saved, queued);
     }
 
     #[core::prelude::v1::test]
