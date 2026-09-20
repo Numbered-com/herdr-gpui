@@ -101,7 +101,9 @@ impl HerdrWindow {
         else {
             return;
         };
-        self.open_menu(window, cx);
+        if !self.open_menu(window, cx) {
+            return;
+        }
         self.menu.close = Some(close);
         self.menu.page = Some(Page::ConfirmClose);
     }
@@ -120,7 +122,9 @@ impl HerdrWindow {
         else {
             return;
         };
-        self.open_menu(window, cx);
+        if !self.open_menu(window, cx) {
+            return;
+        }
         self.menu.close = Some(close);
         self.menu.page = Some(Page::ConfirmClose);
     }

@@ -1,92 +1,73 @@
-// Render the limited SVG vocabulary used by our original icon with native APIs.
+// Build native icons and red worktree variants from the supplied raster exports.
 import AppKit
+import CoreImage
 import Foundation
-
-final class IconRenderer: NSObject, XMLParserDelegate {
-    let context: CGContext
-    init(_ context: CGContext) { self.context = context }
-
-    func parser(_ parser: XMLParser, didStartElement name: String,
-                namespaceURI: String?, qualifiedName: String?,
-                attributes a: [String: String]) {
-        func number(_ key: String) -> CGFloat { CGFloat(Double(a[key]!)!) }
-        func color(_ value: String) -> CGColor {
-            let hex = UInt32(value.dropFirst(), radix: 16)!
-            return CGColor(colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
-                components: [CGFloat((hex >> 16) & 255) / 255,
-                             CGFloat((hex >> 8) & 255) / 255,
-                             CGFloat(hex & 255) / 255, 1])!
-        }
-        let path: CGPath
-        switch name {
-        case "svg", "title": return
-        case "rect":
-            path = CGPath(roundedRect: CGRect(x: number("x"), y: number("y"),
-                width: number("width"), height: number("height")),
-                cornerWidth: number("rx"), cornerHeight: number("rx"), transform: nil)
-        case "circle":
-            let r = number("r")
-            path = CGPath(ellipseIn: CGRect(x: number("cx") - r, y: number("cy") - r,
-                width: 2 * r, height: 2 * r), transform: nil)
-        case "polyline":
-            precondition(a["stroke-linecap"] == "round" && a["stroke-linejoin"] == "round")
-            let points = a["points"]!.split(separator: " ").map { pair -> CGPoint in
-                let xy = pair.split(separator: ",").map { Double($0)! }
-                return CGPoint(x: xy[0], y: xy[1])
-            }
-            let line = CGMutablePath()
-            line.addLines(between: points)
-            path = line
-        default: fatalError("Unsupported SVG element: \(name)")
-        }
-        context.addPath(path)
-        if let stroke = a["stroke"] {
-            context.setStrokeColor(color(stroke))
-            context.setLineWidth(number("stroke-width"))
-            context.setLineCap(.round)
-            context.setLineJoin(.round)
-            context.strokePath()
-        } else {
-            context.setFillColor(color(a["fill"]!))
-            context.fillPath()
-        }
-    }
-}
 
 let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
 let assets = root.appendingPathComponent("assets/icons")
-let source = try Data(contentsOf: assets.appendingPathComponent("herdr.svg"))
+let variants: [(String, String, String?)] = [
+  ("herdr-ui-icon-clean.png", "herdr-worktree-1024.png", "Herdr"),
+  ("herdr-icon-square-clean.png", "herdr-square-worktree-1024.png", nil),
+]
 let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-let iconset = temporary.appendingPathComponent("Herdr.iconset")
-try FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
+try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: temporary) }
 
-for size in [16, 32, 128, 256, 512] {
-    for scale in [1, 2] {
+for (sourceName, redName, bundleName) in variants {
+  let source = try Data(contentsOf: assets.appendingPathComponent(sourceName))
+  guard let image = NSBitmapImageRep(data: source)?.cgImage,
+    image.width == 1024, image.height == 1024
+  else {
+    fatalError("Expected a 1024x1024 PNG icon")
+  }
+
+  // Map luminance to a saturated red palette while retaining the original alpha
+  // and shading. The supplied stable PNG remains unchanged.
+  let red = CIImage(cgImage: image).applyingFilter(
+    "CIColorMatrix",
+    parameters: [
+      "inputRVector": CIVector(x: 0.1382, y: 0.4649, z: 0.0469, w: 0),
+      "inputGVector": CIVector(x: 0.0255, y: 0.0858, z: 0.0087, w: 0),
+      "inputBVector": CIVector(x: 0.0255, y: 0.0858, z: 0.0087, w: 0),
+      "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+      "inputBiasVector": CIVector(x: 0.25, y: 0.02, z: 0.035, w: 0),
+    ])
+  guard let redImage = CIContext().createCGImage(red, from: red.extent) else {
+    fatalError("Unable to generate the red worktree icon")
+  }
+  let redPNG = NSBitmapImageRep(cgImage: redImage).representation(using: .png, properties: [:])!
+  try redPNG.write(to: assets.appendingPathComponent(redName))
+
+  guard let bundleName else { continue }
+  for (name, image, source) in [
+    (bundleName, image, source), ("\(bundleName)-worktree", redImage, redPNG),
+  ] {
+    let iconset = temporary.appendingPathComponent("\(name).iconset")
+    try FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
+    for size in [16, 32, 128, 256, 512] {
+      for scale in [1, 2] {
         let pixels = size * scale
-        let context = CGContext(data: nil, width: pixels, height: pixels,
-            bitsPerComponent: 8, bytesPerRow: pixels * 4,
-            space: CGColorSpace(name: CGColorSpace.sRGB)!,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        context.translateBy(x: 0, y: CGFloat(pixels))
-        context.scaleBy(x: CGFloat(pixels) / 1024, y: -CGFloat(pixels) / 1024)
-        let renderer = IconRenderer(context)
-        let parser = XMLParser(data: source)
-        parser.delegate = renderer
-        precondition(parser.parse(), "Invalid icon SVG")
+        let context = CGContext(
+          data: nil, width: pixels, height: pixels,
+          bitsPerComponent: 8, bytesPerRow: pixels * 4,
+          space: CGColorSpace(name: CGColorSpace.sRGB)!,
+          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: pixels, height: pixels))
         let bitmap = NSBitmapImageRep(cgImage: context.makeImage()!)
-        let png = bitmap.representation(using: .png, properties: [:])!
+        let png = pixels == 1024 ? source : bitmap.representation(using: .png, properties: [:])!
         let suffix = scale == 2 ? "@2x" : ""
         try png.write(to: iconset.appendingPathComponent("icon_\(size)x\(size)\(suffix).png"))
-        if pixels == 1024 {
-            try png.write(to: assets.appendingPathComponent("herdr-1024.png"))
-        }
+      }
     }
+    let iconutil = Process()
+    iconutil.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
+    iconutil.arguments = [
+      "-c", "icns", iconset.path, "-o", assets.appendingPathComponent("\(name).icns").path,
+    ]
+    try iconutil.run()
+    iconutil.waitUntilExit()
+    precondition(iconutil.terminationStatus == 0, "iconutil failed")
+    print("Generated assets/icons/\(name).icns")
+  }
 }
-let iconutil = Process()
-iconutil.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
-iconutil.arguments = ["-c", "icns", iconset.path, "-o", assets.appendingPathComponent("Herdr.icns").path]
-try iconutil.run()
-iconutil.waitUntilExit()
-precondition(iconutil.terminationStatus == 0, "iconutil failed")
-print("Generated assets/icons/herdr-1024.png and assets/icons/Herdr.icns")

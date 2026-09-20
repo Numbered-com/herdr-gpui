@@ -5,6 +5,47 @@ or publish artifacts. Output directories must already exist. Existing
 artifacts are refused. Versions must be numeric SemVer `X.Y.Z`, without `v`,
 prerelease/build suffixes, or leading zeros.
 
+## Build Identity
+
+Packaging and `just bundle` require Python 3 and read a versioned identity record
+embedded in the supplied executable, never the packaging checkout's Git state.
+Linked-worktree binaries select `assets/icons/herdr-square-worktree-1024.png` or
+`assets/icons/Herdr-worktree.icns`; other builds use the standard assets. The
+installed icon keeps its standard filename. No binary is executed, so foreign
+Linux architectures and both macOS slices work on the packaging host. macOS
+inputs must have identical identities (branch and PR included). Missing, malformed,
+or conflicting records fail closed; older binaries must be rebuilt.
+
+`herdr-gpui --build-info` prints three newline-terminated `key=value` lines:
+`worktree=0|1`, `branch=...`, and `pr=...`, before any GUI or daemon startup.
+The same record is retained in optimized binaries for packaging. This metadata is
+an identity hint, not a signature or proof of provenance; supply trusted binaries.
+
+At build time, Git is anchored at the crate manifest. Only differing canonical
+Git/common directories mark a linked worktree, not branch names, `--dev`, or an
+ordinary checkout with a separate Git directory. Stable builds have an empty
+branch; linked builds use the branch or detached short SHA. Printable Unicode,
+including trailing Unicode whitespace, is preserved; branch names containing
+control characters use the short SHA instead. Missing Git/source archives degrade
+to stable. Cargo watches existing HEAD, current ref, packed refs, and checkout
+pointer files, not the entire ordinary `.git` directory. When a loose ref is
+missing, its nearest existing refs directory is watched for creation. Source
+archives do not automatically detect later Git initialization.
+
+`HERDR_BUILD_PR_NUMBER=123 cargo build ...` overrides PR lookup; an explicitly
+empty value disables it. Values must be empty or positive ASCII decimal digits.
+Otherwise attached linked branches get a best-effort
+`gh pr list --head BRANCH --state open --limit 1 --json number --jq '.[0].number'`
+lookup in the manifest repository, with prompts disabled and a two-second timeout.
+Only open PRs are considered; numeric and `#numeric` branches are treated as branch
+names, never PR numbers. Missing gh/auth/network/open PR never prevents a build.
+There is no runtime lookup.
+Cargo does not poll remote PR changes: force a rebuild or change the override
+when PR metadata changes without a local HEAD/ref change. Set an explicit override
+for reproducible builds and matching cross-architecture PR metadata.
+
+## Packaging Commands
+
 ```sh
 cargo install cargo-about --version 0.9.2 --locked
 python3 scripts/release/generate-notices.py OUTPUT_DIR/THIRD-PARTY-NOTICES.txt

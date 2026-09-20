@@ -16,7 +16,9 @@ impl HerdrWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_menu(window, cx);
+        if !self.open_menu(window, cx) {
+            return;
+        }
         self.menu.page = Some(Page::AppUpdate);
         self.update_preview = preview.then(|| State::Available {
             version: "9999.0.0".into(),

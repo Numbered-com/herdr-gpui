@@ -1,4 +1,4 @@
-//! Only help and usage-error paths: none may reach GPUI or require a desktop/daemon.
+//! Informational and usage-error paths must not reach GPUI or require a desktop/daemon.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{
@@ -46,7 +46,12 @@ fn help_succeeds_and_documents_connection_options() {
         assert!(output.status.success(), "{output:?}");
         assert!(output.stderr.is_empty(), "{output:?}");
         let help = String::from_utf8(output.stdout).unwrap();
-        for option in ["--socket CLIENT_SOCKET", "--session NAME", "--dev"] {
+        for option in [
+            "--socket CLIENT_SOCKET",
+            "--session NAME",
+            "--dev",
+            "--build-info",
+        ] {
             assert!(help.contains(option), "missing {option}: {help}");
         }
         assert_eq!(
@@ -55,6 +60,22 @@ fn help_succeeds_and_documents_connection_options() {
             "{help}"
         );
     }
+}
+
+#[test]
+fn build_info_is_pure_and_matches_compile_identity() {
+    let output = cli(&["--build-info"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!(
+            "worktree={}\nbranch={}\npr={}\n",
+            env!("HERDR_BUILD_WORKTREE"),
+            env!("HERDR_BUILD_BRANCH"),
+            env!("HERDR_BUILD_PR")
+        )
+    );
 }
 
 #[test]
