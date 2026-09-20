@@ -12,6 +12,7 @@ pub struct LiveState {
     pub status: String,
     pub error: Option<String>,
     pub connected: bool,
+    pub starting_daemon: bool,
     pub dirty: bool,
     agent_presentation: AgentPresentation,
     outer_focused: Option<bool>,
@@ -25,6 +26,7 @@ impl Default for LiveState {
             status: "Connecting...".into(),
             error: None,
             connected: false,
+            starting_daemon: false,
             dirty: true,
             agent_presentation: AgentPresentation::default(),
             outer_focused: None,
@@ -33,6 +35,12 @@ impl Default for LiveState {
 }
 
 impl LiveState {
+    pub fn daemon_starting(&mut self) {
+        self.starting_daemon = true;
+        self.status = "Starting Herdr server...".into();
+        self.dirty = true;
+    }
+
     /// Track activation without treating receipt or focus gain as presentation.
     pub fn set_outer_focus(&mut self, focused: bool) {
         // A focus report retried after inbox contention must still cause a draw.
@@ -78,10 +86,12 @@ impl LiveState {
     pub fn apply(&mut self, event: ClientEvent) {
         match event {
             ClientEvent::Connected(_) => {
+                self.starting_daemon = false;
                 self.connected = true;
                 self.status = "Connected; waiting for snapshot".into();
             }
             ClientEvent::Snapshot(mut snapshot) => {
+                self.starting_daemon = false;
                 if self
                     .surface
                     .as_ref()
@@ -104,6 +114,7 @@ impl LiveState {
                 }
             }
             ClientEvent::Disconnected { reason } => {
+                self.starting_daemon = false;
                 self.connected = false;
                 self.status = "Disconnected".into();
                 self.error = Some(reason);
@@ -136,6 +147,27 @@ mod tests {
     use super::*;
     use herdr_client::protocol::AgentStatus;
     use herdr_client::protocol::FrameData;
+
+    #[test]
+    fn daemon_loader_stops_on_success_or_failure() {
+        let mut state = LiveState::default();
+        assert!(!state.starting_daemon);
+        state.dirty = false;
+        state.daemon_starting();
+        assert!(state.starting_daemon && state.dirty);
+        assert_eq!(state.status, "Starting Herdr server...");
+        state.apply(ClientEvent::Snapshot(snapshot()));
+        assert!(!state.starting_daemon);
+        assert_eq!(state.status, "Connected");
+
+        state.daemon_starting();
+        state.apply(ClientEvent::Disconnected {
+            reason: "startup failed".into(),
+        });
+        assert!(!state.starting_daemon);
+        assert_eq!(state.status, "Disconnected");
+        assert_eq!(state.error.as_deref(), Some("startup failed"));
+    }
 
     fn agent_snapshot(status: AgentStatus, sequence: u64) -> Arc<ClientShellSnapshot> {
         let mut snapshot = snapshot();

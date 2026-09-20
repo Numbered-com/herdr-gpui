@@ -2,6 +2,7 @@
 #![cfg_attr(feature = "integration-test", allow(unexpected_cfgs))]
 mod app_icon;
 mod controls;
+mod daemon;
 mod input;
 mod menu;
 #[cfg(feature = "integration-test")]
@@ -15,7 +16,9 @@ mod terminal_painter;
 
 use controls::Command;
 use gpui::{prelude::*, *};
-use herdr_client::{ClientHandle, ConnectOptions, ConnectTarget, connect, protocol::*};
+use herdr_client::{
+    ClientHandle, ConnectOptions, ConnectTarget, connect_with_connector, protocol::*,
+};
 use state::LiveState;
 use std::{
     sync::{Arc, Mutex},
@@ -155,7 +158,15 @@ impl HerdrWindow {
         let mut state = LiveState::default();
         state.set_outer_focus(self.active);
         self.inbox = Arc::new(Mutex::new(state));
-        match connect(self.target.clone(), self.options) {
+        let target = self.target.clone();
+        let startup_inbox = self.inbox.clone();
+        match connect_with_connector(self.options, move |stop| {
+            daemon::connect(&target, stop, || {
+                if let Ok(mut state) = startup_inbox.lock() {
+                    state.daemon_starting();
+                }
+            })
+        }) {
             Ok(client) => {
                 self.handle = Some(client.handle);
                 let inbox = self.inbox.clone();
@@ -583,13 +594,32 @@ impl Render for HerdrWindow {
                     .px_3()
                     .bg(rgb(sidebar::BACKGROUND))
                     .text_color(rgb(sidebar::FOREGROUND))
-                    .child(div().size(px(6.)).flex_none().rounded_full().bg(rgb(
-                        if self.live.connected {
-                            0x78c998
-                        } else {
-                            0xe27c7c
-                        },
-                    )))
+                    .child(if self.live.starting_daemon && self.local_error.is_none() {
+                        div()
+                            .size(px(8.))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(rgb(0xe5bd73))
+                            .with_animation(
+                                "daemon-starting-loader",
+                                Animation::new(Duration::from_secs(1)).repeat(),
+                                |dot, delta| {
+                                    dot.opacity(0.3 + 0.7 * (delta * std::f32::consts::PI).sin())
+                                },
+                            )
+                            .into_any_element()
+                    } else {
+                        div()
+                            .size(px(6.))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(rgb(if self.live.connected {
+                                0x78c998
+                            } else {
+                                0xe27c7c
+                            }))
+                            .into_any_element()
+                    })
                     .child(
                         div()
                             .flex_1()
@@ -654,7 +684,7 @@ fn run() {
             "--dev" => development = true,
             "--help" | "-h" => {
                 println!(
-                    "herdr-gpui [--socket CLIENT_SOCKET | --session NAME [--dev]]\nConnects to an existing local Herdr daemon; never starts or stops it."
+                    "herdr-gpui [--socket CLIENT_SOCKET | --session NAME [--dev]]\nStarts the local Herdr daemon if needed; never stops it.\nExplicit --socket and --dev targets are attach-only."
                 );
                 #[cfg(feature = "integration-test")]
                 println!(
