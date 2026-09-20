@@ -16,7 +16,7 @@ use herdr_client::protocol::*;
 #[cfg(test)]
 use herdr_client::{ConnectOptions, ConnectTarget};
 #[cfg(test)]
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Default)]
 struct TextProbes(std::collections::BTreeMap<String, (Bounds<Pixels>, String, Pixels)>);
@@ -238,9 +238,9 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     let (fixture, cx) = cx.add_window_view(|window, cx| {
         // Deliberately do not call HerdrWindow::new: it connects and starts polling.
         let view = cx.new(|cx| HerdrWindow {
-            target: ConnectTarget::Socket("/unused-layout-test.sock".into()),
-            handle: None,
-            inbox: Arc::new(Mutex::new(LiveState::default())),
+            connection: crate::connection::ConnectionBridge::new(ConnectTarget::Socket(
+                "/unused-layout-test.sock".into(),
+            )),
             live: {
                 let mut live = LiveState::default();
                 live.snapshot = Some(Arc::new(snapshot(40)));
@@ -248,7 +248,7 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
             },
             focus: cx.focus_handle(),
             options: ConnectOptions::default(),
-            sent_size: None,
+            last_queued_options: None,
             active: false,
             sent_focus: None,
             bounds: Bounds::default(),

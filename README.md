@@ -173,7 +173,8 @@ updates. It checks forced redraws and retained scenes, verifies zero terminal
 paint calls during warm sidebar interactions, and checks native glyph layouts,
 popup removal, resize invalidation, and activity acknowledgement on retained draws.
 
-On the development M4 Max, retained scenes and verified ASCII-run batching reduced
+Before the upstream blank-cell decoration fix was merged, retained scenes and
+verified ASCII-run batching on the development M4 Max reduced
 release hover p95 from 12.67 ms to 5.76 ms and single-cell updates from 12.14 ms to
 7.09 ms in five interleaved comparisons against the previous per-cell algorithm.
 Full-screen alternating-color output remained essentially unchanged. Run

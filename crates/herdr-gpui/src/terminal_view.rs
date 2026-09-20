@@ -49,19 +49,7 @@ impl Render for TerminalView {
                         cx,
                     );
                     if let Some(popup) = &surface.popup {
-                        let offset = point(
-                            px(
-                                (surface.frame.width.saturating_sub(popup.frame.width) as f32
-                                    * cell_width
-                                    / 2.)
-                                    .floor(),
-                            ),
-                            px(
-                                surface.frame.height.saturating_sub(popup.frame.height) as f32
-                                    * CELL_HEIGHT
-                                    / 2.,
-                            ),
-                        );
+                        let offset = popup_origin(&surface.frame, &popup.frame, cell_width);
                         painter.paint_frame(
                             &popup.frame,
                             bounds.origin + offset,

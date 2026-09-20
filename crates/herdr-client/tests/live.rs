@@ -1,121 +1,66 @@
 //! Explicitly opt-in: never discovers or attaches to an existing daemon.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "../../test-support/sandbox.rs"]
+mod sandbox;
+
 use herdr_client::{
     Client, ClientEvent, ConnectOptions, ConnectTarget, connect,
     protocol::{
         ClientKeyCode, ClientKeyKind, ClientPaneInputEvent, ClientShellSnapshot, ClientSurfaceSize,
     },
 };
+use sandbox::{Sandbox, daemon_binary, stop_children};
 use serde_json::{Value, json};
 use std::{
-    fs::{self, DirBuilder, File},
-    os::unix::fs::DirBuilderExt,
+    fs,
     path::PathBuf,
-    process::{Child, Command, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    process::Child,
+    sync::Arc,
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 const TIMEOUT: Duration = Duration::from_secs(20);
-static NEXT_DAEMON: AtomicU64 = AtomicU64::new(0);
 
 struct Daemon {
-    dir: PathBuf,
+    sandbox: Sandbox,
     child: Option<Child>,
 }
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        if let Some(child) = &mut self.child {
-            // Never use discovery, `server stop`, process-name matching, or group kills.
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        stop_children([&mut self.child]);
         if thread::panicking()
-            && let Ok(log) = fs::read_to_string(self.dir.join("daemon.log"))
+            && let Ok(log) = fs::read_to_string(self.sandbox.dir.join("daemon.log"))
         {
             eprintln!("isolated daemon output:\n{log}");
         }
-        let _ = fs::remove_dir_all(&self.dir);
     }
 }
 
 impl Daemon {
     fn start() -> Self {
-        let binary = PathBuf::from(
-            std::env::var_os("HERDR_TEST_BINARY")
-                .expect("set HERDR_TEST_BINARY to an explicit absolute herdr executable"),
+        let binary = daemon_binary();
+        let mut daemon = Self {
+            sandbox: Sandbox::new(),
+            child: None,
+        };
+        daemon.child = Some(
+            daemon
+                .sandbox
+                .command(binary, "daemon.log")
+                .arg("server")
+                .spawn()
+                .unwrap(),
         );
-        assert!(binary.is_absolute() && binary.is_file());
-        let parent = std::env::var_os("HERDR_TEST_TMPDIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
-        assert!(parent.is_dir(), "temporary parent must already exist");
-        let dir = parent.join(format!(
-            "h{:x}-{:x}-{:x}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .subsec_nanos(),
-            NEXT_DAEMON.fetch_add(1, Ordering::Relaxed)
-        ));
-        DirBuilder::new().mode(0o700).create(&dir).unwrap();
-        let mut daemon = Self { dir, child: None };
-        assert!(
-            daemon.socket().as_os_str().len() < 104,
-            "temporary path too long for Unix socket"
-        );
-        fs::write(daemon.dir.join("config.toml"),
-            "onboarding = false\n[terminal]\ndefault_shell = \"/bin/sh\"\nshell_mode = \"non_login\"\n").unwrap();
-        let log = File::create(daemon.dir.join("daemon.log")).unwrap();
-        let child = Command::new(binary)
-            .arg("server")
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
-            .env("HOME", &daemon.dir)
-            .env("XDG_CONFIG_HOME", daemon.dir.join("config"))
-            .env("XDG_STATE_HOME", daemon.dir.join("state"))
-            .env("XDG_DATA_HOME", daemon.dir.join("data"))
-            .env("XDG_CACHE_HOME", daemon.dir.join("cache"))
-            .env("XDG_RUNTIME_DIR", &daemon.dir)
-            .env("TMPDIR", &daemon.dir)
-            .env("HERDR_CONFIG_PATH", daemon.dir.join("config.toml"))
-            .env("HERDR_SOCKET_PATH", daemon.dir.join("a.sock"))
-            .env("HERDR_CLIENT_SOCKET_PATH", daemon.socket())
-            .env("SHELL", "/bin/sh")
-            .env("TERM", "xterm-256color")
-            .env("PS1", "LIVE> ")
-            .current_dir(&daemon.dir)
-            .stdin(Stdio::null())
-            .stdout(log.try_clone().unwrap())
-            .stderr(log)
-            .spawn()
-            .unwrap();
-        eprintln!(
-            "isolated daemon pid={} dir={}",
-            child.id(),
-            daemon.dir.display()
-        );
-        daemon.child = Some(child);
-        let deadline = Instant::now() + TIMEOUT;
-        while !daemon.socket().exists() {
-            assert!(
-                daemon.child.as_mut().unwrap().try_wait().unwrap().is_none(),
-                "daemon exited during startup"
-            );
-            assert!(Instant::now() < deadline, "daemon startup timed out");
-            thread::sleep(Duration::from_millis(20));
-        }
+        daemon
+            .sandbox
+            .wait_for_daemon(daemon.child.as_mut().unwrap(), TIMEOUT);
         daemon
     }
 
     fn socket(&self) -> PathBuf {
-        self.dir.join("a-client.sock")
+        self.sandbox.socket()
     }
 }
 
@@ -286,7 +231,7 @@ fn stable_endpoint_live() {
     eprintln!("semantic TextCommit + Enter produced shell output: {marker}");
 
     let id = session.client.handle.request(&boot, "tab.create",
-        json!({"workspace_id": workspace, "cwd": daemon.dir, "focus": true, "label": "live-tab"})).unwrap();
+        json!({"workspace_id": workspace, "cwd": daemon.sandbox.dir, "focus": true, "label": "live-tab"})).unwrap();
     let result = session.response(id);
     let second_tab = result["tab"]["tab_id"]
         .as_str()
@@ -306,7 +251,7 @@ fn stable_endpoint_live() {
         .request(
             &boot,
             "workspace.create",
-            json!({"cwd": daemon.dir, "focus": true, "label": "live-workspace"}),
+            json!({"cwd": daemon.sandbox.dir, "focus": true, "label": "live-workspace"}),
         )
         .unwrap();
     let result = session.response(id);
@@ -401,7 +346,7 @@ fn client_local_completion_status_live() {
         (3, "idle", AgentStatus::Done),
     ] {
         // Agent hooks use the JSON API, not the shell's UI-only command allowlist.
-        let mut api = UnixStream::connect(daemon.dir.join("a.sock")).unwrap();
+        let mut api = UnixStream::connect(daemon.sandbox.dir.join("a.sock")).unwrap();
         api.set_read_timeout(Some(TIMEOUT)).unwrap();
         writeln!(
             api,

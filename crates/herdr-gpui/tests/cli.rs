@@ -62,6 +62,20 @@ fn missing_option_values_are_usage_errors() {
     usage_error(&["--socket"], "--socket requires a path");
     usage_error(&["--session"], "--session requires a name");
     usage_error(&["--dev", "--session"], "--session requires a name");
+    usage_error(&["--socket", "--help"], "--socket requires a path");
+    usage_error(&["--session", "--dev"], "--session requires a name");
+}
+
+#[test]
+fn duplicate_options_are_usage_errors() {
+    usage_error(
+        &["--socket", "a", "--socket", "b"],
+        "--socket may only be specified once",
+    );
+    usage_error(
+        &["--session", "a", "--session", "b"],
+        "--session may only be specified once",
+    );
 }
 
 #[test]

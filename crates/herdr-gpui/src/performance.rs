@@ -241,7 +241,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         if counts.shapes > 400
                             || counts.paints == 0
                             || counts.quads != 50 * counts.paints
-                            || counts.decorations != 1677 * counts.paints
+                            || counts.decorations != 1921 * counts.paints
                             || counts.glyphs != 6981 * counts.paints
                             || (batched && counts.runs <= 100 * counts.paints)
                         {
@@ -324,7 +324,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                                     return Err(format!("unchanged popup repainted: {c:?}"));
                                 }
                             } else if c.quads != 54
-                                || c.decorations != 1678
+                                || c.decorations != 1922
                                 || c.glyphs <= 6981
                                 || c.paint_errors != 0
                                 || (redraw == 1 && (c.shapes != 0 || c.run_shapes != 0))
@@ -343,7 +343,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         if c.paints == 0
                             || c.quads != 50 * c.paints
                             || c.glyphs != 6981 * c.paints
-                            || c.decorations != 1677 * c.paints
+                            || c.decorations != 1921 * c.paints
                             || c.paint_errors != 0
                         {
                             return Err(format!("popup hide stale content: {c:?}"));
@@ -486,7 +486,8 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     // A status-only root notification must not invalidate the terminal child.
                     *cx.default_global::<Counts>() = Counts::default();
                     view.update(cx, |view, cx| {
-                        view.live.status = format!("Performance {category}");
+                        view.live.status = state::ConnectionStatus::Connected;
+                        view.local_error = Some(format!("Performance {category}"));
                         cx.notify();
                     });
                     window.draw(cx).clear();
@@ -538,7 +539,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     || (!uncached && (counts.shapes != 0 || counts.run_shapes != 0))
                     || (!uncached && (counts.quads != 50 * counts.paints
                         || counts.glyphs != 6981 * counts.paints
-                        || counts.decorations != 1677 * counts.paints))
+                        || counts.decorations != 1921 * counts.paints))
                     || (batched && counts.runs <= 100 * counts.paints)
                 {
                     return Err(format!("resize invalidation {before:?} -> {bounds:?}: {counts:?}"));
@@ -615,7 +616,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         state.set_outer_focus(true);
                         state.apply(ClientEvent::Snapshot(Arc::new(snapshot)));
                         state.apply(ClientEvent::Surface(frame.clone()));
-                        *view.inbox.lock().map_err(|_| "poisoned fixture inbox")? = state.clone();
+                        *view.connection.inbox.lock().map_err(|_| "poisoned fixture inbox")? = state.clone();
                         view.live = state;
                         view.set_surface(Some(frame), cx);
                         cx.notify();
@@ -630,7 +631,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                 } else if phase == 1 {
                     view.update(cx, |view, cx| -> Result<(), String> {
                         let surface = view.live.surface.clone().ok_or("missing primed surface")?;
-                        let mut state = view.inbox.lock().map_err(|_| "poisoned fixture inbox")?;
+                        let mut state = view.connection.inbox.lock().map_err(|_| "poisoned fixture inbox")?;
                         let mut snapshot = (**state.snapshot.as_ref().ok_or("missing primed snapshot")?).clone();
                         snapshot.agents[0].agent_status = AgentStatus::Idle;
                         snapshot.agents[0].state_change_seq += 1;
@@ -660,7 +661,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     // Leaving the preceding window update flushes cx.defer; do not
                     // draw again or manually acknowledge before inspecting the inbox.
                     let live = &view.read(cx).live;
-                    let state = view.read(cx).inbox.lock().map_err(|_| "poisoned fixture inbox")?;
+                    let state = view.read(cx).connection.inbox.lock().map_err(|_| "poisoned fixture inbox")?;
                     if live.snapshot.as_ref().ok_or("missing presented snapshot")?.agents[0].agent_status != AgentStatus::Done
                         || state.snapshot.as_ref().ok_or("missing acknowledged snapshot")?.agents[0].agent_status != AgentStatus::Idle
                         || !Arc::ptr_eq(live.surface.as_ref().ok_or("missing presented surface")?, state.surface.as_ref().ok_or("missing acknowledged surface")?)

@@ -1,5 +1,18 @@
 # Native Terminal Performance
 
+## Main Merge Integration
+
+The merge of `5300d39` retains upstream's separate decoration pass, including
+spaces and wide-character continuation cells. Current deterministic budgets are
+1,921 decoration/cursor quads per dense paint and 1,922 with the popup. Cached
+popup painting now uses the same `popup_origin` helper as input and IME geometry,
+and retained acknowledgements use `ConnectionBridge`'s authoritative inbox.
+
+The measurements and 1,677/1,678 decoration counts below describe `ca2929b`
+before this merge, not the updated rendering workload. Re-run `just compare-perf`
+on an active desktop to measure the merged code; both comparison modes now include
+the upstream decoration fix.
+
 ## Retained Scenes And Verified Runs (2026-09-20)
 
 This iteration changes only the GUI and its tests/tooling. The protocol, daemon,
