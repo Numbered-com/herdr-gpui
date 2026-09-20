@@ -1,6 +1,5 @@
-use super::{HerdrWindow, LiveState, sidebar};
+use super::{HerdrWindow, sidebar};
 use gpui::{prelude::*, *};
-use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Page {
@@ -83,16 +82,7 @@ impl HerdrWindow {
                 self.dismiss_menu(window, cx);
             }
             "detach" => {
-                if let Some(handle) = self.handle.take() {
-                    handle.disconnect();
-                }
-                // Isolate any final events from the detached connection.
-                self.live = LiveState::default();
-                self.live.status = "Detached (daemon still running)".into();
-                self.live.set_outer_focus(self.active);
-                self.inbox = Arc::new(Mutex::new(self.live.clone()));
-                self.local_error = None;
-                self.marked.clear();
+                self.detach_endpoint();
                 self.dismiss_menu(window, cx);
             }
             "reconnect" => {
@@ -152,7 +142,7 @@ impl HerdrWindow {
             let (title, rows) = match page {
                 Page::Preferences => ("Preferences (read-only)", vec![
                     format!("Connection: {}", self.live.status),
-                    format!("Target: {:?}", self.target),
+                    format!("Target: {:?}", self.endpoints[self.selected_endpoint].target),
                     "Terminal font: Menlo, 14 px (default)".into(),
                     "Sidebar font: Menlo, 12 px (default)".into(),
                     "Daemon configuration editing is not exposed by this native client. No configuration path is assumed.".into(),

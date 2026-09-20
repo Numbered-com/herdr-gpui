@@ -239,7 +239,7 @@ fn create_external_workspace(
     boot: String,
 ) -> Result<ExternalWorkspace, String> {
     use herdr_client::ClientEvent;
-    let client = connect(target, options).map_err(|e| e.to_string())?;
+    let client = herdr_client::connect(target, options).map_err(|e| e.to_string())?;
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut request = None;
     loop {
@@ -480,7 +480,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     12 if has_output(&surface.frame, &reconnected_marker) => {
                         eprintln!("GUI input pipeline verified: frames={frames} focus={focused} active={active} probe={probe:?}");
                         eprintln!("GUI fresh input after reconnect verified: {reconnected_marker}");
-                        let target = view.read(cx).target.clone();
+                        let target = view.read(cx).endpoints[view.read(cx).selected_endpoint].target.clone();
                         if !matches!(&target, ConnectTarget::Socket(_)) {
                             return Err("external smoke requires an explicit isolated socket".into());
                         }

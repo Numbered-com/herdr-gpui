@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/penso/herdr-gpui/actions/workflows/ci.yml/badge.svg)](https://github.com/penso/herdr-gpui/actions/workflows/ci.yml)
 
-A native Rust/GPUI interface to an existing local Herdr daemon. Workspaces and
+A native Rust/GPUI interface to local and saved SSH Herdr hosts. Workspaces and
 worktrees are on the left, agents below them, and the active workspace's tabs
 across the top. The center paints the daemon's terminal cells, including split
 panes, without running another terminal emulator or wrapping the TUI.
@@ -48,10 +48,35 @@ just run --socket /absolute/path/to/herdr-client.sock
 slower with a dense terminal on screen.
 
 The explicit socket must be the binary **client** socket, not `herdr.sock`.
-The app never installs, starts, stops, or upgrades your personal daemon. A failed
-connection appears in the compact single-row status bar with a red dot (green
-when connected). Use Terminal > Reconnect after starting the daemon; there is no
-permanent reconnect button.
+The app never starts the local daemon, installs or upgrades Herdr, or stops your
+daemons. Failed connections retry automatically; Terminal > Reconnect retries
+the selected host immediately.
+
+### Saved Hosts
+
+Normal launches read Herdr's existing saved-host catalog at
+`$XDG_STATE_HOME/herdr/client/endpoints.json` (default
+`~/.local/state/herdr/client/endpoints.json`). `--dev` selects `herdr-dev` instead.
+Manage this list with Herdr's `herdr machine` commands; GPUI reloads changes while
+running. An explicit `--socket` launch stays isolated and does not load saved hosts.
+Normal launches restore the choice in the adjacent `endpoint-selection.json`
+once the saved host's snapshot is ready. Explicit host choices persist there;
+other clients' later choices do not move this window's focus. Startup connection
+delays and automatic fallback never overwrite the preference. Disabled/removed
+choices fall back to Local (or a valid legacy catalog choice at startup).
+`--socket` never reads or writes saved selection.
+
+Spaces lists Local first, then collapsible saved-host groups in catalog order.
+Enabled hosts connect in the background so their workspaces and agents stay
+current. Selecting a remote workspace activates its terminal; input is held until
+the destination surface is ready. Only the selected host receives terminal input.
+
+SSH connects directly to each remote host, not through the local daemon. It uses
+noninteractive SSH authentication and existing trusted host keys. Remote Herdr
+must already be installed on a supported POSIX host; its `remote-client-bridge`
+may start the named remote session. GPUI does not install remote software or
+prompt for passwords/host trust. Configure and verify access with Herdr first.
+Closing GPUI detaches all connections without stopping remote sessions.
 
 New workspaces created through Herdr appear automatically while connected.
 Revisioned snapshots are pushed by the daemon and applied by the GUI without a
@@ -71,7 +96,8 @@ open target/release/Herdr.app
 
 The bundle is named **Herdr** and contains only the release GUI executable,
 `Info.plist`, and its native `.icns` icon. It connects to your existing daemon;
-it does not bundle, install, start, or stop a daemon. This is a local unsigned,
+it does not bundle or install Herdr. Local daemon startup remains external;
+remote startup follows the bridge behavior above. This is a local unsigned,
 unnotarized bundle, not a distribution/signing pipeline. Its version metadata lives
 in `assets/macos/Info.plist` and should be updated for releases.
 
@@ -197,8 +223,8 @@ active desktop. Run `just test-live` and `just test-gui` locally as shown above.
 - Selection/copy, hyperlink interaction, richer mouse support, and inline IME.
 - Rename/close dialogs and full worktree/agent management.
 - Resizable sidebar, editable settings and bundled fonts.
-- Automatic reconnect, optimized terminal painting and graphics support.
-- Signed macOS app packaging, then SSH endpoints.
+- Optimized terminal painting and graphics support.
+- Signed macOS app packaging and broader remote-platform support.
 
 Current rendering uses Menlo and a fixed ANSI palette. Images and terminal
 notifications/clipboard writes are deliberately not executed. See

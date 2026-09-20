@@ -9,6 +9,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+serde.workspace = true
 herdr-protocol.workspace = true
 serde_json.workspace = true
 crossbeam-channel.workspace = true

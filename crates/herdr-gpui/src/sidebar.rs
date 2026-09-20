@@ -34,31 +34,99 @@ impl HerdrWindow {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll();
-        if let Some(snapshot) = &self.live.snapshot {
-            #[cfg(feature = "integration-test")]
-            {
-                spaces = spaces.track_scroll(&self.sidebar_scroll[0]);
-                agents = agents.track_scroll(&self.sidebar_scroll[1]);
+        #[cfg(feature = "integration-test")]
+        {
+            spaces = spaces.track_scroll(&self.sidebar_scroll[0]);
+            agents = agents.track_scroll(&self.sidebar_scroll[1]);
+        }
+        let multi = self.endpoints.len() > 1;
+        let mut agent_count = 0;
+        for (endpoint_index, endpoint) in self.endpoints.iter().enumerate() {
+            let selected = endpoint_index == self.selected_endpoint;
+            let endpoint_id = endpoint.id.clone();
+            if multi {
+                let collapse_id = endpoint_id.clone();
+                let select_id = endpoint_id.clone();
+                spaces = spaces.child(
+                    div()
+                        .id(SharedString::from(format!("host-{endpoint_id}")))
+                        .debug_selector(|| format!("host-{endpoint_id}"))
+                        .h(px(32.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .px(px(12.))
+                        .when(selected, |row| row.bg(rgb(ACTIVE)))
+                        .text_color(rgb(if endpoint.enabled { FOREGROUND } else { MUTED }))
+                        .cursor_pointer()
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("collapse-host-{endpoint_id}")))
+                                .w(px(12.))
+                                .child(if endpoint.collapsed { ">" } else { "v" })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    if let Some(endpoint) =
+                                        this.endpoints.iter_mut().find(|e| e.id == collapse_id)
+                                    {
+                                        endpoint.collapsed = !endpoint.collapsed;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(endpoint.label.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(9.))
+                                .text_color(rgb(MUTED))
+                                .child(endpoint.status()),
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.select_endpoint(&select_id, cx);
+                            window.focus(&this.focus);
+                        })),
+                );
             }
+            let live = if selected { &self.live } else { &endpoint.live };
+            let Some(snapshot) = &live.snapshot else {
+                continue;
+            };
+            let collapsed_repos = if endpoint_index == 0 {
+                &self.collapsed_repos
+            } else {
+                &endpoint.collapsed_repos
+            };
             for (index, indented, group) in
-                visible_workspace_entries(&snapshot.workspaces, &self.collapsed_repos)
+                visible_workspace_entries(&snapshot.workspaces, collapsed_repos)
             {
+                if multi && endpoint.collapsed {
+                    break;
+                }
                 let workspace = &snapshot.workspaces[index];
                 let id = workspace.workspace_id.clone();
+                let navigate_endpoint = endpoint_id.clone();
+                let collapse_endpoint = endpoint_id.clone();
                 spaces = spaces.child(
                     row(
                         workspace_label(workspace, indented),
                         first_text([workspace.branch.as_deref()], ""),
                         workspace.agent_status,
-                        workspace.focused,
+                        selected && workspace.focused,
                         indented,
                         group.is_some() || indented,
                     )
                     .when_some(group, |row, key| {
-                        let collapsed = self.collapsed_repos.contains(&key);
+                        let collapsed = collapsed_repos.contains(&key);
                         row.child(
                             div()
-                                .id(SharedString::from(format!("collapse-{id}")))
+                                .id(SharedString::from(format!("collapse-{endpoint_id}-{id}")))
                                 .debug_selector(move || format!("collapse-{index}"))
                                 .w(px(ARROW_RESERVE - LABEL_GAP))
                                 .h(px(32.))
@@ -66,39 +134,65 @@ impl HerdrWindow {
                                 .child(label_text(if collapsed { ">" } else { "v" }))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
-                                    if !this.collapsed_repos.remove(&key) {
-                                        this.collapsed_repos.insert(key.clone());
+                                    let collapsed = if collapse_endpoint == super::endpoint::LOCAL {
+                                        &mut this.collapsed_repos
+                                    } else if let Some(endpoint) = this
+                                        .endpoints
+                                        .iter_mut()
+                                        .find(|e| e.id == collapse_endpoint)
+                                    {
+                                        &mut endpoint.collapsed_repos
+                                    } else {
+                                        return;
+                                    };
+                                    if !collapsed.remove(&key) {
+                                        collapsed.insert(key.clone());
                                     }
                                     cx.notify();
                                 })),
                         )
                     })
-                    .id(SharedString::from(format!("workspace-{id}")))
+                    .id(SharedString::from(format!("workspace-{endpoint_id}-{id}")))
+                    .when(multi, |row| {
+                        row.debug_selector(|| format!("workspace-{endpoint_id}-{id}"))
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.navigate("workspace", &id, cx);
+                        this.navigate_endpoint(&navigate_endpoint, "workspace", &id, cx);
                         window.focus(&this.focus);
                     })),
                 );
             }
             for agent in &snapshot.agents {
+                agent_count += 1;
                 let id = agent.pane_id.clone();
+                let navigate_endpoint = endpoint_id.clone();
                 let (name, kind) = agent_labels(agent);
+                let detail = if multi {
+                    format!("{} / {kind}", endpoint.label)
+                } else {
+                    kind.to_owned()
+                };
                 agents = agents.child(
-                    row(name, kind, agent.agent_status, agent.focused, false, false)
-                        .id(SharedString::from(format!("agent-{id}")))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.navigate("pane", &id, cx);
-                            window.focus(&this.focus);
-                        })),
+                    row(
+                        name,
+                        &detail,
+                        agent.agent_status,
+                        selected && agent.focused,
+                        false,
+                        false,
+                    )
+                    .id(SharedString::from(format!("agent-{endpoint_id}-{id}")))
+                    .when(multi, |row| {
+                        row.debug_selector(|| format!("agent-{endpoint_id}-{id}"))
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.navigate_endpoint(&navigate_endpoint, "pane", &id, cx);
+                        window.focus(&this.focus);
+                    })),
                 );
             }
         }
-        if self
-            .live
-            .snapshot
-            .as_ref()
-            .is_none_or(|s| s.agents.is_empty())
-        {
+        if agent_count == 0 {
             agents = agents.child(
                 div()
                     .px(px(12.))

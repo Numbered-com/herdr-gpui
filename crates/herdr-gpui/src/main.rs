@@ -2,6 +2,7 @@
 #![cfg_attr(feature = "integration-test", allow(unexpected_cfgs))]
 mod app_icon;
 mod controls;
+mod endpoint;
 mod input;
 mod menu;
 #[cfg(feature = "integration-test")]
@@ -15,7 +16,7 @@ mod terminal_painter;
 
 use controls::Command;
 use gpui::{prelude::*, *};
-use herdr_client::{ClientHandle, ConnectOptions, ConnectTarget, connect, protocol::*};
+use herdr_client::{ClientHandle, ConnectOptions, ConnectTarget, protocol::*};
 use state::LiveState;
 use std::{
     sync::{Arc, Mutex},
@@ -38,7 +39,13 @@ actions!(
 );
 
 struct HerdrWindow {
-    target: ConnectTarget,
+    endpoints: Vec<endpoint::Endpoint>,
+    selected_endpoint: usize,
+    selection_epoch: u64,
+    catalog: endpoint::Catalog,
+    activation_deadline: Option<std::time::Instant>,
+    pending_navigation: Option<(String, String)>,
+    pending_releases: Vec<endpoint::Release>,
     handle: Option<ClientHandle>,
     inbox: Arc<Mutex<LiveState>>,
     live: LiveState,
@@ -78,21 +85,20 @@ impl HerdrWindow {
                 timer.timer(Duration::from_millis(16)).await;
                 if this
                     .update(cx, |this, cx| {
-                        let next = this.inbox.try_lock().ok().and_then(|mut state| {
-                            if !state.dirty {
-                                return None;
-                            }
-                            state.dirty = false;
-                            Some(state.clone())
-                        });
-                        if let Some(next) = next {
-                            if this.live.snapshot.as_ref().map(|s| &s.focused_pane_id)
-                                != next.snapshot.as_ref().map(|s| &s.focused_pane_id)
-                            {
-                                this.marked.clear();
-                            }
-                            this.live = next;
-                            cx.notify();
+                        let old_pane = this
+                            .live
+                            .snapshot
+                            .as_ref()
+                            .and_then(|s| s.focused_pane_id.clone());
+                        this.poll_endpoints(cx);
+                        if old_pane
+                            != this
+                                .live
+                                .snapshot
+                                .as_ref()
+                                .and_then(|s| s.focused_pane_id.clone())
+                        {
+                            this.marked.clear();
                         }
                         this.resize();
                         this.report_focus();
@@ -104,7 +110,18 @@ impl HerdrWindow {
             }
         });
         let mut this = Self {
-            target,
+            catalog: endpoint::Catalog::new(&target),
+            endpoints: vec![endpoint::Endpoint::new(
+                endpoint::LOCAL.into(),
+                "Local".into(),
+                target,
+                true,
+            )],
+            selected_endpoint: 0,
+            selection_epoch: 0,
+            activation_deadline: None,
+            pending_navigation: None,
+            pending_releases: Vec::new(),
             handle: None,
             inbox: Arc::new(Mutex::new(LiveState::default())),
             live: LiveState::default(),
@@ -142,50 +159,6 @@ impl HerdrWindow {
         this
     }
 
-    fn reconnect(&mut self) {
-        if let Some(handle) = self.handle.take() {
-            handle.disconnect();
-        }
-        self.live = LiveState::default();
-        self.local_error = None;
-        self.marked.clear();
-        self.sent_size = None;
-        self.wheel = WheelAccumulator::default();
-        self.sent_focus = None;
-        let mut state = LiveState::default();
-        state.set_outer_focus(self.active);
-        self.inbox = Arc::new(Mutex::new(state));
-        match connect(self.target.clone(), self.options) {
-            Ok(client) => {
-                self.handle = Some(client.handle);
-                let inbox = self.inbox.clone();
-                // Always drain ordered events, even while GPUI is busy. Only the
-                // latest coherent state is retained, never an unbounded UI queue.
-                if let Err(error) = std::thread::Builder::new()
-                    .name("herdr-gui-events".into())
-                    .spawn(move || {
-                        while let Ok(event) = client.events.recv() {
-                            let Ok(mut state) = inbox.lock() else {
-                                break;
-                            };
-                            state.apply(event);
-                        }
-                    })
-                {
-                    self.local_error = Some(error.to_string());
-                    if let Some(handle) = self.handle.take() {
-                        handle.disconnect();
-                    }
-                    self.live.status = "Disconnected".into();
-                }
-            }
-            Err(error) => {
-                self.live.status = "Disconnected".into();
-                self.local_error = Some(error.to_string());
-            }
-        }
-    }
-
     fn resize(&mut self) {
         if self.sent_size == Some(self.options.surface_size) {
             return;
@@ -199,22 +172,23 @@ impl HerdrWindow {
     }
 
     fn report_focus(&mut self) {
+        let focused = self.active && self.endpoints[self.selected_endpoint].surface_requested();
         // Update the authoritative event inbox, not just the rendered clone.
         if let Ok(mut state) = self.inbox.try_lock() {
-            state.set_outer_focus(self.active);
+            state.set_outer_focus(self.active && self.input_ready());
         }
-        if self.sent_focus == Some(self.active) {
+        if self.sent_focus == Some(focused) {
             return;
         }
         if let (Some(handle), Some(snapshot)) = (&self.handle, &self.live.snapshot)
-            && handle.set_focus(&snapshot.boot_id, self.active).is_ok()
+            && handle.set_focus(&snapshot.boot_id, focused).is_ok()
         {
-            self.sent_focus = Some(self.active);
+            self.sent_focus = Some(focused);
         }
     }
 
     fn send(&mut self, event: ClientPaneInputEvent, cx: &mut Context<Self>) {
-        if self.menu.page.is_some() {
+        if self.menu.page.is_some() || !self.input_ready() {
             return;
         }
         if let (Some(handle), Some(snapshot), Some(surface)) =
@@ -235,35 +209,79 @@ impl HerdrWindow {
     }
 
     fn navigate(&mut self, kind: &str, id: &str, cx: &mut Context<Self>) {
-        if let (Some(handle), Some(snapshot)) = (&self.handle, &self.live.snapshot) {
-            let result = match kind {
-                "workspace" => handle.focus_workspace(&snapshot.boot_id, id),
-                "tab" => handle.focus_tab(&snapshot.boot_id, id),
-                _ => handle.focus_pane(&snapshot.boot_id, id),
-            };
-            if let Err(error) = result {
-                self.local_error = Some(error.to_string());
-            }
+        if !self.input_ready() {
+            return;
         }
+        let (method, params) = match kind {
+            "workspace" => ("workspace.focus", serde_json::json!({"workspace_id": id})),
+            "tab" => ("tab.focus", serde_json::json!({"tab_id": id})),
+            _ => ("pane.focus", serde_json::json!({"pane_id": id})),
+        };
+        self.request_focus_change(method, params, Some((kind.into(), id.into())));
         self.marked.clear();
         cx.notify();
     }
 
+    fn request_focus_change(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+        focus: Option<(String, String)>,
+    ) {
+        if let (Some(handle), Some(snapshot)) = (&self.handle, &self.live.snapshot)
+            && let Ok(mut state) = self.inbox.lock()
+        {
+            if let Err(error) = handle.request(&snapshot.boot_id, method, params) {
+                self.local_error = Some(format!("{method}: {error}"));
+            } else if self.live.supports_surface {
+                // An ordered surface barrier prevents input hitting the previous
+                // pane while navigation/creation and its projection are in flight.
+                // Hold the inbox lock until both requests and the fence are set.
+                let (request, failed) = match handle.set_surface_active(&snapshot.boot_id, true) {
+                    Ok(request) => (request, false),
+                    Err(error) => {
+                        self.local_error = Some(error.to_string());
+                        (String::new(), true)
+                    }
+                };
+                state.activation = Some(state::SurfaceActivation {
+                    request,
+                    boot: snapshot.boot_id.clone(),
+                    revision: None,
+                    failed,
+                    focus,
+                    active: true,
+                });
+                state.surface = None;
+                state.dirty = true;
+                self.live = state.clone();
+                self.activation_deadline = Some(
+                    std::time::Instant::now()
+                        + if failed {
+                            Duration::ZERO
+                        } else {
+                            Duration::from_secs(5)
+                        },
+                );
+            }
+        }
+    }
+
     fn command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
-        if self.menu.page.is_some() {
+        if self.menu.page.is_some()
+            || self.activation_deadline.is_some()
+            || !self.endpoints[self.selected_endpoint].surface_requested()
+        {
             return;
         }
         #[cfg(feature = "integration-test")]
         {
             self.input_probe.actions += 1;
         }
-        if let (Some(handle), Some(snapshot)) = (&self.handle, &self.live.snapshot)
+        if let Some(snapshot) = &self.live.snapshot
             && let Some((method, params)) = controls::request(command, snapshot)
         {
-            self.local_error = handle
-                .request(&snapshot.boot_id, method, params)
-                .err()
-                .map(|error| format!("{method}: {error}"));
+            self.request_focus_change(method, params, None);
             self.marked.clear();
         }
         window.focus(&self.focus);
@@ -271,7 +289,7 @@ impl HerdrWindow {
     }
 
     fn scroll_wheel(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.menu.page.is_some() {
+        if self.menu.page.is_some() || !self.input_ready() {
             return;
         }
         let (Some(handle), Some(snapshot), Some(surface)) =
@@ -373,9 +391,15 @@ impl Render for HerdrWindow {
                 );
             }
         }
-        let surface = self.live.surface.clone();
+        let surface = self
+            .live
+            .surface
+            .clone()
+            .filter(|_| self.live.surface_ready());
         let snapshot = self.live.snapshot.clone();
         let inbox = self.inbox.clone();
+        let paint_epoch = self.selection_epoch;
+        let paint_generation = self.endpoints[self.selected_endpoint].generation;
         let entity = cx.entity();
         let paint_entity = entity.clone();
         let focus = self.focus.clone();
@@ -481,16 +505,26 @@ impl Render for HerdrWindow {
                                 let surface = surface.clone();
                                 // Defer projection/COW work until after paint. On contention,
                                 // retry via another draw, never by acknowledging inbox cells.
-                                cx.defer(move |cx| match inbox.try_lock() {
-                                    Ok(mut state) => {
-                                        state.acknowledge_presented_surface(
-                                            &snapshot, &surface, true,
-                                        );
+                                cx.defer(move |cx| {
+                                    let owned = paint_entity.read(cx).owns_paint(
+                                        paint_epoch,
+                                        paint_generation,
+                                        &inbox,
+                                    );
+                                    if !owned {
+                                        return;
                                     }
-                                    Err(std::sync::TryLockError::WouldBlock) => {
-                                        paint_entity.update(cx, |_, cx| cx.notify());
+                                    match inbox.try_lock() {
+                                        Ok(mut state) => {
+                                            state.acknowledge_presented_surface(
+                                                &snapshot, &surface, true,
+                                            );
+                                        }
+                                        Err(std::sync::TryLockError::WouldBlock) => {
+                                            paint_entity.update(cx, |_, cx| cx.notify());
+                                        }
+                                        Err(std::sync::TryLockError::Poisoned(_)) => {}
                                     }
-                                    Err(std::sync::TryLockError::Poisoned(_)) => {}
                                 });
                             }
                         }
@@ -654,7 +688,7 @@ fn run() {
             "--dev" => development = true,
             "--help" | "-h" => {
                 println!(
-                    "herdr-gpui [--socket CLIENT_SOCKET | --session NAME [--dev]]\nConnects to an existing local Herdr daemon; never starts or stops it."
+                    "herdr-gpui [--socket CLIENT_SOCKET | --session NAME [--dev]]\nConnects to Local and saved SSH hosts; never installs remote software.\n--socket isolates the GUI to one existing daemon."
                 );
                 #[cfg(feature = "integration-test")]
                 println!(

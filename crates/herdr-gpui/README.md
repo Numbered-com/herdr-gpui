@@ -1,7 +1,10 @@
 # Herdr Native Shell
 
-A minimal macOS GPUI 0.2.2 client for an **already running** local Herdr daemon.
-It does not link, start, stop, or modify Herdr, spawn a PTY, or emulate a terminal.
+A macOS GPUI 0.2.2 client for an already running Local daemon and saved SSH hosts.
+It does not link or install Herdr, start the local daemon, stop daemons, spawn a
+local PTY, or emulate a terminal. Herdr's remote bridge may start the named remote
+session. SSH requires an installed POSIX Herdr, noninteractive authentication,
+and an already trusted host key.
 Runtime dependencies are GPUI, `herdr-client`, and `serde_json` for API parameters.
 
 ```sh
@@ -14,8 +17,38 @@ cargo run -p herdr-gpui -- --socket /absolute/path/to/herdr-client.sock
 Without flags, discovery follows `herdr-client`'s environment and release-session
 rules. `--socket` must name the binary **client** socket, not the JSON API socket.
 `--dev` selects the `herdr-dev` config directory. Connection failure is displayed
-in the single-row status bar; Terminal > Reconnect makes a fresh connection with
-no input replay. The status dot is green when connected and red otherwise.
+in the single-row status bar and host rows. Endpoints reconnect independently with
+bounded backoff; Terminal > Reconnect retries the selected endpoint immediately,
+without input replay. Detach pauses retries for that endpoint until Reconnect.
+The status dot is green when connected and red otherwise.
+
+Spaces lists Local first, then saved hosts in the upstream catalog's order.
+Enabled hosts connect in the background with inactive terminal surfaces; disabled
+hosts remain visible. Host and repository collapse state is endpoint-scoped, and
+Agents aggregates all connected endpoints with host labels. The catalog is read
+through `herdr-client` every two seconds; changes to targets, sessions, enablement,
+and ordering are reflected without restarting. Catalog errors preserve the last
+valid list. The GUI never edits saved hosts or installs remote software.
+An explicit `--socket` is isolated: it never loads or connects saved hosts, or
+reads/writes saved selection. Other launches read `client/endpoint-selection.json`
+once, under the same release/dev state root as the catalog. Local remains usable
+while the desired host connects; restoration waits for its first snapshot rather
+than timing out during SSH startup. Explicit host/workspace/agent choices cancel
+pending restoration and persist selection asynchronously, without editing hosts.
+Other running clients' choices never change this window's selection. Missing,
+malformed, disabled or removed saved choices fall back to the valid legacy
+catalog selection (normally Local), matching upstream. Live removal/disable
+returns to Local and cancels pending restoration; re-enabling does not steal focus.
+Automatic activation failure returns to Local without overwriting the saved
+preference or repeatedly attempting the same handoff. Write failures are shown
+in the status bar and do not undo the UI choice. Host editing remains in
+`herdr machine`.
+
+Switching revokes the old host's focus before releasing its surface, then resizes
+and activates the selected host. Input waits for the activation acknowledgement
+and a coherent surface at the current viewport size. Handoffs time out after five
+seconds and return to Local; returning to Local never waits on a remote release.
+Servers without surface-switching support remain usable as single targets.
 
 ## Supported
 
@@ -90,8 +123,8 @@ GPUI native action/menu/keybinding patterns.
 - No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
   hyperlink activation, image rendering, or animated blinking.
 - No pane/tab/workspace close or delete actions (deferred until confirmation UI),
-  horizontal wheel handling, command palette, server-owned keybindings, SSH,
-  session picker, automatic reconnect, or daemon lifecycle management.
+  horizontal wheel handling, command palette, server-owned keybindings,
+  session picker, saved-host editing, or daemon lifecycle management.
 - IME uses a minimal transient buffer, not a local editable terminal document;
   composition appears in the status bar rather than inline. Key releases and
   physical-key/extended keyboard protocol metadata are not reported.
