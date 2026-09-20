@@ -194,6 +194,12 @@ active desktop. Run `just test-live` and `just test-gui` locally as shown above.
 
 ## Sidebar Width
 
+Workspace titles show the GitHub organization or owner avatar, resolved from
+the local repository's `origin` remote. Git lookups and avatar downloads run
+in the background, with results shared per owner for the app session. The
+GitHub mark is used while loading or when an avatar is unavailable. No GitHub
+token is needed; avatar requests go to `avatars.githubusercontent.com`.
+
 Drag the sidebar's right edge to resize it; double-click the divider to restore
 the default width. The terminal resizes automatically. Width is remembered per
 daemon socket in `$XDG_STATE_HOME/herdr/gpui/local-<socket-hash>.json`, defaulting

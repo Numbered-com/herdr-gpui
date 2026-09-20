@@ -1,6 +1,7 @@
 // objc 0.2's selectors expand a legacy cargo-clippy cfg in the native test adapter.
 #![cfg_attr(feature = "integration-test", allow(unexpected_cfgs))]
 mod app_icon;
+mod avatars;
 mod controls;
 mod input;
 mod menu;
@@ -60,6 +61,7 @@ struct HerdrWindow {
     sidebar_drag: Option<(f32, f32)>,
     sidebar_preferences: Option<preferences::Preferences>,
     sidebar_modified: bool,
+    avatars: Option<avatars::Avatars>,
     #[cfg(feature = "integration-test")]
     input_probe: smoke::InputProbe,
     #[cfg(feature = "integration-test")]
@@ -83,6 +85,9 @@ impl HerdrWindow {
                 timer.timer(Duration::from_millis(16)).await;
                 if this
                     .update(cx, |this, cx| {
+                        if this.avatars.as_mut().is_some_and(|avatars| avatars.poll()) {
+                            cx.notify();
+                        }
                         if let Some(width) =
                             this.sidebar_preferences.as_mut().and_then(|p| p.loaded())
                             && !this.sidebar_modified
@@ -104,6 +109,13 @@ impl HerdrWindow {
                                 this.marked.clear();
                             }
                             this.live = next;
+                            if let (Some(avatars), Some(snapshot)) =
+                                (&mut this.avatars, &this.live.snapshot)
+                            {
+                                for workspace in &snapshot.workspaces {
+                                    avatars.request(&workspace.new_workspace_cwd);
+                                }
+                            }
                             cx.notify();
                         }
                         this.resize();
@@ -137,6 +149,7 @@ impl HerdrWindow {
             sidebar_drag: None,
             sidebar_preferences: None,
             sidebar_modified: false,
+            avatars: None,
             #[cfg(feature = "integration-test")]
             input_probe: smoke::InputProbe::default(),
             #[cfg(feature = "integration-test")]
@@ -159,6 +172,7 @@ impl HerdrWindow {
             .socket_path()
             .ok()
             .map(|path| preferences::Preferences::new(&path));
+        this.avatars = Some(avatars::Avatars::new());
         this.reconnect();
         this
     }

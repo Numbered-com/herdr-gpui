@@ -156,7 +156,10 @@ impl Element for ProbeText {
             && bounds.bottom() <= mask.bottom()
         {
             let parent = &cx.global::<TextProbes>().0["agent-launcher"].0;
-            assert_eq!(bounds.left(), parent.left() + px(super::CHILD_INDENT));
+            assert_eq!(
+                bounds.left(),
+                parent.left() + px(super::CHILD_INDENT - super::ICON_RESERVE)
+            );
             assert_eq!(
                 bounds.size.width,
                 px(super::LABEL_WIDTH - super::CHILD_INDENT - super::ARROW_RESERVE)
@@ -264,6 +267,7 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
             sidebar_drag: None,
             sidebar_preferences: None,
             sidebar_modified: false,
+            avatars: None,
             #[cfg(feature = "integration-test")]
             input_probe: crate::smoke::InputProbe::default(),
             #[cfg(feature = "integration-test")]
@@ -321,6 +325,16 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     let spaces = cx.debug_bounds("spaces-scroll").unwrap();
     let agents = cx.debug_bounds("agents-scroll").unwrap();
     assert_eq!(sidebar.size.width, px(232.));
+    let icon = cx.debug_bounds("github-herdr").unwrap();
+    let title = cx.debug_bounds("name-herdr").unwrap();
+    let detail = cx.debug_bounds("detail-herdr").unwrap();
+    assert_eq!(icon.size, size(px(12.), px(12.)));
+    assert_eq!(title.left(), icon.right() + px(6.));
+    assert_eq!(icon.left(), detail.left());
+    assert_eq!(title.right(), detail.right());
+    assert!(cx.debug_bounds("github-agent-launcher").is_some());
+    assert!(cx.debug_bounds("github-sidebar-child").is_none());
+    assert!(cx.debug_bounds("github-review").is_none());
     assert!(spaces.size.height > px(200.));
     assert!(agents.size.height > px(200.));
     assert!(agents.bottom() <= sidebar.bottom());
@@ -334,7 +348,10 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     ] {
         let name = cx.debug_bounds(name).unwrap();
         let detail = cx.debug_bounds(detail).unwrap();
-        assert_eq!(name.left(), parent.left() + px(super::CHILD_INDENT));
+        assert_eq!(
+            name.left(),
+            parent.left() + px(super::CHILD_INDENT - super::ICON_RESERVE)
+        );
         assert_eq!(
             name.size.width,
             px(super::LABEL_WIDTH - super::CHILD_INDENT - super::ARROW_RESERVE)
@@ -404,7 +421,10 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
         });
         assert_eq!(cx.debug_bounds("sidebar").unwrap().size.width, px(target));
         let label = cx.debug_bounds("name-herdr").unwrap();
-        assert_eq!(label.size.width, px(super::LABEL_WIDTH + target - 232.));
+        assert_eq!(
+            label.size.width,
+            px(super::LABEL_WIDTH + target - 232. - super::ICON_RESERVE)
+        );
         let parent = cx.debug_bounds("name-agent-launcher").unwrap();
         let child = cx.debug_bounds("name-sidebar-child").unwrap();
         assert_eq!(
@@ -413,7 +433,7 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
         );
         assert_eq!(
             child.size.width,
-            parent.size.width - px(super::CHILD_INDENT)
+            parent.size.width - px(super::CHILD_INDENT) + px(super::ICON_RESERVE)
         );
         assert_eq!(child.right(), parent.right());
         cx.update(|_, cx| {
@@ -475,6 +495,11 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
             let view = view.read(cx);
             assert_eq!(view.live.snapshot.as_deref(), Some(&before));
             assert_eq!(view.marked, "selection must survive toggle");
+            assert!(cx.global::<TextProbes>().0.contains_key(if collapsed {
+                "\u{25b8}"
+            } else {
+                "\u{25be}"
+            }));
             assert_eq!(
                 view.collapsed_repos
                     .contains("/fixture/agent-launcher/.git"),

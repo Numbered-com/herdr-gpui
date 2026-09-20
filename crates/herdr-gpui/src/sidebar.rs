@@ -2,6 +2,7 @@ use super::{Command, HerdrWindow};
 use gpui::{prelude::*, *};
 use herdr_client::protocol::{AgentStatus, ClientShellAgent, ClientShellWorkspace};
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock};
 
 pub(super) const BACKGROUND: u32 = 0x1c1c22;
 pub(super) const FOREGROUND: u32 = 0xc1bdce;
@@ -13,6 +14,13 @@ const STATUS_WIDTH: f32 = 5.;
 const LABEL_GAP: f32 = 8.;
 const CHILD_INDENT: f32 = 16.;
 const ARROW_RESERVE: f32 = 18.;
+pub(super) const ICON_RESERVE: f32 = 18.;
+pub(super) static GITHUB_ICON: LazyLock<Arc<Image>> = LazyLock::new(|| {
+    Arc::new(Image::from_bytes(
+        ImageFormat::Svg,
+        include_bytes!("../../../assets/icons/github.svg").to_vec(),
+    ))
+});
 #[cfg(any(test, feature = "integration-test"))]
 pub(super) const LABEL_WIDTH: f32 =
     SIDEBAR_WIDTH - 1. - 2. * ROW_PADDING - STATUS_WIDTH - LABEL_GAP;
@@ -68,6 +76,12 @@ impl HerdrWindow {
                         indented,
                         group.is_some() || indented,
                         width,
+                        (!indented).then(|| {
+                            self.avatars
+                                .as_ref()
+                                .and_then(|avatars| avatars.image(&workspace.new_workspace_cwd))
+                                .unwrap_or_else(|| GITHUB_ICON.clone())
+                        }),
                     )
                     .when_some(group, |row, key| {
                         let collapsed = self.collapsed_repos.contains(&key);
@@ -78,7 +92,10 @@ impl HerdrWindow {
                                 .w(px(ARROW_RESERVE - LABEL_GAP))
                                 .h(px(32.))
                                 .flex_none()
-                                .child(label_text(if collapsed { ">" } else { "v" }))
+                                .text_size(px(16.))
+                                .text_color(rgb(MUTED))
+                                .hover(|s| s.text_color(rgb(FOREGROUND)))
+                                .child(label_text(if collapsed { "\u{25b8}" } else { "\u{25be}" }))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
                                     if !this.collapsed_repos.remove(&key) {
@@ -107,6 +124,7 @@ impl HerdrWindow {
                         false,
                         false,
                         width,
+                        None,
                     )
                     .id(SharedString::from(format!("agent-{id}")))
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -293,6 +311,7 @@ fn header(label: &'static str) -> Div {
         .child(label)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn row(
     name: &str,
     detail: &str,
@@ -301,7 +320,13 @@ fn row(
     indented: bool,
     reserve_arrow: bool,
     width: f32,
+    workspace_icon: Option<Arc<Image>>,
 ) -> Div {
+    let icon_reserve = if workspace_icon.is_some() {
+        ICON_RESERVE
+    } else {
+        0.
+    };
     let indent = if indented { CHILD_INDENT } else { 0. };
     let label_width = (width
         - 1.
@@ -339,10 +364,47 @@ fn row(
                 .debug_selector(|| format!("column-{name}"))
                 .child(
                     div()
-                        .debug_selector(|| format!("name-{name}"))
+                        .relative()
                         .w(px(label_width))
-                        .truncate()
-                        .child(label_text(name)),
+                        .h(px(16.))
+                        .when_some(workspace_icon, |title, image| {
+                            title.child(
+                                div()
+                                    .debug_selector(|| format!("github-{name}"))
+                                    .absolute()
+                                    .left_0()
+                                    .top(px(2.))
+                                    .size(px(12.))
+                                    .flex_none()
+                                    .overflow_hidden()
+                                    .child(
+                                        img(image)
+                                            .size_full()
+                                            .rounded_full()
+                                            .with_fallback(|| {
+                                                img(GITHUB_ICON.clone())
+                                                    .size_full()
+                                                    .rounded_full()
+                                                    .into_any_element()
+                                            })
+                                            .with_loading(|| {
+                                                img(GITHUB_ICON.clone())
+                                                    .size_full()
+                                                    .rounded_full()
+                                                    .into_any_element()
+                                            }),
+                                    ),
+                            )
+                        })
+                        .child(
+                            div()
+                                .debug_selector(|| format!("name-{name}"))
+                                .ml(px(icon_reserve))
+                                .w(px((label_width - icon_reserve).max(0.)))
+                                .flex_none()
+                                .truncate()
+                                .child(label_text(name)),
+                        ),
                 )
                 .child(
                     div()
