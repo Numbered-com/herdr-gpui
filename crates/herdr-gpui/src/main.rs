@@ -655,8 +655,50 @@ impl Render for HerdrWindow {
                             .child(status),
                     )
                     .when(!self.marked.is_empty(), |d| {
-                        d.child(format!("Composing: {}", self.marked))
-                    }),
+                        d.child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .child(format!("Composing: {}", self.marked)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id("report-issue")
+                            .debug_selector(|| "report-issue".into())
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.))
+                            .px_2()
+                            .text_xs()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgb(sidebar::ACTIVE)))
+                            .child(
+                                div()
+                                    .size(px(12.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(rgb(sidebar::FOREGROUND))
+                                    .child(
+                                        div()
+                                            .size(px(3.))
+                                            .rounded_full()
+                                            .bg(rgb(sidebar::FOREGROUND)),
+                                    ),
+                            )
+                            .child("Report issue")
+                            .on_click(|_, _, cx| {
+                                cx.open_url(
+                                    "https://github.com/penso/herdr-gpui/issues/new/choose",
+                                );
+                            }),
+                    ),
             )
             .when(self.menu.page.is_some(), |root| {
                 root.child(self.render_menu(window, cx))

@@ -62,6 +62,10 @@ stops, or upgrades the daemon, and closing the window leaves it running. A faile
 connection appears in the status bar with a red dot. Use Terminal > Reconnect to
 retry; there is no permanent reconnect button.
 
+Use **Report issue** on the right of the status bar to open this repository's
+GitHub issue forms in your browser. Choose a bug report, feature request, or
+documentation issue; redact secrets and private terminal content before submitting.
+
 New workspaces created through Herdr appear automatically while connected.
 Revisioned snapshots are pushed by the daemon and applied by the GUI without a
 manual refresh. The native integration test checks creation by a separate client,
