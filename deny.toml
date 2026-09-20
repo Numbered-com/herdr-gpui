@@ -1,14 +1,13 @@
 # cargo-deny configuration. Run locally with `cargo deny check`.
 #
-# This is a macOS-only application, so the dependency graph is evaluated for
-# macOS targets only. Without this, Windows- and Linux-only transitive
-# dependencies of GPUI show up and are judged on licenses that never reach a
-# shipped binary.
+# Evaluate every shipped target: both macOS architectures and experimental
+# x86_64 GNU/Linux. Windows-only dependencies do not reach a shipped binary.
 
 [graph]
 targets = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
 ]
 all-features = true
 
