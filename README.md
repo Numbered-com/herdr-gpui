@@ -204,7 +204,22 @@ Current rendering uses Menlo and a fixed ANSI palette. Images and terminal
 notifications/clipboard writes are deliberately not executed. See
 [`crates/herdr-gpui/README.md`](crates/herdr-gpui/README.md) for the detailed scope.
 
+## Releases
+
+Tagged builds (`YYYYMMDD.NN`) publish a universal `Herdr.app` bundle, signed
+with a Developer ID certificate and notarized by Apple, alongside per-architecture
+executables and a CycloneDX SBOM. Every asset ships SHA256/SHA512 checksums, a
+Sigstore keyless signature, and GitHub build provenance; detached GPG
+signatures from the maintainer's key are added shortly after publication.
+
+```sh
+just verify-release --version 20260920.01 --checksums
+```
+
+See [SECURITY.md](SECURITY.md) for what each of those claims actually proves.
+
 ## License
 
-Apache-2.0. See [the license](crates/herdr-protocol/LICENSE-APACHE) and
-[upstream protocol attribution](crates/herdr-protocol/NOTICE.md).
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE), plus the
+[upstream protocol attribution](crates/herdr-protocol/NOTICE.md) for the
+vendored parts of `herdr-protocol`.
