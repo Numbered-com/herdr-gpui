@@ -27,13 +27,19 @@ runs:
             || shasum -a "$algo" "$file" > "${file}.sha${algo}"
         }
 
-        signed=0
+        # Validate every expansion before signing anything; one missing glob is fatal.
+        files=()
         # Unquoted on purpose: the input is a glob or a space-separated list.
         for file in $FILES_PATTERN; do
-          if [ ! -f "$file" ]; then
-            echo "::warning::no file matching '$file'"
-            continue
-          fi
+          [[ -f "$file" && ! -L "$file" && -s "$file" ]] || {
+            echo "::error::missing, empty, or symlink artifact '$file'"
+            exit 1
+          }
+          files+=("$file")
+        done
+        [[ ${#files[@]} -gt 0 ]] || exit 1
+        signed=0
+        for file in "${files[@]}"; do
           echo "Signing: $file"
 
           checksum 256 "$file"

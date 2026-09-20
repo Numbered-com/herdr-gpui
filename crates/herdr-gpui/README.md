@@ -171,7 +171,8 @@ GPUI native action/menu/keybinding patterns.
 
 ## Deliberate Limitations
 
-- macOS first; defaults to system Menlo and system font fallback, no bundled Nerd Font.
+- macOS first; defaults to Menlo on macOS and DejaVu Sans Mono elsewhere, with
+  system font fallback and no bundled Nerd Font.
   Private-use icons may be missing. Fonts and palettes are configured locally,
   not synchronized from the host terminal's theme.
 - No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
