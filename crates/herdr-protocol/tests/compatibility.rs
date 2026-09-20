@@ -4,6 +4,77 @@ use herdr_protocol::{endpoint::*, *};
 use serde::Serialize;
 use std::io::{self, Read};
 
+#[test]
+fn errors_preserve_codec_and_io_sources_and_validation_categories() {
+    use std::error::Error as _;
+
+    let error = decode_payload::<bool>(&[2]).unwrap_err();
+    assert!(matches!(error, Error::Decode(_)));
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(matches!(
+        error
+            .source()
+            .unwrap()
+            .downcast_ref::<bincode::error::DecodeError>(),
+        Some(bincode::error::DecodeError::InvalidBooleanValue(2))
+    ));
+
+    let error = encode_message(&"oversized", 1).unwrap_err();
+    let source = error
+        .source()
+        .unwrap()
+        .downcast_ref::<bincode::error::EncodeError>()
+        .unwrap();
+    let bincode::error::EncodeError::Io { inner, .. } = source else {
+        panic!("expected bounded writer source")
+    };
+    assert!(matches!(
+        inner.get_ref().unwrap().downcast_ref::<Error>(),
+        Some(Error::FrameLimit)
+    ));
+
+    struct FailingIo;
+    impl Read for FailingIo {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::from_raw_os_error(13))
+        }
+    }
+    impl io::Write for FailingIo {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let error = read_message::<_, bool>(&mut FailingIo, 32).unwrap_err();
+    assert_eq!(error.kind(), io::Error::from_raw_os_error(13).kind());
+    assert_eq!(
+        error
+            .source()
+            .unwrap()
+            .downcast_ref::<io::Error>()
+            .unwrap()
+            .raw_os_error(),
+        Some(13)
+    );
+    let error = write_message(&mut FailingIo, &true, 32).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    assert!(error.source().unwrap().is::<io::Error>());
+
+    assert!(matches!(
+        decode_payload::<bool>(&[0, 0]),
+        Err(Error::TrailingBytes)
+    ));
+    assert!(matches!(
+        read_message::<_, bool>(&mut &[0; 4][..], 32),
+        Err(Error::FrameLimit)
+    ));
+    let mut invalid = surface();
+    invalid.frame.cells.clear();
+    assert!(matches!(invalid.frame.validate(), Err(Error::CellCount)));
+}
+
 fn payload(value: &impl Serialize) -> Vec<u8> {
     encode_message(value, MAX_GRAPHICS_FRAME_SIZE).unwrap()[4..].to_vec()
 }

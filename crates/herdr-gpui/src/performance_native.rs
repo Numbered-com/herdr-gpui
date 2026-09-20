@@ -1,5 +1,6 @@
 //! AppKit adapter for GPUI 0.2.2's inaccessible dispatch_event return type.
 #![allow(unsafe_code, deprecated, unexpected_cfgs)]
+use anyhow::{Result, anyhow, bail};
 use cocoa::{
     appkit::{NSApp, NSView, NSWindow},
     base::{id, nil},
@@ -15,7 +16,7 @@ use objc::{class, msg_send, sel, sel_impl};
 
 // Called on the application main thread, outside any GPUI App/Window borrow.
 // Only the fixture's own content view receives events; nothing is posted globally.
-pub fn dispatch(y: f64, scroll: Option<i32>) -> Result<(), String> {
+pub fn dispatch(y: f64, scroll: Option<i32>) -> Result<()> {
     unsafe {
         let windows: id = msg_send![NSApp(), windows];
         let count: usize = msg_send![windows, count];
@@ -30,7 +31,7 @@ pub fn dispatch(y: f64, scroll: Option<i32>) -> Result<(), String> {
             }
         }
         if window == nil {
-            return Err("fixture window not found".into());
+            bail!("fixture window not found");
         }
         let children: id = msg_send![window.contentView(), subviews];
         let count: usize = msg_send![children, count];
@@ -43,7 +44,7 @@ pub fn dispatch(y: f64, scroll: Option<i32>) -> Result<(), String> {
             }
         }
         if view == nil {
-            return Err("GPUIView not found".into());
+            bail!("GPUIView not found");
         }
         let height = NSView::frame(view).size.height;
         let number: isize = msg_send![window, windowNumber];
@@ -52,12 +53,12 @@ pub fn dispatch(y: f64, scroll: Option<i32>) -> Result<(), String> {
             timestamp: 0_f64 windowNumber: number context: nil eventNumber: 0_isize
             clickCount: 0_isize pressure: 0_f32];
         if event == nil {
-            return Err("cannot create native mouse event".into());
+            bail!("cannot create native mouse event");
         }
         let _: () = msg_send![view, mouseMoved: event];
         if let Some(delta) = scroll {
-            let source =
-                CGEventSource::new(CGEventSourceStateID::Private).map_err(|_| "event source")?;
+            let source = CGEventSource::new(CGEventSourceStateID::Private)
+                .map_err(|()| anyhow!("event source"))?;
             let screens: id = msg_send![class!(NSScreen), screens];
             let screen: id = msg_send![screens, objectAtIndex: 0_usize];
             let screen_frame: NSRect = msg_send![screen, frame];
@@ -67,7 +68,7 @@ pub fn dispatch(y: f64, scroll: Option<i32>) -> Result<(), String> {
                 CGPoint::new(100., screen_frame.size.height - height + y),
                 CGMouseButton::Left,
             )
-            .map_err(|_| "scroll event")?;
+            .map_err(|()| anyhow!("scroll event"))?;
             event.set_type(CGEventType::ScrollWheel);
             event.set_integer_value_field(EventField::SCROLL_WHEEL_EVENT_IS_CONTINUOUS, 1);
             event.set_integer_value_field(
@@ -78,7 +79,7 @@ pub fn dispatch(y: f64, scroll: Option<i32>) -> Result<(), String> {
             // compensate so GPUI receives the same local point as the mouse event.
             let native: id = msg_send![class!(NSEvent), eventWithCGEvent: event.as_ptr()];
             if native == nil {
-                return Err("cannot create native scroll event".into());
+                bail!("cannot create native scroll event");
             }
             let _: () = msg_send![view, scrollWheel: native];
         }

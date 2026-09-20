@@ -1,6 +1,6 @@
 //! POSIX discovery/stdio bridge adapted from upstream remote/attach.rs.
 //! No installers, daemon restarts, SSH config edits, or trust-on-first-use.
-use crate::{POLL, catalog::validate_target, invalid, session_socket};
+use crate::{Error, POLL, Result, catalog::validate_target, session_socket};
 use std::{
     io::{self, Read, Write},
     os::{fd::OwnedFd, unix::net::UnixStream},
@@ -88,7 +88,7 @@ pub(crate) fn connect(
     target: &str,
     session: &str,
     stop: &AtomicBool,
-) -> io::Result<(UnixStream, SshChild)> {
+) -> Result<(UnixStream, SshChild)> {
     validate_target(target)?;
     session_socket(Path::new(""), session)?;
     let (mut stream, child_stream) = UnixStream::pair()?;
@@ -143,39 +143,26 @@ fn compatible_status(output: &[u8]) -> Option<bool> {
         })
 }
 
-fn await_ready(
-    stream: &mut UnixStream,
-    stop: &AtomicBool,
-    started: Instant,
-) -> io::Result<Vec<u8>> {
+fn await_ready(stream: &mut UnixStream, stop: &AtomicBool, started: Instant) -> Result<Vec<u8>> {
     let mut line = Vec::new();
     let mut output = Vec::new();
     let mut total = 0;
     loop {
         if stop.load(Ordering::Acquire) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "SSH connection cancelled",
-            ));
+            return Err(Error::SshCancelled);
         }
         if started.elapsed() >= Duration::from_secs(15) {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "SSH discovery timed out",
-            ));
+            return Err(Error::SshTimeout);
         }
         let mut byte = [0];
         match stream.read(&mut byte) {
             Ok(0) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "SSH bridge closed; check host trust, authentication, and remote Herdr installation",
-                ));
+                return Err(Error::SshClosed);
             }
             Ok(_) => {
                 total += 1;
                 if total > 16384 {
-                    return Err(invalid("SSH startup output exceeds limit"));
+                    return Err(Error::SshOutputLimit);
                 }
                 line.push(byte[0]);
                 if byte[0] == b'\n' {
@@ -193,7 +180,7 @@ fn await_ready(
                         | io::ErrorKind::TimedOut
                         | io::ErrorKind::Interrupted
                 ) => {}
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         }
     }
 }

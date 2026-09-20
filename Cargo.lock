@@ -2472,12 +2472,14 @@ dependencies = [
  "herdr-protocol",
  "serde",
  "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "herdr-gpui"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "cocoa 0.26.0",
  "core-graphics 0.24.0",
  "foreign-types",
@@ -2490,6 +2492,7 @@ dependencies = [
  "raw-window-handle",
  "serde",
  "serde_json",
+ "thiserror 2.0.20",
  "toml 0.8.23",
  "toml_edit 0.22.27",
  "ureq",
@@ -2502,6 +2505,7 @@ dependencies = [
  "bincode",
  "serde",
  "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

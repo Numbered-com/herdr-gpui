@@ -10,6 +10,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
 gpui = { workspace = true, features = ["runtime_shaders"] }
 herdr-client.workspace = true
 serde.workspace = true
