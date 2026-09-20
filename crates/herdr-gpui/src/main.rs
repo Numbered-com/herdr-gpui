@@ -9,6 +9,7 @@ mod connection;
 mod controls;
 mod daemon;
 mod endpoint;
+mod icons;
 mod input;
 mod menu;
 mod palette;
@@ -20,9 +21,12 @@ mod sidebar;
 #[cfg(feature = "integration-test")]
 mod smoke;
 mod state;
+mod tab_menu;
 mod terminal;
 mod terminal_painter;
 mod theme_picker;
+#[cfg(target_os = "macos")]
+mod titlebar;
 
 use connection::ConnectionBridge;
 use controls::Command;
@@ -164,6 +168,7 @@ impl HerdrWindow {
                             .as_ref()
                             .and_then(|s| s.focused_pane_id.clone());
                         this.poll_endpoints(cx);
+                        this.poll_tab_rename(window, cx);
                         if old_pane
                             != this
                                 .live
@@ -574,7 +579,7 @@ impl Render for HerdrWindow {
             .id("tabs")
             .flex()
             .flex_none()
-            .h(px((self.config.tabs.size * 1.5 + 16.).max(40.)))
+            .h(px((self.config.tabs.size * 1.5 + 8.).max(32.)))
             .font_family(self.config.tabs.family.clone())
             .text_size(px(self.config.tabs.size))
             .overflow_x_scroll()
@@ -588,12 +593,21 @@ impl Render for HerdrWindow {
                 .filter(|t| Some(&t.workspace_id) == snapshot.focused_workspace_id.as_ref())
             {
                 let id = tab.tab_id.clone();
+                let context_id = id.clone();
+                let close_id = id.clone();
                 tabs = tabs.child(
                     div()
                         .id(SharedString::from(format!("tab-{id}")))
+                        .debug_selector({
+                            let id = id.clone();
+                            move || format!("tab-{id}")
+                        })
                         .px_4()
-                        .py_2()
+                        .py(px(4.))
                         .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
                         .cursor_pointer()
                         .bg(rgb(if tab.focused {
                             self.theme.active
@@ -601,6 +615,45 @@ impl Render for HerdrWindow {
                             self.theme.surface
                         }))
                         .child(tab.label.clone())
+                        .child(
+                            div()
+                                .id("close-tab")
+                                .debug_selector({
+                                    let id = id.clone();
+                                    move || format!("close-tab-{id}")
+                                })
+                                .size(px(24.))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(4.))
+                                .hover(|s| s.bg(rgba((self.theme.foreground << 8) | 0x24)))
+                                .child(
+                                    svg()
+                                        .path("icons/close.svg")
+                                        .debug_selector({
+                                            let id = id.clone();
+                                            move || format!("close-tab-icon-{id}")
+                                        })
+                                        .size(px(16.))
+                                        .text_color(rgb(self.theme.foreground)),
+                                )
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.open_tab_close(&close_id, window, cx);
+                                })),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.open_tab_menu(&context_id, event.position, window, cx);
+                            }),
+                        )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.navigate(NavigationTarget::Tab(&id), cx);
                             window.focus(&this.focus);
@@ -764,8 +817,14 @@ impl Render for HerdrWindow {
             .text_color(rgb(self.theme.foreground))
             .font_family(self.config.ui.family.clone())
             .text_size(px(self.config.ui.size))
+            .map(|root| {
+                #[cfg(target_os = "macos")]
+                let root = root.child(titlebar::render(self.theme.surface, self.theme.foreground));
+                root
+            })
             .child(
                 div()
+                    .debug_selector(|| "window-body".into())
                     .flex()
                     .flex_1()
                     .min_h_0()
@@ -786,12 +845,22 @@ impl Render for HerdrWindow {
                                     .child(
                                         div()
                                             .id("new-tab")
-                                            .px_4()
+                                            .debug_selector(|| "new-tab".into())
+                                            .w(px(44.))
+                                            .min_h(px(32.))
+                                            .flex_none()
                                             .flex()
                                             .items_center()
+                                            .justify_center()
                                             .cursor_pointer()
                                             .hover(|s| s.bg(rgb(self.theme.active)))
-                                            .child("+")
+                                            .child(
+                                                svg()
+                                                    .path("icons/plus.svg")
+                                                    .debug_selector(|| "new-tab-icon".into())
+                                                    .size(px(18.))
+                                                    .text_color(rgb(self.theme.foreground)),
+                                            )
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.command(Command::Tab, window, cx)
                                             })),
@@ -975,7 +1044,7 @@ fn run() -> std::process::ExitCode {
     }
     let startup_failed = std::rc::Rc::new(std::cell::Cell::new(false));
     let failed = startup_failed.clone();
-    Application::new().run(move |cx| {
+    Application::new().with_assets(icons::Icons).run(move |cx| {
         app_icon::install();
         cx.on_action(|_: &Quit, cx| cx.quit());
         bind_keys(cx);
@@ -1114,7 +1183,9 @@ fn run() -> std::process::ExitCode {
                 window_min_size: Some(size(px(640.), px(400.))),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Herdr".into()),
-                    ..Default::default()
+                    appears_transparent: cfg!(target_os = "macos"),
+                    traffic_light_position: cfg!(target_os = "macos")
+                        .then(|| point(px(9.), px(9.))),
                 }),
                 app_id: Some("so.pen.herdr-gpui".into()),
                 ..Default::default()
