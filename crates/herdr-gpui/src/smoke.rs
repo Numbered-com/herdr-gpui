@@ -201,9 +201,12 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                 ("enter", menu::WorkspaceAction::Rename),
                 ("down enter", menu::WorkspaceAction::Close),
                 ("down down enter", menu::WorkspaceAction::NewWorktree),
+                ("down down enter", menu::WorkspaceAction::DeleteWorktree),
             ] {
                 let point = handle.update(cx, |view, window, cx| {
                     view.live.status = state::ConnectionStatus::Connected;
+                    view.sidebar_scroll[0].set_offset(point(px(0.), px(if action == menu::WorkspaceAction::DeleteWorktree { -100. } else { 0. })));
+                    cx.default_global::<sidebar::layout_tests::PaintedProbes>().0.clear();
                     cx.notify();
                     window.refresh();
                 });
@@ -214,7 +217,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                 }
                 let point = AnyWindowHandle::from(handle).update(cx, |_, window, cx| {
                     window.draw(cx).clear();
-                    cx.global::<sidebar::layout_tests::PaintedProbes>().0.get("agent-launcher").map(|probe| {
+                    cx.global::<sidebar::layout_tests::PaintedProbes>().0.get(if action == menu::WorkspaceAction::DeleteWorktree { "sidebar-child" } else { "agent-launcher" }).map(|probe| {
                         eprintln!("DIALOG native {action:?} viewport={:?}", window.viewport_size());
                         probe.bounds.center()
                     })

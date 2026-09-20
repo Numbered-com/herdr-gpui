@@ -96,6 +96,7 @@ impl HerdrWindow {
                                 this.marked.clear();
                             }
                             this.live = next;
+                            this.update_deletion_dialog();
                             cx.notify();
                         }
                         this.resize();

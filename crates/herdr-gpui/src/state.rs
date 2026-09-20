@@ -39,6 +39,7 @@ pub struct LiveState {
     pub status: ConnectionStatus,
     pub error: Option<String>,
     pub dirty: bool,
+    pub(crate) dialog_response: Option<(String, Option<Result<serde_json::Value, String>>)>,
     agent_presentation: AgentPresentation,
     outer_focused: Option<bool>,
 }
@@ -51,6 +52,7 @@ impl Default for LiveState {
             status: ConnectionStatus::Connecting,
             error: None,
             dirty: true,
+            dialog_response: None,
             agent_presentation: AgentPresentation::default(),
             outer_focused: None,
         }
@@ -147,10 +149,25 @@ impl LiveState {
                 self.surface = None;
                 self.agent_presentation = AgentPresentation::default();
             }
-            ClientEvent::CommandRejected { reason, .. } => self.error = Some(reason),
-            ClientEvent::Response { response, .. } => {
+            ClientEvent::CommandRejected { request_id, reason } => {
+                if let Some((id, result)) = &mut self.dialog_response
+                    && request_id.as_ref() == Some(id)
+                {
+                    *result = Some(Err(reason.clone()));
+                }
+                self.error = Some(reason);
+            }
+            ClientEvent::Response {
+                request_id,
+                response,
+            } => {
                 if let Some(error) = response.get("error") {
                     self.error = Some(error.to_string());
+                }
+                if let Some((id, result)) = &mut self.dialog_response
+                    && *id == request_id
+                {
+                    *result = Some(Ok(response));
                 }
             }
             ClientEvent::Message(ServerMessage::ClientShellError { message }) => {
@@ -172,6 +189,42 @@ mod tests {
     use super::*;
     use herdr_client::protocol::AgentStatus;
     use herdr_client::protocol::FrameData;
+
+    #[test]
+    fn dialog_response_is_correlated_and_survives_coalescing() {
+        let mut state = LiveState {
+            dialog_response: Some(("remove".into(), None)),
+            ..LiveState::default()
+        };
+        let response = serde_json::json!({"error":{"code":"dirty_worktree_requires_force", "message":"dirty"}});
+        state.apply(ClientEvent::Response {
+            request_id: "remove".into(),
+            response: response.clone(),
+        });
+        state.apply(ClientEvent::Response {
+            request_id: "other".into(),
+            response: serde_json::json!({"result":{}}),
+        });
+        state.apply(ClientEvent::Snapshot(snapshot()));
+        assert_eq!(
+            state.dialog_response,
+            Some(("remove".into(), Some(Ok(response))))
+        );
+        state.dialog_response = Some(("next".into(), None));
+        state.apply(ClientEvent::CommandRejected {
+            request_id: Some("other".into()),
+            reason: "unrelated".into(),
+        });
+        assert_eq!(state.dialog_response, Some(("next".into(), None)));
+        state.apply(ClientEvent::CommandRejected {
+            request_id: Some("next".into()),
+            reason: "stale boot".into(),
+        });
+        assert_eq!(
+            state.dialog_response,
+            Some(("next".into(), Some(Err("stale boot".into()))))
+        );
+    }
 
     #[test]
     fn connection_status_and_error_priority_follow_lifecycle() {

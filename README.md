@@ -34,6 +34,17 @@ blank for the daemon default. Creation uses `HEAD` and focuses the new workspace
 it does not grant repository trust. Actions target the clicked space, not the
 active one. Text dialogs support Unicode/IME, selection, and Cmd-A/C/X/V.
 
+Linked spaces also offer **Delete worktree checkout**. The GUI obtains the checkout
+path from the daemon and requires typing `DELETE`. The daemon removes the checkout
+and closes its workspace/terminals, but keeps branches. A daemon dirty/untracked
+refusal exposes its error and a separate `FORCE DELETE` confirmation. No local Git
+or filesystem checks/removal run in the GUI. **The daemon does not check unpushed
+commits**; ignored files are not protected, and detached commits may become
+unreachable. Review the warning before proceeding. Escape/outside click dismisses
+the dialog, but cannot cancel an operation already queued to the daemon.
+See [deletion safety](crates/herdr-gpui/WORKTREE-DELETION.md) for the API contract
+and upstream source references.
+
 This is an initial working macOS client, not complete TUI feature parity.
 Herdr owns terminal processes and session state; closing this app only detaches.
 The Herdr checkout does not need to be modified or linked into this build.
@@ -92,7 +103,7 @@ PNG and ICNS from the SVG with macOS Swift/CoreGraphics and `iconutil`.
 | Control | Action |
 | --- | --- |
 | Sidebar workspace/agent | Focus its workspace or pane |
-| Right-click sidebar workspace | Rename, confirmed close, or new worktree on Git parents |
+| Right-click sidebar workspace | Rename, confirmed close, new worktree on Git parents, delete linked checkout |
 | Top tab / terminal pane | Focus the tab or pane |
 | Cmd-N | New workspace using daemon directory policy |
 | Cmd-T | New tab |
@@ -170,7 +181,7 @@ mock text system does not model. It requires an active desktop, but uses only
 fixture data and never connects to your daemon. It is not a screenshot/pixel
 comparison test.
 
-The native sidebar fixture also right-clicks a Git parent and opens all three
+The native sidebar fixture also right-clicks Git parent/child spaces and opens all four
 workspace dialogs at 640x400 and 1200x780, checking Unicode editing, caret/IME
 bounds, focus restoration, and terminal/action isolation without a daemon.
 

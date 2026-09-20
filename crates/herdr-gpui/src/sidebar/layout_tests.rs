@@ -480,7 +480,7 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
                 window.draw(cx).clear();
             });
             let panel = cx.debug_bounds("menu-panel").unwrap();
-            assert_eq!(panel.size.width, px(if dialog { 420. } else { 180. }));
+            assert_eq!(panel.size.width, px(if dialog { 420. } else { 250. }));
             let expected = |position: Pixels, extent: Pixels, viewport: Pixels| {
                 if position + extent > viewport {
                     (viewport - extent - px(12.)).round()

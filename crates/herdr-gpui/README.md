@@ -35,7 +35,13 @@ no input replay. The status dot is green when connected and red otherwise.
 - Workspace actions retain the clicked ID and boot, revalidate before queueing,
   and reject changed close-group membership. Reconnect clears dialogs. Queue
   errors remain in the dialog; daemon errors appear in the connection status bar.
-  Queue acceptance dismisses the dialog, not an optimistic state mutation.
+   Queue acceptance dismisses the dialog, not an optimistic state mutation.
+- Linked spaces offer Delete worktree checkout with a daemon-resolved path and
+  typed confirmation. Unlike other workspace dialogs, deletion stays open until
+  the correlated daemon result arrives. Dirty/untracked refusals and errors are
+  shown inline; force requires a new typed confirmation. All Git/filesystem work
+  stays in Herdr. Unpushed commits are not checked by this API. See
+  [WORKTREE-DELETION.md](WORKTREE-DELETION.md) for safety limits and sources.
 - Worktree creation sends the clicked `workspace_id`, optional `branch`,
   `base: "HEAD"`, `focus: true`, and `trust_repository: false`. Blank branches use
   daemon policy. The daemon's deferred endpoint navigation focuses the result;
@@ -105,7 +111,7 @@ GPUI native action/menu/keybinding patterns.
   not a synchronized host-terminal theme.
 - No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
   hyperlink activation, image rendering, or animated blinking.
-- No pane/tab close or worktree delete actions,
+- No pane/tab close actions,
   horizontal wheel handling, command palette, server-owned keybindings, SSH,
   session picker, automatic reconnect, or daemon lifecycle management.
 - IME uses a minimal transient buffer, not a local editable terminal document;

@@ -18,6 +18,7 @@ pub(super) enum WorkspaceAction {
     Rename,
     Close,
     NewWorktree,
+    DeleteWorktree,
 }
 
 struct WorkspaceTarget {
@@ -43,6 +44,12 @@ impl WorkspaceTarget {
         self.worktree
             .as_ref()
             .is_some_and(|tree| !tree.is_linked_worktree)
+    }
+
+    fn can_delete(&self) -> bool {
+        self.worktree
+            .as_ref()
+            .is_some_and(|tree| tree.is_linked_worktree)
     }
 
     fn close_label(&self) -> &'static str {
@@ -97,6 +104,15 @@ impl WorkspaceTarget {
                 }
                 ("worktree.create", params)
             }
+            WorkspaceAction::DeleteWorktree => {
+                if !self.can_delete() || self.worktree != workspace.worktree {
+                    return Err("Checkout changed. Dismiss and reopen the menu.");
+                }
+                (
+                    "worktree.remove",
+                    serde_json::json!({"workspace_id": self.id, "force": false, "trust_repository": false}),
+                )
+            }
         };
         Ok(params)
     }
@@ -129,9 +145,90 @@ pub(super) struct MenuState {
     target: Option<WorkspaceTarget>,
     pub input: Option<DialogInput>,
     error: Option<String>,
+    deletion: Option<Deletion>,
+}
+
+struct Deletion {
+    pending: Option<String>,
+    path: Option<String>,
+    force: bool,
+}
+
+impl Deletion {
+    fn confirmed(&self, text: &str) -> bool {
+        self.pending.is_none()
+            && self.path.is_some()
+            && text == if self.force { "FORCE DELETE" } else { "DELETE" }
+    }
 }
 
 impl MenuState {
+    fn apply_deletion_response(&mut self, id: &str, result: Result<serde_json::Value, String>) {
+        let Some(deletion) = &mut self.deletion else {
+            return;
+        };
+        if deletion.pending.as_deref() != Some(id) {
+            return;
+        }
+        deletion.pending = None;
+        let response = match result {
+            Ok(response) => response,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
+        if let Some(error) = response.get("error") {
+            self.error = Some(format!(
+                "{}: {}",
+                error["code"].as_str().unwrap_or("endpoint_error"),
+                error["message"].as_str().unwrap_or("Invalid daemon error")
+            ));
+            if deletion.path.is_some()
+                && !deletion.force
+                && error["code"] == "dirty_worktree_requires_force"
+            {
+                deletion.force = true;
+                self.input = Some(DialogInput::default());
+            }
+            return;
+        }
+        let result = &response["result"];
+        let Some(target) = &self.target else {
+            return;
+        };
+        if deletion.path.is_none() && result["type"] == "worktree_list" {
+            let entry = result["worktrees"].as_array().and_then(|entries| {
+                let mut matches = entries
+                    .iter()
+                    .filter(|entry| entry["open_workspace_id"] == target.id);
+                let entry = matches.next()?;
+                (matches.next().is_none()
+                    && entry["is_linked_worktree"] == true
+                    && entry["is_bare"] == false)
+                    .then_some(entry)
+            });
+            deletion.path = entry
+                .and_then(|entry| entry["path"].as_str())
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned);
+            if deletion.path.is_none() {
+                self.error = Some("Daemon did not identify a unique linked checkout. Dismiss and reopen the menu.".into());
+            }
+        } else if result["type"] == "worktree_removed"
+            && result["workspace_id"] == target.id
+            && result["path"].as_str() == deletion.path.as_deref()
+            && result["forced"] == deletion.force
+        {
+            self.reset();
+        } else {
+            self.error = Some(
+                "Unexpected daemon response. Review current workspace state before retrying."
+                    .into(),
+            );
+        }
+    }
+
     pub fn new(cx: &App) -> Self {
         Self {
             page: None,
@@ -141,6 +238,7 @@ impl MenuState {
             target: None,
             input: None,
             error: None,
+            deletion: None,
         }
     }
 
@@ -149,6 +247,7 @@ impl MenuState {
         self.target = None;
         self.input = None;
         self.error = None;
+        self.deletion = None;
     }
 }
 
@@ -211,6 +310,9 @@ impl HerdrWindow {
         if target.can_create() {
             items.push((WorkspaceAction::NewWorktree, "New worktree"));
         }
+        if target.can_delete() {
+            items.push((WorkspaceAction::DeleteWorktree, "Delete worktree checkout"));
+        }
         items
     }
 
@@ -222,10 +324,45 @@ impl HerdrWindow {
             WorkspaceAction::Rename => Some(DialogInput::new(target.label.clone())),
             WorkspaceAction::NewWorktree => Some(DialogInput::default()),
             WorkspaceAction::Close => None,
+            WorkspaceAction::DeleteWorktree => Some(DialogInput::default()),
         };
         self.menu.page = Some(Page::Dialog(action));
         self.menu.error = None;
+        if action == WorkspaceAction::DeleteWorktree {
+            let result = self.connection.request_dialog(
+                &target.boot_id,
+                "worktree.list",
+                serde_json::json!({"workspace_id": target.id, "trust_repository": false}),
+            );
+            self.menu.deletion = Some(Deletion {
+                pending: result.as_ref().ok().cloned(),
+                path: None,
+                force: false,
+            });
+            self.menu.error = result.err();
+        }
         cx.notify();
+    }
+
+    pub(super) fn update_deletion_dialog(&mut self) {
+        if self.menu.deletion.is_none() {
+            return;
+        }
+        if !self.live.status.is_connected()
+            || self.menu.target.as_ref().is_some_and(|target| {
+                self.live
+                    .snapshot
+                    .as_ref()
+                    .is_none_or(|snapshot| snapshot.boot_id != target.boot_id)
+            })
+        {
+            self.menu.reset();
+            return;
+        }
+        let Some((id, Some(result))) = &self.live.dialog_response else {
+            return;
+        };
+        self.menu.apply_deletion_response(id, result.clone());
     }
 
     fn submit_workspace_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -260,16 +397,51 @@ impl HerdrWindow {
                 .as_ref()
                 .map(|input| input.text.as_str())
                 .unwrap_or("");
-            let (method, params) = target.request(snapshot, action, text)?;
+            let (method, mut params) = target.request(snapshot, action, text)?;
+            if action == WorkspaceAction::DeleteWorktree {
+                let deletion = self
+                    .menu
+                    .deletion
+                    .as_ref()
+                    .ok_or("Reopen the deletion dialog.")?;
+                if deletion.pending.is_some() {
+                    return Ok(());
+                }
+                if deletion.path.is_none() {
+                    return Err("Checkout lookup failed. Dismiss and reopen the menu.".into());
+                }
+                let confirmation = if deletion.force {
+                    "FORCE DELETE"
+                } else {
+                    "DELETE"
+                };
+                if !deletion.confirmed(text) {
+                    return Err(format!("Type {confirmation} to confirm."));
+                }
+                params["force"] = deletion.force.into();
+                let id = self
+                    .connection
+                    .request_dialog(&target.boot_id, method, params)?;
+                if let Some(deletion) = &mut self.menu.deletion {
+                    deletion.pending = Some(id);
+                }
+                self.menu.error = None;
+                return Ok(());
+            }
             let handle = self.connection.handle.as_ref().ok_or("Disconnected.")?;
             handle
                 .request(&target.boot_id, method, params)
+                .map(|_| ())
                 .map_err(|error| format!("{method}: {error}"))
         })();
         match result {
             Ok(_) => {
                 self.local_error = None;
-                self.dismiss_menu(window, cx);
+                if action != WorkspaceAction::DeleteWorktree {
+                    self.dismiss_menu(window, cx);
+                } else {
+                    cx.notify();
+                }
             }
             Err(error) => {
                 self.menu.error = Some(error);
@@ -346,13 +518,21 @@ impl HerdrWindow {
                     (window.viewport_size().height - self.menu.anchor.y + px(12.)).max(px(30.)),
                 )
             })
-            .w(px(if matches!(page, Page::Menu | Page::Workspace) {
+            .w(px(if page == Page::Workspace {
+                250.
+            } else if page == Page::Menu {
                 180.
+            } else if page == Page::Dialog(WorkspaceAction::DeleteWorktree) {
+                480.
             } else {
                 420.
             })
             .min(window.viewport_size().width - px(24.)))
-            .max_h(window.viewport_size().height / 2. - px(12.))
+            .max_h(if page == Page::Dialog(WorkspaceAction::DeleteWorktree) {
+                window.viewport_size().height - px(24.)
+            } else {
+                window.viewport_size().height / 2. - px(12.)
+            })
             .overflow_y_scroll()
             .p(px(6.))
             .rounded(px(5.))
@@ -416,6 +596,12 @@ impl HerdrWindow {
                     WorkspaceAction::Rename => ("Rename workspace", "Edit the workspace label.".to_owned(), "Rename"),
                     WorkspaceAction::Close => (target.close_label(), format!("Close {} workspace(s) and terminate their running terminals? Checkout files and branches are not deleted.", target.close_members.len()), target.close_label()),
                     WorkspaceAction::NewWorktree => ("New worktree", "Branch (optional). Blank uses the daemon default. Base: HEAD. Repository trust is not granted.".to_owned(), "Create"),
+                    WorkspaceAction::DeleteWorktree => {
+                        let deletion = self.menu.deletion.as_ref();
+                        let path = deletion.and_then(|d| d.path.as_deref()).unwrap_or("Waiting for daemon checkout lookup...");
+                        let force = deletion.is_some_and(|d| d.force);
+                        ("Delete worktree checkout", format!("Checkout: {path}\n\nDeletes checkout files and closes its workspace and terminals. Branches are preserved. The daemon does not check for unpushed commits. Detached commits may become unreachable.\n\n{}\n\n{}", if force { "WARNING: Force deletion discards modified and untracked files, including submodule contents. Type FORCE DELETE to confirm." } else { "Git may reject modified/untracked files or submodules. Ignored files are not protected. Type DELETE to confirm." }, if deletion.is_some_and(|d| d.pending.is_some()) { "Waiting for daemon. Dismissing does not cancel a queued operation." } else { "" }), if force { "Force delete" } else { "Delete checkout" })
+                    }
                 };
                 panel = panel
                     .child(div().p(px(8.)).child(title))
@@ -453,9 +639,13 @@ impl HerdrWindow {
                                 .id("dialog-submit")
                                 .debug_selector(|| "dialog-submit".into())
                                 .cursor_pointer()
-                                .when(action == WorkspaceAction::Close, |button| {
-                                    button.text_color(rgb(0xf38ba8))
-                                })
+                                .when(
+                                    matches!(
+                                        action,
+                                        WorkspaceAction::Close | WorkspaceAction::DeleteWorktree
+                                    ),
+                                    |button| button.text_color(rgb(0xf38ba8)),
+                                )
                                 .child(submit)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     cx.stop_propagation();
@@ -604,6 +794,111 @@ impl HerdrWindow {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::{WorkspaceAction, WorkspaceTarget, sidebar};
+
+    #[test]
+    fn deletion_schema_and_target_validation() {
+        let mut snapshot = sidebar::layout_tests::snapshot(7);
+        let target = WorkspaceTarget::new(&snapshot, &snapshot.workspaces[4]);
+        assert_eq!(
+            target
+                .request(&snapshot, WorkspaceAction::DeleteWorktree, "")
+                .unwrap(),
+            (
+                "worktree.remove",
+                serde_json::json!({"workspace_id":"w4", "force":false, "trust_repository":false})
+            )
+        );
+        for index in [0, 3] {
+            assert!(
+                WorkspaceTarget::new(&snapshot, &snapshot.workspaces[index])
+                    .request(&snapshot, WorkspaceAction::DeleteWorktree, "")
+                    .is_err()
+            );
+        }
+        snapshot.workspaces[4].worktree = None;
+        assert!(
+            target
+                .request(&snapshot, WorkspaceAction::DeleteWorktree, "")
+                .is_err()
+        );
+        snapshot.workspaces[4].worktree = target.worktree.clone();
+        snapshot.boot_id = "replacement".into();
+        assert!(
+            target
+                .request(&snapshot, WorkspaceAction::DeleteWorktree, "")
+                .is_err()
+        );
+        snapshot.boot_id = target.boot_id.clone();
+        snapshot.workspaces.remove(4);
+        assert!(
+            target
+                .request(&snapshot, WorkspaceAction::DeleteWorktree, "")
+                .is_err()
+        );
+    }
+
+    #[gpui::test]
+    fn deletion_lookup_dirty_force_errors_success_and_cancel(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let snapshot = sidebar::layout_tests::snapshot(7);
+            let mut menu = super::MenuState::new(cx);
+            menu.target = Some(WorkspaceTarget::new(&snapshot, &snapshot.workspaces[4]));
+            menu.page = Some(super::Page::Dialog(WorkspaceAction::DeleteWorktree));
+            menu.deletion = Some(super::Deletion { pending: Some("list".into()), path: None, force: false });
+            let lookup = serde_json::json!({"result":{"type":"worktree_list", "worktrees":[{"open_workspace_id":"w4", "path":"/daemon/checkout", "is_linked_worktree":true, "is_bare":false}]}});
+            menu.apply_deletion_response("unrelated", Ok(lookup.clone()));
+            assert!(menu.deletion.as_ref().unwrap().path.is_none());
+            menu.apply_deletion_response("list", Ok(lookup));
+            let deletion = menu.deletion.as_mut().unwrap();
+            assert_eq!(deletion.path.as_deref(), Some("/daemon/checkout"));
+            for text in ["", "delete", " DELETE", "FORCE DELETE"] { assert!(!deletion.confirmed(text)); }
+            assert!(deletion.confirmed("DELETE"));
+            deletion.pending = Some("remove".into());
+            assert!(!deletion.confirmed("DELETE"));
+            menu.input = Some(super::DialogInput::new("DELETE".into()));
+            menu.apply_deletion_response("remove", Ok(serde_json::json!({"error":{"code":"dirty_worktree_requires_force", "message":"modified or untracked files"}})));
+            assert!(menu.error.as_ref().unwrap().contains("modified or untracked files"));
+            assert_eq!(menu.input.as_ref().unwrap().text, "");
+            let deletion = menu.deletion.as_mut().unwrap();
+            assert!(deletion.force);
+            assert!(!deletion.confirmed("DELETE"));
+            assert!(deletion.confirmed("FORCE DELETE"));
+            deletion.pending = Some("forced".into());
+            menu.apply_deletion_response("forced", Err("unsupported method".into()));
+            assert_eq!(menu.error.as_deref(), Some("unsupported method"));
+            menu.deletion.as_mut().unwrap().pending = Some("success".into());
+            menu.apply_deletion_response("success", Ok(serde_json::json!({"result":{"type":"worktree_removed", "workspace_id":"w4", "path":"/daemon/checkout", "forced":true}})));
+            assert!(menu.page.is_none());
+            menu.deletion = Some(super::Deletion { pending: Some("late".into()), path: None, force: false });
+            menu.reset();
+            menu.apply_deletion_response("late", Err("late error".into()));
+            assert!(menu.deletion.is_none());
+            assert!(menu.error.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn deletion_fails_closed_on_lookup_and_does_not_force_generic_errors(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let snapshot = sidebar::layout_tests::snapshot(7);
+            for response in [
+                serde_json::json!({"result":{"type":"worktree_list", "worktrees":[]}}),
+                serde_json::json!({"error":{"code":"worktree_remove_failed", "message":"is not a working tree"}}),
+                serde_json::json!({"result":{"type":"unexpected"}}),
+            ] {
+                let mut menu = super::MenuState::new(cx);
+                menu.target = Some(WorkspaceTarget::new(&snapshot, &snapshot.workspaces[4]));
+                menu.deletion = Some(super::Deletion { pending: Some("id".into()), path: None, force: false });
+                menu.apply_deletion_response("id", Ok(response));
+                assert!(menu.error.is_some());
+                let deletion = menu.deletion.as_ref().unwrap();
+                assert!(!deletion.force);
+                assert!(!deletion.confirmed("DELETE"));
+            }
+        });
+    }
 
     #[gpui::test]
     fn reset_drops_target_draft_composition_and_error(cx: &mut gpui::TestAppContext) {
