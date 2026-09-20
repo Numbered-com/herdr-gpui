@@ -1,180 +1,93 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 
-# Verify herdr-gpui release artifacts against the maintainer's GPG key.
-#
-# A release carries three independent claims:
-#   - .sha256/.sha512  the bytes are intact
-#   - .sig/.crt        Sigstore: this repository's workflow built them
-#   - .asc             GPG: the maintainer signed off on them
-# This script checks the first and the third. For the second, use:
-#   gh attestation verify <file> --repo penso/herdr-gpui
-#
-# Usage:
-#   ./scripts/verify-release.sh --version 20260920.01 --checksums
-#   ./scripts/verify-release.sh herdr-gpui-*.app.zip
-
-GPG_KEY_URL="https://pen.so/gpg.asc"
-EXPECTED_FINGERPRINT="310320A8CC1C5BA86AD09040C0451BADF7649BBF"
-REPO="${HERDR_GPUI_REPO:-penso/herdr-gpui}"
-
 usage() {
-  cat <<'EOF'
-Usage: ./scripts/verify-release.sh [OPTIONS] [FILE...]
+    cat <<'EOF'
+Usage: bash scripts/verify-release.sh --version vX.Y.Z [--directory DIR] [--sha SHA]
+       [--gpg-key PUBLIC_KEY_FILE --gpg-fingerprint FULL_SIGNING_FINGERPRINT]
 
-Verifies GPG signatures on herdr-gpui release artifacts.
-
-  FILE          Local artifacts to verify (each needs a matching .asc)
-
-Options:
-  -V, --version VER   Download and verify every artifact for this release
-  -k, --key URL       GPG public key URL (default: https://pen.so/gpg.asc)
-  -s, --skip-key      Skip key import (already in your keyring)
-      --checksums     Also verify SHA256 checksums
-  -h, --help          Show this help
-
-Environment:
-  HERDR_GPUI_REPO     GitHub repo (default: penso/herdr-gpui)
+Without --directory, download the release into a temporary directory.
+Verify the exact asset set, both checksums, Sigstore, and GitHub provenance.
+--sha additionally pins the expected release source commit (recommended).
+Optional supplemental .asc files must be in DIR/gpg/; GPG uses an isolated keyring
+and requires the full fingerprint of the actual signing key, including subkeys.
+Requires Python 3.11+, gh, and cosign 2.x; optional GPG verification requires gpg.
 EOF
 }
 
-VERSION=""
-SKIP_KEY=false
-VERIFY_CHECKSUMS=false
-FILES=()
-
+version='' directory='' sha='' gpg_key='' fingerprint=''
 while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -V|--version)  VERSION="$2"; shift 2 ;;
-    -k|--key)      GPG_KEY_URL="$2"; shift 2 ;;
-    -s|--skip-key) SKIP_KEY=true; shift ;;
-    --checksums)   VERIFY_CHECKSUMS=true; shift ;;
-    -h|--help)     usage; exit 0 ;;
-    -*)            echo "Unknown option: $1" >&2; usage; exit 1 ;;
-    *)             FILES+=("$1"); shift ;;
-  esac
+    case "$1" in
+        --version|--directory|--sha|--gpg-key|--gpg-fingerprint)
+            [[ $# -ge 2 && -n $2 ]] || { usage >&2; exit 1; }
+            case "$1" in
+                --version) version=${2#v} ;;
+                --directory) directory=$2 ;;
+                --sha) sha=$2 ;;
+                --gpg-key) gpg_key=$2 ;;
+                --gpg-fingerprint) fingerprint=$2 ;;
+            esac
+            shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; exit 1 ;;
+    esac
 done
-
-if ! command -v gpg >/dev/null 2>&1; then
-  echo "error: gpg is required but not found" >&2
-  exit 1
+[[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { usage >&2; exit 1; }
+[[ -z $sha || $sha =~ ^[0-9a-f]{40}$ ]] || exit 1
+if [[ -n $gpg_key || -n $fingerprint ]]; then
+    [[ -f $gpg_key && $fingerprint =~ ^([0-9A-F]{40}|[0-9A-F]{64})$ ]] || exit 1
 fi
-
-if [[ "$SKIP_KEY" != true ]]; then
-  echo "Fetching maintainer GPG key from $GPG_KEY_URL..."
-  KEY_DATA="$(curl -fsSL "$GPG_KEY_URL")"
-  if [[ -z "$KEY_DATA" ]]; then
-    echo "error: failed to fetch GPG key from $GPG_KEY_URL" >&2
-    exit 1
-  fi
-
-  # Check the fingerprint before the key touches the real keyring: fetching over
-  # HTTPS proves the host, not that the host is serving the right key.
-  ACTUAL_FINGERPRINT="$(echo "$KEY_DATA" \
-    | gpg --with-colons --import-options show-only --import 2>/dev/null \
-    | awk -F: '/^fpr/ { print $10; exit }')"
-  if [[ "$ACTUAL_FINGERPRINT" != "$EXPECTED_FINGERPRINT" ]]; then
-    echo "error: fetched key fingerprint does not match the expected maintainer key" >&2
-    echo "  expected: $EXPECTED_FINGERPRINT" >&2
-    echo "  actual:   $ACTUAL_FINGERPRINT" >&2
-    exit 1
-  fi
-
-  echo "$KEY_DATA" | gpg --import 2>&1 || true
-  echo ""
+scripts=$(cd -- "$(dirname -- "$0")" && pwd)
+repo=penso/herdr-gpui
+identity="https://github.com/$repo/.github/workflows/release.yml@refs/heads/main"
+tmp=$(mktemp -d)
+trap 'rm -rf -- "$tmp"' EXIT
+if [[ -z $directory ]]; then
+    directory=$tmp/assets
+    gh release download "v$version" --repo "$repo" --dir "$directory"
 fi
-
-WORK_DIR=""
-if [[ -n "$VERSION" ]]; then
-  if ! command -v gh >/dev/null 2>&1; then
-    echo "error: gh (GitHub CLI) is required for --version" >&2
-    exit 1
-  fi
-  if [[ ! "$VERSION" =~ ^[0-9]{8}\.[0-9]{2}$ ]]; then
-    echo "error: '$VERSION' does not match YYYYMMDD.NN" >&2
-    exit 1
-  fi
-
-  WORK_DIR="$(mktemp -d)"
-  trap 'rm -rf "$WORK_DIR"' EXIT
-
-  echo "Downloading release artifacts for $VERSION..."
-  DL_ARGS=(--pattern '*.app.zip' --pattern '*.tar.gz' --pattern '*.cdx.json' --pattern '*.asc')
-  if [[ "$VERIFY_CHECKSUMS" == true ]]; then
-    DL_ARGS+=(--pattern '*.sha256')
-  fi
-  gh release download "$VERSION" --repo "$REPO" --dir "$WORK_DIR" "${DL_ARGS[@]}"
-
-  while IFS= read -r -d '' f; do
-    FILES+=("$f")
-  done < <(find "$WORK_DIR" -maxdepth 1 -type f \
-    \( -name '*.app.zip' -o -name '*.tar.gz' -o -name '*.cdx.json' \) \
-    -print0 | sort -z)
+# Supplemental signatures live outside the immutable asset set.
+mkdir "$tmp/assets-to-check"
+while IFS= read -r name; do
+    [[ -f $directory/$name && ! -L $directory/$name ]] || exit 1
+    cp "$directory/$name" "$tmp/assets-to-check/$name"
+done < <(python3 "$scripts/release/artifact-manifest.py" names "$version" "$directory")
+shopt -s dotglob nullglob
+for path in "$directory"/*; do
+    [[ $path == "$directory/gpg" && -d $path && ! -L $path ]] && continue
+    [[ -f $tmp/assets-to-check/${path##*/} && ! -L $path ]] || exit 1
+done
+python3 "$scripts/release/artifact-manifest.py" verify "$version" "$tmp/assets-to-check"
+tag_sha=$(gh api "repos/$repo/git/ref/tags/v$version" --jq '.object | select(.type == "commit") | .sha')
+[[ $tag_sha =~ ^[0-9a-f]{40}$ && ( -z $sha || $sha == "$tag_sha" ) ]] || exit 1
+sha=$tag_sha
+if [[ -n $gpg_key ]]; then
+    mkdir -m 700 "$tmp/keyring"
+    gpg --homedir "$tmp/keyring" --batch --import "$gpg_key"
 fi
-
-if [[ ${#FILES[@]} -eq 0 ]]; then
-  echo "error: no files to verify. Provide files or use --version." >&2
-  usage
-  exit 1
-fi
-
-PASS=0
-FAIL=0
-SKIP=0
-
-for file in "${FILES[@]}"; do
-  name="$(basename "$file")"
-  asc="${file}.asc"
-  echo "Verifying: $name"
-
-  if [[ "$VERIFY_CHECKSUMS" == true ]]; then
-    sha256_file="${file}.sha256"
-    if [[ -f "$sha256_file" ]]; then
-      expected="$(awk '{print $1}' "$sha256_file")"
-      actual="$(sha256sum "$file" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$file" | awk '{print $1}')"
-      if [[ "$expected" != "$actual" ]]; then
-        echo "  FAIL: SHA256 mismatch" >&2
-        echo "    expected: $expected" >&2
-        echo "    actual:   $actual" >&2
-        FAIL=$((FAIL + 1))
-        continue
-      fi
-      echo "  SHA256: OK"
-    else
-      echo "  SHA256: no checksum file found" >&2
+for name in "Herdr-$version-universal-apple-darwin.dmg" \
+    "Herdr-$version-x86_64-unknown-linux-gnu.tar.gz" "Herdr-$version.cdx.json"; do
+    file=$tmp/assets-to-check/$name
+    cosign verify-blob --signature "$file.sig" --certificate "$file.crt" \
+        --certificate-identity "$identity" \
+        --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+        --certificate-github-workflow-repository "$repo" \
+        --certificate-github-workflow-ref refs/heads/main \
+        --certificate-github-workflow-sha "$sha" "$file"
+    gh attestation verify "$file" --repo "$repo" \
+        --cert-identity "$identity" --signer-workflow "$repo/.github/workflows/release.yml" \
+        --cert-oidc-issuer https://token.actions.githubusercontent.com \
+        --source-ref refs/heads/main --source-digest "$sha" --signer-digest "$sha" \
+        --deny-self-hosted-runners
+    if [[ -n $gpg_key ]]; then
+        gpg --homedir "$tmp/keyring" --batch --status-fd 1 \
+            --verify "$directory/gpg/$name.asc" "$file" > "$tmp/gpg-status"
+        # VALIDSIG field 3 is the actual signing fingerprint, not a short key ID
+        # or the primary fingerprint that can authorize multiple signing subkeys.
+        awk -v expected="$fingerprint" '
+            $1 == "[GNUPG:]" && $2 == "VALIDSIG" { count++; if ($3 == expected) valid++ }
+            END { exit !(count == 1 && valid == 1) }
+        ' "$tmp/gpg-status"
     fi
-  fi
-
-  if [[ ! -f "$asc" ]]; then
-    echo "  SKIP: no .asc signature found" >&2
-    SKIP=$((SKIP + 1))
-    continue
-  fi
-
-  GPG_OUTPUT="$(gpg --batch --verify "$asc" "$file" 2>&1)" && GPG_RC=0 || GPG_RC=$?
-  if [[ $GPG_RC -eq 0 ]]; then
-    echo "$GPG_OUTPUT" | grep -i 'good signature' | sed 's/^/  /' || echo "  GPG: OK"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: GPG signature verification failed" >&2
-    # shellcheck disable=SC2001 # indenting every line of multi-line output
-    echo "$GPG_OUTPUT" | sed 's/^/    /' >&2
-    FAIL=$((FAIL + 1))
-  fi
 done
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped (${#FILES[@]} total)"
-
-if [[ $FAIL -gt 0 ]]; then
-  echo ""
-  echo "ERROR: $FAIL artifact(s) failed verification" >&2
-  exit 1
-fi
-
-if [[ $PASS -eq 0 ]]; then
-  echo ""
-  echo "WARNING: nothing was verified (all skipped)" >&2
-  exit 1
-fi
+echo "Verified v$version at $sha (checksums, Sigstore, provenance)."

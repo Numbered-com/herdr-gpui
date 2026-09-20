@@ -20,7 +20,15 @@ concurrency:
 
 jobs:
   zizmor:
-    name: Workflow Security
+    if: >-
+      github.repository == 'penso/herdr-gpui' &&
+      github.actor == 'penso' && github.triggering_actor == 'penso' &&
+      ((github.event_name == 'pull_request' &&
+        github.event.pull_request.user.login == 'penso' &&
+        github.event.pull_request.head.repo.full_name == 'penso/herdr-gpui') ||
+       ((github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+         github.event_name == 'schedule') && github.ref == 'refs/heads/main'))
+    name: Supply Chain Workflow Security
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -35,10 +43,18 @@ jobs:
           online-audits: false
 
   cargo-deny:
+    if: >-
+      github.repository == 'penso/herdr-gpui' &&
+      github.actor == 'penso' && github.triggering_actor == 'penso' &&
+      ((github.event_name == 'pull_request' &&
+        github.event.pull_request.user.login == 'penso' &&
+        github.event.pull_request.head.repo.full_name == 'penso/herdr-gpui') ||
+       ((github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
+         github.event_name == 'schedule') && github.ref == 'refs/heads/main'))
     name: cargo-deny (${{ matrix.check }})
     needs: zizmor
     # Runs on Linux deliberately: cargo-deny reads the lockfile and never
-    # builds, and deny.toml pins graph evaluation to the macOS targets.
+    # builds, and deny.toml pins graph evaluation to the shipped macOS/Linux targets.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

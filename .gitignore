@@ -1,1 +1,20 @@
 /target/
+/dist/
+
+# Local signing configuration and credential backups must never be committed.
+.env
+.env.*
+.envrc
+.envrc.*
+.direnv/
+.release-credentials/
+.herdr-sign.*/
+*.p8
+*.p12
+*.pfx
+*.pem
+*.key
+*.keychain
+*.keychain-db
+id_rsa*
+id_ed25519*

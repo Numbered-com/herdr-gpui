@@ -32,15 +32,20 @@ impl FontConfig {
 
 impl Default for Config {
     fn default() -> Self {
+        let monospace = if cfg!(target_os = "macos") {
+            "Menlo"
+        } else {
+            "DejaVu Sans Mono"
+        };
         let font = |family: &str, size| FontConfig {
             family: family.into(),
             size,
         };
         Self {
             theme: "Default".into(),
-            sidebar: font("Menlo", 12.0),
+            sidebar: font(monospace, 12.0),
             tabs: font(".SystemUIFont", 14.0),
-            terminal: font("Menlo", 14.0),
+            terminal: font(monospace, 14.0),
             ui: font(".SystemUIFont", 12.0),
         }
     }
@@ -662,6 +667,14 @@ mod tests {
     #[test]
     fn defaults_and_partial_settings() -> Result<(), String> {
         let config = Config::parse(DEFAULT_CONFIG)?;
+        let monospace = if cfg!(target_os = "macos") {
+            "Menlo"
+        } else {
+            "DejaVu Sans Mono"
+        };
+        assert_eq!(config.sidebar.family, monospace);
+        assert_eq!(config.terminal.family, monospace);
+        assert_eq!(Config::parse("")?.terminal.family, monospace);
         assert_eq!(config.theme()?, Theme::default());
         assert_eq!(config.sidebar.size, 12.0);
         assert_eq!(config.tabs.family, ".SystemUIFont");
