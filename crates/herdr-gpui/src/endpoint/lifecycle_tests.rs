@@ -147,6 +147,11 @@ fn connected_endpoint(id: &str) -> (Endpoint, Server) {
             "tab.focus",
             "pane.focus",
             "workspace.focus",
+            "pane.focus_direction",
+            "pane.zoom",
+            "pane.close",
+            "tab.close",
+            "command.invoke",
         ]
         .map(str::to_owned),
     );
@@ -246,16 +251,49 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
         (Command::Workspace, "workspace.create"),
         (Command::NextTab, "tab.focus"),
         (Command::PreviousTab, "tab.focus"),
+        (Command::TabNumber(1), "tab.focus"),
+        (Command::FocusLeft, "pane.focus_direction"),
+        (Command::FocusRight, "pane.focus_direction"),
+        (Command::FocusUp, "pane.focus_direction"),
+        (Command::FocusDown, "pane.focus_direction"),
+        (Command::NextPane, "pane.focus"),
+        (Command::PreviousPane, "pane.focus"),
+        (Command::Zoom, "pane.zoom"),
+        (Command::ClosePane, "pane.close"),
+        (Command::CloseTab, "tab.close"),
+        (Command::WorkspacePicker, "workspace.focus"),
+        (Command::Palette, "command.invoke"),
     ] {
-        let (endpoint, mut server) = connected_endpoint(LOCAL);
+        let (endpoint, mut server) = connected_endpoint("ssh:fixture");
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
-                view.endpoints = vec![endpoint];
-                view.selected_endpoint = 0;
+                view.endpoints.truncate(1);
+                view.endpoints.push(endpoint);
+                view.selected_endpoint = 1;
                 view.options = ConnectOptions::default();
                 view.reset_selected();
+                view.activation_deadline = None;
                 assert!(view.input_ready());
                 view.command(command, window, cx);
+                let key = |key: &str| gpui::KeyDownEvent {
+                    keystroke: gpui::Keystroke::parse(key).unwrap(),
+                    is_held: false,
+                };
+                match command {
+                    Command::ClosePane | Command::CloseTab => {
+                        view.close_confirmation_key(&key("tab"), window, cx);
+                        view.close_confirmation_key(&key("enter"), window, cx);
+                    }
+                    Command::WorkspacePicker => view.palette_key(&key("enter"), window, cx),
+                    Command::Palette => {
+                        // The configured entry follows all native entries except Palette.
+                        for _ in 0..crate::controls::COMMANDS.len() - 1 {
+                            view.palette_key(&key("down"), window, cx);
+                        }
+                        view.palette_key(&key("enter"), window, cx);
+                    }
+                    _ => {}
+                }
                 assert!(!view.input_ready(), "{method} must fence immediately");
                 assert!(view.activation_deadline.is_some());
                 view.send(

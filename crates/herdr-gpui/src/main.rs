@@ -3,21 +3,26 @@
 mod app_icon;
 mod avatars;
 mod cli;
+mod close_modal;
+mod config;
 mod connection;
 mod controls;
 mod daemon;
 mod endpoint;
 mod input;
 mod menu;
+mod palette;
 #[cfg(feature = "integration-test")]
 mod performance;
 mod preferences;
+mod search_input;
 mod sidebar;
 #[cfg(feature = "integration-test")]
 mod smoke;
 mod state;
 mod terminal;
 mod terminal_painter;
+mod theme_picker;
 
 use connection::ConnectionBridge;
 use controls::Command;
@@ -29,20 +34,31 @@ use std::sync::Arc;
 use std::time::Duration;
 use terminal::*;
 
-actions!(
-    herdr,
-    [
-        Quit,
-        Reconnect,
-        ShowHerdrNotDetected,
-        NewWorkspace,
-        NewTab,
-        SplitRight,
-        SplitDown,
-        NextTab,
-        PreviousTab
-    ]
-);
+actions!(herdr, [Quit, ShowHerdrNotDetected]);
+
+#[derive(Clone, PartialEq, serde::Deserialize, Action)]
+#[action(no_json)]
+struct RunCommand {
+    command: Command,
+}
+
+fn bind_keys(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+    cx.bind_keys(
+        controls::COMMANDS
+            .iter()
+            .filter(|info| !info.shortcut.is_empty() && info.command != Command::Quit)
+            .map(|info| {
+                KeyBinding::new(
+                    info.shortcut,
+                    RunCommand {
+                        command: info.command,
+                    },
+                    None,
+                )
+            }),
+    );
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum NavigationTarget<T> {
@@ -72,6 +88,8 @@ impl<T: AsRef<str>> NavigationTarget<T> {
 }
 
 struct HerdrWindow {
+    config: config::Config,
+    theme: config::Theme,
     endpoints: Vec<endpoint::Endpoint>,
     selected_endpoint: usize,
     selection_epoch: u64,
@@ -94,6 +112,7 @@ struct HerdrWindow {
     menu: menu::MenuState,
     install_warning_shown: bool,
     collapsed_repos: std::collections::HashSet<String>,
+    sidebar_visible: bool,
     wheel: WheelAccumulator,
     sidebar_width: Option<f32>,
     sidebar_drag: Option<(f32, f32)>,
@@ -167,7 +186,26 @@ impl HerdrWindow {
                 }
             }
         });
+        let fixture = false;
+        #[cfg(feature = "integration-test")]
+        let fixture = fixture || sidebar_test;
+        let loaded = if fixture {
+            Ok(config::Config::default())
+        } else {
+            config::Config::load()
+        };
+        let (config, theme, config_error) =
+            match loaded.and_then(|config| config.theme().map(|theme| (config, theme))) {
+                Ok((config, theme)) => (config, theme, None),
+                Err(error) => (
+                    config::Config::default(),
+                    config::Theme::default(),
+                    Some(error),
+                ),
+            };
         let mut this = Self {
+            config,
+            theme,
             catalog: endpoint::Catalog::new(&target),
             endpoints: vec![endpoint::Endpoint::new(
                 endpoint::LOCAL.into(),
@@ -195,6 +233,7 @@ impl HerdrWindow {
             menu: menu::MenuState::new(cx),
             install_warning_shown: false,
             collapsed_repos: Default::default(),
+            sidebar_visible: true,
             wheel: WheelAccumulator::default(),
             sidebar_width: None,
             sidebar_drag: None,
@@ -230,6 +269,9 @@ impl HerdrWindow {
             .map(|path| preferences::Preferences::new(&path));
         this.avatars = Some(avatars::Avatars::new());
         this.reconnect();
+        if config_error.is_some() {
+            this.local_error = config_error;
+        }
         this
     }
 
@@ -366,15 +408,46 @@ impl HerdrWindow {
     }
 
     fn command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
-        if self.menu.page.is_some()
-            || self.activation_deadline.is_some()
-            || !self.endpoints[self.selected_endpoint].surface_requested()
-        {
+        if self.menu.page.is_some() {
             return;
         }
         #[cfg(feature = "integration-test")]
         {
             self.input_probe.actions += 1;
+        }
+        match command {
+            Command::ClosePane | Command::CloseTab => {
+                self.open_close_confirmation(command, window, cx);
+                return;
+            }
+            Command::Palette | Command::WorkspacePicker => {
+                self.open_palette(command == Command::WorkspacePicker, window, cx);
+                return;
+            }
+            Command::Keybinds => {
+                self.open_keybinds(window, cx);
+                return;
+            }
+            Command::Themes => {
+                self.open_theme_picker(window, cx);
+                return;
+            }
+            Command::Settings => {
+                self.open_preferences(window, cx);
+                return;
+            }
+            Command::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
+            Command::Reconnect => self.reconnect(),
+            Command::Quit => {
+                cx.quit();
+                return;
+            }
+            _ => {}
+        }
+        if self.activation_deadline.is_some()
+            || !self.endpoints[self.selected_endpoint].surface_requested()
+        {
+            return;
         }
         if let Some(snapshot) = &self.live.snapshot
             && let Some((method, params)) = controls::request(command, snapshot)
@@ -401,11 +474,12 @@ impl HerdrWindow {
         };
         let x = (event.position.x - self.bounds.origin.x).to_f64() as f32;
         let y = (event.position.y - self.bounds.origin.y).to_f64() as f32;
-        let Some(target) = wheel_target(surface, x, y, self.cell_width) else {
+        let cell_height = self.config.terminal.line_height();
+        let Some(target) = wheel_target(surface, x, y, self.cell_width, cell_height) else {
             self.wheel = WheelAccumulator::default();
             return;
         };
-        let lines = self.wheel.lines(&target.target, event);
+        let lines = self.wheel.lines(&target.target, event, cell_height);
         cx.stop_propagation();
         if lines == 0 {
             return;
@@ -487,17 +561,25 @@ mod tests {
 
 impl Render for HerdrWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let font = font("Menlo");
+        let font = font(self.config.terminal.family.clone());
+        let cell_height = self.config.terminal.line_height();
+        self.painter.borrow_mut().set_appearance(
+            self.config.terminal.size,
+            cell_height,
+            self.theme.clone(),
+        );
         self.cell_width = self.painter.borrow_mut().cell_width(&font, window, cx);
         let sidebar = self.render_sidebar(window, cx);
         let mut tabs = div()
             .id("tabs")
             .flex()
             .flex_none()
-            .h(px(40.))
+            .h(px((self.config.tabs.size * 1.5 + 16.).max(40.)))
+            .font_family(self.config.tabs.family.clone())
+            .text_size(px(self.config.tabs.size))
             .overflow_x_scroll()
-            .bg(rgb(sidebar::BACKGROUND))
-            .text_color(rgb(sidebar::FOREGROUND))
+            .bg(rgb(self.theme.surface))
+            .text_color(rgb(self.theme.foreground))
             .items_center();
         if let Some(snapshot) = &self.live.snapshot {
             for tab in snapshot
@@ -514,9 +596,9 @@ impl Render for HerdrWindow {
                         .flex_none()
                         .cursor_pointer()
                         .bg(rgb(if tab.focused {
-                            sidebar::ACTIVE
+                            self.theme.active
                         } else {
-                            sidebar::BACKGROUND
+                            self.theme.surface
                         }))
                         .child(tab.label.clone())
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -550,7 +632,7 @@ impl Render for HerdrWindow {
             .min_h_0()
             .min_w_0()
             .overflow_hidden()
-            .bg(rgb(BACKGROUND))
+            .bg(rgb(self.theme.background))
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .on_scroll_wheel(cx.listener(Self::scroll_wheel))
@@ -565,7 +647,7 @@ impl Render for HerdrWindow {
                             / this.cell_width as f64)
                             .floor() as u16;
                         let row = ((event.position.y - this.bounds.origin.y).to_f64()
-                            / CELL_HEIGHT as f64)
+                            / this.config.terminal.line_height() as f64)
                             .floor() as u16;
                         let pane = surface
                             .panes
@@ -593,9 +675,10 @@ impl Render for HerdrWindow {
                                     bounds.size.width.to_f64() as f32,
                                     bounds.size.height.to_f64() as f32,
                                     cell_width,
+                                    cell_height,
                                 ),
                                 cell_width_px: cell_width.round().max(1.) as u32,
-                                cell_height_px: CELL_HEIGHT as u32,
+                                cell_height_px: cell_height.round().max(1.) as u32,
                             };
                             this.resize();
                         });
@@ -616,7 +699,12 @@ impl Render for HerdrWindow {
                                 cx,
                             );
                             if let Some(popup) = &surface.popup {
-                                let offset = popup_origin(&surface.frame, &popup.frame, cell_width);
+                                let offset = popup_origin(
+                                    &surface.frame,
+                                    &popup.frame,
+                                    cell_width,
+                                    cell_height,
+                                );
                                 painter.borrow_mut().paint_frame(
                                     &popup.frame,
                                     bounds.origin + offset,
@@ -662,73 +750,55 @@ impl Render for HerdrWindow {
             );
         let status = self.live.status_text(self.local_error.as_deref());
         div()
+            .on_action(cx.listener(|this, action: &RunCommand, window, cx| {
+                this.command(action.command, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &ShowHerdrNotDetected, window, cx| {
                 this.show_install_modal(window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &Reconnect, window, cx| {
-                if this.menu.page.is_some() {
-                    return;
-                }
-                this.reconnect();
-                window.focus(&this.focus);
-                cx.notify();
-            }))
-            .on_action(cx.listener(|this, _: &NewWorkspace, window, cx| {
-                this.command(Command::Workspace, window, cx)
-            }))
-            .on_action(
-                cx.listener(|this, _: &NewTab, window, cx| this.command(Command::Tab, window, cx)),
-            )
-            .on_action(cx.listener(|this, _: &SplitRight, window, cx| {
-                this.command(Command::SplitRight, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SplitDown, window, cx| {
-                this.command(Command::SplitDown, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &NextTab, window, cx| {
-                this.command(Command::NextTab, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &PreviousTab, window, cx| {
-                this.command(Command::PreviousTab, window, cx)
             }))
             .size_full()
             .relative()
             .flex()
             .flex_col()
-            .bg(rgb(BACKGROUND))
-            .text_color(rgb(FOREGROUND))
-            .font_family(".SystemUIFont")
-            .text_sm()
+            .bg(rgb(self.theme.background))
+            .text_color(rgb(self.theme.foreground))
+            .font_family(self.config.ui.family.clone())
+            .text_size(px(self.config.ui.size))
             .child(
-                div().flex().flex_1().min_h_0().child(sidebar).child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_none()
-                                .bg(rgb(sidebar::BACKGROUND))
-                                .text_color(rgb(sidebar::FOREGROUND))
-                                .child(tabs.flex_1().min_w_0())
-                                .child(
-                                    div()
-                                        .id("new-tab")
-                                        .px_4()
-                                        .flex()
-                                        .items_center()
-                                        .cursor_pointer()
-                                        .hover(|s| s.bg(rgb(sidebar::ACTIVE)))
-                                        .child("+")
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.command(Command::Tab, window, cx)
-                                        })),
-                                ),
-                        )
-                        .child(terminal),
-                ),
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .when(self.sidebar_visible, |row| row.child(sidebar))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_none()
+                                    .bg(rgb(self.theme.surface))
+                                    .text_color(rgb(self.theme.foreground))
+                                    .child(tabs.flex_1().min_w_0())
+                                    .child(
+                                        div()
+                                            .id("new-tab")
+                                            .px_4()
+                                            .flex()
+                                            .items_center()
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(rgb(self.theme.active)))
+                                            .child("+")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.command(Command::Tab, window, cx)
+                                            })),
+                                    ),
+                            )
+                            .child(terminal),
+                    ),
             )
             .child(
                 div()
@@ -736,20 +806,20 @@ impl Render for HerdrWindow {
                     .debug_selector(|| "connection-status".into())
                     .flex()
                     .flex_none()
-                    .h(px(22.))
+                    .h(px((self.config.ui.size * 1.5 + 4.).max(22.)))
                     .overflow_hidden()
                     .items_center()
                     .gap(px(6.))
                     .px_3()
-                    .bg(rgb(sidebar::BACKGROUND))
-                    .text_color(rgb(sidebar::FOREGROUND))
+                    .bg(rgb(self.theme.surface))
+                    .text_color(rgb(self.theme.foreground))
                     .child(
                         if matches!(self.live.status, ConnectionStatus::StartingDaemon) {
                             div()
                                 .size(px(8.))
                                 .flex_none()
                                 .rounded_full()
-                                .bg(rgb(0xe5bd73))
+                                .bg(rgb(self.theme.palette[3]))
                                 .with_animation(
                                     "daemon-starting-loader",
                                     Animation::new(Duration::from_secs(1)).repeat(),
@@ -766,9 +836,9 @@ impl Render for HerdrWindow {
                                 .flex_none()
                                 .rounded_full()
                                 .bg(rgb(if self.live.status.is_connected() {
-                                    0x78c998
+                                    self.theme.palette[2]
                                 } else {
-                                    0xe27c7c
+                                    self.theme.palette[1]
                                 }))
                                 .into_any_element()
                         },
@@ -778,18 +848,45 @@ impl Render for HerdrWindow {
                             .flex_1()
                             .min_w_0()
                             .overflow_hidden()
-                            .text_xs()
+                            .whitespace_nowrap()
                             .child(status),
                     )
                     .when(!self.marked.is_empty(), |d| {
                         d.child(
                             div()
                                 .min_w_0()
+                                .max_w(px(160.))
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .child(format!("Composing: {}", self.marked)),
                         )
                     })
+                    .child(
+                        div()
+                            .id("status-theme")
+                            .debug_selector(|| "status-theme".into())
+                            .flex_none()
+                            .px_2()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgb(self.theme.active)))
+                            .child("Theme")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_theme_picker(window, cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("status-keybinds")
+                            .debug_selector(|| "status-keybinds".into())
+                            .flex_none()
+                            .px_2()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgb(self.theme.active)))
+                            .child("? Keybinds")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_keybinds(window, cx);
+                            })),
+                    )
                     .child(
                         div()
                             .id("report-issue")
@@ -799,9 +896,8 @@ impl Render for HerdrWindow {
                             .items_center()
                             .gap(px(5.))
                             .px_2()
-                            .text_xs()
                             .cursor_pointer()
-                            .hover(|s| s.bg(rgb(sidebar::ACTIVE)))
+                            .hover(|s| s.bg(rgb(self.theme.active)))
                             .child(
                                 div()
                                     .size(px(12.))
@@ -811,12 +907,12 @@ impl Render for HerdrWindow {
                                     .justify_center()
                                     .rounded_full()
                                     .border_1()
-                                    .border_color(rgb(sidebar::FOREGROUND))
+                                    .border_color(rgb(self.theme.foreground))
                                     .child(
                                         div()
                                             .size(px(3.))
                                             .rounded_full()
-                                            .bg(rgb(sidebar::FOREGROUND)),
+                                            .bg(rgb(self.theme.foreground)),
                                     ),
                             )
                             .child("Report issue")
@@ -882,37 +978,115 @@ fn run() -> std::process::ExitCode {
     Application::new().run(move |cx| {
         app_icon::install();
         cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([
-            KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("cmd-n", NewWorkspace, None),
-            KeyBinding::new("cmd-t", NewTab, None),
-            KeyBinding::new("cmd-d", SplitRight, None),
-            KeyBinding::new("cmd-shift-d", SplitDown, None),
-            KeyBinding::new("cmd-shift-]", NextTab, None),
-            KeyBinding::new("cmd-shift-[", PreviousTab, None),
-        ]);
+        bind_keys(cx);
         cx.set_menus(vec![
             Menu {
                 name: "Herdr".into(),
-                items: vec![MenuItem::action("Quit Herdr", Quit)],
+                items: vec![
+                    MenuItem::action(
+                        "Command Palette",
+                        RunCommand {
+                            command: Command::Palette,
+                        },
+                    ),
+                    MenuItem::action(
+                        "Settings",
+                        RunCommand {
+                            command: Command::Settings,
+                        },
+                    ),
+                    MenuItem::action(
+                        "Keybinds",
+                        RunCommand {
+                            command: Command::Keybinds,
+                        },
+                    ),
+                    MenuItem::action("Quit Herdr", Quit),
+                ],
             },
             Menu {
                 name: "File".into(),
                 items: vec![
-                    MenuItem::action("New Workspace", NewWorkspace),
-                    MenuItem::action("New Tab", NewTab),
+                    MenuItem::action(
+                        "New Workspace",
+                        RunCommand {
+                            command: Command::Workspace,
+                        },
+                    ),
+                    MenuItem::action(
+                        "New Tab",
+                        RunCommand {
+                            command: Command::Tab,
+                        },
+                    ),
+                    MenuItem::action(
+                        "Switch Workspace",
+                        RunCommand {
+                            command: Command::WorkspacePicker,
+                        },
+                    ),
+                    MenuItem::separator(),
+                    MenuItem::action(
+                        "Close Pane...",
+                        RunCommand {
+                            command: Command::ClosePane,
+                        },
+                    ),
+                    MenuItem::action(
+                        "Close Tab...",
+                        RunCommand {
+                            command: Command::CloseTab,
+                        },
+                    ),
                 ],
             },
             Menu {
                 name: "Terminal".into(),
                 items: vec![
-                    MenuItem::action("Split Vertically (Right)", SplitRight),
-                    MenuItem::action("Split Horizontally (Down)", SplitDown),
+                    MenuItem::action(
+                        "Split Vertically (Right)",
+                        RunCommand {
+                            command: Command::SplitRight,
+                        },
+                    ),
+                    MenuItem::action(
+                        "Split Horizontally (Down)",
+                        RunCommand {
+                            command: Command::SplitDown,
+                        },
+                    ),
                     MenuItem::separator(),
-                    MenuItem::action("Next Tab", NextTab),
-                    MenuItem::action("Previous Tab", PreviousTab),
+                    MenuItem::action(
+                        "Next Tab",
+                        RunCommand {
+                            command: Command::NextTab,
+                        },
+                    ),
+                    MenuItem::action(
+                        "Previous Tab",
+                        RunCommand {
+                            command: Command::PreviousTab,
+                        },
+                    ),
+                    MenuItem::action(
+                        "Toggle Pane Zoom",
+                        RunCommand {
+                            command: Command::Zoom,
+                        },
+                    ),
+                    MenuItem::action(
+                        "Toggle Sidebar",
+                        RunCommand {
+                            command: Command::ToggleSidebar,
+                        },
+                    ),
                     MenuItem::separator(),
-                    MenuItem::action("Reconnect", Reconnect),
+                    MenuItem::action(
+                        "Reconnect",
+                        RunCommand {
+                            command: Command::Reconnect,
+                        },
+                    ),
                 ],
             },
             Menu {

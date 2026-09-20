@@ -7,7 +7,7 @@ daemons, spawn a local PTY, or emulate a terminal. Herdr's remote bridge may sta
 the named remote session. SSH requires an installed POSIX Herdr, noninteractive authentication,
 and an already trusted host key.
 Runtime dependencies include GPUI, `herdr-client`, `serde_json` for API parameters,
-and `ureq` for background GitHub owner avatar downloads.
+`ureq` for background GitHub owner avatar downloads, and `serde`/`toml` for GUI configuration.
 
 ```sh
 cargo run -p herdr-gpui
@@ -53,6 +53,31 @@ and a coherent surface at the current viewport size. Handoffs time out after fiv
 seconds and return to Local; returning to Local never waits on a remote release.
 Servers without surface-switching support remain usable as single targets.
 
+Default and named-session startup discovers Herdr on PATH or in standard
+Homebrew, Cargo, or `~/.local/bin` locations, then waits up to 20 seconds to
+connect without blocking the UI. If Herdr cannot be found, an installation modal
+offers an **Install** button that opens [herdr.dev](https://herdr.dev/); it never
+downloads or runs an installer. After installing, choose Terminal > Reconnect.
+**QA > Show herdr non-detected modal** previews the warning without restarting,
+disconnecting, or changing daemon detection. Closing the GUI leaves the daemon
+and its terminals running.
+
+## Configuration
+
+See [GUI configuration](../../README.md#gui-configuration) for the config path,
+font defaults, theme lookup order, and reload behavior, and
+[`config-gpui.example.toml`](config-gpui.example.toml) for a complete example.
+Font sizes use logical pixels (finite 8..48), not typographic points. Restart the
+GUI or invoke GUI config reload after edits; daemon config reload is separate.
+
+The standalone `src/config.rs` module exposes `Config::load()` and
+`Config::path()`, both returning errors as strings. `Config::theme()` resolves
+built-ins or Ghostty files into a `Theme` with packed 24-bit RGB colors and all
+256 palette entries. Theme resolution is a separate fallible step from loading
+and validating TOML. Font sections can override either family or size without
+repeating the other field. `FontConfig::line_height()` returns `size * 20 / 14`.
+Config and theme I/O is synchronous; GUI callers should schedule it accordingly.
+
 ## Supported
 
 - Workspace/worktree sidebar with main-checkout parents, indented linked
@@ -62,7 +87,12 @@ Servers without surface-switching support remain usable as single targets.
   host groups. Local workspace titles show repository owner avatars; remote
   workspaces use the GitHub fallback mark without resolving remote paths locally.
 - In-app sidebar menu for settings information, keybinds, config reload, update
-  information, and detach/reconnect. Settings are read-only for now.
+  information, and detach/reconnect. Styled Preferences include Appearance,
+  Fonts, Configuration, and Connection sections, with theme selection and GUI
+  config reload; font values remain read-only and are edited in the config file.
+- A searchable theme picker previews the available names from built-ins and
+  Herdr/Ghostty theme folders. Selecting a theme applies and saves it while
+  preserving other GUI config settings and comments.
 - Title-only tabs, without an added tab number. Externally created workspaces
   arrive through pushed snapshots without manual refresh.
 - Click workspace, tab, agent, or a visible split pane to focus through the API.
@@ -73,6 +103,24 @@ Servers without surface-switching support remain usable as single targets.
   Cmd-Shift-D splits horizontally (new pane below). Cmd-Shift-] / Cmd-Shift-[
   cycles next/previous tab within the current workspace, wrapping at the ends.
   These shortcuts are native actions, not bytes sent to a terminal.
+- Cmd-1 through Cmd-9 focuses the corresponding numbered tab in the current
+  workspace. Cmd-Alt-Left/Right/Up/Down focuses a pane in that direction;
+  Cmd-Alt-] / Cmd-Alt-[ cycles next/previous pane within the current tab.
+  Cmd-Shift-Enter toggles focused pane zoom.
+- Cmd-W closes the focused pane and Cmd-Shift-W closes the focused tab only after
+  a confirmation dialog. **Cancel is selected by default**: Enter alone cancels;
+  Tab then Enter selects and confirms Close. Closing can terminate running
+  processes, unlike quitting the GUI, which only detaches.
+- Cmd-Shift-P opens the command palette with native actions and configured daemon
+  command entries, including native Themes and Reconnect actions without dedicated
+  shortcuts. Cmd-P opens the workspace picker instead.
+- Cmd-B toggles sidebar visibility locally without changing daemon state.
+  Cmd-, opens Settings; Cmd-/ opens the grouped native shortcut reference.
+  Native shortcut labels and keycaps come from the shared `controls::COMMANDS`
+  catalog, with Cmd-V semantic paste shown separately. Search filters by action,
+  section, or key combination. Preferences, keybinds, theme/palette pickers, and
+  close confirmations use themed centered modals and configured UI fonts;
+  modal input does not reach the terminal.
 - Creation omits `cwd`, labels, environment overrides, and split ratio: the
   daemon applies its existing defaults and directory policy. Workspace creation
   supplies the currently focused source workspace when available; tabs and splits
@@ -94,7 +142,7 @@ Servers without surface-switching support remain usable as single targets.
   input follows the macOS keyboard layout, including dead keys.
 - Cmd-V sends semantic Paste; Cmd-Q or window close detaches without killing
   the daemon or its terminals. Window activation is reported to the daemon.
-- Resize uses the actual terminal canvas bounds and measured Menlo cell width,
+- Resize uses the actual terminal canvas bounds and measured configured font cell width,
   excluding the native sidebar, tabs and status bar.
 
 Socket I/O belongs to `herdr-client`'s worker. A separate event thread drains all
@@ -123,14 +171,14 @@ GPUI native action/menu/keybinding patterns.
 
 ## Deliberate Limitations
 
-- macOS first; uses system Menlo and system font fallback, no bundled Nerd Font.
-  Private-use icons may be missing. ANSI colors use a fixed conventional palette,
-  not a synchronized host-terminal theme.
+- macOS first; defaults to system Menlo and system font fallback, no bundled Nerd Font.
+  Private-use icons may be missing. Fonts and palettes are configured locally,
+  not synchronized from the host terminal's theme.
 - No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
   hyperlink activation, image rendering, or animated blinking.
-- No pane/tab/workspace close or delete actions (deferred until confirmation UI),
-  horizontal wheel handling, command palette, server-owned keybindings,
-  session picker, saved-host editing, or daemon stop/upgrade management.
+- No rename dialogs, workspace close/delete actions, horizontal wheel handling,
+  server-owned keybindings, session picker, saved-host editing, or daemon
+  stop/upgrade management.
 - IME uses a minimal transient buffer, not a local editable terminal document;
   composition appears in the status bar rather than inline. Key releases and
   physical-key/extended keyboard protocol metadata are not reported.
