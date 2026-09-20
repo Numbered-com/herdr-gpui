@@ -7,6 +7,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0"
+# Workspace crates are not published to crates.io; they build this application.
+publish = false
 
 [workspace.lints.rust]
 unsafe_code = "deny"
