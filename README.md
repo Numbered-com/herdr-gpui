@@ -104,16 +104,22 @@ see the dependencies below. The repository pins Rust 1.96.1 and GPUI 0.2.2.
 Install Herdr, then:
 
 ```sh
-cargo run --locked --release -p herdr-gpui
-# Or, with just installed:
 just run
 just run --session my-project
 just run --socket /absolute/path/to/herdr-client.sock
+# Or, without just:
+cargo run --locked --release -p herdr-gpui
 ```
 
 `just run` uses the optimized release build for interactive performance. Use
 `just run-debug` when debugging; unoptimized GPUI scene construction is notably
 slower with a dense terminal on screen.
+
+On macOS both recipes launch the local `Herdr.app` bundle built from that
+profile, so the Dock, app switcher, and Force Quit list show **Herdr**. macOS
+names an unbundled process after its executable file, so a bare
+`cargo run` shows `herdr-gpui` there instead; the menu bar reads **Herdr**
+either way.
 
 The explicit socket must be the binary **client** socket, not `herdr.sock`.
 The app starts `herdr server` if the default or named-session local daemon is
@@ -214,15 +220,16 @@ window dragging remains owned by AppKit. Windows/Linux retain their native frame
 without an extra header. See the [native shell notes](crates/herdr-gpui/README.md#title-bar)
 for layout coverage and remaining desktop QA.
 
-`cargo run` and `just run` use the embedded Herdr ram Dock icon, with no runtime
-asset paths or image-generation processes. To create a local Finder-launchable app:
+`cargo run` uses the embedded Herdr ram Dock icon, with no runtime asset paths or
+image-generation processes. `just run` and `just run-debug` build the same local
+bundle used for a Finder-launchable app, which carries the matching `.icns`:
 
 ```sh
-just bundle
+just bundle          # release; `just bundle debug` bundles the debug build
 open target/release/Herdr.app
 ```
 
-The bundle is named **Herdr** and contains only the release GUI executable,
+The bundle is named **Herdr** and contains only that profile's GUI executable,
 `Info.plist`, and its native `.icns` icon. It starts an installed daemon if needed;
 it does not bundle, install, or stop a daemon. This is a local unsigned,
 unnotarized bundle, not a distribution/signing pipeline. Its version metadata lives
