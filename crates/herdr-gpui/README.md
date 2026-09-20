@@ -99,11 +99,23 @@ with transparent chrome and lights positioned at (9, 9) logical pixels. A full-w
 themes while keeping light themes light. It sits above the sidebar and tabs: 80px
 of traffic-light clearance, an empty flexible center, and a 40px upper-right slot.
 The slot centers a 16px circular user avatar with a 12px SVG in a 28px hover target, tinted from
-the theme foreground. This placeholder for future GitHub sign-in has no account
-action, network requests, personal identity, or tooltip. It consumes clicks so
+the theme foreground. This profile control opens native GitHub sign-in and shows
+the authenticated user's avatar when connected. It consumes clicks so
 double-clicking it does not invoke the title-bar action.
 The header and clearance remain in fullscreen so the body layout stays stable.
 Windows/Linux keep the existing native frame and do not render this header.
+
+Linked-worktree builds add a full-width, 22px amber banner below
+the macOS header (above the body on Linux), with the compile-time branch or short
+SHA and optional open PR number, clickable to open that PR on GitHub. The branch
+truncates while the PR stays visible. It participates in the root flex
+layout, so terminal painting,
+hit testing, resize, and IME geometry continue to use the actual canvas bounds.
+The banner does not query Git/GitHub or intercept keyboard focus. Main-checkout
+builds have no banner. Headless tests cover banner presence/absence, long branch
+labels, PR presence/absence, and body bounds at 360px, 640px, and 1200px widths.
+Build identity and icon selection are described in the
+[release notes](../../scripts/release/README.md#build-identity).
 
 The reference is Zed's `crates/platform_title_bar/src/platform_title_bar.rs` and
 window options in `crates/zed/src/zed.rs`, not a build dependency. Double-click calls

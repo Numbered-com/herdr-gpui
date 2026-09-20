@@ -320,7 +320,9 @@ impl MenuState {
 
 impl HerdrWindow {
     pub(super) fn open_keybinds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_menu(window, cx);
+        if !self.open_menu(window, cx) {
+            return;
+        }
         self.menu.page = Some(Page::Keybinds);
         self.menu.keybinds_scroll.set_offset(Point::default());
         let search = cx.new(crate::search_input::SearchInput::new);
@@ -340,12 +342,17 @@ impl HerdrWindow {
     }
 
     pub(super) fn open_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_menu(window, cx);
+        if !self.open_menu(window, cx) {
+            return;
+        }
         self.menu.page = Some(Page::Preferences);
         self.menu.preferences_scroll.set_offset(Point::default());
     }
 
     pub(super) fn reload_gui_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.theme_save_in_flight() {
+            return;
+        }
         self.load_gui_config(cx);
         self.dismiss_menu(window, cx);
     }
@@ -397,11 +404,16 @@ impl HerdrWindow {
     }
 
     pub(super) fn show_install_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_menu(window, cx);
+        if !self.open_menu(window, cx) {
+            return;
+        }
         self.menu.page = Some(Page::Install);
     }
 
-    pub(super) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.cancel_theme_preview(cx) {
+            return false;
+        }
         self.menu.reset();
         self.menu.endpoint_target = (
             self.selection_epoch,
@@ -411,9 +423,13 @@ impl HerdrWindow {
         self.marked.clear();
         window.focus(&self.menu.focus);
         cx.notify();
+        true
     }
 
     pub(super) fn dismiss_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.cancel_theme_preview(cx) {
+            return;
+        }
         self.menu.reset();
         window.focus(&self.focus);
         cx.notify();
@@ -2083,18 +2099,20 @@ mod tests {
             view.load_gui_config_with(|| Err(crate::Error::EmptyTheme), cx);
         });
         cx.run_until_parked();
-        view.update(cx, |view, cx| {
-            assert_eq!(view.config.theme, "Nord");
-            assert_eq!(view.theme, view.config.theme().unwrap());
-            assert!(
-                view.local_error
-                    .as_deref()
-                    .unwrap()
-                    .contains("theme must not be empty")
-            );
-            view.load_gui_config_with(|| Ok((Default::default(), Default::default())), cx);
-            // Same cancellation used after an explicit theme selection.
-            view.config_load = None;
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                assert_eq!(view.config.theme, "Nord");
+                assert_eq!(view.theme, view.config.theme().unwrap());
+                assert!(
+                    view.local_error
+                        .as_deref()
+                        .unwrap()
+                        .contains("theme must not be empty")
+                );
+                view.load_gui_config_with(|| Ok((Default::default(), Default::default())), cx);
+                view.open_theme_picker(window, cx);
+                assert!(view.config_load.is_none());
+            });
         });
         cx.run_until_parked();
         view.update(cx, |view, _| assert_eq!(view.config.theme, "Nord"));

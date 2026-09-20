@@ -448,7 +448,7 @@ impl Theme {
         self.muted = blend(55);
     }
 
-    fn builtin(name: &str) -> Option<Self> {
+    pub(super) fn builtin(name: &str) -> Option<Self> {
         // Small hand-authored palettes; no external theme assets are bundled.
         let (background, foreground, ansi) = match name {
             "Default" => return Some(Self::default()),

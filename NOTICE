@@ -13,3 +13,14 @@ NOTICE file was present at the revision used.
 
 The native GitHub integration's Arbor references and attribution are recorded
 in crates/herdr-gpui/GITHUB-NOTICE.md.
+
+The application icons in assets/icons/herdr-ui-icon-clean.svg and
+herdr-icon-square-clean.svg, their PNG exports, and Herdr.icns use a ram path
+adapted from Herdr's logo:
+https://github.com/herdrdev/herdr/blob/HEAD/assets/logo.svg
+The upstream artwork is licensed under Apache-2.0. This adaptation places the
+ram and terminal prompt on a simple ivory tile, with modified scaling,
+placement, and flat graphite coloring.
+The derived herdr-worktree-1024.png, herdr-square-worktree-1024.png, and
+Herdr-worktree.icns use a red palette to
+identify development builds made from linked Git worktrees.

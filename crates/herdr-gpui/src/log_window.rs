@@ -28,7 +28,7 @@ struct Appearance {
 }
 impl Global for Appearance {}
 
-// Publish only successfully applied settings; the console never reloads files itself.
+// Follow the rendered appearance, including previews; the console never reloads files itself.
 pub(super) fn set_appearance(config: &Config, theme: &Theme, cx: &mut App) {
     cx.set_global(Appearance {
         config: config.clone(),
@@ -714,6 +714,30 @@ mod tests {
             options.traffic_light_position,
             cfg!(target_os = "macos").then(|| point(px(9.), px(9.)))
         );
+    }
+
+    #[gpui::test]
+    fn picker_preview_and_cancel_keep_console_appearance_in_sync(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        let original = view.read_with(cx, |view, _| view.theme.clone());
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| view.open_theme_picker(window, cx));
+        });
+        cx.simulate_input("Nord");
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.global::<Appearance>().theme,
+                Theme::builtin("Nord").unwrap()
+            );
+            assert_eq!(view.read(cx).theme, cx.global::<Appearance>().theme);
+            assert_eq!(view.read(cx).config.theme, "Default");
+        });
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| view.dismiss_menu(window, cx));
+            assert_eq!(view.read(cx).theme, original);
+            assert_eq!(cx.global::<Appearance>().theme, original);
+        });
     }
 
     #[gpui::test]

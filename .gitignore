@@ -1,5 +1,6 @@
 /target/
 /dist/
+.DS_Store
 
 # Local signing configuration and credential backups must never be committed.
 .env

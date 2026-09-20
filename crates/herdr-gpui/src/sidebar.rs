@@ -448,7 +448,7 @@ fn header(label: &'static str, font: &FontConfig, theme: &Theme) -> Div {
         .px(px(12.))
         .flex()
         .items_center()
-        .text_size(px(font.size * 5. / 6.))
+        .text_size(px(font.size))
         .text_color(rgb(theme.muted))
         .child(label)
 }
@@ -699,6 +699,24 @@ mod tests {
         AgentStatus, ClientShellAgent, ClientShellWorkspace, STATUS_WIDTH, agent_labels,
         first_text, layout_tests, status_style, workspace_entries, workspace_label,
     };
+
+    #[test]
+    fn section_headings_use_the_configured_sidebar_font_size() {
+        use gpui::{Styled, px};
+        for size in [12., 16., 20.] {
+            let font = super::FontConfig {
+                family: "Menlo".into(),
+                size,
+            };
+            for label in ["spaces", "agents"] {
+                let mut heading = super::header(label, &font, &super::Theme::default());
+                assert_eq!(
+                    heading.text_style().as_ref().unwrap().font_size,
+                    Some(px(size).into())
+                );
+            }
+        }
+    }
 
     #[test]
     fn hierarchy_uses_git_metadata_and_emits_each_workspace_once() {

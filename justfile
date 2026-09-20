@@ -51,7 +51,7 @@ bundle:
     mkdir -p target/release/Herdr.app/Contents/MacOS target/release/Herdr.app/Contents/Resources
     cp target/release/herdr-gpui target/release/Herdr.app/Contents/MacOS/Herdr
     cp assets/macos/Info.plist target/release/Herdr.app/Contents/Info.plist
-    cp assets/icons/Herdr.icns target/release/Herdr.app/Contents/Resources/Herdr.icns
+    cp "$(python3 scripts/release/build-icon.py icns target/release/Herdr.app/Contents/MacOS/Herdr)" target/release/Herdr.app/Contents/Resources/Herdr.icns
     plutil -lint target/release/Herdr.app/Contents/Info.plist
 
 # Link the actual optimized application and exercise its CLI without a desktop.

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icons/herdr-ui-icon-clean.png" alt="Herdr ram on a simple ivory tile" width="160" height="160">
+</p>
+
 # Herdr GPUI
 
 [![CI](https://github.com/penso/herdr-gpui/actions/workflows/ci.yml/badge.svg)](https://github.com/penso/herdr-gpui/actions/workflows/ci.yml)
@@ -458,14 +462,14 @@ tests and successful linking do not establish native desktop support.
 
 On macOS, a Zed-style integrated title bar lightly blends the theme's surface toward white
 above both the sidebar and tabs, retaining native traffic lights and the Herdr
-window identity. Its upper-right circular user avatar is a placeholder for future
-GitHub sign-in, with no authentication, network requests, or personal identity.
+window identity. Its upper-right profile control opens native GitHub sign-in and
+shows the authenticated user's avatar when connected.
 Double-click outside the avatar uses the macOS title-bar preference;
 window dragging remains owned by AppKit. Windows/Linux retain their native frame
 without an extra header. See the [native shell notes](crates/herdr-gpui/README.md#title-bar)
 for layout coverage and remaining desktop QA.
 
-`cargo run` and `just run` use an embedded original Herdr Dock icon, with no runtime
+`cargo run` and `just run` use the embedded Herdr ram Dock icon, with no runtime
 asset paths or image-generation processes. To create a local Finder-launchable app:
 
 ```sh
@@ -479,14 +483,33 @@ it does not bundle, install, or stop a daemon. This is a local unsigned,
 unnotarized bundle, not a distribution/signing pipeline. Its version metadata lives
 in `assets/macos/Info.plist` and should be updated for releases.
 
-The original charcoal/blue connected-H artwork and provenance are in
-[`assets/icons`](assets/icons/README.md). `just icons` regenerates the checked-in
-PNG and ICNS from the SVG with macOS Swift/CoreGraphics and `iconutil`.
+The ivory tile and upstream Herdr ram artwork and provenance are in
+[`assets/icons`](assets/icons/README.md). Linux packages and the README use the
+supplied PNG export; `just icons` regenerates the macOS ICNS from that PNG with
+Swift/CoreGraphics and `iconutil`.
 
 For a local signed/notarized universal DMG, use `just dmg 0.1.0` (matching the
 manifest version). This requires both Rust macOS targets and ignored local signing
 configuration; see [local DMG setup](scripts/release/README.md#local-dmg).
 Artifacts go to `target/distribution/VERSION`; nothing is published.
+
+### Worktree Builds
+
+Builds from a linked Git worktree are deliberately unmistakable: a **red app
+icon** and a persistent **amber banner** showing the build's
+branch (or detached commit) and open PR number when available. This applies to
+release-mode source runs as well as macOS bundles and Linux packages. The normal
+checkout and published main builds keep the ivory icon and no banner. Linux
+launcher icons are installed through the packaged desktop entry.
+
+Identity is captured at build time, not inferred from the app's launch directory
+or the terminal workspace. GitHub CLI PR lookup is optional and limited to two
+seconds; missing `gh`, authentication, network, or an open PR simply omits the
+number. Set `HERDR_BUILD_PR_NUMBER=123` when building to supply it explicitly, or
+set it to an empty string to disable lookup. PR changes alone do not invalidate
+Cargo's cache; change that override or rebuild after creating a PR.
+`herdr-gpui --build-info` prints the embedded identity without launching the GUI.
+See [build identity details](scripts/release/README.md#build-identity).
 
 ## GUI Configuration
 
@@ -502,10 +525,13 @@ Preferences; font values remain read-only and are edited in the config file.
 
 Click **Theme** beside Keybinds to browse built-in themes and theme files discovered
 in the Herdr and Ghostty theme folders. Type to filter names (case-insensitive),
-use Up/Down to navigate, then press Enter or click a result to apply and save it.
-The current theme is marked in the list. Escape or clicking outside cancels without
-changing the theme. Saving updates only `theme` in the GUI config, preserving its
-comments and other settings; load/save errors leave the current appearance intact.
+hover a result or use Up/Down to preview it immediately, then press Enter or click
+to save it. Filtering also previews the selected result. Previews never write
+configuration. The saved theme is marked in the list. Escape, Close, or clicking
+outside restores the appearance from before the picker opened. File loading and
+saving run in the background; once a save begins, the picker waits for its result
+before closing. Saving updates only `theme` in the GUI config, preserving comments
+and other settings. Errors remain visible without moving the theme rows.
 
 GUI settings live in `$XDG_CONFIG_HOME/herdr/config-gpui.toml`, falling back to
 `~/.config/herdr/config-gpui.toml`. The GUI creates a commented default file if it

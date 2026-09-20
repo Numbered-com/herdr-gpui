@@ -348,7 +348,9 @@ impl HerdrWindow {
         else {
             return;
         };
-        self.open_menu(window, cx);
+        if !self.open_menu(window, cx) {
+            return;
+        }
         self.menu.anchor = anchor;
         self.menu.page = Some(Page::Tab);
         self.menu.tab = Some(TabMenu {

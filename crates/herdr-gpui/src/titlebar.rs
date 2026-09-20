@@ -4,8 +4,8 @@ use gpui::{prelude::*, *};
 
 impl HerdrWindow {
     fn open_profile(&mut self, connect: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.menu.page != Some(Page::GitHub) {
-            self.open_menu(window, cx);
+        if self.menu.page != Some(Page::GitHub) && !self.open_menu(window, cx) {
+            return;
         }
         self.menu.page = Some(Page::GitHub);
         if connect && !self.menu.github.connected() && !self.menu.github.loading_profile() {
@@ -139,7 +139,15 @@ mod tests {
                 cx.debug_bounds("titlebar-avatar").unwrap(),
                 Bounds::new(point(px(width - 34.), px(3.)), size(px(28.), px(28.)))
             );
-            assert_eq!(cx.debug_bounds("window-body").unwrap().top(), px(34.));
+            let banner_height = if env!("HERDR_BUILD_WORKTREE") == "1" {
+                22.
+            } else {
+                0.
+            };
+            assert_eq!(
+                cx.debug_bounds("window-body").unwrap().top(),
+                px(34. + banner_height)
+            );
         }
         let bounds = cx.debug_bounds("titlebar-avatar").unwrap();
         cx.simulate_event(MouseDownEvent {
@@ -217,7 +225,12 @@ mod native_chrome_tests {
                     Bounds::new(point(px(80.), px(0.)), size(px(width - 120.), px(34.)))
                 );
                 let body = cx.debug_bounds("window-body").unwrap();
-                assert_eq!(body.top(), px(34.));
+                let banner_height = if env!("HERDR_BUILD_WORKTREE") == "1" {
+                    22.
+                } else {
+                    0.
+                };
+                assert_eq!(body.top(), px(34. + banner_height));
                 assert_eq!(body.size.width, px(width));
                 assert!(body.bottom() <= px(height));
             }

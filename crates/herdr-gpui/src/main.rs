@@ -33,6 +33,7 @@ mod terminal;
 mod terminal_painter;
 mod theme_picker;
 mod titlebar;
+mod worktree_banner;
 
 use connection::ConnectionBridge;
 use controls::Command;
@@ -829,6 +830,11 @@ impl Render for HerdrWindow {
             .font_family(self.config.ui.family.clone())
             .text_size(px(self.config.ui.size))
             .child(self.render_titlebar(cx))
+            .children(worktree_banner::render(
+                env!("HERDR_BUILD_WORKTREE") == "1",
+                env!("HERDR_BUILD_BRANCH"),
+                env!("HERDR_BUILD_PR"),
+            ))
             .child(
                 div()
                     .debug_selector(|| "window-body".into())
@@ -1029,9 +1035,16 @@ fn run() -> std::process::ExitCode {
             return std::process::ExitCode::from(2);
         }
     };
+    if mode == LaunchMode::BuildInfo {
+        print!("{}", cli::build_info());
+        return std::process::ExitCode::SUCCESS;
+    }
     if mode == LaunchMode::Help {
         println!(
             "herdr-gpui [--socket CLIENT_SOCKET | --session NAME [--dev]]\nConnects to Local and saved SSH hosts; never installs remote software.\nStarts the local Herdr daemon if needed; never stops it.\nExplicit --socket and --dev targets are attach-only; --socket isolates the GUI to one existing daemon."
+        );
+        println!(
+            "  --build-info        Print the executable's build identity without starting the GUI"
         );
         #[cfg(feature = "integration-test")]
         println!(
