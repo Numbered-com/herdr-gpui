@@ -134,6 +134,19 @@ impl SearchInput {
         &self.edit.text
     }
 
+    pub(super) fn set_text_selected(&mut self, text: &str, cx: &mut Context<Self>) {
+        let text = single_line(text);
+        let changed = self.edit.text != text;
+        self.edit = Editing {
+            cursor: text.len(),
+            text,
+            ..Editing::default()
+        };
+        self.scroll = px(0.);
+        self.selecting = false;
+        self.did_edit(changed, cx);
+    }
+
     pub fn set_placeholder(&mut self, value: &str, cx: &mut Context<Self>) {
         self.placeholder = value.into();
         self.layout = None;

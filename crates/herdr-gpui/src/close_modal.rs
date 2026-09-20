@@ -18,6 +18,19 @@ pub(super) struct CloseConfirmation {
 }
 
 impl CloseConfirmation {
+    pub(super) fn capture_tab(snapshot: &ClientShellSnapshot, id: &str) -> Option<Self> {
+        let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == id)?;
+        Some(Self {
+            boot: snapshot.boot_id.clone(),
+            workspace: tab.workspace_id.clone(),
+            tab: tab.tab_id.clone(),
+            pane: None,
+            label: tab.label.clone(),
+            confirm_selected: false,
+            error: None,
+        })
+    }
+
     fn capture(command: Command, snapshot: &ClientShellSnapshot) -> Option<Self> {
         if !matches!(command, Command::ClosePane | Command::CloseTab) {
             return None;
@@ -195,6 +208,26 @@ impl HerdrWindow {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+    #[test]
+    fn explicit_tab_close_does_not_follow_focus() -> Result<(), String> {
+        let mut snapshot: ClientShellSnapshot = serde_json::from_str(include_str!(
+            "../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json"
+        ))
+        .map_err(|error| error.to_string())?;
+        let mut inactive = snapshot.tabs[0].clone();
+        inactive.tab_id = "inactive".into();
+        inactive.focused = false;
+        snapshot.tabs.push(inactive);
+        let close = CloseConfirmation::capture_tab(&snapshot, "inactive").ok_or("missing tab")?;
+        assert!(!close.confirm_selected);
+        assert_eq!(
+            close.request(&snapshot)?,
+            ("tab.close", json!({"tab_id":"inactive"}))
+        );
+        snapshot.tabs.retain(|tab| tab.tab_id != "inactive");
+        assert!(close.request(&snapshot).is_err());
+        Ok(())
+    }
     #[test]
     fn close_retains_original_target_and_rejects_replaced_sessions() -> Result<(), String> {
         let mut snapshot: ClientShellSnapshot = serde_json::from_str(include_str!(

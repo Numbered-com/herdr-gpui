@@ -20,6 +20,7 @@ mod sidebar;
 #[cfg(feature = "integration-test")]
 mod smoke;
 mod state;
+mod tab_menu;
 mod terminal;
 mod terminal_painter;
 mod theme_picker;
@@ -164,6 +165,7 @@ impl HerdrWindow {
                             .as_ref()
                             .and_then(|s| s.focused_pane_id.clone());
                         this.poll_endpoints(cx);
+                        this.poll_tab_rename(window, cx);
                         if old_pane
                             != this
                                 .live
@@ -588,9 +590,14 @@ impl Render for HerdrWindow {
                 .filter(|t| Some(&t.workspace_id) == snapshot.focused_workspace_id.as_ref())
             {
                 let id = tab.tab_id.clone();
+                let context_id = id.clone();
                 tabs = tabs.child(
                     div()
                         .id(SharedString::from(format!("tab-{id}")))
+                        .debug_selector({
+                            let id = id.clone();
+                            move || format!("tab-{id}")
+                        })
                         .px_4()
                         .py_2()
                         .flex_none()
@@ -601,6 +608,13 @@ impl Render for HerdrWindow {
                             self.theme.surface
                         }))
                         .child(tab.label.clone())
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.open_tab_menu(&context_id, event.position, window, cx);
+                            }),
+                        )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.navigate(NavigationTarget::Tab(&id), cx);
                             window.focus(&this.focus);

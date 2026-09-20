@@ -202,6 +202,7 @@ that an omitted cursor color follows the theme foreground.
 | --- | --- |
 | Sidebar workspace/agent | Focus its workspace or pane |
 | Top tab / terminal pane | Focus the tab or pane |
+| Right-click tab | New tab in its workspace, Rename, or Close with confirmation |
 | Cmd-N | New workspace using daemon directory policy |
 | Cmd-T | New tab |
 | Cmd-D / Cmd-Shift-D | Split right / below |
@@ -367,7 +368,7 @@ status text to leave room for labels.
 ## Next Milestones
 
 - Selection/copy, hyperlink interaction, richer mouse support, and inline IME.
-- Rename dialogs, workspace deletion, and full worktree/agent management.
+- Workspace/pane rename dialogs, workspace deletion, and full worktree/agent management.
 - Editable settings and bundled fonts.
 - Optimized terminal painting and graphics support.
 - Signed macOS app packaging and broader remote-platform support.

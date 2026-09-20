@@ -95,6 +95,11 @@ Config and theme I/O is synchronous; GUI callers should schedule it accordingly.
   preserving other GUI config settings and comments.
 - Title-only tabs, without an added tab number. Externally created workspaces
   arrive through pushed snapshots without manual refresh.
+- Right-click any tab without focusing it to open New tab, Rename, and Close.
+  Actions retain the clicked tab/workspace and reject stale connections or targets.
+  Rename selects the current label in a native IME-aware field, with inline errors;
+  Close uses the existing cancel-by-default confirmation. Escape or an outside
+  left/right click dismisses the menu without sending terminal input.
 - Click workspace, tab, agent, or a visible split pane to focus through the API.
 - Native File/Terminal menus and creation buttons: **+ New Workspace** in the
   sidebar and a persistent **+** beside the horizontally scrolling tab strip.
@@ -176,7 +181,7 @@ GPUI native action/menu/keybinding patterns.
   not synchronized from the host terminal's theme.
 - No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
   hyperlink activation, image rendering, or animated blinking.
-- No rename dialogs, workspace close/delete actions, horizontal wheel handling,
+- No workspace/pane rename dialogs, workspace close/delete actions, horizontal wheel handling,
   server-owned keybindings, session picker, saved-host editing, or daemon
   stop/upgrade management.
 - IME uses a minimal transient buffer, not a local editable terminal document;
