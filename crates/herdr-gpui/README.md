@@ -2,7 +2,8 @@
 
 A minimal macOS GPUI 0.2.2 client for an **already running** local Herdr daemon.
 It does not link, start, stop, or modify Herdr, spawn a PTY, or emulate a terminal.
-Runtime dependencies are GPUI, `herdr-client`, and `serde_json` for API parameters.
+Runtime dependencies are GPUI, `herdr-client`, `serde_json` for API parameters,
+and `unicode-segmentation` for grapheme-aware composer editing.
 
 ```sh
 cargo run -p herdr-gpui
@@ -27,6 +28,11 @@ no input replay. The status dot is green when connected and red otherwise.
 - Title-only tabs, without an added tab number. Externally created workspaces
   arrive through pushed snapshots without manual refresh.
 - Click workspace, tab, agent, or a visible split pane to focus through the API.
+- Right-click a tab to select Terminal (default) or Agent presentation locally.
+  Agent mode keeps the terminal surface and adds a multiline composer for the
+  focused pane. Enter inserts a newline; Cmd-Enter/Send queues Paste + Enter in
+  one input batch. Modes and pane-specific drafts survive same-boot reconnects
+  in memory only; closing the GUI does not persist drafts or replay input.
 - Native File/Terminal menus and creation buttons: **+ New Workspace** in the
   sidebar and a persistent **+** beside the horizontally scrolling tab strip.
 - Cmd-N creates and focuses a workspace; Cmd-T creates and focuses a tab.
@@ -56,13 +62,34 @@ no input replay. The status dot is green when connected and red otherwise.
 - Cmd-V sends semantic Paste; Cmd-Q or window close detaches without killing
   the daemon or its terminals. Window activation is reported to the daemon.
 - Resize uses the actual terminal canvas bounds and measured Menlo cell width,
-  excluding the native sidebar, tabs and status bar.
+  excluding the native sidebar, tabs, status bar, and optional agent composer.
 
 Socket I/O belongs to `herdr-client`'s worker. A separate event thread drains all
 ordered events into a bounded latest-state cache. The UI samples changed state
 at most once per 16 ms without blocking. Snapshots invalidate surfaces with a
 different boot/projection revision; input waits for a coherent surface. Reconnect
 replaces the cache, so late events from an old connection cannot affect the UI.
+
+### Composer Safety
+
+Composer drafts are keyed by daemon boot, tab and pane identity, never by label.
+Send revalidates the captured recipient against the authoritative inbox and
+refuses active popups, navigation in progress, stale surfaces, or disconnection.
+Queue failure preserves the draft. Queue success clears it and displays **queued,
+not confirmed**; it is not an acknowledgement from the agent application.
+
+The native editor and terminal have separate input handlers. Registration-time
+session guards reject stale native callbacks after target/mode/focus changes;
+submission events also carry an editor revision. A same-pane snapshot/surface gap
+blocks sending but does not redirect typing or cancel local IME composition.
+Navigation failures are correlated to the latest tracked GUI request so a rejected
+request does not permanently suspend the composer.
+
+Herdr still owns the terminal process and conversation, so its TUI can continue
+the same session. The local composer cannot see or replace an agent application's
+existing prompt buffer. Use an empty prompt and direct terminal mode for approvals
+and menus. Agent mode also works on ordinary panes; sending to a shell submits
+shell input. No agent-specific chat protocol or automatic prompt detection is used.
 
 ### Scrolling Semantics
 
@@ -95,6 +122,10 @@ GPUI native action/menu/keybinding patterns.
 - IME uses a minimal transient buffer, not a local editable terminal document;
   composition appears in the status bar rather than inline. Key releases and
   physical-key/extended keyboard protocol metadata are not reported.
+- The optional composer supports local selection, clipboard operations, Unicode
+  grapheme editing and inline IME. Its 16 KiB documents scroll without soft wrap;
+  undo/redo and persistent drafts/history are not implemented. Terminal creation
+  shortcuts are suppressed while it is focused; buttons remain available.
 - Popups have a basic centered text presentation, without native title/border
   chrome. Server notifications/clipboard writes are not executed.
 - Rendering is a simple two-pass cell painter, not an optimized damaged-row
@@ -107,6 +138,9 @@ cargo check -p herdr-gpui
 cargo test -p herdr-gpui
 cargo clippy -p herdr-gpui --all-targets -- -D warnings
 cargo fmt -p herdr-gpui -- --check
+
+# Native agent menu/editor fixtures at two sizes, no daemon or agent process.
+just test-agent
 ```
 
 Requires the normal macOS Rust/Xcode development environment. GPUI's
@@ -116,3 +150,13 @@ cell modifiers, viewport bounds, semantic key selection, revision coherence,
 creation request parameters, workspace-local tab cycling, wheel accumulation,
 pane-relative hit testing, and popup routing.
 They do not replace an interactive smoke test against a live daemon.
+Agent-view tests additionally cover inactive-tab menus, pane-specific drafts,
+boot/reconnect fencing, stale native callbacks, transient surface gaps, popup
+blocking and atomic input batching with a mock peer. The native fixture uses
+AppKit right-click delivery and GPUI keyboard dispatch; IME calls use the explicit
+`EntityInputHandler` fallback, not an OS input-method automation driver. Clipboard
+shortcuts have headless coverage; native clipboard checks are opt-in via
+`HERDR_AGENT_TEST_CLIPBOARD` and restore GPUI-readable clipboard contents. The
+default native test leaves the system clipboard untouched.
+Actual pi/OpenCode/Claude/Codex workflows and switching between live TUI/GUI clients
+remain manual QA; no personal daemon is touched by these fixtures.

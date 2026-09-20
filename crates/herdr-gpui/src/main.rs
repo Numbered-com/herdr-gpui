@@ -1,10 +1,16 @@
 // objc 0.2's selectors expand a legacy cargo-clippy cfg in the native test adapter.
 #![cfg_attr(feature = "integration-test", allow(unexpected_cfgs))]
+mod agent_mode;
+#[cfg(feature = "integration-test")]
+mod agent_smoke;
+mod agent_view;
 mod app_icon;
 mod cli;
+mod composer;
 mod connection;
 mod controls;
 mod input;
+mod input_guard;
 mod menu;
 #[cfg(feature = "integration-test")]
 mod performance;
@@ -39,10 +45,10 @@ actions!(
     ]
 );
 
-enum NavigationTarget<'a> {
-    Workspace(&'a str),
-    Tab(&'a str),
-    Pane(&'a str),
+enum NavigationTarget {
+    Workspace(String),
+    Tab(String),
+    Pane(String),
 }
 
 struct HerdrWindow {
@@ -57,7 +63,14 @@ struct HerdrWindow {
     cell_width: f32,
     painter: std::rc::Rc<std::cell::RefCell<terminal_painter::TerminalPainter>>,
     terminal_view: Entity<terminal_view::TerminalView>,
+    agent_modes: agent_mode::AgentModes,
+    composer: Entity<composer::Composer>,
+    composer_target: Option<agent_mode::PaneTarget>,
+    drafts: std::collections::HashMap<agent_mode::PaneTarget, composer::Draft>,
+    composer_notice: Option<String>,
+    navigation_fence: Option<agent_view::NavigationFence>,
     marked: String,
+    terminal_input_epoch: u64,
     local_error: Option<String>,
     menu: menu::MenuState,
     collapsed_repos: std::collections::HashSet<String>,
@@ -97,6 +110,7 @@ impl HerdrWindow {
                             }
                             this.set_surface(next.surface.clone(), cx);
                             this.live = next;
+                            this.sync_composer(cx);
                             cx.notify();
                         }
                         this.resize();
@@ -111,6 +125,23 @@ impl HerdrWindow {
         let painter = Default::default();
         let terminal_view =
             cx.new(|_| terminal_view::TerminalView::new(std::rc::Rc::clone(&painter)));
+        let composer = cx.new(composer::Composer::new);
+        cx.subscribe(&composer, |this, _, event: &composer::Submit, cx| {
+            if this.composer.read(cx).revision() == event.revision {
+                this.submit_composer(cx);
+            }
+        })
+        .detach();
+        cx.on_blur(&focus, window, |this, _, cx| {
+            this.invalidate_terminal_input();
+            cx.notify();
+        })
+        .detach();
+        cx.on_blur(&composer.focus_handle(cx), window, |this, _, cx| {
+            this.composer
+                .update(cx, |editor, cx| editor.invalidate_input_session(cx));
+        })
+        .detach();
         let mut this = Self {
             connection: ConnectionBridge::new(target),
             live: LiveState::default(),
@@ -123,7 +154,14 @@ impl HerdrWindow {
             cell_width: 9.,
             painter,
             terminal_view,
+            agent_modes: Default::default(),
+            composer,
+            composer_target: None,
+            drafts: Default::default(),
+            composer_notice: None,
+            navigation_fence: None,
             marked: String::new(),
+            terminal_input_epoch: 0,
             local_error: None,
             menu: menu::MenuState::new(cx),
             collapsed_repos: Default::default(),
@@ -158,13 +196,15 @@ impl HerdrWindow {
 
     fn reconnect(&mut self, cx: &mut Context<Self>) {
         self.local_error = None;
-        self.marked.clear();
+        self.invalidate_terminal_input();
         self.last_queued_options = None;
         self.wheel = WheelAccumulator::default();
         self.sent_focus = None;
         self.connection.reconnect(self.options, self.active);
         self.live = self.connection.take_update().unwrap_or_default();
         self.set_surface(self.live.surface.clone(), cx);
+        self.navigation_fence = None;
+        self.sync_composer(cx);
     }
 
     fn resize(&mut self) {
@@ -198,11 +238,32 @@ impl HerdrWindow {
         if self.menu.page.is_some() {
             return;
         }
+        if self.navigation_fence.is_some() {
+            self.local_error = Some("Navigation pending; input was not sent.".into());
+            cx.notify();
+            return;
+        }
         if let (Some(handle), Some(snapshot), Some(surface)) = (
             &self.connection.handle,
             &self.live.snapshot,
             &self.live.surface,
         ) {
+            let Some(binding) = input::TerminalBinding::new(Some(snapshot), Some(surface)) else {
+                return;
+            };
+            let Ok(inbox) = self.connection.inbox.try_lock() else {
+                self.local_error = Some("Herdr state is updating; input was not sent.".into());
+                cx.notify();
+                return;
+            };
+            if !inbox.status.is_connected()
+                || input::TerminalBinding::new(inbox.snapshot.as_deref(), inbox.surface.as_deref())
+                    != Some(binding)
+            {
+                self.local_error = Some("Terminal target changed; input was not sent.".into());
+                cx.notify();
+                return;
+            }
             let target = if let Some(popup) = &surface.popup {
                 InputTarget::Popup(popup.terminal_id.clone())
             } else if let Some(pane) = &snapshot.focused_pane_id {
@@ -219,18 +280,33 @@ impl HerdrWindow {
         }
     }
 
-    fn navigate(&mut self, target: NavigationTarget<'_>, cx: &mut Context<Self>) {
+    fn navigate(&mut self, target: NavigationTarget, cx: &mut Context<Self>) {
         if let (Some(handle), Some(snapshot)) = (&self.connection.handle, &self.live.snapshot) {
-            let result = match target {
+            let Ok(mut inbox) = self.connection.inbox.try_lock() else {
+                self.local_error =
+                    Some("Herdr state is updating; navigation was not queued.".into());
+                cx.notify();
+                return;
+            };
+            let result = match &target {
                 NavigationTarget::Workspace(id) => handle.focus_workspace(&snapshot.boot_id, id),
                 NavigationTarget::Tab(id) => handle.focus_tab(&snapshot.boot_id, id),
                 NavigationTarget::Pane(id) => handle.focus_pane(&snapshot.boot_id, id),
             };
-            if let Err(error) = result {
-                self.local_error = Some(error.to_string());
+            match result {
+                Err(error) => self.local_error = Some(error.to_string()),
+                Ok(request_id) => {
+                    inbox.track_request(request_id.clone());
+                    self.navigation_fence = Some(agent_view::NavigationFence::new(
+                        snapshot,
+                        request_id,
+                        Some(target),
+                    ));
+                }
             }
         }
         self.marked.clear();
+        self.sync_composer(cx);
         cx.notify();
     }
 
@@ -245,14 +321,39 @@ impl HerdrWindow {
         if let (Some(handle), Some(snapshot)) = (&self.connection.handle, &self.live.snapshot)
             && let Some((method, params)) = controls::request(command, snapshot)
         {
-            self.local_error = handle
-                .request(&snapshot.boot_id, method, params)
-                .err()
-                .map(|error| format!("{method}: {error}"));
+            let goal = if matches!(command, Command::NextTab | Command::PreviousTab) {
+                params
+                    .get("tab_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|id| NavigationTarget::Tab(id.into()))
+            } else {
+                None
+            };
+            let Ok(mut inbox) = self.connection.inbox.try_lock() else {
+                self.local_error = Some("Herdr state is updating; command was not queued.".into());
+                cx.notify();
+                return;
+            };
+            match handle.request(&snapshot.boot_id, method, params) {
+                Ok(request_id) => {
+                    inbox.track_request(request_id.clone());
+                    self.navigation_fence =
+                        Some(agent_view::NavigationFence::new(snapshot, request_id, goal));
+                    self.local_error = None;
+                }
+                Err(error) => self.local_error = Some(format!("{method}: {error}")),
+            }
             self.marked.clear();
         }
+        self.sync_composer(cx);
         window.focus(&self.focus);
         cx.notify();
+    }
+
+    fn command_action(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.composer.focus_handle(cx).is_focused(window) {
+            self.command(command, window, cx);
+        }
     }
 
     fn scroll_wheel(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -286,6 +387,9 @@ impl HerdrWindow {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus.is_focused(window) || self.menu.page.is_some() {
+            return;
+        }
         #[cfg(feature = "integration-test")]
         {
             self.input_probe.keys += 1;
@@ -348,6 +452,7 @@ mod tests {
 
 impl Render for HerdrWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_composer(cx);
         let font = font("Menlo");
         self.cell_width = self.painter.borrow_mut().cell_width(&font, window, cx);
         let sidebar = self.render_sidebar(cx);
@@ -367,9 +472,17 @@ impl Render for HerdrWindow {
                 .filter(|t| Some(&t.workspace_id) == snapshot.focused_workspace_id.as_ref())
             {
                 let id = tab.tab_id.clone();
+                let menu_target = agent_mode::TabTarget {
+                    boot_id: snapshot.boot_id.clone(),
+                    tab_id: id.clone(),
+                };
                 tabs = tabs.child(
                     div()
                         .id(SharedString::from(format!("tab-{id}")))
+                        .debug_selector({
+                            let id = id.clone();
+                            move || format!("tab-{id}")
+                        })
                         .px_4()
                         .py_2()
                         .flex_none()
@@ -380,8 +493,29 @@ impl Render for HerdrWindow {
                             sidebar::BACKGROUND
                         }))
                         .child(tab.label.clone())
+                        .when(
+                            self.agent_modes.mode(&snapshot.boot_id, &id)
+                                == agent_mode::ViewMode::Agent,
+                            |tab| {
+                                tab.child(
+                                    div()
+                                        .ml_2()
+                                        .text_xs()
+                                        .text_color(rgb(sidebar::MUTED))
+                                        .child("Agent"),
+                                )
+                            },
+                        )
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                window.prevent_default();
+                                this.open_tab_menu(menu_target.clone(), event.position, window, cx);
+                            }),
+                        )
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.navigate(NavigationTarget::Tab(&id), cx);
+                            this.navigate(NavigationTarget::Tab(id.clone()), cx);
                             window.focus(&this.focus);
                         })),
                 );
@@ -394,6 +528,8 @@ impl Render for HerdrWindow {
         let paint_entity = entity.clone();
         let focus = self.focus.clone();
         let cell_width = self.cell_width;
+        let input_binding = input::TerminalBinding::new(snapshot.as_deref(), surface.as_deref());
+        let input_epoch = self.terminal_input_epoch;
         let mut pixels = AnyView::from(self.terminal_view.clone());
         #[cfg(feature = "integration-test")]
         let retained = std::env::var_os("HERDR_PERF_NO_RETAIN").is_none();
@@ -443,7 +579,7 @@ impl Render for HerdrWindow {
                             })
                             .map(|p| p.pane_id.clone());
                         if let Some(id) = pane {
-                            this.navigate(NavigationTarget::Pane(&id), cx);
+                            this.navigate(NavigationTarget::Pane(id), cx);
                         }
                     }
                 }),
@@ -470,7 +606,12 @@ impl Render for HerdrWindow {
                     move |bounds, _, window, cx| {
                         window.handle_input(
                             &focus,
-                            ElementInputHandler::new(bounds, paint_entity.clone()),
+                            input::terminal_handler(
+                                bounds,
+                                paint_entity.clone(),
+                                input_binding,
+                                input_epoch,
+                            ),
                             cx,
                         );
                         if let Some(surface) = &surface
@@ -509,22 +650,22 @@ impl Render for HerdrWindow {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &NewWorkspace, window, cx| {
-                this.command(Command::Workspace, window, cx)
+                this.command_action(Command::Workspace, window, cx)
             }))
-            .on_action(
-                cx.listener(|this, _: &NewTab, window, cx| this.command(Command::Tab, window, cx)),
-            )
+            .on_action(cx.listener(|this, _: &NewTab, window, cx| {
+                this.command_action(Command::Tab, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &SplitRight, window, cx| {
-                this.command(Command::SplitRight, window, cx)
+                this.command_action(Command::SplitRight, window, cx)
             }))
             .on_action(cx.listener(|this, _: &SplitDown, window, cx| {
-                this.command(Command::SplitDown, window, cx)
+                this.command_action(Command::SplitDown, window, cx)
             }))
             .on_action(cx.listener(|this, _: &NextTab, window, cx| {
-                this.command(Command::NextTab, window, cx)
+                this.command_action(Command::NextTab, window, cx)
             }))
             .on_action(cx.listener(|this, _: &PreviousTab, window, cx| {
-                this.command(Command::PreviousTab, window, cx)
+                this.command_action(Command::PreviousTab, window, cx)
             }))
             .size_full()
             .relative()
@@ -562,7 +703,10 @@ impl Render for HerdrWindow {
                                         })),
                                 ),
                         )
-                        .child(terminal),
+                        .child(terminal)
+                        .when(self.agent_tab_active(), |column| {
+                            column.child(self.render_composer(cx))
+                        }),
                 ),
             )
             .child(
@@ -633,7 +777,7 @@ fn run() -> std::process::ExitCode {
         );
         #[cfg(feature = "integration-test")]
         println!(
-            "  --integration-test  Run native GUI checks (requires explicit --socket)\n  --sidebar-test      Run native sidebar fixtures without connecting to a daemon\n  --performance-test  Measure native dense-terminal hover/scroll without a daemon (macOS)"
+            "  --integration-test  Run native GUI checks (requires explicit --socket)\n  --sidebar-test      Run native sidebar fixtures without connecting to a daemon\n  --agent-test        Run native agent composer fixtures without a daemon\n  --performance-test  Measure native dense-terminal hover/scroll without a daemon (macOS)"
         );
         return std::process::ExitCode::SUCCESS;
     }
@@ -641,6 +785,8 @@ fn run() -> std::process::ExitCode {
     let integration_test = mode == LaunchMode::Integration;
     #[cfg(feature = "integration-test")]
     let sidebar_test = mode == LaunchMode::Sidebar;
+    #[cfg(feature = "integration-test")]
+    let agent_test = mode == LaunchMode::Agent;
     #[cfg(feature = "integration-test")]
     let performance_test = mode == LaunchMode::Performance;
     #[cfg(feature = "integration-test")]
@@ -716,7 +862,7 @@ fn run() -> std::process::ExitCode {
                         cx,
                         #[cfg(feature = "integration-test")]
                         {
-                            sidebar_test || performance_test
+                            sidebar_test || performance_test || agent_test
                         },
                     )
                 })
@@ -735,6 +881,10 @@ fn run() -> std::process::ExitCode {
                 #[cfg(feature = "integration-test")]
                 if sidebar_test {
                     smoke::start_sidebar(_window, cx);
+                }
+                #[cfg(feature = "integration-test")]
+                if agent_test {
+                    agent_smoke::start(_window, cx);
                 }
             }
             Err(error) => {

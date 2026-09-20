@@ -32,6 +32,10 @@ test-gui binary:
 test-sidebar:
     cargo test --locked -p herdr-gpui --features integration-test --test live_gui native_sidebar -- --ignored --nocapture
 
+# Native tab modes and composer checks; private fixture, never a personal daemon.
+test-agent:
+    cargo test --locked --release -p herdr-gpui --features integration-test --test agent_gui -- --ignored --nocapture
+
 # Native hover/scroll CPU scene budget in milliseconds, calibrated for this machine.
 test-perf budget="30":
     cargo build --locked --release -p herdr-gpui --features integration-test

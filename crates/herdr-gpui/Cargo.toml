@@ -12,6 +12,7 @@ workspace = true
 gpui = { workspace = true, features = ["runtime_shaders"] }
 herdr-client.workspace = true
 serde_json.workspace = true
+unicode-segmentation.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
@@ -34,4 +35,8 @@ required-features = ["integration-test"]
 
 [[test]]
 name = "performance_gui"
+required-features = ["integration-test"]
+
+[[test]]
+name = "agent_gui"
 required-features = ["integration-test"]

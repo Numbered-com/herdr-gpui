@@ -1,18 +1,24 @@
-use super::{HerdrWindow, sidebar};
+use super::{
+    HerdrWindow,
+    agent_mode::{TabTarget, ViewMode},
+    sidebar,
+};
 use gpui::{prelude::*, *};
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(super) enum Page {
     Menu,
     Preferences,
     Keybinds,
     Update,
+    TabMode(TabTarget),
 }
 
 pub(super) struct MenuState {
     pub page: Option<Page>,
     pub anchor: Point<Pixels>,
     focus: FocusHandle,
+    previous_focus: Option<FocusHandle>,
     selected: usize,
 }
 
@@ -22,6 +28,7 @@ impl MenuState {
             page: None,
             anchor: Point::default(),
             focus: cx.focus_handle(),
+            previous_focus: None,
             selected: 0,
         }
     }
@@ -29,17 +36,74 @@ impl MenuState {
 
 impl HerdrWindow {
     pub(super) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.page.is_none() {
+            self.menu.previous_focus = window.focused(cx);
+        }
         self.menu.page = Some(Page::Menu);
         self.menu.selected = 0;
-        self.marked.clear();
+        self.invalidate_terminal_input();
+        self.composer
+            .update(cx, |editor, cx| editor.set_enabled(false, cx));
+        window.focus(&self.menu.focus);
+        cx.notify();
+    }
+
+    pub(super) fn open_tab_menu(
+        &mut self,
+        target: TabTarget,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.live.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.boot_id == target.boot_id
+                && snapshot.tabs.iter().any(|tab| tab.tab_id == target.tab_id)
+        }) {
+            return;
+        }
+        if self.menu.page.is_none() {
+            self.menu.previous_focus = window.focused(cx);
+        }
+        self.menu.selected = match self.agent_modes.mode(&target.boot_id, &target.tab_id) {
+            ViewMode::Terminal => 0,
+            ViewMode::Agent => 1,
+        };
+        self.menu.page = Some(Page::TabMode(target));
+        self.menu.anchor = position;
+        self.invalidate_terminal_input();
+        self.composer
+            .update(cx, |editor, cx| editor.set_enabled(false, cx));
         window.focus(&self.menu.focus);
         cx.notify();
     }
 
     fn dismiss_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu.page = None;
-        window.focus(&self.focus);
+        let preferred = self.menu.previous_focus.take();
+        self.restore_input_focus(preferred, window, cx);
         cx.notify();
+    }
+
+    fn activate_tab_mode(
+        &mut self,
+        target: &TabTarget,
+        mode: ViewMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Remove the input guard before the mode setter chooses the active input.
+        self.dismiss_menu(window, cx);
+        let Some(snapshot) = self.live.snapshot.as_ref().filter(|snapshot| {
+            snapshot.boot_id == target.boot_id
+                && snapshot.tabs.iter().any(|tab| tab.tab_id == target.tab_id)
+        }) else {
+            return;
+        };
+        let active = snapshot.focused_tab_id.as_ref() == Some(&target.tab_id);
+        let previous = window.focused(cx);
+        self.set_tab_mode(target, mode, window, cx);
+        let preferred = if active { window.focused(cx) } else { previous };
+        self.restore_input_focus(preferred, window, cx);
     }
 
     fn menu_items(&self) -> Vec<&'static str> {
@@ -101,15 +165,57 @@ impl HerdrWindow {
     }
 
     pub(super) fn render_menu(&self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
-        let page = self.menu.page.unwrap_or(Page::Menu);
+        let page = self.menu.page.as_ref().unwrap_or(&Page::Menu);
+        let viewport = window.viewport_size();
+        let tab_menu = matches!(page, Page::TabMode(_));
+        let width = px(if matches!(page, Page::Menu | Page::TabMode(_)) {
+            180.
+        } else {
+            420.
+        })
+        .min(viewport.width.max(px(0.)));
+        let tab_height = px(70.).min(viewport.height.max(px(0.)));
         let mut panel = div()
             .id("menu-panel")
-            .debug_selector(|| "menu-panel".into())
+            .debug_selector(move || {
+                if tab_menu {
+                    "tab-mode-menu"
+                } else {
+                    "menu-panel"
+                }
+                .into()
+            })
             .absolute()
-            .left(px(56.))
-            .bottom((window.viewport_size().height - self.menu.anchor.y + px(12.)).max(px(30.)))
-            .w(px(if page == Page::Menu { 180. } else { 420. }))
-            .max_h(window.viewport_size().height / 2. - px(12.))
+            .when(tab_menu, |panel| {
+                panel
+                    .left(
+                        self.menu
+                            .anchor
+                            .x
+                            .max(px(0.))
+                            .min((viewport.width - width).max(px(0.))),
+                    )
+                    .top(
+                        self.menu
+                            .anchor
+                            .y
+                            .max(px(0.))
+                            .min((viewport.height - tab_height).max(px(0.))),
+                    )
+                    .max_h(tab_height)
+            })
+            .when(!tab_menu, |panel| {
+                panel
+                    .left(px(56.).min((viewport.width - width).max(px(0.))))
+                    .bottom(
+                        (viewport.height - self.menu.anchor.y + px(12.))
+                            .max(px(30.))
+                            .min(viewport.height / 2.),
+                    )
+                    .max_h((viewport.height / 2. - px(12.)).max(px(0.)))
+            })
+            .w(width)
+            .overflow_x_hidden()
             .overflow_y_scroll()
             .p(px(6.))
             .rounded(px(5.))
@@ -121,8 +227,44 @@ impl HerdrWindow {
             .text_size(px(12.))
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
             .on_click(|_, _, cx| cx.stop_propagation());
-        if page == Page::Menu {
+        if let Page::TabMode(target) = page {
+            let current = self.agent_modes.mode(&target.boot_id, &target.tab_id);
+            for (index, (mode, label, selector)) in [
+                (ViewMode::Terminal, "Terminal", "tab-mode-terminal"),
+                (ViewMode::Agent, "Agent", "tab-mode-agent"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let target = target.clone();
+                panel = panel.child(
+                    div()
+                        .id(selector)
+                        .debug_selector(move || selector.into())
+                        .h(px(28.))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .cursor_pointer()
+                        .when(index == self.menu.selected, |row| {
+                            row.bg(rgb(sidebar::ACTIVE))
+                        })
+                        .hover(|row| row.bg(rgb(sidebar::ACTIVE)))
+                        .child(format!(
+                            "{} {label}",
+                            if current == mode { "[x]" } else { "[ ]" }
+                        ))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.activate_tab_mode(&target, mode, window, cx);
+                        })),
+                );
+            }
+        } else if *page == Page::Menu {
             for (index, item) in self.menu_items().into_iter().enumerate() {
                 panel = panel.child(
                     div()
@@ -202,13 +344,29 @@ impl HerdrWindow {
                 }),
             )
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.dismiss_menu(window, cx);
+                }),
+            )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 cx.stop_propagation();
                 window.prevent_default();
                 match event.keystroke.key.as_str() {
                     "escape" => this.dismiss_menu(window, cx),
-                    "up" | "down" if this.menu.page == Some(Page::Menu) => {
-                        let count = this.menu_items().len();
+                    "up" | "down"
+                        if matches!(
+                            this.menu.page.as_ref(),
+                            Some(Page::Menu | Page::TabMode(_))
+                        ) =>
+                    {
+                        let count = if matches!(this.menu.page.as_ref(), Some(Page::TabMode(_))) {
+                            2
+                        } else {
+                            this.menu_items().len()
+                        };
                         this.menu.selected = (this.menu.selected
                             + if event.keystroke.key == "up" {
                                 count - 1
@@ -221,6 +379,15 @@ impl HerdrWindow {
                     "enter" if this.menu.page == Some(Page::Menu) => {
                         if let Some(item) = this.menu_items().get(this.menu.selected) {
                             this.activate_menu(item, window, cx);
+                        }
+                    }
+                    "enter" => {
+                        if let Some(Page::TabMode(target)) = this.menu.page.clone() {
+                            let mode = match this.menu.selected {
+                                0 => ViewMode::Terminal,
+                                _ => ViewMode::Agent,
+                            };
+                            this.activate_tab_mode(&target, mode, window, cx);
                         }
                     }
                     _ => {}

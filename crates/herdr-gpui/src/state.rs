@@ -32,6 +32,13 @@ impl std::fmt::Display for ConnectionStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RequestStatus {
+    Queued,
+    Succeeded,
+    Failed,
+}
+
 #[derive(Clone)]
 pub struct LiveState {
     pub snapshot: Option<Arc<ClientShellSnapshot>>,
@@ -41,6 +48,7 @@ pub struct LiveState {
     pub dirty: bool,
     agent_presentation: AgentPresentation,
     outer_focused: Option<bool>,
+    tracked_request: Option<(String, RequestStatus)>,
 }
 
 impl Default for LiveState {
@@ -53,11 +61,24 @@ impl Default for LiveState {
             dirty: true,
             agent_presentation: AgentPresentation::default(),
             outer_focused: None,
+            tracked_request: None,
         }
     }
 }
 
 impl LiveState {
+    pub(super) fn track_request(&mut self, request_id: String) {
+        self.tracked_request = Some((request_id, RequestStatus::Queued));
+        self.dirty = true;
+    }
+
+    pub(super) fn request_status(&self, id: &str) -> Option<RequestStatus> {
+        self.tracked_request
+            .as_ref()
+            .filter(|(request_id, _)| request_id == id)
+            .map(|(_, status)| *status)
+    }
+
     pub fn status_text(&self, local_error: Option<&str>) -> String {
         let error = if self.status.is_connected() {
             local_error.or(self.error.as_deref())
@@ -113,12 +134,44 @@ impl LiveState {
     }
 
     pub fn apply(&mut self, event: ClientEvent) {
+        // Record completion before the display-only branches can return early.
+        if let Some((tracked_id, status)) = &mut self.tracked_request {
+            let next = match &event {
+                ClientEvent::Response {
+                    request_id,
+                    response,
+                } if request_id == tracked_id => Some(if response.get("error").is_some() {
+                    RequestStatus::Failed
+                } else {
+                    RequestStatus::Succeeded
+                }),
+                ClientEvent::CommandRejected {
+                    request_id: Some(request_id),
+                    ..
+                } if request_id == tracked_id => Some(RequestStatus::Failed),
+                ClientEvent::Disconnected { .. } if *status == RequestStatus::Queued => {
+                    Some(RequestStatus::Failed)
+                }
+                _ => None,
+            };
+            if let Some(next) = next {
+                self.dirty |= *status != next;
+                *status = next;
+            }
+        }
         match event {
             ClientEvent::Connected(_) => {
                 self.status = ConnectionStatus::AwaitingSnapshot;
                 self.error = None;
             }
             ClientEvent::Snapshot(mut snapshot) => {
+                if self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|previous| previous.boot_id != snapshot.boot_id)
+                {
+                    self.tracked_request = None;
+                }
                 if self
                     .surface
                     .as_ref()
@@ -518,6 +571,116 @@ mod tests {
                 assert!(Arc::ptr_eq(state.surface.as_ref().unwrap(), &frame));
             }
         }
+    }
+
+    #[test]
+    fn tracked_success_marks_dirty_only_when_status_changes() {
+        let mut state = LiveState::default();
+        assert_eq!(state.request_status("navigation"), None);
+        state.track_request("navigation".into());
+        assert_eq!(
+            state.request_status("navigation"),
+            Some(RequestStatus::Queued)
+        );
+        for expected_dirty in [true, false] {
+            state.dirty = false;
+            state.apply(ClientEvent::Response {
+                request_id: "navigation".into(),
+                response: serde_json::json!({"result": {}}),
+            });
+            assert_eq!(state.dirty, expected_dirty);
+            assert_eq!(
+                state.request_status("navigation"),
+                Some(RequestStatus::Succeeded)
+            );
+            assert_eq!(state.error, None);
+        }
+    }
+
+    #[test]
+    fn unrelated_completions_preserve_latest_request() {
+        let mut state = LiveState::default();
+        state.track_request("old".into());
+        state.track_request("new".into());
+        assert_eq!(state.request_status("old"), None);
+        for event in [
+            ClientEvent::Response {
+                request_id: "old".into(),
+                response: serde_json::json!({"result": {}}),
+            },
+            ClientEvent::Response {
+                request_id: "old".into(),
+                response: serde_json::json!({"error": "old failure"}),
+            },
+            ClientEvent::CommandRejected {
+                request_id: Some("old".into()),
+                reason: "old rejection".into(),
+            },
+            ClientEvent::CommandRejected {
+                request_id: None,
+                reason: "untracked rejection".into(),
+            },
+        ] {
+            state.apply(event);
+            assert_eq!(state.request_status("new"), Some(RequestStatus::Queued));
+            assert_eq!(state.request_status("old"), None);
+        }
+    }
+
+    #[test]
+    fn tracked_failures_mark_dirty_even_when_displayed_error_is_unchanged() {
+        for rejected in [false, true] {
+            let event = || {
+                if rejected {
+                    ClientEvent::CommandRejected {
+                        request_id: Some("navigation".into()),
+                        reason: "failure".into(),
+                    }
+                } else {
+                    ClientEvent::Response {
+                        request_id: "navigation".into(),
+                        response: serde_json::json!({"error": "failure"}),
+                    }
+                }
+            };
+            let mut state = LiveState::default();
+            state.apply(event());
+            state.track_request("navigation".into());
+            for expected_dirty in [true, false] {
+                state.dirty = false;
+                state.apply(event());
+                assert_eq!(state.dirty, expected_dirty);
+                assert_eq!(
+                    state.request_status("navigation"),
+                    Some(RequestStatus::Failed)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn disconnect_fails_queued_request_and_boot_change_clears_tracking() {
+        let mut state = LiveState::default();
+        state.track_request("navigation".into());
+        state.apply(ClientEvent::Snapshot(snapshot()));
+        state.apply(ClientEvent::Snapshot(snapshot()));
+        assert_eq!(
+            state.request_status("navigation"),
+            Some(RequestStatus::Queued)
+        );
+        state.apply(ClientEvent::Disconnected {
+            reason: "closed".into(),
+        });
+        assert_eq!(
+            state.request_status("navigation"),
+            Some(RequestStatus::Failed)
+        );
+        state.apply(ClientEvent::Snapshot(snapshot()));
+        state.track_request("new".into());
+        let mut reboot = snapshot();
+        Arc::make_mut(&mut reboot).boot_id = "new-boot".into();
+        state.apply(ClientEvent::Snapshot(reboot));
+        assert_eq!(state.request_status("new"), None);
     }
 
     #[test]

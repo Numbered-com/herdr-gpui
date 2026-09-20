@@ -30,6 +30,37 @@ This is an initial working macOS client, not complete TUI feature parity.
 Herdr owns terminal processes and session state; closing this app only detaches.
 The Herdr checkout does not need to be modified or linked into this build.
 
+### Agent View Prototype
+
+Right-click a tab name and choose **Agent** to add a native multiline composer
+below its existing terminal output. **Terminal** restores the normal layout.
+The choice is per tab, defaults to Terminal, and does not start or replace an agent.
+Right-clicking an inactive tab does not focus it in Herdr.
+
+- The composer names its recipient. For split tabs it targets the focused pane,
+  with separate drafts for each pane; the existing split terminal view remains.
+- Enter inserts a newline. **Cmd-Enter** or **Send** queues one semantic Paste +
+  Enter batch through Herdr. Nothing is sent while editing the local draft.
+- Popups and pending navigation suspend composer input. Stale/disconnected state
+  blocks Send. A temporary surface update gap keeps typing in the composer.
+- Click the output for direct terminal interaction, or use **Terminal mode** for
+  approval prompts, menus, and other agent-specific controls. Terminal creation
+  shortcuts are paused while editing; explicit UI buttons still work.
+- Modes and drafts live only in this GUI process. Same-boot reconnects preserve
+  them; closing the GUI loses unsent drafts, not the daemon session. Deleted panes
+  and changed daemon boots discard their local drafts. Nothing is auto-replayed.
+
+**This is terminal input, not a chat API.** Start with an empty agent prompt:
+Send does not replace text already typed in Herdr's TUI, detect approvals inside
+an agent's terminal, or confirm that the agent accepted the input. On a shell,
+Send submits shell input. Specific agents' multiline/paste behavior still needs
+manual verification. The prototype editor has a 16 KiB limit, scrolls rather than
+soft-wrapping long lines, and does not yet provide undo/redo or persistent history.
+
+`just test-agent` runs daemon-free native fixtures. Headless tests also verify
+recipient/IME isolation and a real socket worker sending to a mock Herdr peer;
+these do not certify interoperability with individual agent products.
+
 ## Run
 
 Install Rust/rustup and the macOS Xcode command-line tools. The repository pins

@@ -452,7 +452,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         key("cmd-n", window, cx)?;
                     }
                     6 if snapshot.workspaces.len() == 2 && focused_workspace != workspace && surface.panes.len() == 1 => {
-                        view.update(cx, |view, cx| { view.navigate(NavigationTarget::Workspace(&workspace), cx); window.focus(&view.focus); });
+                        view.update(cx, |view, cx| { view.navigate(NavigationTarget::Workspace(workspace.clone()), cx); window.focus(&view.focus); });
                     }
                     7 if focused_workspace == workspace && focused_tab == second_tab && surface.panes.len() == 3 => {
                         // Use the full-width tab so the exact output row cannot wrap in a split.

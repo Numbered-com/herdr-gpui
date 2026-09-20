@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 pub(super) const BACKGROUND: u32 = 0x1c1c22;
 pub(super) const FOREGROUND: u32 = 0xc1bdce;
-const MUTED: u32 = 0x827e91;
+pub(super) const MUTED: u32 = 0x827e91;
 pub(super) const ACTIVE: u32 = 0x2b2933;
 const SIDEBAR_WIDTH: f32 = 232.;
 const ROW_PADDING: f32 = 12.;
@@ -75,7 +75,7 @@ impl HerdrWindow {
                     })
                     .id(SharedString::from(format!("workspace-{id}")))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.navigate(NavigationTarget::Workspace(&id), cx);
+                        this.navigate(NavigationTarget::Workspace(id.clone()), cx);
                         window.focus(&this.focus);
                     })),
                 );
@@ -87,7 +87,7 @@ impl HerdrWindow {
                     row(name, kind, agent.agent_status, agent.focused, false, false)
                         .id(SharedString::from(format!("agent-{id}")))
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.navigate(NavigationTarget::Pane(&id), cx);
+                            this.navigate(NavigationTarget::Pane(id.clone()), cx);
                             window.focus(&this.focus);
                         })),
                 );
