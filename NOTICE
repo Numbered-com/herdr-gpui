@@ -21,6 +21,7 @@ placement, and flat graphite coloring.
 The derived herdr-worktree-1024.png, herdr-square-worktree-1024.png, and
 Herdr-worktree.icns use a red palette to
 identify development builds made from linked Git worktrees.
-The repository social preview images in assets/social-preview-light.svg and
-assets/social-preview-dark.svg, and their PNG exports, embed the same adapted
-ram path alongside original layout, typography, and interface artwork.
+The repository social preview images in assets/social-preview-light.svg,
+assets/social-preview-light-ui.svg, and assets/social-preview-dark.svg, and
+their PNG exports, embed the same adapted ram path alongside original layout,
+typography, and interface artwork.
