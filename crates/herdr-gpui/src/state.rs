@@ -5,13 +5,39 @@ use herdr_client::{
 };
 use std::sync::Arc;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionStatus {
+    Connecting,
+    AwaitingSnapshot,
+    Connected,
+    Disconnected,
+    Detached,
+}
+
+impl ConnectionStatus {
+    pub fn is_connected(self) -> bool {
+        matches!(self, Self::AwaitingSnapshot | Self::Connected)
+    }
+}
+
+impl std::fmt::Display for ConnectionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Connecting => "Connecting...",
+            Self::AwaitingSnapshot => "Connected; waiting for snapshot",
+            Self::Connected => "Connected",
+            Self::Disconnected => "Disconnected",
+            Self::Detached => "Detached (daemon still running)",
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct LiveState {
     pub snapshot: Option<Arc<ClientShellSnapshot>>,
     pub surface: Option<Arc<PaneSurfaceFrame>>,
-    pub status: String,
+    pub status: ConnectionStatus,
     pub error: Option<String>,
-    pub connected: bool,
     pub dirty: bool,
     agent_presentation: AgentPresentation,
     outer_focused: Option<bool>,
@@ -22,9 +48,8 @@ impl Default for LiveState {
         Self {
             snapshot: None,
             surface: None,
-            status: "Connecting...".into(),
+            status: ConnectionStatus::Connecting,
             error: None,
-            connected: false,
             dirty: true,
             agent_presentation: AgentPresentation::default(),
             outer_focused: None,
@@ -33,6 +58,18 @@ impl Default for LiveState {
 }
 
 impl LiveState {
+    pub fn status_text(&self, local_error: Option<&str>) -> String {
+        let error = if self.status.is_connected() {
+            local_error.or(self.error.as_deref())
+        } else {
+            self.error.as_deref()
+        };
+        match error {
+            Some(error) => format!("{}: {error}", self.status),
+            None => self.status.to_string(),
+        }
+    }
+
     /// Track activation without treating receipt or focus gain as presentation.
     pub fn set_outer_focus(&mut self, focused: bool) {
         // A focus report retried after inbox contention must still cause a draw.
@@ -78,8 +115,8 @@ impl LiveState {
     pub fn apply(&mut self, event: ClientEvent) {
         match event {
             ClientEvent::Connected(_) => {
-                self.connected = true;
-                self.status = "Connected; waiting for snapshot".into();
+                self.status = ConnectionStatus::AwaitingSnapshot;
+                self.error = None;
             }
             ClientEvent::Snapshot(mut snapshot) => {
                 if self
@@ -89,7 +126,7 @@ impl LiveState {
                 {
                     self.surface = None;
                 }
-                self.status = "Connected".into();
+                self.status = ConnectionStatus::Connected;
                 self.agent_presentation
                     .project_snapshot(Arc::make_mut(&mut snapshot));
                 self.snapshot = Some(snapshot);
@@ -104,8 +141,7 @@ impl LiveState {
                 }
             }
             ClientEvent::Disconnected { reason } => {
-                self.connected = false;
-                self.status = "Disconnected".into();
+                self.status = ConnectionStatus::Disconnected;
                 self.error = Some(reason);
                 self.snapshot = None;
                 self.surface = None;
@@ -136,6 +172,40 @@ mod tests {
     use super::*;
     use herdr_client::protocol::AgentStatus;
     use herdr_client::protocol::FrameData;
+
+    #[test]
+    fn connection_status_and_error_priority_follow_lifecycle() {
+        let mut state = LiveState::default();
+        assert_eq!(state.status, ConnectionStatus::Connecting);
+        assert!(!state.status.is_connected());
+        assert_eq!(state.status_text(Some("old input error")), "Connecting...");
+        state.apply(ClientEvent::Snapshot(snapshot()));
+        assert!(state.status.is_connected());
+        assert_eq!(
+            state.status_text(Some("input error")),
+            "Connected: input error"
+        );
+        state.apply(ClientEvent::Disconnected {
+            reason: "socket closed".into(),
+        });
+        assert!(!state.status.is_connected());
+        assert_eq!(
+            state.status_text(Some("old input error")),
+            "Disconnected: socket closed"
+        );
+        state.status = ConnectionStatus::Detached;
+        state.error = None;
+        assert!(!state.status.is_connected());
+        assert_eq!(
+            state.status_text(Some("old input error")),
+            "Detached (daemon still running)"
+        );
+        assert!(ConnectionStatus::AwaitingSnapshot.is_connected());
+        assert_eq!(
+            ConnectionStatus::AwaitingSnapshot.to_string(),
+            "Connected; waiting for snapshot"
+        );
+    }
 
     fn agent_snapshot(status: AgentStatus, sequence: u64) -> Arc<ClientShellSnapshot> {
         let mut snapshot = snapshot();
@@ -422,7 +492,7 @@ mod tests {
         state.apply(ClientEvent::Surface(frame));
         assert!(state.snapshot.is_none());
         assert!(state.surface.is_none());
-        assert_eq!(state.status, "Disconnected");
+        assert_eq!(state.status, ConnectionStatus::Disconnected);
         assert_eq!(state.error.as_deref(), Some("closed"));
     }
 
@@ -440,7 +510,7 @@ mod tests {
             reason: "closed".into(),
         });
         assert!(state.snapshot.is_none() && state.surface.is_none());
-        assert!(!state.connected);
+        assert!(!state.status.is_connected());
         assert_eq!(state.error.as_deref(), Some("closed"));
     }
 }

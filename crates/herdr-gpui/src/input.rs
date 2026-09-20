@@ -1,4 +1,4 @@
-use super::HerdrWindow;
+use super::{HerdrWindow, terminal::input_cursor_bounds};
 use gpui::*;
 use herdr_client::protocol::ClientPaneInputEvent;
 use std::ops::Range;
@@ -73,23 +73,11 @@ impl EntityInputHandler for HerdrWindow {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let cell_height = self.config.terminal.line_height();
-        let cursor = self
-            .live
-            .surface
-            .as_ref()
-            .and_then(|s| s.frame.cursor.as_ref());
-        let offset = cursor
-            .map(|c| {
-                point(
-                    px(c.x as f32 * self.cell_width),
-                    px(c.y as f32 * cell_height),
-                )
-            })
-            .unwrap_or_default();
-        Some(Bounds::new(
-            self.bounds.origin + offset,
-            size(px(self.cell_width), px(cell_height)),
+        Some(input_cursor_bounds(
+            self.live.surface.as_deref(),
+            self.bounds.origin,
+            self.cell_width,
+            self.config.terminal.line_height(),
         ))
     }
     fn character_index_for_point(

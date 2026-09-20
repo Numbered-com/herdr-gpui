@@ -139,12 +139,12 @@ impl HerdrWindow {
             .child(row(
                 "preferences-connection-status",
                 "Status",
-                self.live.status.clone(),
+                self.live.status_text(self.local_error.as_deref()),
             ))
             .child(row(
                 "preferences-connection-target",
                 "Target",
-                format!("{:?}", self.target),
+                format!("{:?}", self.connection.target),
             ));
 
         div()

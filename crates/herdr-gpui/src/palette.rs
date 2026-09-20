@@ -1,5 +1,5 @@
 use crate::{
-    HerdrWindow,
+    HerdrWindow, NavigationTarget,
     controls::{COMMANDS, Command},
     menu::Page,
     search_input::{Changed, SearchInput},
@@ -261,7 +261,11 @@ impl HerdrWindow {
             return;
         }
         let result = (|| {
-            let handle = self.handle.as_ref().ok_or("Not connected to the daemon.")?;
+            let handle = self
+                .connection
+                .handle
+                .as_ref()
+                .ok_or("Not connected to the daemon.")?;
             let snapshot = self
                 .live
                 .snapshot
@@ -289,7 +293,7 @@ impl HerdrWindow {
             Ok(()) => {
                 self.dismiss_menu(window, cx);
                 if let Action::Workspace(id) = action {
-                    self.navigate("workspace", &id, cx);
+                    self.navigate(NavigationTarget::Workspace(&id), cx);
                 }
             }
             Err(error) => {

@@ -111,7 +111,8 @@ impl HerdrWindow {
                 .as_ref()
                 .ok_or("Not connected to a daemon.")?;
             let (method, params) = close.request(snapshot)?;
-            self.handle
+            self.connection
+                .handle
                 .as_ref()
                 .ok_or("Not connected to a daemon.")?
                 .request(&close.boot, method, params)

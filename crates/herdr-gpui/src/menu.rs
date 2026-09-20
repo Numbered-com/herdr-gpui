@@ -1,7 +1,6 @@
-use super::{HerdrWindow, LiveState};
+use super::HerdrWindow;
 use crate::config::Config;
 use gpui::{prelude::*, *};
-use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Page {
@@ -83,7 +82,7 @@ impl HerdrWindow {
                 self.config = config;
                 self.theme = theme;
                 self.wheel = Default::default();
-                self.sent_size = None;
+                self.last_queued_options = None;
                 self.local_error = None;
             }
             Err(error) => self.local_error = Some(format!("Reload GUI config: {error}")),
@@ -115,7 +114,7 @@ impl HerdrWindow {
             "workspaces",
             "reload GUI config",
         ];
-        if self.live.connected {
+        if self.live.status.is_connected() {
             items.push("reload daemon config");
         }
         if self
@@ -126,7 +125,7 @@ impl HerdrWindow {
         {
             items.push("update ready");
         }
-        items.push(if self.handle.is_some() {
+        items.push(if self.connection.handle.is_some() {
             "detach"
         } else {
             "reconnect"
@@ -144,7 +143,9 @@ impl HerdrWindow {
             "update ready" => self.menu.page = Some(Page::Update),
             "reload GUI config" => self.reload_gui_config(window, cx),
             "reload daemon config" => {
-                if let (Some(handle), Some(snapshot)) = (&self.handle, &self.live.snapshot) {
+                if let (Some(handle), Some(snapshot)) =
+                    (&self.connection.handle, &self.live.snapshot)
+                {
                     self.local_error = handle
                         .request(
                             &snapshot.boot_id,
@@ -157,14 +158,8 @@ impl HerdrWindow {
                 self.dismiss_menu(window, cx);
             }
             "detach" => {
-                if let Some(handle) = self.handle.take() {
-                    handle.disconnect();
-                }
-                // Isolate any final events from the detached connection.
-                self.live = LiveState::default();
-                self.live.status = "Detached (daemon still running)".into();
-                self.live.set_outer_focus(self.active);
-                self.inbox = Arc::new(Mutex::new(self.live.clone()));
+                self.connection.detach(self.active);
+                self.live = self.connection.take_update().unwrap_or_default();
                 self.local_error = None;
                 self.marked.clear();
                 self.dismiss_menu(window, cx);

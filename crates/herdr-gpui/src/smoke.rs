@@ -1,5 +1,6 @@
 //! Native opt-in smoke driver. No test platform or blocking waits on the UI thread.
 use super::*;
+use herdr_client::connect;
 use std::{
     sync::atomic::{AtomicU8, Ordering},
     time::Instant,
@@ -323,8 +324,8 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                 if step == 13 {
                     let view = view.read(cx);
                     let (before, inbox) = baseline.as_ref().ok_or("missing external baseline")?;
-                    if !Arc::ptr_eq(inbox, &view.inbox) || !view.live.connected
-                        || view.handle.as_ref().is_none_or(|h| h.is_disconnected())
+                    if !Arc::ptr_eq(inbox, &view.connection.inbox) || !view.live.status.is_connected()
+                        || view.connection.handle.as_ref().is_none_or(|h| h.is_disconnected())
                         || view.local_error.is_some() || view.live.error.is_some() {
                         return Err("GUI connection changed or failed during external creation".into());
                     }
@@ -378,14 +379,14 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                 let active = window.is_window_active();
                 let actions_ready = window.is_action_available(&RunCommand { command: Command::Tab }, cx);
                 let probe = view.read(cx).input_probe;
-                let (live, local_error, options, sent_size, bounds) = {
+                let (live, local_error, options, last_queued_options, bounds) = {
                     let view = view.read(cx);
-                    (view.live.clone(), view.local_error.clone(), view.options, view.sent_size, view.bounds)
+                    (view.live.clone(), view.local_error.clone(), view.options, view.last_queued_options, view.bounds)
                 };
                 let diagnostic = || format!(
-                    "step={step} ({}) elapsed={:?} frames={frames} focus={focused} actions_ready={actions_ready} active={} probe={probe:?} status={:.160} local_error={:.240} live.error={:.240} connected={} snapshot={:?} surface={:?} size={:?} sent_size={sent_size:?}",
+                    "step={step} ({}) elapsed={:?} frames={frames} focus={focused} actions_ready={actions_ready} active={} probe={probe:?} status={:.160} local_error={:.240} live.error={:.240} connected={} snapshot={:?} surface={:?} size={:?} last_queued_options={last_queued_options:?}",
                     STEPS[step], since.elapsed(), active, live.status,
-                    local_error.as_deref().unwrap_or("none"), live.error.as_deref().unwrap_or("none"), live.connected,
+                    local_error.as_deref().unwrap_or("none"), live.error.as_deref().unwrap_or("none"), live.status.is_connected(),
                     live.snapshot.as_ref().map(|s| (s.revision, s.workspaces.len(), s.tabs.len())),
                     live.surface.as_ref().map(|s| (s.projection_revision, s.panes.len(), s.frame.width, s.frame.height)), options.surface_size
                 );
@@ -397,7 +398,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                 }
                 if !focused || !actions_ready { return Ok(false); }
                 let (Some(snapshot), Some(surface)) = (&live.snapshot, &live.surface) else { return Ok(false) };
-                if !live.connected || snapshot.boot_id != surface.boot_id || snapshot.revision != surface.projection_revision {
+                if !live.status.is_connected() || snapshot.boot_id != surface.boot_id || snapshot.revision != surface.projection_revision {
                     return Ok(false);
                 }
                 surface.frame.validate().map_err(|e| format!("invalid frame: {e}; {}", diagnostic()))?;
@@ -451,7 +452,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         key("cmd-n", window, cx)?;
                     }
                     6 if snapshot.workspaces.len() == 2 && focused_workspace != workspace && surface.panes.len() == 1 => {
-                        view.update(cx, |view, cx| { view.navigate("workspace", &workspace, cx); window.focus(&view.focus); });
+                        view.update(cx, |view, cx| { view.navigate(NavigationTarget::Workspace(&workspace), cx); window.focus(&view.focus); });
                     }
                     7 if focused_workspace == workspace && focused_tab == second_tab && surface.panes.len() == 3 => {
                         // Use the full-width tab so the exact output row cannot wrap in a split.
@@ -467,7 +468,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         old_size = options.surface_size;
                         window.resize(size(px(1000.), px(650.)));
                     }
-                    10 if options.surface_size != old_size && sent_size == Some(options.surface_size)
+                    10 if options.surface_size != old_size && last_queued_options == Some(options)
                         && surface.frame.width == options.surface_size.cols && surface.frame.height == options.surface_size.rows => {
                         eprintln!("GUI native resize verified: {:?} -> {:?}", old_size, options.surface_size);
                         view.update(cx, |view, cx| { view.reconnect(); window.focus(&view.focus); cx.notify(); });
@@ -480,11 +481,11 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     12 if has_output(&surface.frame, &reconnected_marker) => {
                         eprintln!("GUI input pipeline verified: frames={frames} focus={focused} active={active} probe={probe:?}");
                         eprintln!("GUI fresh input after reconnect verified: {reconnected_marker}");
-                        let target = view.read(cx).target.clone();
+                        let target = view.read(cx).connection.target.clone();
                         if !matches!(&target, ConnectTarget::Socket(_)) {
                             return Err("external smoke requires an explicit isolated socket".into());
                         }
-                        baseline = Some((snapshot.clone(), view.read(cx).inbox.clone()));
+                        baseline = Some((snapshot.clone(), view.read(cx).connection.inbox.clone()));
                         let boot = boot.clone();
                         let (tx, rx) = std::sync::mpsc::channel();
                         std::thread::Builder::new().name("external-workspace-smoke".into()).spawn(move || {

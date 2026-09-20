@@ -1,8 +1,12 @@
 use crate::config::Theme;
-use gpui::{KeyDownEvent, Keystroke, Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase};
+use gpui::{
+    Bounds, KeyDownEvent, Keystroke, Modifiers, Pixels, Point, ScrollDelta, ScrollWheelEvent,
+    TouchPhase, point, px, size,
+};
 use herdr_client::protocol::{
     CellData, ClientKeyCode, ClientKeyKind, ClientMouseGeometry, ClientMouseKind,
-    ClientMousePosition, ClientPaneInputEvent, ClientSurfaceSize, PaneSurfaceFrame, SurfaceRect,
+    ClientMousePosition, ClientPaneInputEvent, ClientSurfaceSize, CursorState, FrameData,
+    PaneSurfaceFrame, SurfaceRect,
 };
 
 #[cfg(test)]
@@ -12,25 +16,81 @@ pub const FOREGROUND: u32 = 0xd8dee9;
 pub const FONT_SIZE: f32 = 14.;
 pub const CELL_HEIGHT: f32 = 20.;
 
+pub(crate) const BOLD: u16 = 1;
+pub(crate) const DIM: u16 = 1 << 1;
+pub(crate) const ITALIC: u16 = 1 << 2;
+pub(crate) const UNDERLINE: u16 = 1 << 3;
+pub(crate) const REVERSED: u16 = 1 << 6;
+pub(crate) const HIDDEN: u16 = 1 << 7;
+pub(crate) const STRIKETHROUGH: u16 = 1 << 8;
+
+pub(crate) fn popup_origin(
+    frame: &FrameData,
+    popup: &FrameData,
+    cell_width: f32,
+    cell_height: f32,
+) -> Point<Pixels> {
+    point(
+        px((frame.width.saturating_sub(popup.width) as f32 * cell_width / 2.).floor()),
+        px(frame.height.saturating_sub(popup.height) as f32 * cell_height / 2.),
+    )
+}
+
+pub(crate) fn cursor_offset(
+    cursor: &CursorState,
+    cell_width: f32,
+    cell_height: f32,
+) -> Point<Pixels> {
+    point(
+        px(cursor.x as f32 * cell_width),
+        px(cursor.y as f32 * cell_height),
+    )
+}
+
+pub(crate) fn input_cursor_bounds(
+    surface: Option<&PaneSurfaceFrame>,
+    origin: Point<Pixels>,
+    cell_width: f32,
+    cell_height: f32,
+) -> Bounds<Pixels> {
+    let mut origin = origin;
+    if let Some(surface) = surface {
+        let frame = if let Some(popup) = &surface.popup {
+            origin += popup_origin(&surface.frame, &popup.frame, cell_width, cell_height);
+            &popup.frame
+        } else {
+            &surface.frame
+        };
+        if let Some(cursor) = &frame.cursor {
+            origin += cursor_offset(cursor, cell_width, cell_height);
+        }
+    }
+    Bounds::new(origin, size(px(cell_width), px(cell_height)))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum InputTarget {
+    Pane(String),
+    Popup(String),
+}
+
 #[derive(Default)]
 pub struct WheelAccumulator {
-    target: Option<(String, bool)>,
+    target: Option<InputTarget>,
     remainder: f32,
 }
 
 impl WheelAccumulator {
     pub fn lines(
         &mut self,
-        id: &str,
-        popup: bool,
+        target: &InputTarget,
         event: &ScrollWheelEvent,
         cell_height: f32,
     ) -> i16 {
-        let target = (id.to_owned(), popup);
-        if self.target.as_ref() != Some(&target) || matches!(event.touch_phase, TouchPhase::Started)
+        if self.target.as_ref() != Some(target) || matches!(event.touch_phase, TouchPhase::Started)
         {
             self.remainder = 0.;
-            self.target = Some(target);
+            self.target = Some(target.clone());
         }
         let delta = match event.delta {
             ScrollDelta::Pixels(delta) => delta.y.to_f64() as f32 / cell_height,
@@ -51,8 +111,7 @@ impl WheelAccumulator {
 }
 
 pub struct WheelTarget {
-    pub id: String,
-    pub popup: bool,
+    pub target: InputTarget,
     position: ClientMousePosition,
     geometry: Option<ClientMouseGeometry>,
 }
@@ -94,16 +153,11 @@ pub fn wheel_target(
     {
         return None;
     }
-    let (id, popup, rect, pixel_mouse, width_px, height_px, origin_x, origin_y) =
+    let (target, rect, pixel_mouse, width_px, height_px, origin_x, origin_y) =
         if let Some(popup) = &surface.popup {
-            let origin_x =
-                (surface.frame.width.saturating_sub(popup.frame.width) as f32 * cell_width / 2.)
-                    .floor();
-            let origin_y =
-                surface.frame.height.saturating_sub(popup.frame.height) as f32 * cell_height / 2.;
+            let origin = popup_origin(&surface.frame, &popup.frame, cell_width, cell_height);
             (
-                &popup.terminal_id,
-                true,
+                InputTarget::Popup(popup.terminal_id.clone()),
                 SurfaceRect {
                     x: 0,
                     y: 0,
@@ -113,8 +167,8 @@ pub fn wheel_target(
                 popup.sgr_pixel_mouse,
                 popup.pixel_width,
                 popup.pixel_height,
-                origin_x,
-                origin_y,
+                origin.x.to_f64() as f32,
+                origin.y.to_f64() as f32,
             )
         } else {
             let pane = surface.panes.iter().find(|pane| {
@@ -125,8 +179,7 @@ pub fn wheel_target(
                     && y < (u32::from(r.y) + u32::from(r.height)) as f32 * cell_height
             })?;
             (
-                &pane.pane_id,
-                false,
+                InputTarget::Pane(pane.pane_id.clone()),
                 pane.inner_rect,
                 pane.sgr_pixel_mouse,
                 pane.pixel_width,
@@ -163,8 +216,7 @@ pub fn wheel_target(
         ClientMousePosition::Cell { column, row }
     };
     Some(WheelTarget {
-        id: id.clone(),
-        popup,
+        target,
         position,
         geometry,
     })
@@ -185,13 +237,13 @@ pub fn color(value: u32, default: u32, theme: &Theme) -> u32 {
 pub fn cell_colors(cell: &CellData, theme: &Theme) -> (u32, u32) {
     let mut fg = color(cell.fg, theme.foreground, theme);
     let mut bg = color(cell.bg, theme.background, theme);
-    if cell.modifier & (1 << 6) != 0 {
+    if cell.modifier & REVERSED != 0 {
         std::mem::swap(&mut fg, &mut bg);
     }
-    if cell.modifier & (1 << 1) != 0 {
+    if cell.modifier & DIM != 0 {
         fg = ((fg & 0xfefefe) >> 1) + ((bg & 0xfefefe) >> 1);
     }
-    if cell.modifier & (1 << 7) != 0 {
+    if cell.modifier & HIDDEN != 0 {
         fg = bg;
     }
     (fg, bg)
@@ -268,44 +320,48 @@ mod tests {
     #[test]
     fn wheel_preserves_fractions_and_resets_on_target_direction_or_gesture_change() {
         let mut wheel = WheelAccumulator::default();
+        let pane = InputTarget::Pane("pane".into());
+        let other = InputTarget::Pane("other".into());
+        let popup = InputTarget::Popup("other".into());
         let mut event = ScrollWheelEvent {
-            delta: ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(12.))),
+            delta: ScrollDelta::Pixels(point(px(0.), px(12.))),
             touch_phase: TouchPhase::Moved,
             ..Default::default()
         };
-        assert_eq!(wheel.lines("pane", false, &event, CELL_HEIGHT), 0);
-        assert_eq!(wheel.lines("pane", false, &event, CELL_HEIGHT), 1);
-        assert_eq!(wheel.lines("other", false, &event, CELL_HEIGHT), 0);
-        assert_eq!(wheel.lines("other", true, &event, CELL_HEIGHT), 0);
+        assert_eq!(wheel.lines(&pane, &event, CELL_HEIGHT), 0);
+        assert_eq!(wheel.lines(&pane, &event, CELL_HEIGHT), 1);
+        assert_eq!(wheel.lines(&other, &event, CELL_HEIGHT), 0);
+        assert_eq!(wheel.lines(&popup, &event, CELL_HEIGHT), 0);
         event.touch_phase = TouchPhase::Started;
-        assert_eq!(wheel.lines("other", true, &event, CELL_HEIGHT), 0);
+        assert_eq!(wheel.lines(&popup, &event, CELL_HEIGHT), 0);
         event.touch_phase = TouchPhase::Moved;
-        event.delta = ScrollDelta::Lines(gpui::point(0., -1.));
-        assert_eq!(wheel.lines("other", true, &event, CELL_HEIGHT), -1);
-        event.delta = ScrollDelta::Lines(gpui::point(0., 1e9));
-        assert_eq!(wheel.lines("other", true, &event, CELL_HEIGHT), 128);
-        event.delta = ScrollDelta::Lines(gpui::point(10., 0.));
-        assert_eq!(wheel.lines("other", true, &event, CELL_HEIGHT), 0);
+        event.delta = ScrollDelta::Lines(point(0., -1.));
+        assert_eq!(wheel.lines(&popup, &event, CELL_HEIGHT), -1);
+        event.delta = ScrollDelta::Lines(point(0., 1e9));
+        assert_eq!(wheel.lines(&popup, &event, CELL_HEIGHT), 128);
+        event.delta = ScrollDelta::Lines(point(10., 0.));
+        assert_eq!(wheel.lines(&popup, &event, CELL_HEIGHT), 0);
     }
 
     #[test]
     fn nonfinite_wheel_deltas_do_not_poison_fractional_motion() {
+        let pane = InputTarget::Pane("pane".into());
         for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let mut wheel = WheelAccumulator::default();
             let mut event = ScrollWheelEvent {
-                delta: ScrollDelta::Lines(gpui::point(0., 0.75)),
+                delta: ScrollDelta::Lines(point(0., 0.75)),
                 touch_phase: TouchPhase::Moved,
                 ..Default::default()
             };
-            assert_eq!(wheel.lines("pane", false, &event, CELL_HEIGHT), 0);
-            event.delta = ScrollDelta::Lines(gpui::point(0., invalid));
-            assert_eq!(wheel.lines("pane", false, &event, CELL_HEIGHT), 0);
-            event.delta = ScrollDelta::Lines(gpui::point(0., 0.25));
-            assert_eq!(wheel.lines("pane", false, &event, CELL_HEIGHT), 1);
-            event.delta = ScrollDelta::Lines(gpui::point(0., -1e9));
-            assert_eq!(wheel.lines("pane", false, &event, CELL_HEIGHT), -128);
-            event.delta = ScrollDelta::Lines(gpui::point(0., 0.));
-            assert_eq!(wheel.lines("pane", false, &event, CELL_HEIGHT), 0);
+            assert_eq!(wheel.lines(&pane, &event, CELL_HEIGHT), 0);
+            event.delta = ScrollDelta::Lines(point(0., invalid));
+            assert_eq!(wheel.lines(&pane, &event, CELL_HEIGHT), 0);
+            event.delta = ScrollDelta::Lines(point(0., 0.25));
+            assert_eq!(wheel.lines(&pane, &event, CELL_HEIGHT), 1);
+            event.delta = ScrollDelta::Lines(point(0., -1e9));
+            assert_eq!(wheel.lines(&pane, &event, CELL_HEIGHT), -128);
+            event.delta = ScrollDelta::Lines(point(0., 0.));
+            assert_eq!(wheel.lines(&pane, &event, CELL_HEIGHT), 0);
         }
     }
 
@@ -356,10 +412,14 @@ mod tests {
         assert!(wheel_target(&surface, -1., 25., 10., CELL_HEIGHT).is_none());
         assert!(wheel_target(&surface, 5., 25., 10., CELL_HEIGHT).is_none());
         assert!(wheel_target(&surface, 400., 25., 10., CELL_HEIGHT).is_none());
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0., -1.] {
+            assert!(wheel_target(&surface, 35., 65., invalid, CELL_HEIGHT).is_none());
+            assert!(wheel_target(&surface, 35., 65., 10., invalid).is_none());
+        }
         for alternate in [false, true] {
             surface.panes[0].alternate_screen_active = alternate;
             let target = wheel_target(&surface, 35., 65., 10., CELL_HEIGHT).unwrap();
-            assert_eq!(target.id, "pane");
+            assert_eq!(target.target, InputTarget::Pane("pane".into()));
             assert_eq!(
                 target.position,
                 ClientMousePosition::Cell { column: 2, row: 2 }
@@ -412,8 +472,7 @@ mod tests {
         }));
         assert!(wheel_target(&surface, 35., 65., 10., CELL_HEIGHT).is_none());
         let target = wheel_target(&surface, 315., 165., 10., CELL_HEIGHT).unwrap();
-        assert!(target.popup);
-        assert_eq!(target.id, "popup");
+        assert_eq!(target.target, InputTarget::Popup("popup".into()));
         assert_eq!(
             target.position,
             ClientMousePosition::Cell { column: 1, row: 1 }
@@ -423,6 +482,92 @@ mod tests {
             target.position,
             ClientMousePosition::Cell { column: 1, row: 1 }
         );
+
+        let origin = point(px(17.), px(29.));
+        let cursor = CursorState {
+            x: 2,
+            y: 3,
+            visible: false,
+            shape: 0,
+        };
+        surface.frame.cursor = Some(CursorState {
+            x: 70,
+            y: 20,
+            ..cursor.clone()
+        });
+        surface.popup.as_mut().unwrap().frame.cursor = Some(cursor);
+        // A hidden popup cursor still anchors IME; never use the base cursor.
+        assert_eq!(
+            input_cursor_bounds(Some(&surface), origin, 8.5, CELL_HEIGHT),
+            Bounds::new(origin + point(px(272.), px(200.)), size(px(8.5), px(20.)))
+        );
+        assert_eq!(
+            input_cursor_bounds(Some(&surface), origin, 8.5, 30.5),
+            Bounds::new(origin + point(px(272.), px(305.)), size(px(8.5), px(30.5)))
+        );
+        surface.popup.as_mut().unwrap().frame.cursor = None;
+        assert_eq!(
+            input_cursor_bounds(Some(&surface), origin, 8.5, CELL_HEIGHT).origin,
+            origin + point(px(255.), px(140.))
+        );
+        assert_eq!(
+            input_cursor_bounds(Some(&surface), origin, 8.5, 30.5).origin,
+            origin + point(px(255.), px(213.5))
+        );
+        surface.popup = None;
+        assert_eq!(
+            input_cursor_bounds(Some(&surface), origin, 8.5, CELL_HEIGHT).origin,
+            origin + point(px(595.), px(400.))
+        );
+        assert_eq!(
+            input_cursor_bounds(Some(&surface), origin, 8.5, 30.5).origin,
+            origin + point(px(595.), px(610.))
+        );
+        surface.frame.cursor = None;
+        assert_eq!(
+            input_cursor_bounds(Some(&surface), origin, 8.5, CELL_HEIGHT).origin,
+            origin
+        );
+        assert_eq!(
+            input_cursor_bounds(None, origin, 8.5, CELL_HEIGHT).origin,
+            origin
+        );
+        for surface in [Some(&surface), None] {
+            assert_eq!(
+                input_cursor_bounds(surface, origin, 8.5, 30.5),
+                Bounds::new(origin, size(px(8.5), px(30.5)))
+            );
+        }
+    }
+
+    #[test]
+    fn popup_origin_rounds_horizontal_pixels_and_saturates_oversized_frames() {
+        let frame = FrameData {
+            width: 81,
+            height: 25,
+            cells: vec![],
+            cursor: None,
+            hyperlinks: vec![],
+            graphics: vec![],
+        };
+        let popup = FrameData {
+            width: 20,
+            height: 10,
+            ..frame.clone()
+        };
+        assert_eq!(
+            popup_origin(&frame, &popup, 8.5, CELL_HEIGHT),
+            point(px(259.), px(150.))
+        );
+        assert_eq!(
+            popup_origin(&popup, &frame, 8.5, CELL_HEIGHT),
+            Point::default()
+        );
+        assert_eq!(
+            popup_origin(&frame, &popup, 8.5, 30.5),
+            point(px(259.), px(228.75))
+        );
+        assert_eq!(popup_origin(&popup, &frame, 8.5, 30.5), Point::default());
     }
 
     #[test]
@@ -519,15 +664,16 @@ mod tests {
     #[test]
     fn wheel_uses_configured_height_only_for_pixel_deltas() {
         let mut wheel = WheelAccumulator::default();
+        let pane = InputTarget::Pane("pane".into());
         let mut event = ScrollWheelEvent {
-            delta: ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(15.))),
+            delta: ScrollDelta::Pixels(point(px(0.), px(15.))),
             touch_phase: TouchPhase::Moved,
             ..Default::default()
         };
-        assert_eq!(wheel.lines("pane", false, &event, 30.), 0);
-        assert_eq!(wheel.lines("pane", false, &event, 30.), 1);
-        event.delta = ScrollDelta::Lines(gpui::point(0., 2.));
-        assert_eq!(wheel.lines("pane", false, &event, 30.), 2);
+        assert_eq!(wheel.lines(&pane, &event, 30.), 0);
+        assert_eq!(wheel.lines(&pane, &event, 30.), 1);
+        event.delta = ScrollDelta::Lines(point(0., 2.));
+        assert_eq!(wheel.lines(&pane, &event, 30.), 2);
     }
 
     #[test]
