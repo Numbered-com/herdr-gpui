@@ -184,8 +184,19 @@ text truncation that protocol and action-dispatch tests cannot detect.
 font renderer and full application layout. It checks native glyphs and clipping
 over 12 draws at four window sizes. This catches truncated font runs that the
 mock text system does not model. It requires an active desktop, but uses only
-fixture data and never connects to your daemon. It is not a screenshot/pixel
-comparison test.
+fixture data and never connects to your daemon. Its process uses the shared
+cleared-environment sandbox; the fixture catalog and synthetic hosts use unused
+explicit socket targets, with polling stopped and no saved-state reads or writes.
+On macOS, exact-view AppKit clicks verify host selection and return, disabled
+selection, collapse without navigation or composition loss, agents remaining
+visible, duplicate workspace/pane ID routing, and endpoint-scoped repository
+collapse. A separate key window guards against accidentally targeting global
+focus. Native glyph probes check long host/agent labels at 480px and 360px widths.
+Independent list offsets are checked through GPUI scroll handles and native
+draws, not physical wheel/trackpad delivery. Routing checks stop at the queued
+navigation target; they do not claim daemon acknowledgement or SSH coverage.
+Menu keyboard isolation and outside dismissal remain covered. This is not a
+screenshot/pixel comparison or OS-level IME test.
 
 On macOS this also verifies that the running application's native Dock image is
 valid and 1024x1024; a normal unit test checks the embedded PNG header/dimensions.

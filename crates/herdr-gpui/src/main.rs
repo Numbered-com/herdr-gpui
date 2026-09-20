@@ -105,6 +105,12 @@ impl HerdrWindow {
         cx: &mut Context<Self>,
         #[cfg(feature = "integration-test")] sidebar_test: bool,
     ) -> Self {
+        #[cfg(feature = "integration-test")]
+        let target = if sidebar_test {
+            ConnectTarget::Socket("/unused-sidebar-fixture.sock".into())
+        } else {
+            target
+        };
         let focus = cx.focus_handle();
         window.focus(&focus);
         let timer = cx.background_executor().clone();
@@ -180,6 +186,10 @@ impl HerdrWindow {
         if sidebar_test {
             this._poll = Task::ready(());
             this.live.snapshot = Some(Arc::new(sidebar::layout_tests::snapshot(40)));
+            this.endpoints[0].live = this.live.clone();
+            if let Ok(mut inbox) = this.endpoints[0].connection.inbox.lock() {
+                *inbox = this.live.clone();
+            }
             return this;
         }
         this.reconnect();

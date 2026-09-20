@@ -77,13 +77,21 @@ impl HerdrWindow {
                         )
                         .child(
                             div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(endpoint.label.clone()),
+                                // As with workspace labels, avoid zero-basis text measurement.
+                                .w(px(116.))
+                                .flex_none()
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .w(px(116.))
+                                        .truncate()
+                                        .child(label_text(&endpoint.label)),
+                                ),
                         )
                         .child(
                             div()
+                                .flex_1()
+                                .text_right()
                                 .text_size(px(9.))
                                 .text_color(rgb(MUTED))
                                 .child(endpoint.status()),

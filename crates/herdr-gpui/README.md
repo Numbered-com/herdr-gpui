@@ -149,3 +149,10 @@ cell modifiers, viewport bounds, semantic key selection, revision coherence,
 creation request parameters, workspace-local tab cycling, wheel accumulation,
 pane-relative hit testing, and popup routing.
 They do not replace an interactive smoke test against a live daemon.
+
+`just test-sidebar` runs isolated, daemon-free native fixtures on the active
+desktop. On macOS it checks exact-window clicks with a decoy key window, host
+selection/disabled hosts, scoped collapse, duplicate-ID navigation routing,
+composition preservation, menu isolation, and long-label native glyph clipping.
+Scroll independence uses scroll handles and native draws, not trackpad events.
+See the root README for the full verification scope and remaining limitations.
