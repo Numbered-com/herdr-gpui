@@ -1,6 +1,10 @@
 //! Embedded development icon; app bundles use their native Info.plist icon.
 #[cfg(any(target_os = "macos", test))]
-const PNG: &[u8] = include_bytes!("../../../assets/icons/herdr-1024.png");
+const PNG: &[u8] = if env!("HERDR_BUILD_WORKTREE").as_bytes()[0] == b'1' {
+    include_bytes!("../../../assets/icons/herdr-worktree-1024.png")
+} else {
+    include_bytes!("../../../assets/icons/herdr-ui-icon-clean.png")
+};
 
 #[cfg(target_os = "macos")]
 pub fn install() {
@@ -56,10 +60,23 @@ mod tests {
 
     #[test]
     fn embedded_icon_is_a_nonempty_1024_square_png() {
-        assert!(PNG.len() > 33);
-        assert_eq!(&PNG[..8], b"\x89PNG\r\n\x1a\n");
-        assert_eq!(&PNG[12..16], b"IHDR");
-        assert_eq!(&PNG[16..20], &1024_u32.to_be_bytes());
-        assert_eq!(&PNG[20..24], &1024_u32.to_be_bytes());
+        let stable = include_bytes!("../../../assets/icons/herdr-ui-icon-clean.png").as_slice();
+        let worktree = include_bytes!("../../../assets/icons/herdr-worktree-1024.png").as_slice();
+        assert_ne!(stable, worktree);
+        for png in [stable, worktree] {
+            assert!(png.len() > 33);
+            assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+            assert_eq!(&png[12..16], b"IHDR");
+            assert_eq!(&png[16..20], &1024_u32.to_be_bytes());
+            assert_eq!(&png[20..24], &1024_u32.to_be_bytes());
+        }
+        assert_eq!(
+            PNG,
+            if env!("HERDR_BUILD_WORKTREE") == "1" {
+                worktree
+            } else {
+                stable
+            }
+        );
     }
 }

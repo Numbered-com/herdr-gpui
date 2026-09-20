@@ -156,7 +156,9 @@ impl HerdrWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_menu(window, cx);
+        if !self.open_menu(window, cx) {
+            return;
+        }
         self.menu.page = Some(Page::Palette);
         let search = cx.new(SearchInput::new);
         let subscription = cx.subscribe(&search, |this, search, _: &Changed, cx| {

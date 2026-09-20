@@ -8,6 +8,7 @@ case $2 in x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;; *) fail 'Unsup
 [[ -f $5 && -s $5 ]] || fail 'Nonempty third-party notices file required'
 out=$(cd -- "$4" && pwd)/Herdr-$1-$2.tar.gz
 new_output "$out"
+icon=$(python3 "$release_root/scripts/release/build-icon.py" png "$3")
 tmp=$(mktemp -d "${out%/*}/.herdr-linux.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT
 trap 'exit 130' INT
@@ -17,7 +18,7 @@ root=$tmp/$name
 mkdir -p "$root/bin" "$root/share/applications" "$root/share/icons/hicolor/1024x1024/apps" "$root/share/licenses/herdr-gpui"
 cp "$3" "$root/bin/herdr-gpui"
 chmod 755 "$root/bin/herdr-gpui"
-cp "$release_root/assets/icons/herdr-1024.png" "$root/share/icons/hicolor/1024x1024/apps/herdr-gpui.png"
+cp "$icon" "$root/share/icons/hicolor/1024x1024/apps/herdr-gpui.png"
 cp "$release_root/scripts/release/herdr-gpui.desktop" "$root/share/applications/"
 cp "$release_root/crates/herdr-protocol/LICENSE-APACHE" "$release_root/crates/herdr-protocol/NOTICE.md" "$root/share/licenses/herdr-gpui/"
 cp "$release_root/LICENSE" "$release_root/NOTICE" "$release_root/assets/icons/LICENSE-octicons" "$root/share/licenses/herdr-gpui/"
