@@ -1,0 +1,59 @@
+name: Bug report
+description: Something in the GUI client misbehaves
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This repository is the **macOS GUI client**. If the problem is in the
+        daemon itself — sessions, terminal processes, socket handling — report
+        it at [herdrdev/herdr](https://github.com/herdrdev/herdr/issues).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. just run
+        2. ...
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: Output of `git rev-parse --short HEAD`.
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: macOS version and hardware
+      placeholder: macOS 15.2, M1 Pro
+    validations:
+      required: true
+
+  - type: input
+    id: herdr-version
+    attributes:
+      label: Herdr daemon version
+      description: The daemon this client connected to.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output
+      description: Relevant terminal output. Redact socket paths if they identify private work.
+      render: text
