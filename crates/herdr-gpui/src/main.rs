@@ -9,6 +9,7 @@ mod menu;
 mod palette;
 #[cfg(feature = "integration-test")]
 mod performance;
+mod preferences;
 mod search_input;
 mod sidebar;
 #[cfg(feature = "integration-test")]
@@ -318,8 +319,7 @@ impl HerdrWindow {
                 return;
             }
             Command::Settings => {
-                self.open_menu(window, cx);
-                self.menu.page = Some(menu::Page::Preferences);
+                self.open_preferences(window, cx);
                 return;
             }
             Command::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,

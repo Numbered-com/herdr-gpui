@@ -506,6 +506,74 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     );
     cx.simulate_keystrokes("escape");
     cx.update(|window, cx| assert!(view.read(cx).focus.is_focused(window)));
+    cx.simulate_keystrokes("cmd-/");
+    let shortcut_search = cx.update(|window, cx| {
+        window.draw(cx).clear();
+        let search = view.read(cx).menu.keybinds_search.as_ref().unwrap().clone();
+        assert!(search.read(cx).focus.is_focused(window));
+        search
+    });
+    cx.simulate_input("pane zoom");
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        assert_eq!(shortcut_search.read(cx).text(), "pane zoom");
+    });
+    assert!(cx.debug_bounds("shortcut-Toggle Pane Zoom").is_some());
+    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_input("no-shortcut-matches-xyz");
+    cx.update(|window, cx| window.draw(cx).clear());
+    assert!(cx.debug_bounds("keybinds-empty").is_some());
+    cx.simulate_keystrokes("cmd-w");
+    cx.update(|_, cx| assert!(view.read(cx).menu.page == Some(crate::menu::Page::Keybinds)));
+    cx.simulate_keystrokes("escape cmd-/");
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        let search = view.read(cx).menu.keybinds_search.as_ref().unwrap().clone();
+        assert!(search.read(cx).text().is_empty());
+        search.update(cx, |input, cx| {
+            gpui::EntityInputHandler::replace_and_mark_text_in_range(
+                input,
+                None,
+                "pane",
+                Some(4..4),
+                window,
+                cx,
+            )
+        });
+    });
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| {
+        assert!(view.read(cx).menu.page == Some(crate::menu::Page::Keybinds));
+        let search = view.read(cx).menu.keybinds_search.as_ref().unwrap().clone();
+        search.update(cx, |input, cx| {
+            gpui::EntityInputHandler::unmark_text(input, window, cx)
+        });
+    });
+    cx.simulate_keystrokes("escape cmd-,");
+    cx.simulate_resize(size(px(360.), px(240.)));
+    cx.update(|window, cx| window.draw(cx).clear());
+    let header = cx.debug_bounds("preferences-header").unwrap();
+    let footer = cx.debug_bounds("preferences-footer").unwrap();
+    let body = cx.debug_bounds("preferences-body").unwrap();
+    let theme_row = cx.debug_bounds("preferences-theme").unwrap();
+    assert!(body.size.height > px(0.));
+    assert!(header.bottom() <= body.top());
+    assert!(body.bottom() <= footer.top());
+    cx.simulate_keystrokes("pagedown");
+    cx.update(|window, cx| window.draw(cx).clear());
+    assert!(cx.debug_bounds("preferences-theme").unwrap().top() < theme_row.top());
+    assert_eq!(cx.debug_bounds("preferences-header").unwrap(), header);
+    assert_eq!(cx.debug_bounds("preferences-footer").unwrap(), footer);
+    let close = cx.debug_bounds("preferences-close").unwrap();
+    cx.simulate_click(close.center(), Default::default());
+    cx.update(|window, cx| assert!(view.read(cx).focus.is_focused(window)));
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.simulate_keystrokes("cmd-,");
+    cx.update(|window, cx| window.draw(cx).clear());
+    let choose_theme = cx.debug_bounds("preferences-choose-theme").unwrap();
+    cx.simulate_click(choose_theme.center(), Default::default());
+    cx.update(|_, cx| assert!(view.read(cx).menu.page == Some(crate::menu::Page::Themes)));
+    cx.simulate_keystrokes("escape");
 
     let search = cx.update(|window, cx| {
         view.update(cx, |view, cx| view.open_theme_picker(window, cx));

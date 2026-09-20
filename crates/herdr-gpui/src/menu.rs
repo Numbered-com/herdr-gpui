@@ -20,6 +20,9 @@ pub(super) struct MenuState {
     focus: FocusHandle,
     selected: usize,
     keybinds_scroll: ScrollHandle,
+    pub(super) keybinds_search: Option<Entity<crate::search_input::SearchInput>>,
+    _keybinds_subscription: Option<Subscription>,
+    pub(super) preferences_scroll: ScrollHandle,
     pub(super) themes: Option<crate::theme_picker::ThemePicker>,
     pub(super) palette: Option<crate::palette::Palette>,
     pub(super) close: Option<crate::close_modal::CloseConfirmation>,
@@ -33,6 +36,9 @@ impl MenuState {
             focus: cx.focus_handle(),
             selected: 0,
             keybinds_scroll: ScrollHandle::new(),
+            keybinds_search: None,
+            _keybinds_subscription: None,
+            preferences_scroll: ScrollHandle::new(),
             themes: None,
             palette: None,
             close: None,
@@ -45,6 +51,44 @@ impl HerdrWindow {
         self.open_menu(window, cx);
         self.menu.page = Some(Page::Keybinds);
         self.menu.keybinds_scroll.set_offset(Point::default());
+        let search = cx.new(crate::search_input::SearchInput::new);
+        search.update(cx, |input, cx| {
+            input.set_placeholder("Search shortcuts...", cx);
+            input.set_appearance(self.config.ui.clone(), self.theme.clone(), cx);
+            window.focus(&input.focus);
+        });
+        self.menu._keybinds_subscription = Some(cx.subscribe(
+            &search,
+            |this, _, _: &crate::search_input::Changed, cx| {
+                this.menu.keybinds_scroll.set_offset(Point::default());
+                cx.notify();
+            },
+        ));
+        self.menu.keybinds_search = Some(search);
+    }
+
+    pub(super) fn open_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_menu(window, cx);
+        self.menu.page = Some(Page::Preferences);
+        self.menu.preferences_scroll.set_offset(Point::default());
+    }
+
+    pub(super) fn reload_gui_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Load both before replacing either, so invalid themes preserve the UI.
+        match Config::load().and_then(|config| {
+            let theme = config.theme()?;
+            Ok((config, theme))
+        }) {
+            Ok((config, theme)) => {
+                self.config = config;
+                self.theme = theme;
+                self.wheel = Default::default();
+                self.sent_size = None;
+                self.local_error = None;
+            }
+            Err(error) => self.local_error = Some(format!("Reload GUI config: {error}")),
+        }
+        self.dismiss_menu(window, cx);
     }
 
     pub(super) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -92,29 +136,13 @@ impl HerdrWindow {
 
     fn activate_menu(&mut self, item: &str, window: &mut Window, cx: &mut Context<Self>) {
         match item {
-            "settings" => self.menu.page = Some(Page::Preferences),
+            "settings" => self.open_preferences(window, cx),
             "keybinds" => self.open_keybinds(window, cx),
             "themes" => self.open_theme_picker(window, cx),
             "commands" => self.open_palette(false, window, cx),
             "workspaces" => self.open_palette(true, window, cx),
             "update ready" => self.menu.page = Some(Page::Update),
-            "reload GUI config" => {
-                // Load both before replacing either, so invalid themes preserve the UI.
-                match Config::load().and_then(|config| {
-                    let theme = config.theme()?;
-                    Ok((config, theme))
-                }) {
-                    Ok((config, theme)) => {
-                        self.config = config;
-                        self.theme = theme;
-                        self.wheel = Default::default();
-                        self.sent_size = None;
-                        self.local_error = None;
-                    }
-                    Err(error) => self.local_error = Some(format!("Reload GUI config: {error}")),
-                }
-                self.dismiss_menu(window, cx);
-            }
+            "reload GUI config" => self.reload_gui_config(window, cx),
             "reload daemon config" => {
                 if let (Some(handle), Some(snapshot)) = (&self.handle, &self.live.snapshot) {
                     self.local_error = handle
@@ -172,11 +200,17 @@ impl HerdrWindow {
                     .max_h((viewport.height - px(32.)).max(px(0.)))
             })
             .when(
-                !matches!(page, Page::Keybinds | Page::Themes | Page::Palette),
+                !matches!(
+                    page,
+                    Page::Keybinds | Page::Themes | Page::Palette | Page::Preferences
+                ),
                 |panel| panel.overflow_y_scroll().p(px(6.)),
             )
             .when(
-                matches!(page, Page::Keybinds | Page::Themes | Page::Palette),
+                matches!(
+                    page,
+                    Page::Keybinds | Page::Themes | Page::Palette | Page::Preferences
+                ),
                 |panel| {
                     panel
                         .flex()
@@ -226,29 +260,28 @@ impl HerdrWindow {
             panel = panel.child(self.render_palette(cx));
         } else if page == Page::ConfirmClose {
             panel = panel.child(self.render_close_confirmation(cx));
+        } else if page == Page::Preferences {
+            panel = panel.child(self.render_preferences(cx));
         } else {
-            let (title, rows) = match page {
-                Page::Preferences => ("Preferences (read-only)", vec![
-                    format!("Connection: {}", self.live.status),
-                    format!("Target: {:?}", self.target),
-                    format!("GUI config: {}", Config::path().map(|path| path.display().to_string()).unwrap_or_else(|error| format!("unavailable ({error})"))),
-                    format!("Theme: {}", self.config.theme),
-                    format!("Terminal font: {}, {} px", self.config.terminal.family, self.config.terminal.size),
-                    format!("Sidebar font: {}, {} px", self.config.sidebar.family, self.config.sidebar.size),
-                    format!("Tabs font: {}, {} px", self.config.tabs.family, self.config.tabs.size),
-                    format!("UI font: {}, {} px", font.family, font.size),
-                    "Edit the GUI config file to change theme and sidebar, tabs, terminal, or ui fonts (family and size), then choose reload GUI config. Invalid configuration leaves the current appearance unchanged.".into(),
-                    "Reload daemon config is separate and asks the connected daemon to reload its own configuration.".into(),
-                ]),
-                _ => {
-                    let snapshot = self.live.snapshot.as_ref();
-                    ("Update ready", vec![
-                        format!("Version: {}", snapshot.and_then(|s| s.update_available.as_deref()).unwrap_or("unavailable")),
+            let (title, rows) = {
+                let snapshot = self.live.snapshot.as_ref();
+                (
+                    "Update ready",
+                    vec![
+                        format!(
+                            "Version: {}",
+                            snapshot
+                                .and_then(|s| s.update_available.as_deref())
+                                .unwrap_or("unavailable")
+                        ),
                         "Suggested command (review and run yourself):".into(),
-                        snapshot.map(|s| s.update_install_command.clone()).filter(|s| !s.trim().is_empty()).unwrap_or("No install command provided by daemon.".into()),
+                        snapshot
+                            .map(|s| s.update_install_command.clone())
+                            .filter(|s| !s.trim().is_empty())
+                            .unwrap_or("No install command provided by daemon.".into()),
                         "Nothing is installed or executed by this panel.".into(),
-                    ])
-                }
+                    ],
+                )
             };
             panel = panel.child(div().p(px(8.)).child(title));
             for text in rows {
@@ -300,14 +333,32 @@ impl HerdrWindow {
                     this.theme_picker_key(event, window, cx);
                     return;
                 }
+                if this.menu.page == Some(Page::Keybinds)
+                    && (this
+                        .menu
+                        .keybinds_search
+                        .as_ref()
+                        .is_some_and(|search| search.read(cx).is_composing())
+                        || !matches!(
+                            event.keystroke.key.as_str(),
+                            "escape" | "up" | "down" | "pageup" | "pagedown"
+                        ))
+                {
+                    // Printable input and IME commands must reach the native text handler.
+                    return;
+                }
                 cx.stop_propagation();
                 window.prevent_default();
                 match event.keystroke.key.as_str() {
                     "escape" => this.dismiss_menu(window, cx),
                     "up" | "down" | "pageup" | "pagedown"
-                        if this.menu.page == Some(Page::Keybinds) =>
+                        if matches!(this.menu.page, Some(Page::Keybinds | Page::Preferences)) =>
                     {
-                        let scroll = &this.menu.keybinds_scroll;
+                        let scroll = if this.menu.page == Some(Page::Preferences) {
+                            &this.menu.preferences_scroll
+                        } else {
+                            &this.menu.keybinds_scroll
+                        };
                         let key = event.keystroke.key.as_str();
                         let distance = if key.starts_with("page") {
                             scroll.bounds().size.height * 0.8
@@ -345,6 +396,12 @@ impl HerdrWindow {
 
         let theme = &self.theme;
         let font = &self.config.ui;
+        let query = self
+            .menu
+            .keybinds_search
+            .as_ref()
+            .map(|search| search.read(cx).text())
+            .unwrap_or("");
         // Mix the theme's blue with foreground so accents remain readable on dark themes.
         let accent = rgb(theme.foreground).blend(rgba((theme.palette[4] << 8) | 0x70));
         let mut body = div()
@@ -390,7 +447,17 @@ impl HerdrWindow {
             };
             groups[group].1.push((info.shortcut, info.label));
         }
+        let total: usize = groups.iter().map(|(_, shortcuts)| shortcuts.len()).sum();
+        let mut count = 0;
         for (section, shortcuts) in groups {
+            let shortcuts: Vec<_> = shortcuts
+                .into_iter()
+                .filter(|(keys, description)| shortcut_matches(query, keys, description, section))
+                .collect();
+            if shortcuts.is_empty() {
+                continue;
+            }
+            count += shortcuts.len();
             body = body.child(
                 div()
                     .pt(px(12.))
@@ -448,6 +515,15 @@ impl HerdrWindow {
                         ),
                 );
             }
+        }
+        if count == 0 {
+            body = body.child(
+                div()
+                    .debug_selector(|| "keybinds-empty".into())
+                    .py(px(20.))
+                    .text_color(rgb(theme.muted))
+                    .child("No matching shortcuts. Try an action name or key combination."),
+            );
         }
         body = body.child(
             div()
@@ -514,6 +590,23 @@ impl HerdrWindow {
                             ),
                     ),
             )
+            .child(
+                div()
+                    .debug_selector(|| "keybinds-search-area".into())
+                    .flex_none()
+                    .px(px(16.))
+                    .py(px(8.))
+                    .when_some(self.menu.keybinds_search.clone(), |area, search| {
+                        area.child(search)
+                    })
+                    .child(
+                        div()
+                            .debug_selector(|| "keybinds-count".into())
+                            .pt(px(4.))
+                            .text_color(rgb(theme.muted))
+                            .child(format!("{count} of {total} shortcuts")),
+                    ),
+            )
             .child(body)
             .child(
                 div()
@@ -526,5 +619,56 @@ impl HerdrWindow {
                     .text_color(rgb(theme.muted))
                     .child("Esc to close  /  click outside to dismiss"),
             )
+    }
+}
+
+fn shortcut_matches(query: &str, keys: &str, description: &str, section: &str) -> bool {
+    let query = query.to_lowercase().replace(['-', '+'], " ");
+    if query
+        .split_whitespace()
+        .next()
+        .is_some_and(|token| matches!(token, "cmd" | "ctrl" | "alt" | "shift"))
+    {
+        // A key combination should match keycaps, not letters in an action's name.
+        return query
+            .split_whitespace()
+            .all(|token| keys.split('-').any(|key| key == token));
+    }
+    let text = format!("{keys} {description} {section}")
+        .to_lowercase()
+        .replace('-', " ");
+    query.split_whitespace().all(|token| text.contains(token))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn shortcut_search_matches_labels_keys_and_sections() {
+        for query in ["", "pane close", "CMD+W", "cmd-w", "workspaces"] {
+            assert!(super::shortcut_matches(
+                query,
+                "cmd-w",
+                "Close Pane",
+                "WORKSPACES & PANES"
+            ));
+        }
+        assert!(!super::shortcut_matches(
+            "zoom",
+            "cmd-w",
+            "Close Pane",
+            "WORKSPACES & PANES"
+        ));
+        assert!(super::shortcut_matches(
+            "cmd shift p",
+            "cmd-shift-p",
+            "Command Palette",
+            "APPLICATION"
+        ));
+        assert!(!super::shortcut_matches(
+            "cmd+p",
+            "cmd-d",
+            "Split Right",
+            "WORKSPACES & PANES"
+        ));
     }
 }

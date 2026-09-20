@@ -84,7 +84,12 @@ PNG and ICNS from the SVG with macOS Swift/CoreGraphics and `iconutil`.
 Click **? Keybinds** at the bottom right of the status bar, or press `Cmd-/`,
 to open the native shortcut reference. Press Escape, click outside the modal,
 or use its close button to return to the terminal. Terminal input is blocked
-while the modal is open.
+while the modal is open. Its search field filters by action, section, or key
+combination (for example `pane zoom` or `Cmd+Shift+P`).
+
+`Cmd-,` opens Preferences with Appearance, Fonts, Configuration, and Connection
+sections. The theme picker and GUI config reload are available directly from
+Preferences; font values remain read-only and are edited in the config file.
 
 Click **Theme** beside Keybinds to browse built-in themes and theme files discovered
 in the Herdr and Ghostty theme folders. Type to filter names (case-insensitive),
