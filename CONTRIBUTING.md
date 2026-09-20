@@ -8,8 +8,9 @@ human and agent contributors alike.
 
 ## Before You Start
 
-- **macOS only.** The client is built on GPUI and Metal. There is no Linux or
-  Windows build, and adding one is not a small patch.
+- **macOS for now; Linux support is planned.** The current client uses GPUI
+  with Metal on macOS. Linux is not supported yet, but is a planned target.
+  There is currently no Windows build.
 - **You need a running Herdr daemon.** This repository is a client of the
   daemon from [herdrdev/herdr](https://github.com/herdrdev/herdr); it never
   installs, starts, or upgrades one for you. Bugs in the daemon, its session
