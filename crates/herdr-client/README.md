@@ -49,8 +49,8 @@ ConnectOptions { surface_size: ClientSurfaceSize, cell_width_px: u32, cell_heigh
 `ClientHandle` is cloneable. Its exact methods are:
 
 ```text
-send_input(&self, boot_id: &str, pane_id: &str, events: Vec<ClientPaneInputEvent>) -> Result<(), SendError>
-send_popup_input(&self, boot_id: &str, terminal_id: &str, events: Vec<ClientPaneInputEvent>) -> Result<(), SendError>
+send_input(&self, boot_id: &str, pane_id: &str, events: impl IntoIterator<Item = ClientPaneInputEvent>) -> Result<(), SendError>
+send_popup_input(&self, boot_id: &str, terminal_id: &str, events: impl IntoIterator<Item = ClientPaneInputEvent>) -> Result<(), SendError>
 resize(&self, boot_id: &str, options: ConnectOptions) -> Result<(), SendError>
 set_focus(&self, boot_id: &str, focused: bool) -> Result<(), SendError>
 set_surface_active(&self, boot_id: &str, active: bool) -> Result<String, SendError>

@@ -18,7 +18,16 @@ pub(crate) struct TerminalPainter {
 }
 
 fn style(cell: &CellData) -> (u32, u16) {
-    (cell_colors(cell).0, cell.modifier & 5)
+    (cell_colors(cell).0, cell.modifier & (BOLD | ITALIC))
+}
+
+fn decoration_offsets(cell: &CellData) -> impl Iterator<Item = f32> + '_ {
+    [
+        (UNDERLINE, CELL_HEIGHT - 2.),
+        (STRIKETHROUGH, CELL_HEIGHT / 2.),
+    ]
+    .into_iter()
+    .filter_map(|(modifier, y)| (cell.modifier & modifier != 0).then_some(y))
 }
 
 fn background_spans(row: &[CellData]) -> impl Iterator<Item = (usize, usize, u32)> + '_ {
@@ -51,10 +60,10 @@ impl TerminalPainter {
         };
         for ((color, flags), lines) in &self.lines {
             let mut font = base.clone();
-            if flags & 1 != 0 {
+            if flags & BOLD != 0 {
                 font.weight = FontWeight::BOLD;
             }
-            if flags & 4 != 0 {
+            if flags & ITALIC != 0 {
                 font.style = FontStyle::Italic;
             }
             for (symbol, cached) in lines {
@@ -182,10 +191,10 @@ impl TerminalPainter {
                 line
             } else {
                 let mut font = font.clone();
-                if key.1 & 1 != 0 {
+                if key.1 & BOLD != 0 {
                     font.weight = FontWeight::BOLD;
                 }
-                if key.1 & 4 != 0 {
+                if key.1 & ITALIC != 0 {
                     font.style = FontStyle::Italic;
                 }
                 #[cfg(feature = "integration-test")]
@@ -225,19 +234,25 @@ impl TerminalPainter {
                 counts.glyphs += shaped.runs.iter().map(|r| r.glyphs.len()).sum::<usize>();
                 counts.paint_errors += usize::from(result.is_err());
             }
-            for (bit, y) in [(3, CELL_HEIGHT - 2.), (8, CELL_HEIGHT / 2.)] {
-                if cell.modifier & (1 << bit) != 0 {
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            position + point(px(0.), px(y)),
-                            size(px(cell_width), px(1.)),
-                        ),
-                        rgb(key.0),
-                    ));
-                    #[cfg(feature = "integration-test")]
-                    {
-                        counts.decorations += 1;
-                    }
+        }
+        // Decorations cover the grid, including spaces and wide-glyph continuation cells.
+        for (index, cell) in frame.cells.iter().enumerate() {
+            let position = origin
+                + point(
+                    px((index % usize::from(frame.width)) as f32 * cell_width),
+                    px((index / usize::from(frame.width)) as f32 * CELL_HEIGHT),
+                );
+            for y in decoration_offsets(cell) {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        position + point(px(0.), px(y)),
+                        size(px(cell_width), px(1.)),
+                    ),
+                    rgb(cell_colors(cell).0),
+                ));
+                #[cfg(feature = "integration-test")]
+                {
+                    counts.decorations += 1;
                 }
             }
         }
@@ -246,11 +261,7 @@ impl TerminalPainter {
             .as_ref()
             .filter(|c| c.visible && c.x < frame.width && c.y < frame.height)
         {
-            let position = origin
-                + point(
-                    px(cursor.x as f32 * cell_width),
-                    px(cursor.y as f32 * CELL_HEIGHT),
-                );
+            let position = origin + cursor_offset(cursor, cell_width);
             let (offset, dimensions) = match cursor.shape {
                 3 | 4 => (
                     point(px(0.), px(CELL_HEIGHT - 2.)),
@@ -295,6 +306,67 @@ mod tests {
             skip: false,
             hyperlink: None,
         }
+    }
+
+    #[test]
+    fn decorations_cover_spaces_empty_and_wide_continuation_cells() {
+        for (symbol, skip) in [("x", false), (" ", false), ("", false), ("", true)] {
+            let mut cell = CellData {
+                skip,
+                ..cell(symbol)
+            };
+            assert_eq!(decoration_offsets(&cell).count(), 0);
+            cell.modifier = UNDERLINE;
+            assert_eq!(decoration_offsets(&cell).collect::<Vec<_>>(), vec![18.]);
+            cell.modifier = STRIKETHROUGH;
+            assert_eq!(decoration_offsets(&cell).collect::<Vec<_>>(), vec![10.]);
+            cell.modifier = UNDERLINE | STRIKETHROUGH;
+            assert_eq!(
+                decoration_offsets(&cell).collect::<Vec<_>>(),
+                vec![18., 10.]
+            );
+        }
+    }
+
+    #[cfg(feature = "integration-test")]
+    #[gpui::test]
+    fn blank_cells_paint_decorations_without_shaping(cx: &mut TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, _| Empty);
+        cx.draw(Point::default(), size(px(800.), px(600.)), |_, _| {
+            canvas(
+                |_, _, _| (),
+                |bounds, _, window, cx| {
+                    let frame = FrameData {
+                        width: 3,
+                        height: 1,
+                        cells: [(" ", false), ("", false), ("", true)]
+                            .into_iter()
+                            .map(|(symbol, skip)| CellData {
+                                modifier: UNDERLINE | STRIKETHROUGH,
+                                skip,
+                                ..cell(symbol)
+                            })
+                            .collect(),
+                        cursor: None,
+                        hyperlinks: vec![],
+                        graphics: vec![],
+                    };
+                    let before = cx
+                        .default_global::<crate::performance::Counts>()
+                        .decorations;
+                    let mut painter = TerminalPainter::default();
+                    painter.paint_frame(&frame, bounds.origin, 8.5, &font("Menlo"), window, cx);
+                    assert_eq!(painter.entries, 0);
+                    assert_eq!(
+                        cx.default_global::<crate::performance::Counts>()
+                            .decorations
+                            - before,
+                        6
+                    );
+                },
+            )
+            .size_full()
+        });
     }
 
     #[test]

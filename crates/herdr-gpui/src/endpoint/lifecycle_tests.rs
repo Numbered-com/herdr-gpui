@@ -172,11 +172,12 @@ fn connected_endpoint(id: &str) -> (Endpoint, Server) {
     }
     wait_until(|| {
         endpoint.poll(Instant::now());
-        endpoint.handle.is_some() && endpoint.live.snapshot.is_some()
+        endpoint.connection.handle.is_some() && endpoint.live.snapshot.is_some()
     });
     assert!(endpoint.live.supports_surface);
     let frame = surface(endpoint.live.snapshot.as_ref().unwrap());
     endpoint
+        .connection
         .inbox
         .lock()
         .unwrap()
@@ -263,7 +264,9 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
                 );
                 let boot = view.live.snapshot.as_ref().unwrap().boot_id.clone();
                 // An ordered marker exposes any input that incorrectly escaped.
-                view.handle
+                view.endpoints[view.selected_endpoint]
+                    .connection
+                    .handle
                     .as_ref()
                     .unwrap()
                     .set_focus(&boot, false)
@@ -291,7 +294,11 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
             next.revision += 1;
             next.focused_pane_id = Some("new-pane".into());
             {
-                let mut state = view.inbox.lock().unwrap();
+                let mut state = view.endpoints[view.selected_endpoint]
+                    .connection
+                    .inbox
+                    .lock()
+                    .unwrap();
                 // A fresh frame alone must not open input before the ordered ack.
                 state.apply(ClientEvent::Snapshot(Arc::new(next.clone())));
                 state.apply(ClientEvent::Surface(surface(&next)));
@@ -299,7 +306,11 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
             view.poll_endpoints(cx);
             assert!(!view.input_ready());
             {
-                let mut state = view.inbox.lock().unwrap();
+                let mut state = view.endpoints[view.selected_endpoint]
+                    .connection
+                    .inbox
+                    .lock()
+                    .unwrap();
                 state.apply(ClientEvent::Response {
                     request_id: barrier["id"].as_str().unwrap().into(),
                     response: serde_json::json!({"result": {
@@ -315,7 +326,11 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
             );
             next.revision += 1;
             {
-                let mut state = view.inbox.lock().unwrap();
+                let mut state = view.endpoints[view.selected_endpoint]
+                    .connection
+                    .inbox
+                    .lock()
+                    .unwrap();
                 state.apply(ClientEvent::Snapshot(Arc::new(next.clone())));
                 state.apply(ClientEvent::Surface(surface(&next)));
             }
@@ -351,17 +366,17 @@ fn retiring_release_source_unblocks_destination_without_waiting_for_timeout(
         };
         // These already-connected test transports stand in for SSH profiles;
         // catalog reconciliation must not try opening actual SSH connections.
-        source.target = ConnectTarget::Ssh {
+        source.connection.target = ConnectTarget::Ssh {
             target: "source".into(),
             session: "default".into(),
         };
-        target.target = ConnectTarget::Ssh {
+        target.connection.target = ConnectTarget::Ssh {
             target: "target".into(),
             session: "default".into(),
         };
         target.initial_surface = false;
-        let drained = source.drained.clone();
-        let source_handle = source.handle.clone().unwrap();
+        let drained = source.connection.drained.clone();
+        let source_handle = source.connection.handle.clone().unwrap();
         view.update(cx, |view, cx| {
             view.endpoints.truncate(1);
             view.endpoints[0].detached = true;
@@ -443,7 +458,7 @@ fn retry_backoff_resets_only_after_sixty_seconds_of_healthy_connection() {
     endpoint.poll(now + Duration::from_secs(60));
     assert_eq!(endpoint.attempts, 0);
     assert_eq!(endpoint.retry_delay(), Duration::from_millis(500));
-    endpoint.handle.as_ref().unwrap().disconnect();
+    endpoint.connection.handle.as_ref().unwrap().disconnect();
     endpoint.poll(now + Duration::from_secs(61));
     assert_eq!(
         endpoint.retry_at,
@@ -460,7 +475,7 @@ fn brief_success_preserves_backoff_and_disconnect_restarts_stability_window() {
     endpoint.online_since = None;
     endpoint.poll(now);
     endpoint.poll(now + Duration::from_secs(59));
-    endpoint.handle.as_ref().unwrap().disconnect();
+    endpoint.connection.handle.as_ref().unwrap().disconnect();
     endpoint.poll(now + Duration::from_secs(59));
     assert_eq!(endpoint.attempts, 8);
     assert!(endpoint.online_since.is_none());

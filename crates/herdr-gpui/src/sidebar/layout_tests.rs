@@ -16,7 +16,7 @@ use herdr_client::protocol::*;
 #[cfg(test)]
 use herdr_client::{ConnectOptions, ConnectTarget};
 #[cfg(test)]
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Default)]
 struct TextProbes(std::collections::BTreeMap<String, (Bounds<Pixels>, String, Pixels)>);
@@ -324,8 +324,7 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         activation_deadline: None,
         pending_navigation: None,
         pending_releases: Vec::new(),
-        handle: None,
-        inbox: Arc::new(Mutex::new(LiveState::default())),
+        selected_generation: 0,
         live: {
             let mut live = LiveState::default();
             live.snapshot = Some(Arc::new(snapshot(40)));
@@ -333,7 +332,7 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         },
         focus: cx.focus_handle(),
         options: ConnectOptions::default(),
-        sent_size: None,
+        last_queued_options: None,
         active: false,
         sent_focus: None,
         bounds: Bounds::default(),

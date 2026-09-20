@@ -342,7 +342,7 @@ fn snapshot_surface_patch_navigation_input_resize_and_response() {
         .send_input(
             &s.boot_id,
             "w1:p1",
-            vec![ClientPaneInputEvent::TextCommit("hello".into())],
+            std::iter::once(ClientPaneInputEvent::TextCommit("hello".into())),
         )
         .unwrap();
     client
@@ -738,6 +738,65 @@ fn health_probes_quiet_hosts_and_any_complete_message_satisfies_probe() {
 }
 
 #[test]
+fn session_negotiates_remote_health_without_extending_snapshot_deadline() {
+    for (surface_active, remote) in [(true, false), (false, false), (true, true), (false, true)] {
+        for health_supported in [false, true] {
+            let mut session = Session::new(surface_active, remote);
+            let mut welcome: Value = serde_json::from_str(WELCOME).unwrap();
+            welcome["methods"] = json!(["client_shell.surface.set"]);
+            welcome["capabilities"] = json!(["surface_interest", "presentation_effects_fence"]);
+            if health_supported {
+                welcome["capabilities"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!("health_check"));
+            }
+            let mut events = Vec::new();
+            let result = session.handle_message(
+                ServerMessage::EndpointControl {
+                    kind: ENDPOINT_WELCOME_KIND.into(),
+                    data: welcome.to_string(),
+                },
+                |event| {
+                    events.push(event);
+                    Ok(())
+                },
+            );
+            if remote && !health_supported {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "SSH endpoint lacks health_check capability"
+                );
+                assert!(events.is_empty());
+                assert!(session.welcome.is_none());
+                continue;
+            }
+            result.unwrap();
+            assert!(matches!(events.as_slice(), [ClientEvent::Connected(_)]));
+            assert_eq!(session.health.is_some(), remote);
+            if let Some(health) = &mut session.health {
+                health.ping = Some(Instant::now());
+            }
+            session.started = Instant::now() - TIMEOUT - POLL;
+            session
+                .handle_message(
+                    ServerMessage::EndpointControl {
+                        kind: "endpoint.health.pong.v1".into(),
+                        data: String::new(),
+                    },
+                    |_| panic!("health controls must not emit UI events"),
+                )
+                .unwrap();
+            assert!(session.health.as_ref().is_none_or(|h| h.ping.is_none()));
+            assert_eq!(
+                session.check_timeouts().unwrap_err().to_string(),
+                "handshake/snapshot timed out"
+            );
+        }
+    }
+}
+
+#[test]
 fn ssh_health_uses_named_ping_and_ignores_pong_as_an_optional_control() {
     let (client, mut server, worker) = test_client_mode(false, true);
     server
@@ -850,4 +909,283 @@ fn response_boot_id_correlation_and_assembly_limits() {
             "{error}"
         );
     }
+}
+
+#[test]
+fn connect_options_equality_and_send_error_display() {
+    let options = ConnectOptions::default();
+    assert_eq!(options, ConnectOptions::default());
+    for changed in [
+        ConnectOptions {
+            surface_size: ClientSurfaceSize { cols: 81, rows: 24 },
+            ..options
+        },
+        ConnectOptions {
+            surface_size: ClientSurfaceSize { cols: 80, rows: 25 },
+            ..options
+        },
+        ConnectOptions {
+            cell_width_px: 8,
+            ..options
+        },
+        ConnectOptions {
+            cell_height_px: 16,
+            ..options
+        },
+    ] {
+        assert_ne!(options, changed);
+    }
+    assert_eq!(SendError::Full.to_string(), "client command queue is full");
+    assert_eq!(
+        SendError::Disconnected.to_string(),
+        "client is disconnected"
+    );
+    assert_eq!(
+        SendError::Invalid("snapshot boot ID required".into()).to_string(),
+        "invalid client command: snapshot boot ID required"
+    );
+}
+
+#[test]
+fn frame_reader_accepts_read_trait_objects_and_preserves_partial_state() {
+    struct Fragmented {
+        bytes: io::Cursor<Vec<u8>>,
+        pause: bool,
+        error: io::ErrorKind,
+    }
+    impl Read for Fragmented {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.pause = !self.pause;
+            if self.pause {
+                return Err(self.error.into());
+            }
+            let len = buf.len().min(1);
+            self.bytes.read(&mut buf[..len])
+        }
+    }
+    let expected = ServerMessage::TerminalBell { count: 300 };
+    let bytes = encode_message(&expected, MAX_FRAME_SIZE).unwrap();
+    for error in [
+        io::ErrorKind::WouldBlock,
+        io::ErrorKind::TimedOut,
+        io::ErrorKind::Interrupted,
+    ] {
+        let mut input = Fragmented {
+            bytes: io::Cursor::new(bytes.repeat(2)),
+            pause: false,
+            error,
+        };
+        let input: &mut dyn Read = &mut input;
+        let mut reader = FrameReader::new();
+        for _ in 0..2 {
+            for index in 0..bytes.len() {
+                assert!(reader.poll(input).unwrap().is_none());
+                let message = reader.poll(input).unwrap();
+                if index + 1 == bytes.len() {
+                    assert_eq!(message, Some(expected.clone()));
+                    assert!(reader.started.is_none());
+                    assert!(reader.bytes.is_empty());
+                    assert_eq!(reader.target, 4);
+                } else {
+                    assert!(message.is_none());
+                }
+            }
+        }
+        assert!(reader.poll(input).unwrap().is_none());
+        assert_eq!(
+            reader.poll(input).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+    }
+}
+
+fn ready_session() -> Session {
+    let mut session = Session::new(true, false);
+    let mut events = Vec::new();
+    for (kind, data) in [
+        (ENDPOINT_WELCOME_KIND, WELCOME),
+        (ENDPOINT_SNAPSHOT_KIND, SNAPSHOT),
+    ] {
+        session
+            .handle_message(
+                ServerMessage::EndpointControl {
+                    kind: kind.into(),
+                    data: data.into(),
+                },
+                |event| {
+                    events.push(event);
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
+    assert!(matches!(
+        events.as_slice(),
+        [ClientEvent::Connected(_), ClientEvent::Snapshot(_)]
+    ));
+    session
+}
+
+#[test]
+fn session_response_slot_correlates_chunks_and_clears_only_on_completion() {
+    let mut session = ready_session();
+    let chunk =
+        |id: &str, final_chunk, data: &[u8]| ServerMessage::ClientShellEndpointResponseChunk {
+            boot_id: "boot-v1".into(),
+            request_id: id.into(),
+            final_chunk,
+            data: data.into(),
+        };
+    let no_event = |_| -> io::Result<()> { panic!("unexpected event") };
+    assert_eq!(
+        session
+            .handle_message(chunk("one", true, b"{}"), no_event)
+            .unwrap_err()
+            .to_string(),
+        "unsolicited response"
+    );
+    session.pending = Some(Pending {
+        id: "one".into(),
+        bytes: Vec::new(),
+        started: Instant::now(),
+    });
+    session
+        .handle_message(chunk("one", false, br#"{"id":"one","result":"#), no_event)
+        .unwrap();
+    let partial = session.pending.as_ref().unwrap().bytes.clone();
+    assert_eq!(
+        session
+            .handle_message(chunk("other", true, b"null}"), no_event)
+            .unwrap_err()
+            .to_string(),
+        "unsolicited response"
+    );
+    assert_eq!(session.pending.as_ref().unwrap().bytes, partial);
+    let mut events = Vec::new();
+    session
+        .handle_message(chunk("one", true, b"null}"), |event| {
+            events.push(event);
+            Ok(())
+        })
+        .unwrap();
+    assert!(session.pending.is_none());
+    assert!(
+        matches!(events.as_slice(), [ClientEvent::Response { request_id, response }]
+        if request_id == "one" && *response == json!({"id": "one", "result": null}))
+    );
+    assert_eq!(
+        session
+            .handle_message(chunk("one", true, b"{}"), no_event)
+            .unwrap_err()
+            .to_string(),
+        "unsolicited response"
+    );
+}
+
+#[test]
+fn session_response_limit_counts_previous_chunks_and_allows_exact_limit() {
+    for overflow in [false, true] {
+        let mut session = ready_session();
+        let response = br#"{"id":"one"}"#;
+        session.pending = Some(Pending {
+            id: "one".into(),
+            bytes: vec![b' '; MAX_RESPONSE_BYTES - response.len()],
+            started: Instant::now(),
+        });
+        let mut data = response.to_vec();
+        if overflow {
+            data.push(b' ');
+        }
+        let mut events = Vec::new();
+        let result = session.handle_message(
+            ServerMessage::ClientShellEndpointResponseChunk {
+                boot_id: "boot-v1".into(),
+                request_id: "one".into(),
+                final_chunk: true,
+                data,
+            },
+            |event| {
+                events.push(event);
+                Ok(())
+            },
+        );
+        if overflow {
+            assert_eq!(result.unwrap_err().to_string(), "response limit exceeded");
+            assert!(events.is_empty());
+            assert_eq!(
+                session.pending.unwrap().bytes.len(),
+                MAX_RESPONSE_BYTES - response.len()
+            );
+        } else {
+            result.unwrap();
+            assert!(session.pending.is_none());
+            assert!(matches!(events.as_slice(), [ClientEvent::Response { .. }]));
+        }
+    }
+}
+
+#[test]
+fn session_deadlines_and_snapshot_revision_fence() {
+    let mut session = Session::new(true, false);
+    session.started = Instant::now() - TIMEOUT - POLL;
+    assert_eq!(
+        session.check_timeouts().unwrap_err().to_string(),
+        "handshake/snapshot timed out"
+    );
+    session
+        .handle_message(
+            ServerMessage::EndpointControl {
+                kind: ENDPOINT_WELCOME_KIND.into(),
+                data: WELCOME.into(),
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert!(session.check_timeouts().is_err()); // Welcome alone is not ready.
+
+    let mut session = ready_session();
+    session.started = Instant::now() - TIMEOUT - POLL;
+    session.check_timeouts().unwrap();
+    session.pending = Some(Pending {
+        id: "one".into(),
+        bytes: Vec::new(),
+        started: Instant::now() - COMMAND_TIMEOUT - POLL,
+    });
+    assert_eq!(
+        session.check_timeouts().unwrap_err().to_string(),
+        "endpoint request timed out; not replayed"
+    );
+
+    let mut snapshot: Value = serde_json::from_str(SNAPSHOT).unwrap();
+    snapshot["revision"] = json!(6);
+    let error = session
+        .handle_message(
+            ServerMessage::EndpointControl {
+                kind: ENDPOINT_SNAPSHOT_KIND.into(),
+                data: snapshot.to_string(),
+            },
+            |_| panic!("regressed snapshot must not be published"),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("snapshot revision regressed"));
+    assert_eq!(session.snapshot.unwrap().revision, 7);
+}
+
+#[test]
+fn cancellation_does_not_flush_commands_behind_pending_request() {
+    let (client, mut server, worker) = test_client();
+    handshake(&mut server);
+    event(&client);
+    event(&client);
+    let first = client.handle.focus_pane("boot-v1", "w1:p1").unwrap();
+    client.handle.focus_pane("boot-v1", "w1:p2").unwrap();
+    client.handle.set_focus("boot-v1", false).unwrap();
+    assert!(
+        matches!(receive(&mut server), ClientMessage::ClientShellEndpointRequest { request, .. }
+        if serde_json::from_str::<Value>(&request).unwrap()["id"] == first)
+    );
+    client.handle.disconnect();
+    worker.join().unwrap().unwrap();
+    assert_eq!(server.read(&mut [0]).unwrap(), 0);
+    assert!(client.events.try_recv().is_err());
 }

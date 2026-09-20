@@ -1,10 +1,11 @@
 //! GUI-owned endpoint catalog and connection lifetimes. Each attempt has its own
 //! inbox, so retired workers can never publish into a replacement connection.
-use super::{HerdrWindow, LiveState, WheelAccumulator};
-use gpui::Context;
-use herdr_client::{
-    ClientHandle, ConnectOptions, ConnectTarget, SavedHost, connect_with_surface_active,
+use super::{
+    HerdrWindow, LiveState, NavigationTarget, WheelAccumulator, connection::ConnectionBridge,
+    state::ConnectionStatus,
 };
+use gpui::Context;
+use herdr_client::{ClientHandle, ConnectOptions, ConnectTarget, SavedHost};
 use std::{
     collections::HashSet,
     sync::{
@@ -49,19 +50,15 @@ impl Release {
 pub(super) struct Endpoint {
     pub id: String,
     pub label: String,
-    pub target: ConnectTarget,
+    pub connection: ConnectionBridge,
     pub enabled: bool,
     pub collapsed: bool,
     pub collapsed_repos: HashSet<String>,
-    pub handle: Option<ClientHandle>,
-    pub inbox: Arc<Mutex<LiveState>>,
     pub live: LiveState,
     pub generation: u64,
-    pending: Option<mpsc::Receiver<Result<ClientHandle, String>>>,
     retry_at: Instant,
     attempts: u32,
     online_since: Option<Instant>,
-    drained: Arc<AtomicBool>,
     detached: bool,
     initial_surface: bool,
 }
@@ -74,35 +71,26 @@ impl Endpoint {
         Self {
             id,
             label,
-            target,
+            connection: ConnectionBridge::new(target),
             enabled,
             collapsed: false,
             collapsed_repos: HashSet::new(),
-            handle: None,
-            inbox: Arc::new(Mutex::new(LiveState::default())),
             live: LiveState::default(),
             generation: 0,
-            pending: None,
             retry_at: Instant::now(),
             attempts: 0,
             online_since: None,
-            drained: Arc::new(AtomicBool::new(true)),
             detached: false,
             initial_surface: false,
         }
     }
 
     fn stop(&mut self) {
-        if let Some(handle) = self.handle.take() {
-            handle.disconnect();
-        }
-        self.pending = None;
+        self.connection.detach(false);
         self.initial_surface = false;
         self.online_since = None;
-        self.drained = Arc::new(AtomicBool::new(true));
         self.generation += 1;
-        self.inbox = Arc::new(Mutex::new(LiveState::default()));
-        self.live = LiveState::default();
+        self.live = self.connection.take_update().unwrap_or_default();
     }
 
     fn connect(&mut self, options: ConnectOptions, active: bool) {
@@ -110,80 +98,31 @@ impl Endpoint {
         self.detached = false;
         self.initial_surface = active;
         self.attempts = self.attempts.saturating_add(1);
-        self.drained = Arc::new(AtomicBool::new(false));
-        let drained = self.drained.clone();
-        let (tx, rx) = mpsc::sync_channel(1);
-        self.pending = Some(rx);
-        let target = self.target.clone();
-        let inbox = self.inbox.clone();
-        let result = std::thread::Builder::new()
-            .name("herdr-gui-endpoint".into())
-            .spawn(move || {
-                let client = match connect_with_surface_active(target, options, active) {
-                    Ok(client) => client,
-                    Err(error) => {
-                        drained.store(true, Ordering::Release);
-                        let _ = tx.send(Err(error.to_string()));
-                        return;
-                    }
-                };
-                if tx.send(Ok(client.handle.clone())).is_err() {
-                    client.handle.disconnect();
-                }
-                drop(client.handle);
-                while let Ok(event) = client.events.recv() {
-                    if let Ok(mut state) = inbox.lock() {
-                        state.apply(event);
-                    }
-                }
-                drained.store(true, Ordering::Release);
-            });
-        if let Err(error) = result {
-            self.drained.store(true, Ordering::Release);
-            self.pending = None;
-            self.live.status = "Disconnected".into();
-            self.live.error = Some(error.to_string());
-            if let Ok(mut state) = self.inbox.lock() {
-                *state = self.live.clone();
-            }
-        }
-        self.retry_at = Instant::now() + Duration::from_secs(30);
+        self.connection.reconnect(options, false, active);
+        self.live = self.connection.take_update().unwrap_or_default();
+        self.retry_at = Instant::now() + self.retry_delay();
     }
 
     fn poll(&mut self, now: Instant) -> bool {
         let mut changed = false;
-        if let Some(result) = self.pending.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            self.pending = None;
-            match result {
-                Ok(handle) => self.handle = Some(handle),
-                Err(error) => {
-                    self.live.status = "Disconnected".into();
-                    self.live.error = Some(error);
-                    if let Ok(mut state) = self.inbox.lock() {
-                        *state = self.live.clone();
-                    }
-                    self.retry_at = now + self.retry_delay();
-                }
-            }
-            changed = true;
-        }
-        if let Ok(mut state) = self.inbox.try_lock()
-            && state.dirty
-        {
-            state.dirty = false;
-            self.live = state.clone();
+        if let Some(state) = self.connection.take_update() {
+            self.live = state;
             changed = true;
         }
         if self
+            .connection
             .handle
             .as_ref()
             .is_some_and(ClientHandle::is_disconnected)
         {
-            self.handle = None;
+            self.connection.handle = None;
             self.retry_at = now + self.retry_delay();
             changed = true;
         }
-        if self.handle.is_some() && self.live.connected && self.live.snapshot.is_some() {
+        if self.connection.handle.is_some()
+            && self.live.status.is_connected()
+            && self.live.snapshot.is_some()
+        {
             let since = self.online_since.get_or_insert(now);
             if now.duration_since(*since) >= STABLE_CONNECTION_PERIOD {
                 self.attempts = 0;
@@ -203,7 +142,7 @@ impl Endpoint {
             "disabled"
         } else if self.detached {
             "detached"
-        } else if self.live.connected {
+        } else if self.live.status.is_connected() {
             "online"
         } else if self.live.error.is_some() {
             "reconnecting"
@@ -356,7 +295,10 @@ impl HerdrWindow {
         self.active
             && self.selection_epoch == epoch
             && self.endpoints[self.selected_endpoint].generation == generation
-            && Arc::ptr_eq(&self.inbox, inbox)
+            && Arc::ptr_eq(
+                &self.endpoints[self.selected_endpoint].connection.inbox,
+                inbox,
+            )
     }
 
     pub(super) fn reconnect(&mut self) {
@@ -373,8 +315,8 @@ impl HerdrWindow {
         let endpoint = &mut self.endpoints[self.selected_endpoint];
         endpoint.stop();
         endpoint.detached = true;
-        endpoint.live.status = "Detached (daemon still running)".into();
-        if let Ok(mut state) = endpoint.inbox.lock() {
+        endpoint.live.status = ConnectionStatus::Detached;
+        if let Ok(mut state) = endpoint.connection.inbox.lock() {
             *state = endpoint.live.clone();
         }
         self.reset_selected();
@@ -383,15 +325,14 @@ impl HerdrWindow {
     fn reset_selected(&mut self) {
         self.selection_epoch += 1;
         let endpoint = &self.endpoints[self.selected_endpoint];
-        self.handle = endpoint.handle.clone();
-        self.inbox = endpoint.inbox.clone();
+        self.selected_generation = endpoint.generation;
         self.live = endpoint.live.clone();
         if !endpoint.initial_surface {
             self.live.surface = None;
         }
         self.local_error = None;
         self.marked.clear();
-        self.sent_size = None;
+        self.last_queued_options = None;
         self.sent_focus = None;
         self.wheel = WheelAccumulator::default();
         self.activation_deadline = (self.selected_endpoint != 0 && !endpoint.detached)
@@ -419,7 +360,10 @@ impl HerdrWindow {
             return true;
         }
         if index != 0
-            && self.endpoints[self.selected_endpoint].live.connected
+            && self.endpoints[self.selected_endpoint]
+                .live
+                .status
+                .is_connected()
             && !self.endpoints[self.selected_endpoint].live.supports_surface
         {
             self.local_error = Some("Current endpoint does not support surface switching".into());
@@ -443,17 +387,18 @@ impl HerdrWindow {
         // A handshake started with an active surface cannot be demoted without
         // its boot ID. Retire that attempt rather than let it finish in background.
         if endpoint.initial_surface
-            && (endpoint.handle.is_none() || endpoint.live.snapshot.is_none())
+            && (endpoint.connection.handle.is_none() || endpoint.live.snapshot.is_none())
         {
             endpoint.stop();
             endpoint.retry_at = Instant::now();
             return;
         }
-        if let Ok(mut state) = endpoint.inbox.lock() {
+        if let Ok(mut state) = endpoint.connection.inbox.lock() {
             state.set_outer_focus(false);
             state.surface = None;
             if endpoint.initial_surface
-                && let (Some(handle), Some(snapshot)) = (&endpoint.handle, &endpoint.live.snapshot)
+                && let (Some(handle), Some(snapshot)) =
+                    (&endpoint.connection.handle, &endpoint.live.snapshot)
             {
                 // Focus loss must precede deactivation on older servers.
                 let result = handle
@@ -470,8 +415,8 @@ impl HerdrWindow {
                             active: false,
                         });
                         self.pending_releases.push(Release {
-                            inbox: endpoint.inbox.clone(),
-                            drained: endpoint.drained.clone(),
+                            inbox: endpoint.connection.inbox.clone(),
+                            drained: endpoint.connection.drained.clone(),
                             request,
                             boot: snapshot.boot_id.clone(),
                         });
@@ -487,22 +432,24 @@ impl HerdrWindow {
     pub(super) fn navigate_endpoint(
         &mut self,
         endpoint: &str,
-        kind: &str,
-        id: &str,
+        target: NavigationTarget<&str>,
         cx: &mut Context<Self>,
     ) {
         if !self.select_endpoint(endpoint, cx) {
             return;
         }
         if self.input_ready() {
-            self.navigate(kind, id, cx);
+            self.navigate(target, cx);
         } else {
-            self.pending_navigation = Some((kind.to_owned(), id.to_owned()));
+            self.pending_navigation = Some(target.to_owned());
         }
     }
 
     pub(super) fn input_ready(&self) -> bool {
-        self.handle.is_some()
+        self.endpoints[self.selected_endpoint]
+            .connection
+            .handle
+            .is_some()
             && self.endpoints[self.selected_endpoint].surface_requested()
             && self.pending_releases.is_empty()
             && self.live.surface_ready()
@@ -534,8 +481,7 @@ impl HerdrWindow {
             changed |= endpoint.poll(Instant::now());
             if endpoint.enabled
                 && !endpoint.detached
-                && endpoint.handle.is_none()
-                && endpoint.pending.is_none()
+                && endpoint.connection.handle.is_none()
                 && Instant::now() >= endpoint.retry_at
             {
                 endpoint.connect(self.options, index == 0 && self.selected_endpoint == 0);
@@ -544,19 +490,22 @@ impl HerdrWindow {
         }
         self.restore_selection(cx);
         let endpoint = &mut self.endpoints[self.selected_endpoint];
-        if !Arc::ptr_eq(&self.inbox, &endpoint.inbox) {
+        if self.selected_generation != endpoint.generation {
             self.reset_selected();
         }
         let endpoint = &mut self.endpoints[self.selected_endpoint];
-        self.handle = endpoint.handle.clone();
         if changed {
             self.live = endpoint.live.clone();
+            if !self.live.status.is_connected() {
+                self.local_error = None;
+            }
         }
         self.pending_releases.retain(|release| !release.resolved());
         if !endpoint.initial_surface
             && self.pending_releases.is_empty()
-            && let (Some(handle), Some(snapshot)) = (&endpoint.handle, &endpoint.live.snapshot)
-            && let Ok(mut state) = endpoint.inbox.try_lock()
+            && let (Some(handle), Some(snapshot)) =
+                (&endpoint.connection.handle, &endpoint.live.snapshot)
+            && let Ok(mut state) = endpoint.connection.inbox.try_lock()
         {
             let result = handle
                 .resize(&snapshot.boot_id, self.options)
@@ -576,7 +525,7 @@ impl HerdrWindow {
                     endpoint.initial_surface = true;
                     self.live = state.clone();
                     self.activation_deadline = Some(Instant::now() + ACTIVATION_TIMEOUT);
-                    self.sent_size = Some(self.options.surface_size);
+                    self.last_queued_options = Some(self.options);
                     self.sent_focus = None;
                 }
                 Err(error) => {
@@ -588,14 +537,14 @@ impl HerdrWindow {
         }
         if self.input_ready() {
             self.activation_deadline = None;
-            if let Some((kind, id)) = self.pending_navigation.take() {
-                self.navigate(&kind, &id, cx);
+            if let Some(target) = self.pending_navigation.take() {
+                self.navigate(target.as_ref(), cx);
             }
         } else if self
             .activation_deadline
             .is_some_and(|deadline| Instant::now() >= deadline)
             || self.live.activation.as_ref().is_some_and(|a| a.failed)
-            || (self.selected_endpoint != 0 && self.live.status == "Disconnected")
+            || (self.selected_endpoint != 0 && self.live.status == ConnectionStatus::Disconnected)
         {
             let mut error = format!(
                 "{}: surface activation failed or timed out",
@@ -629,8 +578,8 @@ impl HerdrWindow {
         if self.endpoints.iter().any(|endpoint| {
             endpoint.id == id
                 && endpoint.enabled
-                && endpoint.handle.is_some()
-                && endpoint.live.connected
+                && endpoint.connection.handle.is_some()
+                && endpoint.live.status.is_connected()
                 && endpoint.live.snapshot.is_some()
         }) {
             // One handoff attempt: activation failure may fall back to Local,
@@ -647,7 +596,7 @@ impl HerdrWindow {
             && !hosts.iter().any(|host| {
                 format!("ssh:{}", host.id) == selected_id
                     && host.enabled
-                    && same_target(&selected.target, host)
+                    && same_target(&selected.connection.target, host)
             });
         if selected_retired {
             self.switch_endpoint(LOCAL, cx);
@@ -670,10 +619,11 @@ impl HerdrWindow {
                     host.enabled,
                 )
             };
-            if endpoint.enabled != host.enabled || !same_target(&endpoint.target, &host) {
+            if endpoint.enabled != host.enabled || !same_target(&endpoint.connection.target, &host)
+            {
                 endpoint.stop();
                 endpoint.attempts = 0;
-                endpoint.target = ConnectTarget::Ssh {
+                endpoint.connection.target = ConnectTarget::Ssh {
                     target: host.target,
                     session: host.session,
                 };
@@ -720,7 +670,7 @@ mod tests {
     #[test]
     fn retired_generation_cannot_publish_into_replacement() {
         let mut endpoint = Endpoint::new(LOCAL.into(), "Local".into(), ConnectTarget::Local, true);
-        let old = endpoint.inbox.clone();
+        let old = endpoint.connection.inbox.clone();
         let generation = endpoint.generation;
         endpoint.stop();
         assert!(endpoint.generation > generation);
@@ -729,7 +679,7 @@ mod tests {
         )));
         endpoint.poll(Instant::now());
         assert!(endpoint.live.snapshot.is_none());
-        assert!(!Arc::ptr_eq(&old, &endpoint.inbox));
+        assert!(!Arc::ptr_eq(&old, &endpoint.connection.inbox));
     }
 
     #[test]
@@ -872,11 +822,11 @@ mod tests {
                 .collapsed_repos
                 .insert("/same/repo".into());
             view.endpoints[1].collapsed = true;
-            let inbox = view.endpoints[1].inbox.clone();
+            let inbox = view.endpoints[1].connection.inbox.clone();
             let mut renamed = host("b", true);
             renamed.label = "renamed".into();
             view.reconcile_catalog(vec![renamed.clone(), host("a", true)], cx);
-            assert!(Arc::ptr_eq(&inbox, &view.endpoints[1].inbox));
+            assert!(Arc::ptr_eq(&inbox, &view.endpoints[1].connection.inbox));
             assert_eq!(view.endpoints[1].label, "renamed");
             assert!(view.endpoints[1].collapsed);
             assert!(view.endpoints[2].collapsed_repos.is_empty());
@@ -886,7 +836,7 @@ mod tests {
             view.reconcile_catalog(vec![host("a", true), renamed], cx);
             assert_eq!(view.selected_endpoint, 0);
             assert!(view.selection_epoch > epoch);
-            assert!(!Arc::ptr_eq(&inbox, &view.endpoints[2].inbox));
+            assert!(!Arc::ptr_eq(&inbox, &view.endpoints[2].connection.inbox));
             view.select_endpoint("ssh:a", cx);
             view.reconcile_catalog(vec![], cx);
             assert_eq!(view.selected_endpoint, 0);
@@ -900,10 +850,10 @@ mod tests {
         view.update(cx, |view, cx| {
             view.reconcile_catalog(vec![host("remote", true)], cx);
             view.endpoints[0].initial_surface = true;
-            let inbox = view.endpoints[0].inbox.clone();
+            let inbox = view.endpoints[0].connection.inbox.clone();
             assert!(view.select_endpoint("ssh:remote", cx));
             assert!(!view.endpoints[0].initial_surface);
-            assert!(!Arc::ptr_eq(&inbox, &view.endpoints[0].inbox));
+            assert!(!Arc::ptr_eq(&inbox, &view.endpoints[0].connection.inbox));
             assert!(view.pending_releases.is_empty());
         });
     }
@@ -913,7 +863,10 @@ mod tests {
         let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
         view.update(cx, |view, cx| {
             view.active = true;
-            let painted = view.inbox.clone();
+            let painted = view.endpoints[view.selected_endpoint]
+                .connection
+                .inbox
+                .clone();
             let epoch = view.selection_epoch;
             let generation = view.endpoints[0].generation;
             assert!(view.owns_paint(epoch, generation, &painted));
@@ -924,7 +877,10 @@ mod tests {
             view.select_endpoint("ssh:remote", cx);
             assert!(!view.owns_paint(epoch, generation, &painted));
             view.pending_releases.push(Release {
-                inbox: view.inbox.clone(),
+                inbox: view.endpoints[view.selected_endpoint]
+                    .connection
+                    .inbox
+                    .clone(),
                 drained: Arc::new(AtomicBool::new(false)),
                 request: "never-acked".into(),
                 boot: "boot".into(),
@@ -936,9 +892,15 @@ mod tests {
             assert!(view.pending_releases.is_empty());
             assert!(view.local_error.as_ref().unwrap().contains("timed out"));
             view.select_endpoint("ssh:remote", cx);
-            let remote = view.inbox.clone();
+            let remote = view.endpoints[view.selected_endpoint]
+                .connection
+                .inbox
+                .clone();
             view.select_endpoint(LOCAL, cx);
-            assert!(!Arc::ptr_eq(&remote, &view.inbox));
+            assert!(!Arc::ptr_eq(
+                &remote,
+                &view.endpoints[view.selected_endpoint].connection.inbox
+            ));
             assert!(view.pending_navigation.is_none());
         });
     }

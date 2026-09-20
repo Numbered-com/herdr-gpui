@@ -44,7 +44,7 @@ impl HerdrWindow {
 
     fn menu_items(&self) -> Vec<&'static str> {
         let mut items = vec!["settings", "keybinds"];
-        if self.live.connected {
+        if self.live.status.is_connected() {
             items.push("reload config");
         }
         if self
@@ -55,11 +55,17 @@ impl HerdrWindow {
         {
             items.push("update ready");
         }
-        items.push(if self.handle.is_some() {
-            "detach"
-        } else {
-            "reconnect"
-        });
+        items.push(
+            if self.endpoints[self.selected_endpoint]
+                .connection
+                .handle
+                .is_some()
+            {
+                "detach"
+            } else {
+                "reconnect"
+            },
+        );
         items
     }
 
@@ -69,7 +75,10 @@ impl HerdrWindow {
             "keybinds" => self.menu.page = Some(Page::Keybinds),
             "update ready" => self.menu.page = Some(Page::Update),
             "reload config" => {
-                if let (Some(handle), Some(snapshot)) = (&self.handle, &self.live.snapshot) {
+                if let (Some(handle), Some(snapshot)) = (
+                    &self.endpoints[self.selected_endpoint].connection.handle,
+                    &self.live.snapshot,
+                ) {
                     self.local_error = handle
                         .request(
                             &snapshot.boot_id,
@@ -142,7 +151,7 @@ impl HerdrWindow {
             let (title, rows) = match page {
                 Page::Preferences => ("Preferences (read-only)", vec![
                     format!("Connection: {}", self.live.status),
-                    format!("Target: {:?}", self.endpoints[self.selected_endpoint].target),
+                    format!("Target: {:?}", self.endpoints[self.selected_endpoint].connection.target),
                     "Terminal font: Menlo, 14 px (default)".into(),
                     "Sidebar font: Menlo, 12 px (default)".into(),
                     "Daemon configuration editing is not exposed by this native client. No configuration path is assumed.".into(),

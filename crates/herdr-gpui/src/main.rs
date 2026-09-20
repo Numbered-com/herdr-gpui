@@ -1,6 +1,8 @@
 // objc 0.2's selectors expand a legacy cargo-clippy cfg in the native test adapter.
 #![cfg_attr(feature = "integration-test", allow(unexpected_cfgs))]
 mod app_icon;
+mod cli;
+mod connection;
 mod controls;
 mod endpoint;
 mod input;
@@ -14,14 +16,14 @@ mod state;
 mod terminal;
 mod terminal_painter;
 
+use connection::ConnectionBridge;
 use controls::Command;
 use gpui::{prelude::*, *};
-use herdr_client::{ClientHandle, ConnectOptions, ConnectTarget, protocol::*};
+use herdr_client::{ConnectOptions, ConnectTarget, protocol::*};
 use state::LiveState;
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+#[cfg(feature = "integration-test")]
+use std::sync::Arc;
+use std::time::Duration;
 use terminal::*;
 
 actions!(
@@ -38,20 +40,46 @@ actions!(
     ]
 );
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum NavigationTarget<T> {
+    Workspace(T),
+    Tab(T),
+    Pane(T),
+}
+
+type OwnedNavigationTarget = NavigationTarget<String>;
+
+impl<T: AsRef<str>> NavigationTarget<T> {
+    fn as_ref(&self) -> NavigationTarget<&str> {
+        match self {
+            Self::Workspace(id) => NavigationTarget::Workspace(id.as_ref()),
+            Self::Tab(id) => NavigationTarget::Tab(id.as_ref()),
+            Self::Pane(id) => NavigationTarget::Pane(id.as_ref()),
+        }
+    }
+
+    fn to_owned(&self) -> OwnedNavigationTarget {
+        match self.as_ref() {
+            NavigationTarget::Workspace(id) => NavigationTarget::Workspace(id.to_owned()),
+            NavigationTarget::Tab(id) => NavigationTarget::Tab(id.to_owned()),
+            NavigationTarget::Pane(id) => NavigationTarget::Pane(id.to_owned()),
+        }
+    }
+}
+
 struct HerdrWindow {
     endpoints: Vec<endpoint::Endpoint>,
     selected_endpoint: usize,
     selection_epoch: u64,
     catalog: endpoint::Catalog,
     activation_deadline: Option<std::time::Instant>,
-    pending_navigation: Option<(String, String)>,
+    pending_navigation: Option<OwnedNavigationTarget>,
     pending_releases: Vec<endpoint::Release>,
-    handle: Option<ClientHandle>,
-    inbox: Arc<Mutex<LiveState>>,
+    selected_generation: u64,
     live: LiveState,
     focus: FocusHandle,
     options: ConnectOptions,
-    sent_size: Option<ClientSurfaceSize>,
+    last_queued_options: Option<ConnectOptions>,
     active: bool,
     sent_focus: Option<bool>,
     bounds: Bounds<Pixels>,
@@ -122,12 +150,11 @@ impl HerdrWindow {
             activation_deadline: None,
             pending_navigation: None,
             pending_releases: Vec::new(),
-            handle: None,
-            inbox: Arc::new(Mutex::new(LiveState::default())),
+            selected_generation: 0,
             live: LiveState::default(),
             focus,
             options: ConnectOptions::default(),
-            sent_size: None,
+            last_queued_options: None,
             active: window.is_window_active(),
             sent_focus: None,
             bounds: Bounds::default(),
@@ -160,12 +187,15 @@ impl HerdrWindow {
     }
 
     fn resize(&mut self) {
-        if self.sent_size == Some(self.options.surface_size) {
+        if self.last_queued_options == Some(self.options) {
             return;
         }
-        if let (Some(handle), Some(snapshot)) = (&self.handle, &self.live.snapshot) {
+        if let (Some(handle), Some(snapshot)) = (
+            &self.endpoints[self.selected_endpoint].connection.handle,
+            &self.live.snapshot,
+        ) {
             match handle.resize(&snapshot.boot_id, self.options) {
-                Ok(()) => self.sent_size = Some(self.options.surface_size),
+                Ok(()) => self.last_queued_options = Some(self.options),
                 Err(error) => self.local_error = Some(format!("Resize: {error}")),
             }
         }
@@ -174,14 +204,20 @@ impl HerdrWindow {
     fn report_focus(&mut self) {
         let focused = self.active && self.endpoints[self.selected_endpoint].surface_requested();
         // Update the authoritative event inbox, not just the rendered clone.
-        if let Ok(mut state) = self.inbox.try_lock() {
+        if let Ok(mut state) = self.endpoints[self.selected_endpoint]
+            .connection
+            .inbox
+            .try_lock()
+        {
             state.set_outer_focus(self.active && self.input_ready());
         }
         if self.sent_focus == Some(focused) {
             return;
         }
-        if let (Some(handle), Some(snapshot)) = (&self.handle, &self.live.snapshot)
-            && handle.set_focus(&snapshot.boot_id, focused).is_ok()
+        if let (Some(handle), Some(snapshot)) = (
+            &self.endpoints[self.selected_endpoint].connection.handle,
+            &self.live.snapshot,
+        ) && handle.set_focus(&snapshot.boot_id, focused).is_ok()
         {
             self.sent_focus = Some(focused);
         }
@@ -191,33 +227,40 @@ impl HerdrWindow {
         if self.menu.page.is_some() || !self.input_ready() {
             return;
         }
-        if let (Some(handle), Some(snapshot), Some(surface)) =
-            (&self.handle, &self.live.snapshot, &self.live.surface)
-        {
-            let result = if let Some(popup) = &surface.popup {
-                handle.send_popup_input(&snapshot.boot_id, &popup.terminal_id, vec![event])
+        if let (Some(handle), Some(snapshot), Some(surface)) = (
+            &self.endpoints[self.selected_endpoint].connection.handle,
+            &self.live.snapshot,
+            &self.live.surface,
+        ) {
+            let target = if let Some(popup) = &surface.popup {
+                InputTarget::Popup(popup.terminal_id.clone())
             } else if let Some(pane) = &snapshot.focused_pane_id {
-                handle.send_input(&snapshot.boot_id, pane, vec![event])
+                InputTarget::Pane(pane.clone())
             } else {
                 return;
             };
-            if let Err(error) = result {
+            if let Err(error) =
+                ConnectionBridge::send_input(handle, &snapshot.boot_id, &target, event)
+            {
                 self.local_error = Some(format!("Input not sent: {error}"));
                 cx.notify();
             }
         }
     }
 
-    fn navigate(&mut self, kind: &str, id: &str, cx: &mut Context<Self>) {
+    fn navigate(&mut self, target: NavigationTarget<&str>, cx: &mut Context<Self>) {
         if !self.input_ready() {
             return;
         }
-        let (method, params) = match kind {
-            "workspace" => ("workspace.focus", serde_json::json!({"workspace_id": id})),
-            "tab" => ("tab.focus", serde_json::json!({"tab_id": id})),
-            _ => ("pane.focus", serde_json::json!({"pane_id": id})),
-        };
-        self.request_focus_change(method, params, Some((kind.into(), id.into())));
+        self.request_focus_change(
+            "Navigate",
+            Some(target.to_owned()),
+            |handle, boot| match target {
+                NavigationTarget::Workspace(id) => handle.focus_workspace(boot, id),
+                NavigationTarget::Tab(id) => handle.focus_tab(boot, id),
+                NavigationTarget::Pane(id) => handle.focus_pane(boot, id),
+            },
+        );
         self.marked.clear();
         cx.notify();
     }
@@ -225,13 +268,21 @@ impl HerdrWindow {
     fn request_focus_change(
         &mut self,
         method: &str,
-        params: serde_json::Value,
-        focus: Option<(String, String)>,
+        focus: Option<OwnedNavigationTarget>,
+        enqueue: impl FnOnce(
+            &herdr_client::ClientHandle,
+            &str,
+        ) -> Result<String, herdr_client::SendError>,
     ) {
-        if let (Some(handle), Some(snapshot)) = (&self.handle, &self.live.snapshot)
-            && let Ok(mut state) = self.inbox.lock()
+        if let (Some(handle), Some(snapshot)) = (
+            &self.endpoints[self.selected_endpoint].connection.handle,
+            &self.live.snapshot,
+        ) && let Ok(mut state) = self.endpoints[self.selected_endpoint]
+            .connection
+            .inbox
+            .lock()
         {
-            if let Err(error) = handle.request(&snapshot.boot_id, method, params) {
+            if let Err(error) = enqueue(handle, &snapshot.boot_id) {
                 self.local_error = Some(format!("{method}: {error}"));
             } else if self.live.supports_surface {
                 // An ordered surface barrier prevents input hitting the previous
@@ -281,7 +332,9 @@ impl HerdrWindow {
         if let Some(snapshot) = &self.live.snapshot
             && let Some((method, params)) = controls::request(command, snapshot)
         {
-            self.request_focus_change(method, params, None);
+            self.request_focus_change(method, None, |handle, boot| {
+                handle.request(boot, method, params)
+            });
             self.marked.clear();
         }
         window.focus(&self.focus);
@@ -292,9 +345,11 @@ impl HerdrWindow {
         if self.menu.page.is_some() || !self.input_ready() {
             return;
         }
-        let (Some(handle), Some(snapshot), Some(surface)) =
-            (&self.handle, &self.live.snapshot, &self.live.surface)
-        else {
+        let (Some(handle), Some(snapshot), Some(surface)) = (
+            &self.endpoints[self.selected_endpoint].connection.handle,
+            &self.live.snapshot,
+            &self.live.surface,
+        ) else {
             return;
         };
         let x = (event.position.x - self.bounds.origin.x).to_f64() as f32;
@@ -303,17 +358,13 @@ impl HerdrWindow {
             self.wheel = WheelAccumulator::default();
             return;
         };
-        let lines = self.wheel.lines(&target.id, target.popup, event);
+        let lines = self.wheel.lines(&target.target, event);
         cx.stop_propagation();
         if lines == 0 {
             return;
         }
         let input = target.event(lines, event.modifiers);
-        let result = if target.popup {
-            handle.send_popup_input(&snapshot.boot_id, &target.id, vec![input])
-        } else {
-            handle.send_input(&snapshot.boot_id, &target.id, vec![input])
-        };
+        let result = ConnectionBridge::send_input(handle, &snapshot.boot_id, &target.target, input);
         if let Err(error) = result {
             self.local_error = Some(format!("Wheel input not sent: {error}"));
             cx.notify();
@@ -341,12 +392,49 @@ impl HerdrWindow {
     }
 }
 
-impl Drop for HerdrWindow {
-    fn drop(&mut self) {
-        // Closing this view detaches the client only; never kill a daemon/PTY.
-        if let Some(handle) = &self.handle {
-            handle.disconnect();
-        }
+#[cfg(all(test, feature = "integration-test"))]
+mod tests {
+    use super::{ConnectTarget, HerdrWindow};
+
+    #[gpui::test]
+    fn resize_tracks_cell_metrics_and_retries_failed_options(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            HerdrWindow::new(
+                ConnectTarget::Socket("/unused-resize-test.sock".into()),
+                window,
+                cx,
+                true,
+            )
+        });
+        view.update(cx, |view, _| {
+            let client = herdr_client::connect(
+                view.endpoints[view.selected_endpoint]
+                    .connection
+                    .target
+                    .clone(),
+                view.options,
+            )
+            .unwrap_or_else(|error| panic!("cannot create test client: {error}"));
+            client.handle.disconnect();
+            view.endpoints[view.selected_endpoint].connection.handle = Some(client.handle);
+            let queued = view.options;
+            view.last_queued_options = Some(queued);
+            view.resize();
+            assert!(
+                view.local_error.is_none(),
+                "identical options are not resent"
+            );
+            view.options.cell_width_px += 1;
+            view.resize();
+            assert!(
+                view.local_error.is_some(),
+                "cell metrics alone trigger a send"
+            );
+            assert_eq!(view.last_queued_options, Some(queued));
+            view.local_error = None;
+            view.resize();
+            assert!(view.local_error.is_some(), "failed options are retried");
+        });
     }
 }
 
@@ -385,7 +473,7 @@ impl Render for HerdrWindow {
                         }))
                         .child(tab.label.clone())
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.navigate("tab", &id, cx);
+                            this.navigate(NavigationTarget::Tab(&id), cx);
                             window.focus(&this.focus);
                         })),
                 );
@@ -397,7 +485,10 @@ impl Render for HerdrWindow {
             .clone()
             .filter(|_| self.live.surface_ready());
         let snapshot = self.live.snapshot.clone();
-        let inbox = self.inbox.clone();
+        let inbox = self.endpoints[self.selected_endpoint]
+            .connection
+            .inbox
+            .clone();
         let paint_epoch = self.selection_epoch;
         let paint_generation = self.endpoints[self.selected_endpoint].generation;
         let entity = cx.entity();
@@ -440,7 +531,7 @@ impl Render for HerdrWindow {
                             })
                             .map(|p| p.pane_id.clone());
                         if let Some(id) = pane {
-                            this.navigate("pane", &id, cx);
+                            this.navigate(NavigationTarget::Pane(&id), cx);
                         }
                     }
                 }),
@@ -478,17 +569,7 @@ impl Render for HerdrWindow {
                                 cx,
                             );
                             if let Some(popup) = &surface.popup {
-                                let offset = point(
-                                    px(((surface.frame.width.saturating_sub(popup.frame.width))
-                                        as f32
-                                        * cell_width
-                                        / 2.)
-                                        .floor()),
-                                    px((surface.frame.height.saturating_sub(popup.frame.height))
-                                        as f32
-                                        * CELL_HEIGHT
-                                        / 2.),
-                                );
+                                let offset = popup_origin(&surface.frame, &popup.frame, cell_width);
                                 painter.borrow_mut().paint_frame(
                                     &popup.frame,
                                     bounds.origin + offset,
@@ -532,12 +613,7 @@ impl Render for HerdrWindow {
                 )
                 .size_full(),
             );
-        let status = self
-            .local_error
-            .as_ref()
-            .or(self.live.error.as_ref())
-            .map(|e| format!("{}: {e}", self.live.status))
-            .unwrap_or_else(|| self.live.status.clone());
+        let status = self.live.status_text(self.local_error.as_deref());
         div()
             .on_action(cx.listener(|this, _: &Reconnect, window, cx| {
                 if this.menu.page.is_some() {
@@ -618,7 +694,7 @@ impl Render for HerdrWindow {
                     .bg(rgb(sidebar::BACKGROUND))
                     .text_color(rgb(sidebar::FOREGROUND))
                     .child(div().size(px(6.)).flex_none().rounded_full().bg(rgb(
-                        if self.live.connected {
+                        if self.live.status.is_connected() {
                             0x78c998
                         } else {
                             0xe27c7c
@@ -643,7 +719,10 @@ impl Render for HerdrWindow {
 }
 
 fn main() -> std::process::ExitCode {
-    run();
+    let exit = run();
+    if exit != std::process::ExitCode::SUCCESS {
+        return exit;
+    }
     #[cfg(feature = "integration-test")]
     return std::process::ExitCode::from(
         smoke::EXIT_CODE.load(std::sync::atomic::Ordering::SeqCst),
@@ -652,92 +731,39 @@ fn main() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-fn run() {
-    let mut socket = None;
-    let mut session = None;
-    let mut development = false;
-    #[cfg(feature = "integration-test")]
-    let mut integration_test = false;
-    #[cfg(feature = "integration-test")]
-    let mut sidebar_test = false;
-    #[cfg(feature = "integration-test")]
-    let mut performance_test = false;
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            #[cfg(feature = "integration-test")]
-            "--performance-test" => performance_test = true,
-            #[cfg(feature = "integration-test")]
-            "--sidebar-test" => sidebar_test = true,
-            #[cfg(feature = "integration-test")]
-            "--integration-test" => {
-                integration_test = true;
-            }
-            "--socket" => {
-                socket = Some(
-                    args.next()
-                        .unwrap_or_else(|| usage_error("--socket requires a path")),
-                )
-            }
-            "--session" => {
-                session = Some(
-                    args.next()
-                        .unwrap_or_else(|| usage_error("--session requires a name")),
-                )
-            }
-            "--dev" => development = true,
-            "--help" | "-h" => {
-                println!(
-                    "herdr-gpui [--socket CLIENT_SOCKET | --session NAME [--dev]]\nConnects to Local and saved SSH hosts; never installs remote software.\n--socket isolates the GUI to one existing daemon."
-                );
-                #[cfg(feature = "integration-test")]
-                println!(
-                    "  --integration-test  Run native GUI checks (requires explicit --socket)\n  --sidebar-test      Run native sidebar fixtures without connecting to a daemon\n  --performance-test  Measure native dense-terminal hover/scroll without a daemon (macOS)"
-                );
-                return;
-            }
-            _ => usage_error(&format!("Unknown option: {arg}")),
+fn run() -> std::process::ExitCode {
+    use cli::{LaunchMode, LaunchOptions};
+    let LaunchOptions { target, mode } = match LaunchOptions::parse(std::env::args_os().skip(1)) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!(
+                "{error}\nUsage: herdr-gpui [--socket CLIENT_SOCKET | --session NAME [--dev]]"
+            );
+            return std::process::ExitCode::from(2);
         }
-    }
-    if socket.is_some() && (session.is_some() || development) {
-        usage_error("--socket cannot be combined with --session or --dev");
-    }
-    #[cfg(feature = "integration-test")]
-    if sidebar_test && performance_test {
-        usage_error("--sidebar-test and --performance-test are mutually exclusive");
-    }
-    #[cfg(all(feature = "integration-test", not(target_os = "macos")))]
-    if performance_test {
-        usage_error("--performance-test currently requires macOS native event delivery");
-    }
-    #[cfg(feature = "integration-test")]
-    if (sidebar_test || performance_test)
-        && (integration_test || socket.is_some() || session.is_some() || development)
-    {
-        usage_error(
-            "fixture tests cannot be combined with connection options or --integration-test",
-        );
-    }
-    #[cfg(feature = "integration-test")]
-    if sidebar_test || performance_test {
-        smoke::EXIT_CODE.store(1, std::sync::atomic::Ordering::SeqCst);
-    }
-    #[cfg(feature = "integration-test")]
-    if integration_test {
-        if socket.is_none() {
-            usage_error("--integration-test requires an explicit --socket");
-        }
-        smoke::EXIT_CODE.store(1, std::sync::atomic::Ordering::SeqCst);
-    }
-    let target = match (socket, session) {
-        (Some(path), _) => ConnectTarget::Socket(path.into()),
-        (_, Some(name)) => ConnectTarget::Session { name, development },
-        _ if development => ConnectTarget::Session {
-            name: "default".into(),
-            development,
-        },
-        _ => ConnectTarget::Local,
     };
+    if mode == LaunchMode::Help {
+        println!(
+            "herdr-gpui [--socket CLIENT_SOCKET | --session NAME [--dev]]\nConnects to Local and saved SSH hosts; never installs remote software.\n--socket isolates the GUI to one existing daemon."
+        );
+        #[cfg(feature = "integration-test")]
+        println!(
+            "  --integration-test  Run native GUI checks (requires explicit --socket)\n  --sidebar-test      Run native sidebar fixtures without connecting to a daemon\n  --performance-test  Measure native dense-terminal hover/scroll without a daemon (macOS)"
+        );
+        return std::process::ExitCode::SUCCESS;
+    }
+    #[cfg(feature = "integration-test")]
+    let integration_test = mode == LaunchMode::Integration;
+    #[cfg(feature = "integration-test")]
+    let sidebar_test = mode == LaunchMode::Sidebar;
+    #[cfg(feature = "integration-test")]
+    let performance_test = mode == LaunchMode::Performance;
+    #[cfg(feature = "integration-test")]
+    if mode != LaunchMode::Normal {
+        smoke::EXIT_CODE.store(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    let startup_failed = std::rc::Rc::new(std::cell::Cell::new(false));
+    let failed = startup_failed.clone();
     Application::new().run(move |cx| {
         app_icon::install();
         cx.on_action(|_: &Quit, cx| cx.quit());
@@ -828,6 +854,7 @@ fn run() {
             }
             Err(error) => {
                 eprintln!("Unable to open Herdr window: {error}");
+                failed.set(true);
                 #[cfg(feature = "integration-test")]
                 if performance_test {
                     std::process::exit(1);
@@ -837,9 +864,9 @@ fn run() {
         }
         cx.activate(true);
     });
-}
-
-fn usage_error(message: &str) -> ! {
-    eprintln!("{message}\nUsage: herdr-gpui [--socket CLIENT_SOCKET | --session NAME [--dev]]");
-    std::process::exit(2)
+    if startup_failed.get() {
+        std::process::ExitCode::FAILURE
+    } else {
+        std::process::ExitCode::SUCCESS
+    }
 }

@@ -1,4 +1,4 @@
-use super::{Command, HerdrWindow};
+use super::{Command, HerdrWindow, NavigationTarget};
 use gpui::{prelude::*, *};
 use herdr_client::protocol::{AgentStatus, ClientShellAgent, ClientShellWorkspace};
 use std::collections::{HashMap, HashSet};
@@ -157,7 +157,11 @@ impl HerdrWindow {
                         row.debug_selector(|| format!("workspace-{endpoint_id}-{id}"))
                     })
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.navigate_endpoint(&navigate_endpoint, "workspace", &id, cx);
+                        this.navigate_endpoint(
+                            &navigate_endpoint,
+                            NavigationTarget::Workspace(&id),
+                            cx,
+                        );
                         window.focus(&this.focus);
                     })),
                 );
@@ -186,7 +190,7 @@ impl HerdrWindow {
                         row.debug_selector(|| format!("agent-{endpoint_id}-{id}"))
                     })
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.navigate_endpoint(&navigate_endpoint, "pane", &id, cx);
+                        this.navigate_endpoint(&navigate_endpoint, NavigationTarget::Pane(&id), cx);
                         window.focus(&this.focus);
                     })),
                 );
