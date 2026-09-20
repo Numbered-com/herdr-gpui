@@ -29,6 +29,8 @@ toml_edit = "0.22"
 ureq = "3"
 bincode = { version = "2", default-features = false, features = ["std", "serde"] }
 crossbeam-channel = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 cocoa = "0.26"
 objc = "0.2"
 core-graphics = "0.24"

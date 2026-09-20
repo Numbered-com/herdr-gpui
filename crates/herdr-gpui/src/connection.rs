@@ -41,10 +41,12 @@ impl ConnectionBridge {
     }
 
     pub fn detach(&mut self, active: bool) {
+        tracing::debug!("Connection bridge detaching");
         self.reset(ConnectionStatus::Detached, active);
     }
 
     pub fn reconnect(&mut self, options: ConnectOptions, active: bool, surface_active: bool) {
+        tracing::debug!("Connection bridge reconnecting");
         self.reset(ConnectionStatus::Connecting, active);
         self.start(options, surface_active, |events| {
             std::thread::Builder::new()
@@ -66,12 +68,21 @@ impl ConnectionBridge {
         let result =
             connect_with_connector(target, options, surface_active, move |target, stop| {
                 let result = crate::daemon::connect(target, stop, || {
+                    tracing::debug!("Connection bridge starting local daemon");
                     if let Ok(mut state) = startup_inbox.lock()
                         && state.status == ConnectionStatus::Connecting
                     {
                         state.daemon_starting();
                     }
                 });
+                if let Err(error) = &result {
+                    let category = if crate::daemon::is_missing_installation(error) {
+                        "missing_installation"
+                    } else {
+                        "daemon_connect"
+                    };
+                    tracing::debug!(category, error_kind = ?error.kind(), "Connection bridge connector failed");
+                }
                 if result
                     .as_ref()
                     .is_err_and(crate::daemon::is_missing_installation)
@@ -90,14 +101,21 @@ impl ConnectionBridge {
                 // Drain ordered events even while GPUI is busy; retain only coherent state.
                 spawn(Box::new(move || {
                     while let Ok(event) = client.events.recv() {
+                        match &event {
+                            ClientEvent::Connected(_) => tracing::debug!("Connection bridge connected"),
+                            ClientEvent::Disconnected { .. } => tracing::debug!(category = "transport_disconnected", "Connection bridge disconnected"),
+                            _ => {}
+                        }
                         if let Ok(mut state) = inbox.lock() {
                             state.apply(event);
                         }
                     }
                     drained.store(true, Ordering::Release);
+                    tracing::debug!("Connection bridge event reader drained");
                 }))
             });
         if let Err(error) = result {
+            tracing::warn!(category = "bridge_startup", error_kind = ?error.kind(), "Connection bridge startup failed");
             self.drained.store(true, Ordering::Release);
             if let Some(handle) = self.handle.take() {
                 handle.disconnect();
@@ -136,6 +154,7 @@ impl Drop for ConnectionBridge {
     fn drop(&mut self) {
         // Detach this client only; never kill a daemon or PTY.
         if let Some(handle) = &self.handle {
+            tracing::debug!("Connection bridge dropping client");
             handle.disconnect();
         }
     }

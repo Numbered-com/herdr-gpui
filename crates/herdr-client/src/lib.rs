@@ -31,6 +31,8 @@ const EVENT_CAPACITY: usize = 8;
 const POLL: Duration = Duration::from_millis(10);
 const TIMEOUT: Duration = Duration::from_secs(10);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+// Completed API round trips over 250 ms are noteworthy; queue wait is excluded.
+const SLOW_REQUEST: Duration = Duration::from_millis(250);
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +154,10 @@ pub fn connect_with_connector(
     thread::Builder::new()
         .name("herdr-client-io".into())
         .spawn(move || {
+            let transport = if matches!(target, ConnectTarget::Ssh { .. }) { "ssh" } else { "local" };
+            let span = tracing::info_span!("connection", transport);
+            let _entered = span.enter();
+            tracing::info!(transport, "connection starting");
             let result = (|| {
                 let (stream, child) = match &target {
                     ConnectTarget::Ssh { target, session } => {
@@ -171,6 +177,13 @@ pub fn connect_with_connector(
                 )
                 // The child guard is dropped before delivering a disconnect event.
             })();
+            if worker_stop.load(Ordering::Acquire) {
+                tracing::debug!("connection cancelled");
+            } else if let Err(error) = &result {
+                tracing::warn!(kind = ?error.kind(), "connection ended with transport or protocol failure");
+            } else {
+                tracing::info!("connection ended");
+            }
             if !worker_stop.load(Ordering::Acquire) {
                 let reason = result
                     .err()
@@ -200,6 +213,7 @@ pub fn connect_with_connector(
 
 impl ClientHandle {
     pub fn disconnect(&self) {
+        tracing::debug!("disconnect requested");
         self.inner.stop.store(true, Ordering::Release);
     }
     pub fn is_disconnected(&self) -> bool {
@@ -228,7 +242,10 @@ impl ClientHandle {
                 request,
             })
             .map_err(|e| match e {
-                TrySendError::Full(_) => SendError::Full,
+                TrySendError::Full(_) => {
+                    tracing::warn!(category = "command_queue", "client backpressure");
+                    SendError::Full
+                }
                 TrySendError::Disconnected(_) => SendError::Disconnected,
             })
     }
@@ -343,13 +360,20 @@ fn validate_options(options: ConnectOptions) -> io::Result<()> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests;
 fn deliver(tx: &Sender<ClientEvent>, mut event: ClientEvent, stop: &AtomicBool) -> io::Result<()> {
+    let mut reported_backpressure = false;
     loop {
         if stop.load(Ordering::Acquire) {
             return Err(io::Error::new(io::ErrorKind::Interrupted, "client stopped"));
         }
         match tx.send_timeout(event, POLL) {
             Ok(()) => return Ok(()),
-            Err(SendTimeoutError::Timeout(e)) => event = e,
+            Err(SendTimeoutError::Timeout(e)) => {
+                if !reported_backpressure {
+                    tracing::debug!(category = "event_queue", "client backpressure");
+                    reported_backpressure = true;
+                }
+                event = e;
+            }
             Err(SendTimeoutError::Disconnected(_)) => {
                 return Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
@@ -377,6 +401,7 @@ impl FrameReader {
     }
     fn poll(&mut self, stream: &mut (impl Read + ?Sized)) -> io::Result<Option<ServerMessage>> {
         if self.started.is_some_and(|t| t.elapsed() > TIMEOUT) {
+            tracing::warn!(category = "partial_frame", "client timeout");
             return Err(invalid("partial frame timed out"));
         }
         let mut buf = [0; 8192];
@@ -457,6 +482,7 @@ impl Health {
             .ping
             .is_some_and(|sent| now.saturating_duration_since(sent) >= Duration::from_secs(10))
         {
+            tracing::warn!(category = "health_check", "client timeout");
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "endpoint health check timed out",
@@ -499,6 +525,7 @@ impl Session {
 
     fn check_timeouts(&self) -> io::Result<()> {
         if self.snapshot.is_none() && self.started.elapsed() > TIMEOUT {
+            tracing::warn!(category = "initial_snapshot", "client timeout");
             return Err(invalid("handshake/snapshot timed out"));
         }
         if self
@@ -506,6 +533,7 @@ impl Session {
             .as_ref()
             .is_some_and(|p| p.started.elapsed() > COMMAND_TIMEOUT)
         {
+            tracing::warn!(category = "request", "client timeout; request not replayed");
             return Err(invalid("endpoint request timed out; not replayed"));
         }
         Ok(())
@@ -605,6 +633,7 @@ fn run_connection(
                 return Ok(());
             }
             if let Some(reason) = session.rejection_reason(&command) {
+                tracing::debug!(category = "session_policy", "command rejected");
                 deliver(
                     tx,
                     ClientEvent::CommandRejected {
@@ -623,6 +652,7 @@ fn run_connection(
             }
             stream.write_all(&command.bytes)?;
             if let Some((id, _)) = command.request {
+                tracing::trace!(category = "api", "request sent");
                 session.pending = Some(Pending {
                     id,
                     bytes: Vec::new(),
@@ -690,6 +720,7 @@ impl Session {
                 });
             }
             emit(ClientEvent::Connected(w.clone()))?;
+            tracing::info!("endpoint handshake accepted");
             *welcome = Some(w);
             return Ok(());
         }
@@ -706,6 +737,9 @@ impl Session {
                     ));
                 }
                 let next = Arc::new(next);
+                if snapshot.is_none() {
+                    tracing::debug!("initial snapshot ready");
+                }
                 let revision_changed = snapshot
                     .as_ref()
                     .is_none_or(|s| s.revision != next.revision);
@@ -778,6 +812,16 @@ impl Session {
                     let response: Value = serde_json::from_slice(&p.bytes)?;
                     if response.get("id").and_then(Value::as_str) != Some(&request_id) {
                         return Err(invalid("response ID mismatch"));
+                    }
+                    let elapsed = p.started.elapsed();
+                    let elapsed_ms = elapsed.as_millis() as u64;
+                    let api_error = response.get("error").is_some_and(|error| !error.is_null());
+                    if api_error {
+                        tracing::warn!(elapsed_ms, "API request failed");
+                    } else if elapsed > SLOW_REQUEST {
+                        tracing::warn!(elapsed_ms, api_error, "slow API request completed");
+                    } else {
+                        tracing::trace!(elapsed_ms, api_error, "API request completed");
                     }
                     emit(ClientEvent::Response {
                         request_id,

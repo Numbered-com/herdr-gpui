@@ -548,7 +548,8 @@ impl HerdrWindow {
                 | Command::Themes
                 | Command::Palette
                 | Command::Reconnect
-                | Command::Quit => 2,
+                | Command::Quit
+                | Command::Logs => 2,
             };
             groups[group].1.push((info.shortcut, info.label));
         }

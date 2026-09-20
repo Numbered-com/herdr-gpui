@@ -314,6 +314,36 @@ ignored, including includes and commands: theme loading does not execute them.
 Repeated colors use the last value. Unspecified colors retain defaults, except
 that an omitted cursor color follows the theme foreground.
 
+## Client Diagnostics
+
+Open **Window > GPUI Logs** in the macOS menu, or **GPUI Logs** in the command
+palette. This separate console tails this client's structured `TRACE`, `DEBUG`,
+`INFO`, `WARN`, and `ERROR` events, including its client transport library, not
+the Herdr daemon's logs. Search matches messages, targets and fields without
+case sensitivity; level buttons toggle individual levels. Scroll or use
+**Pause** to freeze the view, then **Resume tail** to catch up. Click a row to
+read its full message in the detail area.
+`Cmd-F` focuses search; `Cmd-W` closes only the log window.
+
+**Copy** and **Export...** share the currently filtered snapshot as plain text;
+Export uses a native save dialog and writes in the background. Clear search and
+enable all levels to export all retained records. Nothing is uploaded. Review
+exports before sharing them in an issue.
+
+Logging starts before client connections and stays enabled even when the console
+is closed. It is local, in memory, and limited to the latest 5,000 records with
+4 KiB per record. The console reports evicted/dropped records; logs are lost when
+the app exits unless exported. Dependency logs, daemon payloads, terminal text,
+keystrokes, connection paths and credentials are not captured. Timestamps are
+UNIX seconds with millisecond precision; exports include app version and platform.
+
+Performance diagnostics include request/response elapsed time (excluding queue
+wait), warnings above 250 ms, event-delivery backpressure, and CPU terminal paint
+summaries approximately every five seconds while painting. Paint summaries report
+count, mean, maximum and frames above 16 ms, warning when any exceeded that
+threshold. These measure CPU scene construction, not GPU completion or actual
+display latency. Use a release build for meaningful performance measurements.
+
 ## Controls
 
 | Control | Action |

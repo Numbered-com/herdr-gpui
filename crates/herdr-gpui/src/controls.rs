@@ -27,6 +27,7 @@ pub enum Command {
     Palette,
     Reconnect,
     Quit,
+    Logs,
 }
 
 pub struct CommandInfo {
@@ -36,6 +37,11 @@ pub struct CommandInfo {
 }
 
 pub const COMMANDS: &[CommandInfo] = &[
+    CommandInfo {
+        command: Command::Logs,
+        label: "GPUI Logs",
+        shortcut: "",
+    },
     CommandInfo {
         command: Command::Workspace,
         label: "New Workspace",
@@ -301,7 +307,8 @@ pub fn request(command: Command, snapshot: &ClientShellSnapshot) -> Option<(&'st
         | Command::WorkspacePicker
         | Command::Palette
         | Command::Reconnect
-        | Command::Quit => return None,
+        | Command::Quit
+        | Command::Logs => return None,
     })
 }
 
@@ -321,6 +328,7 @@ mod tests {
     fn catalog_has_all_native_commands_and_gpui_shortcuts() {
         use Command::*;
         let expected = [
+            (Logs, ""),
             (Workspace, "cmd-n"),
             (Tab, "cmd-t"),
             (SplitRight, "cmd-d"),
@@ -371,6 +379,7 @@ mod tests {
     fn gui_commands_never_send_daemon_requests() {
         let s = snapshot();
         for command in [
+            Command::Logs,
             Command::ToggleSidebar,
             Command::Settings,
             Command::Keybinds,
