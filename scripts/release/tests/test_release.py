@@ -3,12 +3,18 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import tarfile
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = ROOT / "scripts/release"
+
+
+def build_identity(worktree=False):
+    return (b"not executable\0HERDR_BUILD_IDENTITY_V1\nworktree="
+            + (b"1\nbranch=feature/test\npr=42\n\0" if worktree else b"0\nbranch=\npr=\n\0"))
 
 
 class ReleaseTests(unittest.TestCase):
@@ -22,7 +28,7 @@ class ReleaseTests(unittest.TestCase):
 
     def run_script(self, name, *args, success=True):
         result = subprocess.run(
-            ["bash", str(SCRIPTS / name), *map(str, args)],
+            ["bash", str(getattr(self, "scripts", SCRIPTS) / name), *map(str, args)],
             env=self.env, capture_output=True, text=True, timeout=30,
         )
         if success:
@@ -45,7 +51,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_linux_archive(self):
         binary = self.work / "input binary"
-        binary.write_text("not executable input: must never run")
+        binary.write_bytes(build_identity())
         result = self.run_script("package-linux.sh", "1.2.3", "x86_64-unknown-linux-gnu", binary, self.work, self.notices)
         with tarfile.open(result.stdout.strip()) as archive:
             base = "Herdr-1.2.3-x86_64-unknown-linux-gnu/"
@@ -59,6 +65,7 @@ class ReleaseTests(unittest.TestCase):
                 "share/licenses/herdr-gpui/THIRD-PARTY-NOTICES.txt",
             ]})
             self.assertEqual(files[base + "bin/herdr-gpui"].mode & 0o777, 0o755)
+            self.assertEqual(archive.extractfile(base + "share/icons/hicolor/1024x1024/apps/herdr-gpui.png").read(), (ROOT / "assets/icons/herdr-1024.png").read_bytes())
             self.assertEqual(archive.extractfile(base + "share/licenses/herdr-gpui/THIRD-PARTY-NOTICES.txt").read(), self.notices.read_bytes())
             for source in ("LICENSE", "NOTICE", "assets/icons/LICENSE-octicons", "crates/herdr-protocol/NOTICE.md"):
                 self.assertEqual(archive.extractfile(base + "share/licenses/herdr-gpui/" + Path(source).name).read(), (ROOT / source).read_bytes())
@@ -90,8 +97,8 @@ class ReleaseTests(unittest.TestCase):
     def test_unsigned_assembly(self):
         self.mock_tools()
         arm, intel = self.work / "arm64", self.work / "x86_64"
-        arm.touch()
-        intel.touch()
+        arm.write_bytes(build_identity())
+        intel.write_bytes(build_identity())
         self.run_script("package-macos.sh", "1.2.3", arm, intel, self.work, self.notices)
         app = self.work / "Herdr.app"
         self.assertEqual({str(p.relative_to(app)) for p in app.rglob("*") if p.is_file()}, {
@@ -101,9 +108,46 @@ class ReleaseTests(unittest.TestCase):
             "Contents/Resources/THIRD-PARTY-NOTICES.txt",
         })
         self.assertEqual((app / "Contents/Resources/THIRD-PARTY-NOTICES.txt").read_bytes(), self.notices.read_bytes())
+        self.assertEqual((app / "Contents/Resources/Herdr.icns").read_bytes(), (ROOT / "assets/icons/Herdr.icns").read_bytes())
         for source in ("LICENSE", "NOTICE", "assets/icons/LICENSE-octicons", "crates/herdr-protocol/NOTICE.md"):
             self.assertEqual((app / "Contents/Resources" / Path(source).name).read_bytes(), (ROOT / source).read_bytes())
         self.run_script("package-macos.sh", "1.2.3", arm, intel, self.work, self.notices, success=False)
+
+    def test_worktree_icons_and_mismatched_architectures(self):
+        self.mock_tools()
+        # Distinct fixture artwork proves selection without generating real icons.
+        fixture = self.work / "packaging checkout"
+        for path in ["scripts/release/common.sh", "scripts/release/package-macos.sh",
+                     "scripts/release/package-linux.sh", "scripts/release/build-icon.py",
+                     "scripts/release/herdr-gpui.desktop", "assets/macos/Info.plist",
+                     "LICENSE", "NOTICE", "assets/icons/LICENSE-octicons",
+                     "crates/herdr-protocol/LICENSE-APACHE", "crates/herdr-protocol/NOTICE.md"]:
+            destination = fixture / path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / path, destination)
+        for name in ["Herdr-worktree.icns", "herdr-worktree-1024.png"]:
+            (fixture / "assets/icons" / name).write_bytes(b"red fixture " + name.encode())
+        self.scripts = fixture / "scripts/release"
+        arm, intel = self.work / "arm64", self.work / "x86_64"
+        arm.write_bytes(build_identity(True))
+        intel.write_bytes(build_identity())
+        result = self.run_script("package-macos.sh", "1.2.3", arm, intel, self.work, self.notices, success=False)
+        self.assertIn("different build identities", result.stderr)
+        intel.write_bytes(build_identity(True))
+        self.run_script("package-macos.sh", "1.2.3", arm, intel, self.work, self.notices)
+        self.assertEqual((self.work / "Herdr.app/Contents/Resources/Herdr.icns").read_bytes(), (fixture / "assets/icons/Herdr-worktree.icns").read_bytes())
+        result = self.run_script("package-linux.sh", "1.2.3", "aarch64-unknown-linux-gnu", arm, self.work, self.notices)
+        with tarfile.open(result.stdout.strip()) as archive:
+            self.assertEqual(archive.extractfile("Herdr-1.2.3-aarch64-unknown-linux-gnu/share/icons/hicolor/1024x1024/apps/herdr-gpui.png").read(), (fixture / "assets/icons/herdr-worktree-1024.png").read_bytes())
+
+    def test_missing_malformed_conflicting_identity_fails_closed(self):
+        binary = self.work / "binary"
+        for data in [b"old binary", build_identity() + build_identity(True),
+                     build_identity().replace(b"pr=\n", b"pr=0\n"),
+                     build_identity().replace(b"worktree=0", b"worktree=9")]:
+            binary.write_bytes(data)
+            self.run_script("package-linux.sh", "1.2.3", "x86_64-unknown-linux-gnu", binary, self.work, self.notices, success=False)
+            self.assertFalse(list(self.work.glob("*.tar.gz")))
 
     def test_signing_success_and_fail_closed(self):
         self.mock_tools()

@@ -6,6 +6,7 @@ pub enum LaunchMode {
     #[default]
     Normal,
     Help,
+    BuildInfo,
     #[cfg(feature = "integration-test")]
     Integration,
     #[cfg(feature = "integration-test")]
@@ -31,6 +32,25 @@ impl fmt::Display for CliError {
 
 impl std::error::Error for CliError {}
 
+// The framed record is also read without execution by cross-platform packaging.
+pub fn build_info() -> &'static str {
+    const PREFIX_LEN: usize = "\0HERDR_BUILD_IDENTITY_V1\n".len();
+    const RECORD: &str = concat!(
+        "\0HERDR_BUILD_IDENTITY_V1\n",
+        "worktree=",
+        env!("HERDR_BUILD_WORKTREE"),
+        "\n",
+        "branch=",
+        env!("HERDR_BUILD_BRANCH"),
+        "\n",
+        "pr=",
+        env!("HERDR_BUILD_PR"),
+        "\n\0"
+    );
+    let record = std::hint::black_box(RECORD);
+    &record[PREFIX_LEN..record.len() - 1]
+}
+
 impl LaunchOptions {
     pub fn parse(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result<Self, CliError> {
         let mut args = args.into_iter().map(Into::into);
@@ -43,10 +63,14 @@ impl LaunchOptions {
         let mode = LaunchMode::Normal;
         while let Some(arg) = args.next() {
             match arg.to_str() {
-                Some("--help" | "-h") => {
+                Some("--help" | "-h" | "--build-info") => {
                     return Ok(Self {
                         target: ConnectTarget::Local,
-                        mode: LaunchMode::Help,
+                        mode: if arg == "--build-info" {
+                            LaunchMode::BuildInfo
+                        } else {
+                            LaunchMode::Help
+                        },
                     });
                 }
                 Some("--socket" | "--session") => {
@@ -137,6 +161,26 @@ impl LaunchOptions {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_info_is_an_informational_mode() {
+        assert_eq!(
+            LaunchOptions::parse(["--build-info"]).unwrap().mode,
+            LaunchMode::BuildInfo
+        );
+        assert_eq!(
+            build_info(),
+            concat!(
+                "worktree=",
+                env!("HERDR_BUILD_WORKTREE"),
+                "\nbranch=",
+                env!("HERDR_BUILD_BRANCH"),
+                "\npr=",
+                env!("HERDR_BUILD_PR"),
+                "\n"
+            )
+        );
+    }
 
     #[test]
     fn connection_selection() {

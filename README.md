@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icons/herdr-1024.png" alt="Herdr ram on an ivory application window" width="160" height="160">
+</p>
+
 # Herdr GPUI
 
 [![CI](https://github.com/penso/herdr-gpui/actions/workflows/ci.yml/badge.svg)](https://github.com/penso/herdr-gpui/actions/workflows/ci.yml)
@@ -165,7 +169,7 @@ window dragging remains owned by AppKit. Windows/Linux retain their native frame
 without an extra header. See the [native shell notes](crates/herdr-gpui/README.md#title-bar)
 for layout coverage and remaining desktop QA.
 
-`cargo run` and `just run` use an embedded original Herdr Dock icon, with no runtime
+`cargo run` and `just run` use the embedded Herdr ram Dock icon, with no runtime
 asset paths or image-generation processes. To create a local Finder-launchable app:
 
 ```sh
@@ -179,14 +183,33 @@ it does not bundle, install, or stop a daemon. This is a local unsigned,
 unnotarized bundle, not a distribution/signing pipeline. Its version metadata lives
 in `assets/macos/Info.plist` and should be updated for releases.
 
-The original charcoal/blue connected-H artwork and provenance are in
-[`assets/icons`](assets/icons/README.md). `just icons` regenerates the checked-in
-PNG and ICNS from the SVG with macOS Swift/CoreGraphics and `iconutil`.
+The ivory window and upstream Herdr ram artwork and provenance are in
+[`assets/icons`](assets/icons/README.md). Linux packages and the README use the
+supplied PNG export; `just icons` regenerates the macOS ICNS from that PNG with
+Swift/CoreGraphics and `iconutil`.
 
 For a local signed/notarized universal DMG, use `just dmg 0.1.0` (matching the
 manifest version). This requires both Rust macOS targets and ignored local signing
 configuration; see [local DMG setup](scripts/release/README.md#local-dmg).
 Artifacts go to `target/distribution/VERSION`; nothing is published.
+
+### Worktree Builds
+
+Builds from a linked Git worktree are deliberately unmistakable: a **red app
+icon** and a persistent **amber WORKTREE BUILD banner** showing the build's
+branch (or detached commit) and open PR number when available. This applies to
+release-mode source runs as well as macOS bundles and Linux packages. The normal
+checkout and published main builds keep the ivory icon and no banner. Linux
+launcher icons are installed through the packaged desktop entry.
+
+Identity is captured at build time, not inferred from the app's launch directory
+or the terminal workspace. GitHub CLI PR lookup is optional and limited to two
+seconds; missing `gh`, authentication, network, or an open PR simply omits the
+number. Set `HERDR_BUILD_PR_NUMBER=123` when building to supply it explicitly, or
+set it to an empty string to disable lookup. PR changes alone do not invalidate
+Cargo's cache; change that override or rebuild after creating a PR.
+`herdr-gpui --build-info` prints the embedded identity without launching the GUI.
+See [build identity details](scripts/release/README.md#build-identity).
 
 ## GUI Configuration
 

@@ -10,3 +10,12 @@ Portions of crates/herdr-protocol are adapted from Herdr
 adapted files, the upstream revision they came from, and the modifications
 made to them are recorded in crates/herdr-protocol/NOTICE.md. No upstream
 NOTICE file was present at the revision used.
+
+The application icon in assets/icons/herdr.svg, herdr-1024.png, and Herdr.icns
+uses a ram path adapted from Herdr's logo:
+https://github.com/herdrdev/herdr/blob/HEAD/assets/logo.svg
+The upstream artwork is licensed under Apache-2.0. This adaptation places the
+ram and terminal prompt on an ivory application window, with modified scaling,
+placement, graphite shading, and shadows.
+The derived herdr-worktree-1024.png and Herdr-worktree.icns use a red palette to
+identify development builds made from linked Git worktrees.

@@ -109,7 +109,12 @@ mod tests {
                     Bounds::new(point(px(80.), px(0.)), size(px(width - 120.), px(34.)))
                 );
                 let body = cx.debug_bounds("window-body").unwrap();
-                assert_eq!(body.top(), px(34.));
+                let banner_height = if env!("HERDR_BUILD_WORKTREE") == "1" {
+                    28.
+                } else {
+                    0.
+                };
+                assert_eq!(body.top(), px(34. + banner_height));
                 assert_eq!(body.size.width, px(width));
                 assert!(body.bottom() <= px(height));
             }

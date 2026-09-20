@@ -7,6 +7,20 @@ use std::{
 
 pub static EXIT_CODE: AtomicU8 = AtomicU8::new(0);
 
+fn banner_height() -> f32 {
+    if env!("HERDR_BUILD_WORKTREE") == "1" {
+        28.
+    } else {
+        0.
+    }
+}
+
+// Baseline viewport sizes already include the existing 34px macOS titlebar.
+// Add only the optional banner to preserve the tested content area, not mask clipping.
+fn fixture_size(width: f32, height: f32) -> Size<Pixels> {
+    size(px(width), px(height + banner_height()))
+}
+
 pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
     EXIT_CODE.store(1, Ordering::SeqCst);
     #[cfg(target_os = "macos")]
@@ -27,8 +41,8 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     let (w, h) =
                         [(1200., 780.), (640., 400.), (1000., 650.), (800., 600.)][frame / 3];
                     if frame % 3 == 0 {
-                        window.resize(size(px(w), px(h)));
-                    } else if window.viewport_size() != size(px(w), px(h)) {
+                        window.resize(fixture_size(w, h));
+                    } else if window.viewport_size() != fixture_size(w, h) {
                         return Err(format!(
                             "native resize did not settle: {:?}",
                             window.viewport_size()
@@ -140,7 +154,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     let target = AnyWindowHandle::from(handle)
                         .update(cx, |_, window, _| sidebar::native_tests::Target::acquire(window))
                         .map_err(|e| e.to_string())??;
-                    target.click(700., 500.)
+                    target.click(700., 500. + f64::from(banner_height()))
                 })
             } else {
                 result
@@ -268,7 +282,7 @@ async fn sidebar_hosts(handle: WindowHandle<HerdrWindow>, cx: &mut AsyncApp) -> 
             view.live = view.endpoints[0].live.clone();
             view.collapsed_repos.clear();
             view.marked = "preserve collapse composition".into();
-            window.resize(size(px(480.), px(780.)));
+            window.resize(fixture_size(480., 780.));
             cx.notify();
         })
         .map_err(|e| e.to_string())?;
@@ -289,7 +303,7 @@ async fn sidebar_hosts(handle: WindowHandle<HerdrWindow>, cx: &mut AsyncApp) -> 
     let viewport = handle
         .update(cx, |_, window, _| window.viewport_size())
         .map_err(|e| e.to_string())?;
-    if viewport != size(px(480.), px(780.)) {
+    if viewport != fixture_size(480., 780.) {
         return Err(format!("narrow resize not settled: {viewport:?}"));
     }
     for (step, label, expected) in [
@@ -438,7 +452,7 @@ async fn sidebar_hosts(handle: WindowHandle<HerdrWindow>, cx: &mut AsyncApp) -> 
         handle
             .update(cx, |view, window, cx| {
                 view.sidebar_width = preferred;
-                window.resize(size(px(window_width), px(780.)));
+                window.resize(fixture_size(window_width, 780.));
                 cx.notify();
             })
             .map_err(|e| e.to_string())?;
@@ -446,7 +460,7 @@ async fn sidebar_hosts(handle: WindowHandle<HerdrWindow>, cx: &mut AsyncApp) -> 
         loop {
             let settled = AnyWindowHandle::from(handle)
             .update(cx, |_, window, cx| -> Result<bool, String> {
-                if window.viewport_size() != size(px(window_width), px(780.)) {
+                if window.viewport_size() != fixture_size(window_width, 780.) {
                     return Ok(false);
                 }
                 cx.default_global::<PaintedProbes>().0.clear();
@@ -852,7 +866,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     9 if has_output(&surface.frame, &marker) => {
                         eprintln!("GUI shell output verified (not command echo): {marker}");
                         old_size = options.surface_size;
-                        window.resize(size(px(1000.), px(650.)));
+                        window.resize(fixture_size(1000., 650.));
                     }
                     10 if options.surface_size != old_size && last_queued_options == Some(options)
                         && surface.frame.width == options.surface_size.cols && surface.frame.height == options.surface_size.rows => {

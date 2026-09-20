@@ -1,13 +1,51 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <title>Herdr: connected workspaces</title>
-  <rect x="80" y="80" width="864" height="864" rx="192" fill="#10161e"/>
-  <rect x="88" y="88" width="848" height="848" rx="184" fill="#304055"/>
-  <rect x="92" y="92" width="840" height="840" rx="180" fill="#181e26"/>
-  <polyline points="332,304 332,720" fill="none" stroke="#8bbcff" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
-  <polyline points="692,304 692,720" fill="none" stroke="#8bbcff" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
-  <polyline points="332,584 424,584 600,440 692,440" fill="none" stroke="#8bbcff" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="332" cy="304" r="64" fill="#8bbcff"/>
-  <circle cx="692" cy="720" r="64" fill="#8bbcff"/>
-  <circle cx="332" cy="304" r="25" fill="#181e26"/>
-  <circle cx="692" cy="720" r="25" fill="#181e26"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Herdr UI</title>
+  <desc id="desc">Herdr's original ram and terminal prompt on an ivory native application window.</desc>
+  <metadata>Ram path adapted from https://github.com/herdrdev/herdr/blob/HEAD/assets/logo.svg. Upstream project license: Apache-2.0. Preserve upstream attribution and applicable notices when distributing.</metadata>
+  <defs>
+    <linearGradient id="ivory" x1="0" y1="0" x2="0.3" y2="1">
+      <stop stop-color="#fffefa"/>
+      <stop offset="0.55" stop-color="#f3f0e8"/>
+      <stop offset="1" stop-color="#e5e1d7"/>
+    </linearGradient>
+    <linearGradient id="graphite" x1="0" y1="0" x2="0.65" y2="1">
+      <stop stop-color="#3d4143"/>
+      <stop offset="1" stop-color="#24282b"/>
+    </linearGradient>
+    <linearGradient id="recess" x1="0" y1="0" x2="0.2" y2="1">
+      <stop stop-color="#92918b"/>
+      <stop offset="1" stop-color="#cbc9c1"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#c9c6bd"/>
+      <stop offset="0.5" stop-color="#e5e1d7"/>
+      <stop offset="1" stop-color="#b6b2a9"/>
+    </linearGradient>
+    <clipPath id="tile-clip"><rect x="64" y="64" width="896" height="896" rx="192"/></clipPath>
+    <clipPath id="content-clip"><rect x="66" y="166" width="892" height="792" rx="50"/></clipPath>
+    <filter id="tile-shadow" x="-15%" y="-15%" width="130%" height="140%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="12" stdDeviation="9" flood-color="#252824" flood-opacity="0.18"/>
+    </filter>
+    <filter id="ram-shadow" x="-20%" y="-20%" width="140%" height="150%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="3" stdDeviation="2" flood-color="#171a1c" flood-opacity="0.24"/>
+    </filter>
+    <path id="ram" d="M2794 3710 c-129 -33 -299 -135 -359 -214 -21 -28 -26 -42 -21 -63 9 -38 154 -178 199 -192 32 -11 41 -9 104 23 171 86 354 70 475 -43 150 -138 150 -379 0 -511 -107 -95 -278 -94 -386 2 l-46 40 -11 -29 c-16 -40 -14 -122 4 -164 60 -144 264 -222 452 -174 360 92 559 494 430 868 -36 103 -81 173 -175 267 -71 72 -100 93 -180 132 -52 26 -127 54 -167 62 -96 21 -230 20 -319 -4z M2183 3695 c-116 -32 -221 -108 -273 -199 -17 -28 -30 -54 -30 -58 0 -4 20 1 45 12 66 28 220 68 294 76 64 7 65 7 137 83 40 41 71 77 69 79 -2 2 -21 8 -42 13 -55 12 -140 10 -200 -6z M2212 3388 c-159 -22 -390 -122 -559 -241 -299 -210 -585 -600 -609 -828 -12 -118 40 -251 125 -318 96 -76 178 -98 426 -116 110 -8 224 -21 254 -29 125 -34 230 -115 272 -211 11 -24 24 -81 30 -127 20 -170 65 -271 166 -374 34 -35 63 -65 63 -67 0 -1 -10 -27 -22 -57 -29 -76 -37 -259 -14 -350 42 -170 158 -318 311 -397 44 -23 98 -46 120 -52 22 -6 45 -14 51 -18 5 -5 15 -48 22 -96 6 -48 14 -92 17 -97 4 -6 415 -10 1131 -10 l1124 0 0 1584 0 1585 -55 -19 c-84 -29 -143 -68 -232 -154 l-83 -78 -54 49 c-111 102 -233 151 -391 160 -113 6 -199 -10 -298 -54 l-60 -27 -26 34 c-37 51 -120 134 -127 128 -3 -4 0 -34 7 -67 17 -89 7 -268 -21 -356 -103 -328 -377 -545 -688 -545 -161 0 -273 41 -373 137 -37 35 -66 75 -85 116 -79 173 -8 407 124 407 44 0 68 -14 117 -66 74 -78 167 -82 238 -9 60 62 72 147 33 231 -42 90 -120 130 -238 122 -50 -4 -85 -14 -131 -37 -89 -45 -122 -52 -176 -40 -92 20 -262 163 -302 253 -11 25 -21 45 -22 45 -1 -1 -30 -6 -65 -11z m-256 -505 c115 -88 129 -102 132 -131 2 -18 -2 -40 -9 -49 -7 -8 -69 -55 -138 -105 -103 -73 -130 -88 -151 -83 -35 8 -51 34 -48 74 3 31 12 42 83 92 44 31 80 61 82 66 1 4 -30 31 -69 58 -39 28 -77 56 -85 63 -18 19 -16 72 4 94 32 35 63 23 199 -79z m528 -88 c23 -24 28 -52 14 -82 l-13 -28 -141 -3 c-130 -2 -142 -1 -158 17 -23 26 -24 66 -1 91 16 18 32 20 151 20 105 0 136 -3 148 -15z"/>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="192" fill="url(#ivory)" filter="url(#tile-shadow)"/>
+  <g clip-path="url(#tile-clip)">
+    <path d="M64 210 Q64 168 112 168 H912 Q960 168 960 210" fill="none" stroke="#c6c2b9" stroke-width="3"/>
+    <path d="M66 213 Q66 172 113 172 H911 Q958 172 958 213" fill="none" stroke="#fffefa" stroke-width="3"/>
+    <g fill="url(#recess)" stroke="#aaa79f" stroke-width="1.5">
+      <circle cx="172" cy="128" r="18"/>
+      <circle cx="230" cy="128" r="18"/>
+      <circle cx="288" cy="128" r="18"/>
+    </g>
+    <g clip-path="url(#content-clip)">
+      <g filter="url(#ram-shadow)">
+        <use href="#ram" transform="translate(-35 967) scale(.2 -.2)" fill="url(#graphite)"/>
+      </g>
+    </g>
+  </g>
+  <rect x="65" y="65" width="894" height="894" rx="191" fill="none" stroke="url(#rim)" stroke-width="2"/>
+  <rect x="69" y="69" width="886" height="886" rx="187" fill="none" stroke="#fffefa" stroke-opacity="0.5" stroke-width="2"/>
 </svg>
