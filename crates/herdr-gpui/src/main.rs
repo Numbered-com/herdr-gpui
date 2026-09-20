@@ -1,6 +1,7 @@
 // objc 0.2's selectors expand a legacy cargo-clippy cfg in the native test adapter.
 #![cfg_attr(feature = "integration-test", allow(unexpected_cfgs))]
 mod app_icon;
+mod config;
 mod controls;
 mod input;
 mod menu;
@@ -33,11 +34,14 @@ actions!(
         SplitRight,
         SplitDown,
         NextTab,
-        PreviousTab
+        PreviousTab,
+        ShowKeybinds
     ]
 );
 
 struct HerdrWindow {
+    config: config::Config,
+    theme: config::Theme,
     target: ConnectTarget,
     handle: Option<ClientHandle>,
     inbox: Arc<Mutex<LiveState>>,
@@ -103,7 +107,26 @@ impl HerdrWindow {
                 }
             }
         });
+        let fixture = false;
+        #[cfg(feature = "integration-test")]
+        let fixture = fixture || sidebar_test;
+        let loaded = if fixture {
+            Ok(config::Config::default())
+        } else {
+            config::Config::load()
+        };
+        let (config, theme, config_error) =
+            match loaded.and_then(|config| config.theme().map(|theme| (config, theme))) {
+                Ok((config, theme)) => (config, theme, None),
+                Err(error) => (
+                    config::Config::default(),
+                    config::Theme::default(),
+                    Some(error),
+                ),
+            };
         let mut this = Self {
+            config,
+            theme,
             target,
             handle: None,
             inbox: Arc::new(Mutex::new(LiveState::default())),
@@ -139,6 +162,9 @@ impl HerdrWindow {
             return this;
         }
         this.reconnect();
+        if config_error.is_some() {
+            this.local_error = config_error;
+        }
         this
     }
 
@@ -281,11 +307,14 @@ impl HerdrWindow {
         };
         let x = (event.position.x - self.bounds.origin.x).to_f64() as f32;
         let y = (event.position.y - self.bounds.origin.y).to_f64() as f32;
-        let Some(target) = wheel_target(surface, x, y, self.cell_width) else {
+        let cell_height = self.config.terminal.line_height();
+        let Some(target) = wheel_target(surface, x, y, self.cell_width, cell_height) else {
             self.wheel = WheelAccumulator::default();
             return;
         };
-        let lines = self.wheel.lines(&target.id, target.popup, event);
+        let lines = self
+            .wheel
+            .lines(&target.id, target.popup, event, cell_height);
         cx.stop_propagation();
         if lines == 0 {
             return;
@@ -334,17 +363,25 @@ impl Drop for HerdrWindow {
 
 impl Render for HerdrWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let font = font("Menlo");
+        let font = font(self.config.terminal.family.clone());
+        let cell_height = self.config.terminal.line_height();
+        self.painter.borrow_mut().set_appearance(
+            self.config.terminal.size,
+            cell_height,
+            self.theme.clone(),
+        );
         self.cell_width = self.painter.borrow_mut().cell_width(&font, window, cx);
         let sidebar = self.render_sidebar(cx);
         let mut tabs = div()
             .id("tabs")
             .flex()
             .flex_none()
-            .h(px(40.))
+            .h(px((self.config.tabs.size * 1.5 + 16.).max(40.)))
+            .font_family(self.config.tabs.family.clone())
+            .text_size(px(self.config.tabs.size))
             .overflow_x_scroll()
-            .bg(rgb(sidebar::BACKGROUND))
-            .text_color(rgb(sidebar::FOREGROUND))
+            .bg(rgb(self.theme.surface))
+            .text_color(rgb(self.theme.foreground))
             .items_center();
         if let Some(snapshot) = &self.live.snapshot {
             for tab in snapshot
@@ -361,9 +398,9 @@ impl Render for HerdrWindow {
                         .flex_none()
                         .cursor_pointer()
                         .bg(rgb(if tab.focused {
-                            sidebar::ACTIVE
+                            self.theme.active
                         } else {
-                            sidebar::BACKGROUND
+                            self.theme.surface
                         }))
                         .child(tab.label.clone())
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -388,7 +425,7 @@ impl Render for HerdrWindow {
             .min_h_0()
             .min_w_0()
             .overflow_hidden()
-            .bg(rgb(BACKGROUND))
+            .bg(rgb(self.theme.background))
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .on_scroll_wheel(cx.listener(Self::scroll_wheel))
@@ -403,7 +440,7 @@ impl Render for HerdrWindow {
                             / this.cell_width as f64)
                             .floor() as u16;
                         let row = ((event.position.y - this.bounds.origin.y).to_f64()
-                            / CELL_HEIGHT as f64)
+                            / this.config.terminal.line_height() as f64)
                             .floor() as u16;
                         let pane = surface
                             .panes
@@ -431,9 +468,10 @@ impl Render for HerdrWindow {
                                     bounds.size.width.to_f64() as f32,
                                     bounds.size.height.to_f64() as f32,
                                     cell_width,
+                                    cell_height,
                                 ),
                                 cell_width_px: cell_width.round().max(1.) as u32,
-                                cell_height_px: CELL_HEIGHT as u32,
+                                cell_height_px: cell_height.round().max(1.) as u32,
                             };
                             this.resize();
                         });
@@ -462,7 +500,7 @@ impl Render for HerdrWindow {
                                         .floor()),
                                     px((surface.frame.height.saturating_sub(popup.frame.height))
                                         as f32
-                                        * CELL_HEIGHT
+                                        * cell_height
                                         / 2.),
                                 );
                                 painter.borrow_mut().paint_frame(
@@ -505,6 +543,9 @@ impl Render for HerdrWindow {
             .map(|e| format!("{}: {e}", self.live.status))
             .unwrap_or_else(|| self.live.status.clone());
         div()
+            .on_action(cx.listener(|this, _: &ShowKeybinds, window, cx| {
+                this.open_keybinds(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &Reconnect, window, cx| {
                 if this.menu.page.is_some() {
                     return;
@@ -535,10 +576,10 @@ impl Render for HerdrWindow {
             .relative()
             .flex()
             .flex_col()
-            .bg(rgb(BACKGROUND))
-            .text_color(rgb(FOREGROUND))
-            .font_family(".SystemUIFont")
-            .text_sm()
+            .bg(rgb(self.theme.background))
+            .text_color(rgb(self.theme.foreground))
+            .font_family(self.config.ui.family.clone())
+            .text_size(px(self.config.ui.size))
             .child(
                 div().flex().flex_1().min_h_0().child(sidebar).child(
                     div()
@@ -550,8 +591,8 @@ impl Render for HerdrWindow {
                             div()
                                 .flex()
                                 .flex_none()
-                                .bg(rgb(sidebar::BACKGROUND))
-                                .text_color(rgb(sidebar::FOREGROUND))
+                                .bg(rgb(self.theme.surface))
+                                .text_color(rgb(self.theme.foreground))
                                 .child(tabs.flex_1().min_w_0())
                                 .child(
                                     div()
@@ -560,7 +601,7 @@ impl Render for HerdrWindow {
                                         .flex()
                                         .items_center()
                                         .cursor_pointer()
-                                        .hover(|s| s.bg(rgb(sidebar::ACTIVE)))
+                                        .hover(|s| s.bg(rgb(self.theme.active)))
                                         .child("+")
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.command(Command::Tab, window, cx)
@@ -576,31 +617,37 @@ impl Render for HerdrWindow {
                     .debug_selector(|| "connection-status".into())
                     .flex()
                     .flex_none()
-                    .h(px(22.))
+                    .h(px((self.config.ui.size * 1.5 + 4.).max(22.)))
                     .overflow_hidden()
                     .items_center()
                     .gap(px(6.))
                     .px_3()
-                    .bg(rgb(sidebar::BACKGROUND))
-                    .text_color(rgb(sidebar::FOREGROUND))
+                    .bg(rgb(self.theme.surface))
+                    .text_color(rgb(self.theme.foreground))
                     .child(div().size(px(6.)).flex_none().rounded_full().bg(rgb(
                         if self.live.connected {
-                            0x78c998
+                            self.theme.palette[2]
                         } else {
-                            0xe27c7c
+                            self.theme.palette[1]
                         },
                     )))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_xs()
-                            .child(status),
-                    )
+                    .child(div().flex_1().min_w_0().overflow_hidden().child(status))
                     .when(!self.marked.is_empty(), |d| {
                         d.child(format!("Composing: {}", self.marked))
-                    }),
+                    })
+                    .child(
+                        div()
+                            .id("status-keybinds")
+                            .debug_selector(|| "status-keybinds".into())
+                            .flex_none()
+                            .px_2()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgb(self.theme.active)))
+                            .child("? Keybinds")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_keybinds(window, cx);
+                            })),
+                    ),
             )
             .when(self.menu.page.is_some(), |root| {
                 root.child(self.render_menu(window, cx))
@@ -709,6 +756,7 @@ fn run() {
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("cmd-/", ShowKeybinds, None),
             KeyBinding::new("cmd-n", NewWorkspace, None),
             KeyBinding::new("cmd-t", NewTab, None),
             KeyBinding::new("cmd-d", SplitRight, None),
@@ -719,7 +767,10 @@ fn run() {
         cx.set_menus(vec![
             Menu {
                 name: "Herdr".into(),
-                items: vec![MenuItem::action("Quit Herdr", Quit)],
+                items: vec![
+                    MenuItem::action("Keybinds", ShowKeybinds),
+                    MenuItem::action("Quit Herdr", Quit),
+                ],
             },
             Menu {
                 name: "File".into(),

@@ -1,4 +1,5 @@
-use super::{HerdrWindow, LiveState, sidebar};
+use super::{HerdrWindow, LiveState};
+use crate::config::Config;
 use gpui::{prelude::*, *};
 use std::sync::{Arc, Mutex};
 
@@ -29,6 +30,11 @@ impl MenuState {
 }
 
 impl HerdrWindow {
+    pub(super) fn open_keybinds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_menu(window, cx);
+        self.menu.page = Some(Page::Keybinds);
+    }
+
     pub(super) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu.page = Some(Page::Menu);
         self.menu.selected = 0;
@@ -44,9 +50,9 @@ impl HerdrWindow {
     }
 
     fn menu_items(&self) -> Vec<&'static str> {
-        let mut items = vec!["settings", "keybinds"];
+        let mut items = vec!["settings", "keybinds", "reload GUI config"];
         if self.live.connected {
-            items.push("reload config");
+            items.push("reload daemon config");
         }
         if self
             .live
@@ -67,9 +73,26 @@ impl HerdrWindow {
     fn activate_menu(&mut self, item: &str, window: &mut Window, cx: &mut Context<Self>) {
         match item {
             "settings" => self.menu.page = Some(Page::Preferences),
-            "keybinds" => self.menu.page = Some(Page::Keybinds),
+            "keybinds" => self.open_keybinds(window, cx),
             "update ready" => self.menu.page = Some(Page::Update),
-            "reload config" => {
+            "reload GUI config" => {
+                // Load both before replacing either, so invalid themes preserve the UI.
+                match Config::load().and_then(|config| {
+                    let theme = config.theme()?;
+                    Ok((config, theme))
+                }) {
+                    Ok((config, theme)) => {
+                        self.config = config;
+                        self.theme = theme;
+                        self.wheel = Default::default();
+                        self.sent_size = None;
+                        self.local_error = None;
+                    }
+                    Err(error) => self.local_error = Some(format!("Reload GUI config: {error}")),
+                }
+                self.dismiss_menu(window, cx);
+            }
+            "reload daemon config" => {
                 if let (Some(handle), Some(snapshot)) = (&self.handle, &self.live.snapshot) {
                     self.local_error = handle
                         .request(
@@ -106,23 +129,35 @@ impl HerdrWindow {
 
     pub(super) fn render_menu(&self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let page = self.menu.page.unwrap_or(Page::Menu);
+        let font = &self.config.ui;
+        let theme = &self.theme;
+        let viewport = window.viewport_size();
         let mut panel = div()
             .id("menu-panel")
             .debug_selector(|| "menu-panel".into())
-            .absolute()
-            .left(px(56.))
-            .bottom((window.viewport_size().height - self.menu.anchor.y + px(12.)).max(px(30.)))
-            .w(px(if page == Page::Menu { 180. } else { 420. }))
-            .max_h(window.viewport_size().height / 2. - px(12.))
+            .when(page == Page::Menu, |panel| {
+                panel
+                    .absolute()
+                    .left(px(56.))
+                    .bottom((viewport.height - self.menu.anchor.y + px(12.)).max(px(30.)))
+                    .w(px(180.))
+                    .max_h((viewport.height / 2. - px(12.)).max(px(0.)))
+            })
+            .when(page != Page::Menu, |panel| {
+                panel
+                    .w((viewport.width - px(32.)).max(px(0.)).min(px(480.)))
+                    .max_h((viewport.height - px(32.)).max(px(0.)))
+            })
             .overflow_y_scroll()
             .p(px(6.))
             .rounded(px(5.))
             .border_1()
-            .border_color(rgb(sidebar::ACTIVE))
-            .bg(rgb(sidebar::BACKGROUND))
-            .text_color(rgb(sidebar::FOREGROUND))
-            .font_family("Menlo")
-            .text_size(px(12.))
+            .border_color(rgb(theme.active))
+            .bg(rgb(theme.surface))
+            .text_color(rgb(theme.foreground))
+            .font_family(font.family.clone())
+            .text_size(px(font.size))
+            .line_height(px(font.line_height()))
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(|_, _, cx| cx.stop_propagation());
@@ -132,15 +167,13 @@ impl HerdrWindow {
                     div()
                         .id(item)
                         .debug_selector(move || format!("menu-{item}"))
-                        .h(px(28.))
+                        .min_h(px(font.line_height() + 12.))
                         .px(px(8.))
                         .flex()
                         .items_center()
                         .cursor_pointer()
-                        .when(index == self.menu.selected, |row| {
-                            row.bg(rgb(sidebar::ACTIVE))
-                        })
-                        .hover(|row| row.bg(rgb(sidebar::ACTIVE)))
+                        .when(index == self.menu.selected, |row| row.bg(rgb(theme.active)))
+                        .hover(|row| row.bg(rgb(theme.active)))
                         .child(item)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
@@ -153,16 +186,21 @@ impl HerdrWindow {
                 Page::Preferences => ("Preferences (read-only)", vec![
                     format!("Connection: {}", self.live.status),
                     format!("Target: {:?}", self.target),
-                    "Terminal font: Menlo, 14 px (default)".into(),
-                    "Sidebar font: Menlo, 12 px (default)".into(),
-                    "Daemon configuration editing is not exposed by this native client. No configuration path is assumed.".into(),
-                    "Reload config asks the connected daemon to reload its own configuration.".into(),
+                    format!("GUI config: {}", Config::path().map(|path| path.display().to_string()).unwrap_or_else(|error| format!("unavailable ({error})"))),
+                    format!("Theme: {}", self.config.theme),
+                    format!("Terminal font: {}, {} px", self.config.terminal.family, self.config.terminal.size),
+                    format!("Sidebar font: {}, {} px", self.config.sidebar.family, self.config.sidebar.size),
+                    format!("Tabs font: {}, {} px", self.config.tabs.family, self.config.tabs.size),
+                    format!("UI font: {}, {} px", font.family, font.size),
+                    "Edit the GUI config file to change theme and sidebar, tabs, terminal, or ui fonts (family and size), then choose reload GUI config. Invalid configuration leaves the current appearance unchanged.".into(),
+                    "Reload daemon config is separate and asks the connected daemon to reload its own configuration.".into(),
                 ]),
                 Page::Keybinds => ("Native keybinds", vec![
                     "Cmd-N   New workspace".into(), "Cmd-T   New tab".into(),
                     "Cmd-D   Split right".into(), "Cmd-Shift-D   Split down".into(),
                     "Cmd-Shift-] / [   Next / previous tab".into(),
                     "Cmd-V   Paste into terminal".into(), "Cmd-Q   Quit GUI (daemon stays running)".into(),
+                    "Cmd-/   Show native keybinds".into(),
                     "Menu: Up / Down, Enter; Escape or outside click to dismiss.".into(),
                     "Daemon/TUI custom keybindings are not native GUI shortcuts.".into(),
                 ]),
@@ -196,6 +234,13 @@ impl HerdrWindow {
             .id("menu-overlay")
             .absolute()
             .inset_0()
+            .when(page != Page::Menu, |overlay| {
+                overlay
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(rgba((theme.background << 8) | 0xb0))
+            })
             .occlude()
             .track_focus(&self.menu.focus)
             .on_mouse_down(

@@ -254,6 +254,8 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
             bounds: Bounds::default(),
             cell_width: 9.,
             painter: Default::default(),
+            config: Default::default(),
+            theme: Default::default(),
             marked: String::new(),
             local_error: None,
             menu: crate::menu::MenuState::new(cx),
@@ -422,11 +424,24 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
         window.draw(cx).clear();
     });
     assert!(cx.debug_bounds("menu-panel").is_some());
+    assert!(cx.debug_bounds("menu-reload GUI config").is_some());
     cx.simulate_keystrokes("down enter");
     cx.update(|window, cx| {
         window.draw(cx).clear();
         assert!(view.read(cx).menu.page == Some(crate::menu::Page::Keybinds));
     });
+    let panel = cx.debug_bounds("menu-panel").unwrap();
+    assert_eq!(panel.size.width, px(480.));
+    assert_eq!(panel.center(), gpui::point(px(400.), px(300.)));
+    cx.simulate_resize(size(px(360.), px(240.)));
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+    });
+    let panel = cx.debug_bounds("menu-panel").unwrap();
+    assert_eq!(panel.size.width, px(328.));
+    assert!(panel.size.height <= px(208.));
+    assert_eq!(panel.center(), gpui::point(px(180.), px(120.)));
+    cx.simulate_resize(size(px(800.), px(600.)));
     cx.simulate_keystrokes("escape");
     cx.update(|window, cx| {
         window.draw(cx).clear();
@@ -438,4 +453,26 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     });
     cx.simulate_click(gpui::point(px(700.), px(500.)), Default::default());
     cx.update(|_, cx| assert!(view.read(cx).menu.page.is_none()));
+
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.config.sidebar.size = 24.;
+            view.marked = "composition".into();
+            view.open_keybinds(window, cx);
+            assert!(view.marked.is_empty());
+        });
+        window.draw(cx).clear();
+        assert!(!view.read(cx).focus.is_focused(window));
+    });
+    let line_height = cx.update(|_, cx| super::line_height(&view.read(cx).config.sidebar));
+    assert_eq!(
+        cx.debug_bounds("row-herdr").unwrap().size.height,
+        px(2. * line_height + 8.)
+    );
+    assert_eq!(
+        cx.debug_bounds("name-herdr").unwrap().size.height,
+        px(line_height)
+    );
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| assert!(view.read(cx).focus.is_focused(window)));
 }

@@ -2,7 +2,8 @@
 
 A minimal macOS GPUI 0.2.2 client for an **already running** local Herdr daemon.
 It does not link, start, stop, or modify Herdr, spawn a PTY, or emulate a terminal.
-Runtime dependencies are GPUI, `herdr-client`, and `serde_json` for API parameters.
+Runtime dependencies include GPUI, `herdr-client`, `serde_json` for API parameters,
+and `serde`/`toml` for GUI configuration.
 
 ```sh
 cargo run -p herdr-gpui
@@ -16,6 +17,22 @@ rules. `--socket` must name the binary **client** socket, not the JSON API socke
 `--dev` selects the `herdr-dev` config directory. Connection failure is displayed
 in the single-row status bar; Terminal > Reconnect makes a fresh connection with
 no input replay. The status dot is green when connected and red otherwise.
+
+## Configuration
+
+See [GUI configuration](../../README.md#gui-configuration) for the config path,
+font defaults, theme lookup order, and reload behavior, and
+[`config-gpui.example.toml`](config-gpui.example.toml) for a complete example.
+Font sizes use logical pixels (finite 8..48), not typographic points. Restart the
+GUI or invoke GUI config reload after edits; daemon config reload is separate.
+
+The standalone `src/config.rs` module exposes `Config::load()` and
+`Config::path()`, both returning errors as strings. `Config::theme()` resolves
+built-ins or Ghostty files into a `Theme` with packed 24-bit RGB colors and all
+256 palette entries. Theme resolution is a separate fallible step from loading
+and validating TOML. Font sections can override either family or size without
+repeating the other field. `FontConfig::line_height()` returns `size * 20 / 14`.
+Config and theme I/O is synchronous; GUI callers should schedule it accordingly.
 
 ## Supported
 
@@ -55,7 +72,7 @@ no input replay. The status dot is green when connected and red otherwise.
   input follows the macOS keyboard layout, including dead keys.
 - Cmd-V sends semantic Paste; Cmd-Q or window close detaches without killing
   the daemon or its terminals. Window activation is reported to the daemon.
-- Resize uses the actual terminal canvas bounds and measured Menlo cell width,
+- Resize uses the actual terminal canvas bounds and measured configured font cell width,
   excluding the native sidebar, tabs and status bar.
 
 Socket I/O belongs to `herdr-client`'s worker. A separate event thread drains all
@@ -84,9 +101,9 @@ GPUI native action/menu/keybinding patterns.
 
 ## Deliberate Limitations
 
-- macOS first; uses system Menlo and system font fallback, no bundled Nerd Font.
-  Private-use icons may be missing. ANSI colors use a fixed conventional palette,
-  not a synchronized host-terminal theme.
+- macOS first; defaults to system Menlo and system font fallback, no bundled Nerd Font.
+  Private-use icons may be missing. Fonts and palettes are configured locally,
+  not synchronized from the host terminal's theme.
 - No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
   hyperlink activation, image rendering, or animated blinking.
 - No pane/tab/workspace close or delete actions (deferred until confirmation UI),

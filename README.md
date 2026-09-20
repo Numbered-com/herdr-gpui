@@ -22,7 +22,7 @@ starts with a seen baseline, so its dots can differ from a long-running TUI's
 unread history. Activity is never guessed from terminal output.
 
 The sidebar's `menu` opens an in-app popover with read-only settings information,
-keybind help, daemon config reload, available-update information, and safe
+keybind help, GUI and daemon config reload, available-update information, and safe
 detach/reconnect. Escape or clicking outside dismisses it; menu typing never
 reaches the terminal. Update commands are displayed, not executed automatically.
 
@@ -78,6 +78,75 @@ in `assets/macos/Info.plist` and should be updated for releases.
 The original charcoal/blue connected-H artwork and provenance are in
 [`assets/icons`](assets/icons/README.md). `just icons` regenerates the checked-in
 PNG and ICNS from the SVG with macOS Swift/CoreGraphics and `iconutil`.
+
+## GUI Configuration
+
+Click **? Keybinds** at the bottom right of the status bar, or press `Cmd-/`,
+to open the native shortcut reference. Press Escape, click outside the modal,
+or use its close button to return to the terminal. Terminal input is blocked
+while the modal is open.
+
+GUI settings live in `$XDG_CONFIG_HOME/herdr/config-gpui.toml`, falling back to
+`~/.config/herdr/config-gpui.toml`. The GUI creates a commented default file if it
+is absent, without overwriting an existing file. These settings are independent
+of the daemon configuration and apply equally when connecting with `--dev`.
+
+See the complete [example config](crates/herdr-gpui/config-gpui.example.toml).
+Omitted settings keep their defaults, including individual fields inside a font
+section. Unknown keys, empty font families, and invalid sizes are errors.
+
+```toml
+theme = "Nord"
+
+[terminal]
+family = "Menlo"
+size = 14
+```
+
+| Section | Default Font Family | Default Size |
+| --- | --- | --- |
+| `sidebar` | `Menlo` | 12 |
+| `tabs` | `.SystemUIFont` | 14 |
+| `terminal` | `Menlo` | 14 |
+| `ui` | `.SystemUIFont` | 12 |
+
+Sizes are **logical pixels**, not points or physical display pixels. Fractional
+sizes are supported; values must be finite and between 8 and 48 inclusive. Line
+height scales as `size * 20 / 14`. Fonts must be installed locally; none are bundled.
+Restart the GUI or use its **GUI config reload** action after editing. Reloading
+daemon config is separate and does not apply these appearance settings. There is
+no automatic file watcher.
+
+### Themes
+
+Built-in names are case-sensitive: `Default`, `Nord`, `Dracula`,
+`Catppuccin Mocha`, and `Catppuccin Latte`. `Default` preserves the original
+terminal background, foreground, cursor, ANSI/256-color palette and sidebar
+surface/active/muted colors. Other themes derive chrome colors by blending the
+background and foreground. Built-ins have small hardcoded palettes, not bundled
+third-party assets; entries 16 through 255 retain the conventional color cube and
+grayscale ramp.
+
+`theme` also accepts an absolute path, a `~/` path, or a Ghostty theme filename.
+Built-in names take priority; use an explicit path to select a file with the same
+name. Named files are searched in this order:
+
+1. `$XDG_CONFIG_HOME/herdr/themes` (or `~/.config/herdr/themes`).
+2. `$XDG_CONFIG_HOME/ghostty/themes` (or `~/.config/ghostty/themes`).
+3. `$GHOSTTY_RESOURCES_DIR/themes`, when set.
+4. `/Applications/Ghostty.app/Contents/Resources/ghostty/themes`.
+5. `$XDG_DATA_HOME/ghostty/themes` (or `~/.local/share/ghostty/themes`).
+6. `ghostty/themes` under each `$XDG_DATA_DIRS` entry (defaults to
+   `/usr/local/share` and `/usr/share`).
+
+Ghostty files support `background`, `foreground`, `cursor-color`, and
+`palette = INDEX=COLOR` for indices 0 through 255. Colors must be exactly six hex
+digits, optionally prefixed with `#`. Blank lines and full-line `#` comments are
+allowed; inline comments and named colors are not supported for color values.
+Malformed supported colors report the file and line number. Other settings are
+ignored, including includes and commands: theme loading does not execute them.
+Repeated colors use the last value. Unspecified colors retain defaults, except
+that an omitted cursor color follows the theme foreground.
 
 ## Controls
 
@@ -200,7 +269,7 @@ active desktop. Run `just test-live` and `just test-gui` locally as shown above.
 - Automatic reconnect, optimized terminal painting and graphics support.
 - Signed macOS app packaging, then SSH endpoints.
 
-Current rendering uses Menlo and a fixed ANSI palette. Images and terminal
+Current rendering defaults to Menlo with configurable fonts and themes. Images and terminal
 notifications/clipboard writes are deliberately not executed. See
 [`crates/herdr-gpui/README.md`](crates/herdr-gpui/README.md) for the detailed scope.
 
