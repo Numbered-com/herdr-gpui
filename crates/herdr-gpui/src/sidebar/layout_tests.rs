@@ -261,6 +261,7 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
             marked: String::new(),
             local_error: None,
             menu: crate::menu::MenuState::new(cx),
+            install_warning_shown: false,
             collapsed_repos: Default::default(),
             wheel: WheelAccumulator::default(),
             sidebar_width: None,
@@ -532,5 +533,19 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
         window.draw(cx).clear();
     });
     cx.simulate_click(point(px(700.), px(500.)), Default::default());
+    cx.update(|_, cx| assert!(view.read(cx).menu.page.is_none()));
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| view.show_install_modal(window, cx));
+    });
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        let view = view.read(cx);
+        assert!(view.menu.page == Some(crate::menu::Page::Install));
+        assert!(!view.live.missing_installation);
+        assert_eq!(view.live.snapshot.as_deref(), Some(&before));
+    });
+    assert!(cx.debug_bounds("menu-install").is_some());
+    assert!(cx.debug_bounds("menu-dismiss").is_some());
+    cx.simulate_keystrokes("escape");
     cx.update(|_, cx| assert!(view.read(cx).menu.page.is_none()));
 }
