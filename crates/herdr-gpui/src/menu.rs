@@ -89,6 +89,7 @@ impl HerdrWindow {
             Ok((config, theme)) => {
                 self.config = config;
                 self.theme = theme;
+                crate::log_window::set_appearance(&self.config, &self.theme, cx);
                 self.wheel = Default::default();
                 self.last_queued_options = None;
                 self.local_error = None;

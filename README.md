@@ -325,6 +325,11 @@ case sensitivity; level buttons toggle individual levels. Scroll or use
 read its full message in the detail area.
 `Cmd-F` focuses search; `Cmd-W` closes only the log window.
 
+The console follows the active GUI theme, including theme changes and successful
+GUI config reloads while it is open. It shares the main window's integrated macOS
+title bar. Controls and search use the configured UI font; log rows and details
+use the terminal font (Menlo on macOS or DejaVu Sans Mono on Linux by default).
+
 **Copy** and **Export...** share the currently filtered snapshot as plain text;
 Export uses a native save dialog and writes in the background. Clear search and
 enable all levels to export all retained records. Nothing is uploaded. Review

@@ -27,7 +27,6 @@ mod tab_menu;
 mod terminal;
 mod terminal_painter;
 mod theme_picker;
-#[cfg(target_os = "macos")]
 mod titlebar;
 
 use connection::ConnectionBridge;
@@ -210,6 +209,7 @@ impl HerdrWindow {
                     Some(error),
                 ),
             };
+        log_window::set_appearance(&config, &theme, cx);
         let mut this = Self {
             config,
             theme,
@@ -1203,12 +1203,7 @@ fn run() -> std::process::ExitCode {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(640.), px(400.))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Herdr".into()),
-                    appears_transparent: cfg!(target_os = "macos"),
-                    traffic_light_position: cfg!(target_os = "macos")
-                        .then(|| point(px(9.), px(9.))),
-                }),
+                titlebar: Some(titlebar::options("Herdr")),
                 app_id: Some("so.pen.herdr-gpui".into()),
                 ..Default::default()
             },

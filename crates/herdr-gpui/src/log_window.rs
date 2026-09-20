@@ -1,4 +1,5 @@
 use crate::{
+    config::{Config, Theme},
     diagnostics::{self, Record},
     search_input::{Changed, SearchInput},
 };
@@ -20,6 +21,30 @@ actions!(log_window, [Close, FocusSearch]);
 struct LogWindowHandle(Option<WindowHandle<LogWindow>>);
 impl Global for LogWindowHandle {}
 
+#[derive(Clone, Default)]
+struct Appearance {
+    config: Config,
+    theme: Theme,
+}
+impl Global for Appearance {}
+
+// Publish only successfully applied settings; the console never reloads files itself.
+pub(super) fn set_appearance(config: &Config, theme: &Theme, cx: &mut App) {
+    cx.set_global(Appearance {
+        config: config.clone(),
+        theme: theme.clone(),
+    });
+}
+
+fn severity_color(theme: &Theme, level: Level) -> u32 {
+    match level {
+        Level::ERROR => theme.palette[1],
+        Level::WARN => theme.palette[3],
+        Level::INFO => theme.foreground,
+        _ => theme.muted,
+    }
+}
+
 pub(super) fn open(cx: &mut App) {
     // Global menu actions can run inside the existing window's update.
     cx.defer(open_deferred);
@@ -38,10 +63,7 @@ fn open_deferred(cx: &mut App) {
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(620.), px(360.))),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Herdr GPUI Logs".into()),
-                ..Default::default()
-            }),
+            titlebar: Some(crate::titlebar::options("Herdr GPUI Logs")),
             ..Default::default()
         },
         |window, cx| cx.new(|cx| LogWindow::new(window, cx)),
@@ -52,6 +74,8 @@ fn open_deferred(cx: &mut App) {
 }
 
 struct LogWindow {
+    appearance: Appearance,
+    _appearance: Subscription,
     focus: FocusHandle,
     search: Entity<SearchInput>,
     enabled: [bool; 5],
@@ -103,9 +127,22 @@ impl LogWindow {
             KeyBinding::new("cmd-f", FocusSearch, Some("LogWindow")),
         ]);
         let search = cx.new(SearchInput::new);
+        let appearance = cx.default_global::<Appearance>().clone();
         search.update(cx, |input, cx| {
+            input.set_appearance(appearance.config.ui.clone(), appearance.theme.clone(), cx);
             input.set_placeholder("Search messages, targets, timings...", cx);
             window.focus(&input.focus);
+        });
+        let appearance_subscription = cx.observe_global::<Appearance>(|this, cx| {
+            this.appearance = cx.global::<Appearance>().clone();
+            this.search.update(cx, |input, cx| {
+                input.set_appearance(
+                    this.appearance.config.ui.clone(),
+                    this.appearance.theme.clone(),
+                    cx,
+                );
+            });
+            cx.notify();
         });
         let subscription = cx.subscribe(&search, |this, _, _: &Changed, cx| {
             this.generation = None;
@@ -181,6 +218,8 @@ impl LogWindow {
             }
         });
         Self {
+            appearance,
+            _appearance: appearance_subscription,
             focus: cx.focus_handle(),
             search,
             enabled: [true; 5],
@@ -270,21 +309,23 @@ impl LogWindow {
     }
 }
 
-fn button(id: &'static str, label: impl Into<SharedString>) -> Stateful<Div> {
+fn button(id: &'static str, label: impl Into<SharedString>, theme: &Theme) -> Stateful<Div> {
+    let active = theme.active;
     div()
         .id(id)
         .debug_selector(move || id.into())
         .px_2()
         .py_1()
         .rounded_sm()
-        .bg(rgb(0x263344))
+        .bg(rgb(theme.surface))
         .cursor_pointer()
-        .hover(|style| style.bg(rgb(0x34475e)))
+        .hover(move |style| style.bg(rgb(active)))
         .child(label.into())
 }
 
 impl Render for LogWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Appearance { config, theme } = &self.appearance;
         div()
             .key_context("LogWindow")
             .track_focus(&self.focus)
@@ -295,9 +336,16 @@ impl Render for LogWindow {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(0x111820))
-            .text_color(rgb(0xd9e2ed))
-            .text_size(px(12.))
+            .bg(rgb(theme.background))
+            .text_color(rgb(theme.foreground))
+            .font_family(config.ui.family.clone())
+            .text_size(px(config.ui.size))
+            .line_height(px(config.ui.line_height()))
+            .map(|root| {
+                #[cfg(target_os = "macos")]
+                let root = root.child(crate::titlebar::render(theme.surface, theme.foreground));
+                root
+            })
             .child(
                 div()
                     .flex_none()
@@ -305,11 +353,16 @@ impl Render for LogWindow {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(div().text_size(px(16.)).child("GPUI / Diagnostics"))
+                    .child(
+                        div()
+                            .text_size(px(config.ui.size + 4.))
+                            .child("GPUI / Diagnostics"),
+                    )
                     .child(self.search.clone())
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .items_center()
                             .gap_2()
                             .children(LEVELS.iter().enumerate().map(|(index, level)| {
@@ -322,8 +375,9 @@ impl Render for LogWindow {
                                         _ => "error",
                                     },
                                     level.as_str(),
+                                    theme,
                                 )
-                                .when(!self.enabled[index], |el| el.text_color(rgb(0x6a7889)))
+                                .when(!self.enabled[index], |el| el.text_color(rgb(theme.muted)))
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
                                         this.enabled[index] = !this.enabled[index];
@@ -341,6 +395,7 @@ impl Render for LogWindow {
                                     } else {
                                         "Resume tail"
                                     },
+                                    theme,
                                 )
                                 .on_click(cx.listener(
                                     |this, _, _, cx| {
@@ -351,7 +406,7 @@ impl Render for LogWindow {
                                 )),
                             )
                             .child(
-                                button("copy", "Copy")
+                                button("copy", "Copy", theme)
                                     .on_click(cx.listener(|this, _, _, cx| this.share(false, cx))),
                             )
                             .child(
@@ -362,6 +417,7 @@ impl Render for LogWindow {
                                     } else {
                                         "Export..."
                                     },
+                                    theme,
                                 )
                                 .on_click(cx.listener(|this, _, _, cx| this.share(true, cx))),
                             ),
@@ -388,23 +444,25 @@ impl Render for LogWindow {
                                     range
                                         .map(|index| {
                                             let record = this.rows[index].clone();
-                                            let color = match record.level {
-                                                Level::ERROR => 0xff8794,
-                                                Level::WARN => 0xefc77a,
-                                                Level::INFO => 0xd9e2ed,
-                                                _ => 0x91a5bb,
-                                            };
+                                            let theme = &this.appearance.theme;
+                                            let font = &this.appearance.config.terminal;
+                                            let active = theme.active;
                                             div()
                                                 .id(index)
                                                 .debug_selector(move || format!("log-row-{index}"))
-                                                .h(px(22.))
+                                                .h(px(font.line_height() + 2.))
                                                 .px_3()
-                                                .text_color(rgb(color))
-                                                .font_family("monospace")
+                                                .text_color(rgb(severity_color(
+                                                    theme,
+                                                    record.level,
+                                                )))
+                                                .font_family(font.family.clone())
+                                                .text_size(px(font.size))
+                                                .line_height(px(font.line_height()))
                                                 .truncate()
                                                 .child(record.line.clone())
                                                 .cursor_pointer()
-                                                .hover(|style| style.bg(rgb(0x263344)))
+                                                .hover(move |style| style.bg(rgb(active)))
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     this.selected = Some(record.clone());
                                                     cx.notify();
@@ -422,10 +480,16 @@ impl Render for LogWindow {
                 el.child(
                     div()
                         .id("log-detail")
-                        .h(px(100.))
+                        .debug_selector(|| "log-detail".into())
+                        .flex_none()
+                        .h((window.viewport_size().height * 0.2).min(px(100.)))
                         .overflow_y_scroll()
                         .p_3()
-                        .bg(rgb(0x1c2734))
+                        .bg(rgb(theme.surface))
+                        .text_color(rgb(severity_color(theme, record.level)))
+                        .font_family(config.terminal.family.clone())
+                        .text_size(px(config.terminal.size))
+                        .line_height(px(config.terminal.line_height()))
                         .child(record.line.clone()),
                 )
             })
@@ -434,7 +498,8 @@ impl Render for LogWindow {
                     .flex_none()
                     .p_3()
                     .border_t_1()
-                    .border_color(rgb(0x263344))
+                    .border_color(rgb(theme.active))
+                    .truncate()
                     .child(format!(
                         "{} shown | {} evicted/dropped | {} | {}",
                         self.rows.len(),
@@ -466,6 +531,104 @@ mod tests {
             })
         })
         .collect()
+    }
+
+    #[test]
+    fn concrete_default_fonts_and_shared_native_decoration() {
+        let appearance = Appearance::default();
+        assert_eq!(
+            appearance.config.terminal.family,
+            if cfg!(target_os = "linux") {
+                "DejaVu Sans Mono"
+            } else {
+                "Menlo"
+            }
+        );
+        let options = crate::titlebar::options("Herdr GPUI Logs");
+        assert_eq!(options.title.unwrap().as_ref(), "Herdr GPUI Logs");
+        assert_eq!(options.appears_transparent, cfg!(target_os = "macos"));
+        assert_eq!(
+            options.traffic_light_position,
+            cfg!(target_os = "macos").then(|| point(px(9.), px(9.)))
+        );
+    }
+
+    #[gpui::test]
+    fn appearance_updates_open_paused_console_and_geometry(cx: &mut TestAppContext) {
+        let mut config = Config {
+            theme: "Nord".into(),
+            ..Config::default()
+        };
+        cx.update(|cx| set_appearance(&config, &config.theme().unwrap(), cx));
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut view = LogWindow::new(window, cx);
+            view.following = false;
+            view.generation = Some(diagnostics::generation());
+            view.rows = records();
+            view.selected = Some(view.rows[0].clone());
+            view
+        });
+        for name in ["Nord", "Catppuccin Latte", "Dracula"] {
+            config.theme = name.into();
+            config.terminal.family = "DejaVu Sans Mono".into();
+            config.terminal.size = 20.;
+            config.ui.size = 16.;
+            let theme = config.theme().unwrap();
+            cx.update(|_, cx| set_appearance(&config, &theme, cx));
+            cx.run_until_parked();
+            view.read_with(cx, |view, _| {
+                assert_eq!(view.appearance.theme, theme);
+                assert_eq!(view.appearance.config.ui.family, config.ui.family);
+                assert_eq!(view.appearance.config.ui.size, 16.);
+                assert_eq!(view.appearance.config.terminal.family, "DejaVu Sans Mono");
+                assert!(!view.following);
+                assert_eq!(view.rows.len(), 3);
+                assert!(view.selected.is_some());
+                assert_eq!(severity_color(&theme, Level::ERROR), theme.palette[1]);
+                assert_eq!(severity_color(&theme, Level::WARN), theme.palette[3]);
+                assert_eq!(severity_color(&theme, Level::INFO), theme.foreground);
+                assert_eq!(severity_color(&theme, Level::DEBUG), theme.muted);
+                assert_eq!(severity_color(&theme, Level::TRACE), theme.muted);
+            });
+            for (width, height) in [(1100., 650.), (620., 360.)] {
+                cx.simulate_resize(size(px(width), px(height)));
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    window.refresh();
+                    window.draw(cx).clear();
+                });
+                let search = cx.debug_bounds("theme-search").unwrap();
+                #[cfg(target_os = "macos")]
+                {
+                    let header = cx.debug_bounds("titlebar").unwrap();
+                    assert_eq!(
+                        header,
+                        Bounds::new(point(px(0.), px(0.)), size(px(width), px(34.)))
+                    );
+                    assert!(search.top() >= header.bottom());
+                }
+                let first = cx.debug_bounds("log-row-0").unwrap();
+                assert!(
+                    (f32::from(first.size.height) - (config.terminal.line_height() + 2.)).abs()
+                        < 1.
+                );
+                assert!(first.top() >= search.bottom());
+                let detail = cx.debug_bounds("log-detail").unwrap();
+                assert_eq!(detail.size.height, px((height * 0.2).min(100.)));
+                assert!(detail.top() >= first.bottom());
+                assert!(detail.bottom() <= px(height));
+                for selector in [
+                    "trace", "debug", "info", "warn", "error", "follow", "copy", "export",
+                ] {
+                    let bounds = cx.debug_bounds(selector).unwrap();
+                    assert!(bounds.left() >= px(0.) && bounds.right() <= px(width));
+                    assert!(
+                        bounds.bottom() <= first.top(),
+                        "{name} {width}x{height} {selector}: {bounds:?}, row: {first:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[gpui::test]
