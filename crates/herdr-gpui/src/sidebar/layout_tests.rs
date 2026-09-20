@@ -433,6 +433,19 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     let panel = cx.debug_bounds("menu-panel").unwrap();
     assert_eq!(panel.size.width, px(480.));
     assert_eq!(panel.center(), gpui::point(px(400.), px(300.)));
+    let first_description = cx.debug_bounds("description-New workspace").unwrap();
+    for (keys, label) in [
+        ("keys-New workspace", "description-New workspace"),
+        ("keys-New tab", "description-New tab"),
+        ("keys-Split right", "description-Split right"),
+        ("keys-Split down", "description-Split down"),
+    ] {
+        let keys = cx.debug_bounds(keys).unwrap();
+        let label = cx.debug_bounds(label).unwrap();
+        assert!(keys.right() < label.left());
+        assert_eq!(label.left(), first_description.left());
+        assert!(label.right() < panel.right());
+    }
     cx.simulate_resize(size(px(360.), px(240.)));
     cx.update(|window, cx| {
         window.draw(cx).clear();
@@ -441,6 +454,31 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     assert_eq!(panel.size.width, px(328.));
     assert!(panel.size.height <= px(208.));
     assert_eq!(panel.center(), gpui::point(px(180.), px(120.)));
+    let header = cx.debug_bounds("keybinds-header").unwrap();
+    let footer = cx.debug_bounds("keybinds-footer").unwrap();
+    let body = cx.debug_bounds("keybinds-body").unwrap();
+    assert!(body.size.height > px(0.));
+    assert!(header.bottom() <= body.top());
+    assert!(body.bottom() <= footer.top());
+    assert!(footer.bottom() <= panel.bottom());
+    let first_row = cx.debug_bounds("shortcut-New workspace").unwrap();
+    cx.simulate_keystrokes("pagedown");
+    cx.update(|window, cx| window.draw(cx).clear());
+    assert!(cx.debug_bounds("shortcut-New workspace").unwrap().top() < first_row.top());
+    assert_eq!(cx.debug_bounds("keybinds-header").unwrap(), header);
+    assert_eq!(cx.debug_bounds("keybinds-footer").unwrap(), footer);
+    let close = cx.debug_bounds("keybinds-close").unwrap();
+    cx.simulate_click(close.center(), Default::default());
+    cx.update(|window, cx| {
+        assert!(view.read(cx).menu.page.is_none());
+        assert!(view.read(cx).focus.is_focused(window));
+        view.update(cx, |view, cx| view.open_keybinds(window, cx));
+        window.draw(cx).clear();
+    });
+    assert_eq!(
+        cx.debug_bounds("shortcut-New workspace").unwrap(),
+        first_row
+    );
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.simulate_keystrokes("escape");
     cx.update(|window, cx| {

@@ -16,6 +16,7 @@ pub(super) struct MenuState {
     pub anchor: Point<Pixels>,
     focus: FocusHandle,
     selected: usize,
+    keybinds_scroll: ScrollHandle,
 }
 
 impl MenuState {
@@ -25,6 +26,7 @@ impl MenuState {
             anchor: Point::default(),
             focus: cx.focus_handle(),
             selected: 0,
+            keybinds_scroll: ScrollHandle::new(),
         }
     }
 }
@@ -33,6 +35,7 @@ impl HerdrWindow {
     pub(super) fn open_keybinds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu(window, cx);
         self.menu.page = Some(Page::Keybinds);
+        self.menu.keybinds_scroll.set_offset(Point::default());
     }
 
     pub(super) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -148,8 +151,17 @@ impl HerdrWindow {
                     .w((viewport.width - px(32.)).max(px(0.)).min(px(480.)))
                     .max_h((viewport.height - px(32.)).max(px(0.)))
             })
-            .overflow_y_scroll()
-            .p(px(6.))
+            .when(page != Page::Keybinds, |panel| {
+                panel.overflow_y_scroll().p(px(6.))
+            })
+            .when(page == Page::Keybinds, |panel| {
+                panel
+                    .flex()
+                    .flex_col()
+                    .h(px(560. * (font.size / 12.)).min((viewport.height - px(32.)).max(px(0.))))
+                    .overflow_hidden()
+                    .shadow_lg()
+            })
             .rounded(px(5.))
             .border_1()
             .border_color(rgb(theme.active))
@@ -181,6 +193,8 @@ impl HerdrWindow {
                         })),
                 );
             }
+        } else if page == Page::Keybinds {
+            panel = panel.child(self.render_keybinds(cx));
         } else {
             let (title, rows) = match page {
                 Page::Preferences => ("Preferences (read-only)", vec![
@@ -194,15 +208,6 @@ impl HerdrWindow {
                     format!("UI font: {}, {} px", font.family, font.size),
                     "Edit the GUI config file to change theme and sidebar, tabs, terminal, or ui fonts (family and size), then choose reload GUI config. Invalid configuration leaves the current appearance unchanged.".into(),
                     "Reload daemon config is separate and asks the connected daemon to reload its own configuration.".into(),
-                ]),
-                Page::Keybinds => ("Native keybinds", vec![
-                    "Cmd-N   New workspace".into(), "Cmd-T   New tab".into(),
-                    "Cmd-D   Split right".into(), "Cmd-Shift-D   Split down".into(),
-                    "Cmd-Shift-] / [   Next / previous tab".into(),
-                    "Cmd-V   Paste into terminal".into(), "Cmd-Q   Quit GUI (daemon stays running)".into(),
-                    "Cmd-/   Show native keybinds".into(),
-                    "Menu: Up / Down, Enter; Escape or outside click to dismiss.".into(),
-                    "Daemon/TUI custom keybindings are not native GUI shortcuts.".into(),
                 ]),
                 _ => {
                     let snapshot = self.live.snapshot.as_ref();
@@ -256,6 +261,20 @@ impl HerdrWindow {
                 window.prevent_default();
                 match event.keystroke.key.as_str() {
                     "escape" => this.dismiss_menu(window, cx),
+                    "up" | "down" | "pageup" | "pagedown"
+                        if this.menu.page == Some(Page::Keybinds) =>
+                    {
+                        let scroll = &this.menu.keybinds_scroll;
+                        let key = event.keystroke.key.as_str();
+                        let distance = if key.starts_with("page") {
+                            scroll.bounds().size.height * 0.8
+                        } else {
+                            px(this.config.ui.line_height() * 3.)
+                        };
+                        let direction = if key.ends_with("up") { 1. } else { -1. };
+                        scroll.set_offset(scroll.offset() + point(px(0.), distance * direction));
+                        cx.notify();
+                    }
                     "up" | "down" if this.menu.page == Some(Page::Menu) => {
                         let count = this.menu_items().len();
                         this.menu.selected = (this.menu.selected
@@ -276,5 +295,172 @@ impl HerdrWindow {
                 }
             }))
             .child(panel)
+    }
+
+    fn render_keybinds(&self, cx: &mut Context<Self>) -> Div {
+        let theme = &self.theme;
+        let font = &self.config.ui;
+        // Mix the theme's blue with foreground so accents remain readable on dark themes.
+        let accent = rgb(theme.foreground).blend(rgba((theme.palette[4] << 8) | 0x70));
+        let mut body = div()
+            .id("keybinds-body")
+            .debug_selector(|| "keybinds-body".into())
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.menu.keybinds_scroll)
+            .px(px(16.))
+            .py(px(8.));
+        for (section, shortcuts) in [
+            (
+                "WORKSPACES & PANES",
+                vec![
+                    ("Cmd N", "New workspace"),
+                    ("Cmd T", "New tab"),
+                    ("Cmd D", "Split right"),
+                    ("Cmd Shift D", "Split down"),
+                ],
+            ),
+            (
+                "NAVIGATION",
+                vec![("Cmd Shift ]", "Next tab"), ("Cmd Shift [", "Previous tab")],
+            ),
+            (
+                "APPLICATION",
+                vec![
+                    ("Cmd V", "Paste into terminal"),
+                    ("Cmd /", "Show keybinds"),
+                    ("Cmd Q", "Quit GUI; daemon stays running"),
+                ],
+            ),
+        ] {
+            body = body.child(
+                div()
+                    .pt(px(12.))
+                    .pb(px(6.))
+                    .text_size(px(font.size * 0.85))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(accent)
+                    .child(section),
+            );
+            for (keys, description) in shortcuts {
+                body = body.child(
+                    div()
+                        .debug_selector(|| format!("shortcut-{description}"))
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .py(px(7.))
+                        .border_b_1()
+                        .border_color(rgb(theme.active))
+                        .child(
+                            div()
+                                .debug_selector(|| format!("keys-{description}"))
+                                .w(relative(0.45))
+                                .flex_none()
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(4.))
+                                .children(keys.split_whitespace().map(|key| {
+                                    div()
+                                        .flex_none()
+                                        .px(px(6.))
+                                        .py(px(2.))
+                                        .rounded(px(4.))
+                                        .border_1()
+                                        .border_color(rgb(theme.active))
+                                        .bg(rgb(theme.background))
+                                        .text_size(px(font.size * 0.9))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(key.to_owned())
+                                })),
+                        )
+                        .child(
+                            div()
+                                .debug_selector(|| format!("description-{description}"))
+                                .flex_1()
+                                .min_w_0()
+                                .child(description),
+                        ),
+                );
+            }
+        }
+        body = body.child(
+            div()
+                .py(px(14.))
+                .text_color(rgb(theme.muted))
+                .child("Native GUI shortcuts only. Terminal applications and daemon/TUI keybindings keep their own shortcuts."),
+        );
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .min_h_0()
+            .child(
+                div()
+                    .debug_selector(|| "keybinds-header".into())
+                    .flex()
+                    .items_center()
+                    .flex_none()
+                    .gap(px(12.))
+                    .p(px(16.))
+                    .border_b_1()
+                    .border_color(rgb(theme.active))
+                    .child(
+                        div()
+                            .w(px(3.))
+                            .h(px(font.size * 2.5))
+                            .rounded_full()
+                            .bg(accent),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_size(px(font.size * 1.35))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Keyboard Shortcuts"),
+                            )
+                            .child(
+                                div()
+                                    .text_color(rgb(theme.muted))
+                                    .child("Your Herdr quick reference"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("menu-close")
+                            .debug_selector(|| "keybinds-close".into())
+                            .flex_none()
+                            .px(px(8.))
+                            .py(px(4.))
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .text_color(rgb(theme.muted))
+                            .hover(|style| {
+                                style
+                                    .bg(rgb(theme.active))
+                                    .text_color(rgb(theme.foreground))
+                            })
+                            .child("Close")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.dismiss_menu(window, cx)),
+                            ),
+                    ),
+            )
+            .child(body)
+            .child(
+                div()
+                    .debug_selector(|| "keybinds-footer".into())
+                    .flex_none()
+                    .px(px(16.))
+                    .py(px(10.))
+                    .border_t_1()
+                    .border_color(rgb(theme.active))
+                    .text_color(rgb(theme.muted))
+                    .child("Esc to close  /  click outside to dismiss"),
+            )
     }
 }
