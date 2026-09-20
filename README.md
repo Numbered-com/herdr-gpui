@@ -26,6 +26,14 @@ keybind help, daemon config reload, available-update information, and safe
 detach/reconnect. Escape or clicking outside dismisses it; menu typing never
 reaches the terminal. Update commands are displayed, not executed automatically.
 
+Right-click a space to **Rename** it or **Close** it with confirmation. A main
+checkout with multiple spaces in its repository offers **Close group**, which
+terminates the group's terminals but does not delete checkout files or branches.
+Non-linked Git parents also offer **New worktree**: enter a branch or leave it
+blank for the daemon default. Creation uses `HEAD` and focuses the new workspace;
+it does not grant repository trust. Actions target the clicked space, not the
+active one. Text dialogs support Unicode/IME, selection, and Cmd-A/C/X/V.
+
 This is an initial working macOS client, not complete TUI feature parity.
 Herdr owns terminal processes and session state; closing this app only detaches.
 The Herdr checkout does not need to be modified or linked into this build.
@@ -84,6 +92,7 @@ PNG and ICNS from the SVG with macOS Swift/CoreGraphics and `iconutil`.
 | Control | Action |
 | --- | --- |
 | Sidebar workspace/agent | Focus its workspace or pane |
+| Right-click sidebar workspace | Rename, confirmed close, or new worktree on Git parents |
 | Top tab / terminal pane | Focus the tab or pane |
 | Cmd-N | New workspace using daemon directory policy |
 | Cmd-T | New tab |
@@ -161,6 +170,10 @@ mock text system does not model. It requires an active desktop, but uses only
 fixture data and never connects to your daemon. It is not a screenshot/pixel
 comparison test.
 
+The native sidebar fixture also right-clicks a Git parent and opens all three
+workspace dialogs at 640x400 and 1200x780, checking Unicode editing, caret/IME
+bounds, focus restoration, and terminal/action isolation without a daemon.
+
 On macOS this also verifies that the running application's native Dock image is
 valid and 1024x1024; a normal unit test checks the embedded PNG header/dimensions.
 
@@ -195,7 +208,7 @@ active desktop. Run `just test-live` and `just test-gui` locally as shown above.
 ## Next Milestones
 
 - Selection/copy, hyperlink interaction, richer mouse support, and inline IME.
-- Rename/close dialogs and full worktree/agent management.
+- Full worktree/agent management and pane/tab close dialogs.
 - Resizable sidebar, editable settings and bundled fonts.
 - Automatic reconnect, optimized terminal painting and graphics support.
 - Signed macOS app packaging, then SSH endpoints.

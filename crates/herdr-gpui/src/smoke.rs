@@ -193,7 +193,77 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                 return;
             }
         }
-        eprintln!("SIDEBAR native PASS: 12 Menlo draws, 4 sizes, collapse/expand, menu keyboard isolation and outside dismissal");
+        #[cfg(target_os = "macos")]
+        for (width, height) in [(640., 400.), (1200., 780.)] {
+            let _ = handle.update(cx, |_, window, _| window.resize(size(px(width), px(height))));
+            timer.timer(Duration::from_millis(100)).await;
+            for (keys, action) in [
+                ("enter", menu::WorkspaceAction::Rename),
+                ("down enter", menu::WorkspaceAction::Close),
+                ("down down enter", menu::WorkspaceAction::NewWorktree),
+            ] {
+                let point = handle.update(cx, |view, window, cx| {
+                    view.live.status = state::ConnectionStatus::Connected;
+                    cx.notify();
+                    window.refresh();
+                });
+                if let Err(error) = point {
+                    eprintln!("SIDEBAR native dialog setup FAIL: {error}");
+                    let _ = cx.update(|cx| cx.quit());
+                    return;
+                }
+                let point = AnyWindowHandle::from(handle).update(cx, |_, window, cx| {
+                    window.draw(cx).clear();
+                    cx.global::<sidebar::layout_tests::PaintedProbes>().0.get("agent-launcher").map(|probe| {
+                        eprintln!("DIALOG native {action:?} viewport={:?}", window.viewport_size());
+                        probe.bounds.center()
+                    })
+                });
+                let clicked = match point {
+                    Ok(Some(point)) => sidebar::native_tests::right_click(point.x.to_f64(), point.y.to_f64()),
+                    _ => Err("missing native workspace".into()),
+                };
+                timer.timer(Duration::from_millis(50)).await;
+                let verified = AnyWindowHandle::from(handle).update(cx, |root, window, cx| -> Result<(), String> {
+                    clicked?;
+                    let view = root.downcast::<HerdrWindow>().map_err(|_| "unexpected root")?;
+                    if view.read(cx).menu.page != Some(menu::Page::Workspace) { return Err("right click did not open workspace menu".into()); }
+                    let before = view.read(cx).input_probe;
+                    for key in keys.split(' ') {
+                        window.dispatch_keystroke(Keystroke::parse(key).map_err(|error| error.to_string())?, cx);
+                    }
+                    window.draw(cx).clear();
+                    if view.read(cx).menu.page != Some(menu::Page::Dialog(action)) { return Err("workspace menu opened wrong dialog".into()); }
+                    window.dispatch_action(Box::new(NewTab), cx);
+                    if action != menu::WorkspaceAction::Close {
+                        window.dispatch_keystroke(Keystroke::parse("cmd-a").map_err(|error| error.to_string())?, cx);
+                        for ch in "long-label-\u{65e5}\u{672c}-\u{1f600}".repeat(4).chars() {
+                            window.dispatch_keystroke(Keystroke::parse(&ch.to_string()).map_err(|error| error.to_string())?, cx);
+                        }
+                        window.draw(cx).clear();
+                        view.update(cx, |view, cx| -> Result<(), String> {
+                            let input = view.menu.input.as_ref().ok_or("missing native editor")?;
+                            if input.text != "long-label-\u{65e5}\u{672c}-\u{1f600}".repeat(4) { return Err("native editor lost Unicode text".into()); }
+                            let end = input.text.encode_utf16().count();
+                            let field = input.bounds;
+                            let caret = view.bounds_for_range(end..end, Bounds::default(), window, cx).ok_or("missing native IME bounds")?;
+                            if !field.contains(&caret.origin) || field.right() > window.viewport_size().width || field.bottom() > window.viewport_size().height { return Err("native dialog caret/field out of bounds".into()); }
+                            Ok(())
+                        })?;
+                    }
+                    window.dispatch_keystroke(Keystroke::parse("escape").map_err(|error| error.to_string())?, cx);
+                    let state = view.read(cx);
+                    if state.menu.page.is_some() || state.input_probe.text != before.text || state.input_probe.keys != before.keys || state.input_probe.actions != before.actions || !state.focus.is_focused(window) { return Err("workspace dialog leaked input or lost focus".into()); }
+                    Ok(())
+                });
+                if !matches!(verified, Ok(Ok(()))) {
+                    eprintln!("SIDEBAR native dialog FAIL: {verified:?}");
+                    let _ = cx.update(|cx| cx.quit());
+                    return;
+                }
+            }
+        }
+        eprintln!("SIDEBAR native PASS: 12 Menlo draws, 4 sizes, collapse/expand, menu isolation, right-click dialogs and Unicode fields at 2 sizes");
         EXIT_CODE.store(0, Ordering::SeqCst);
         let _ = cx.update(|cx| cx.quit());
     })

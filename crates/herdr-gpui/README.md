@@ -24,6 +24,22 @@ no input replay. The status dot is green when connected and red otherwise.
   filled/hollow activity indicators with client-local unseen-completion tracking.
 - In-app sidebar menu for settings information, keybinds, config reload, update
   information, and detach/reconnect. Settings are read-only for now.
+- Right-click spaces for Rename, Close (Close group on non-linked parents with
+  multiple spaces sharing `worktree.key`), and New worktree on non-linked Git
+  parents. Close requires confirmation and terminates terminals, not checkout
+  files or branches. Rename and branch dialogs support Unicode/IME, grapheme
+  editing, Shift-arrow selection, Home/End, and Cmd-A/C/X/V. Escape/outside click
+  cancels; dialog input never reaches terminals or native creation actions.
+  Context menus and dialogs anchor to the pointer and clamp to the viewport.
+  Rename trims surrounding whitespace and rejects blank labels inline.
+- Workspace actions retain the clicked ID and boot, revalidate before queueing,
+  and reject changed close-group membership. Reconnect clears dialogs. Queue
+  errors remain in the dialog; daemon errors appear in the connection status bar.
+  Queue acceptance dismisses the dialog, not an optimistic state mutation.
+- Worktree creation sends the clicked `workspace_id`, optional `branch`,
+  `base: "HEAD"`, `focus: true`, and `trust_repository: false`. Blank branches use
+  daemon policy. The daemon's deferred endpoint navigation focuses the result;
+  no follow-up focus request or local Git subprocess is used.
 - Title-only tabs, without an added tab number. Externally created workspaces
   arrive through pushed snapshots without manual refresh.
 - Click workspace, tab, agent, or a visible split pane to focus through the API.
@@ -89,7 +105,7 @@ GPUI native action/menu/keybinding patterns.
   not a synchronized host-terminal theme.
 - No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
   hyperlink activation, image rendering, or animated blinking.
-- No pane/tab/workspace close or delete actions (deferred until confirmation UI),
+- No pane/tab close or worktree delete actions,
   horizontal wheel handling, command palette, server-owned keybindings, SSH,
   session picker, automatic reconnect, or daemon lifecycle management.
 - IME uses a minimal transient buffer, not a local editable terminal document;
@@ -115,4 +131,9 @@ the separate downloadable build-time Metal compiler. Tests cover wire colors,
 cell modifiers, viewport bounds, semantic key selection, revision coherence,
 creation request parameters, workspace-local tab cycling, wheel accumulation,
 pane-relative hit testing, and popup routing.
+Workspace-menu regressions check clicked-target schemas, stale boot/group
+rejection, Unicode composition, and headless right-click/input routing.
+`just test-sidebar` additionally exercises the native dialogs at narrow and wide
+sizes, but does not validate OS IME candidate-window delivery or live daemon
+worktree creation/close.
 They do not replace an interactive smoke test against a live daemon.

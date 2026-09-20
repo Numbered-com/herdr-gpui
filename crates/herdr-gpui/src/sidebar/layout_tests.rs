@@ -438,4 +438,136 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     });
     cx.simulate_click(gpui::point(px(700.), px(500.)), Default::default());
     cx.update(|_, cx| assert!(view.read(cx).menu.page.is_none()));
+
+    // Exercise the actual right-click overlay and platform text handler, without a daemon.
+    cx.update(|_, cx| {
+        view.update(cx, |view, _| {
+            view.live.status = crate::state::ConnectionStatus::Connected;
+        })
+    });
+    let parent = cx.debug_bounds("row-agent-launcher").unwrap();
+    cx.simulate_mouse_down(
+        parent.center(),
+        gpui::MouseButton::Right,
+        Default::default(),
+    );
+    cx.simulate_mouse_up(
+        parent.center(),
+        gpui::MouseButton::Right,
+        Default::default(),
+    );
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        assert!(view.read(cx).menu.page == Some(crate::menu::Page::Workspace));
+        assert_eq!(view.read(cx).live.snapshot.as_deref(), Some(&before));
+    });
+    assert!(cx.debug_bounds("workspace-menu-Close group").is_some());
+    assert!(cx.debug_bounds("workspace-menu-New worktree").is_some());
+    for dialog in [false, true] {
+        if dialog {
+            cx.simulate_keystrokes("enter");
+        }
+        for anchor in [
+            gpui::point(px(200.), px(400.)),
+            gpui::point(px(795.), px(595.)),
+            gpui::point(px(-10.), px(-20.)),
+        ] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.menu.anchor = anchor;
+                    cx.notify();
+                });
+                window.draw(cx).clear();
+            });
+            let panel = cx.debug_bounds("menu-panel").unwrap();
+            assert_eq!(panel.size.width, px(if dialog { 420. } else { 180. }));
+            let expected = |position: Pixels, extent: Pixels, viewport: Pixels| {
+                if position + extent > viewport {
+                    (viewport - extent - px(12.)).round()
+                } else if position < px(0.) {
+                    px(12.)
+                } else {
+                    position.round()
+                }
+            };
+            assert_eq!(panel.left(), expected(anchor.x, panel.size.width, px(800.)));
+            assert_eq!(panel.top(), expected(anchor.y, panel.size.height, px(600.)));
+            assert!(panel.right() <= px(800.) && panel.bottom() <= px(600.));
+        }
+    }
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.menu.anchor = parent.center();
+            cx.notify();
+        });
+        window.draw(cx).clear();
+    });
+    cx.simulate_input("\u{65e5}\u{672c}\u{1f600}");
+    cx.update(|window, cx| {
+        use gpui::EntityInputHandler;
+        view.update(cx, |view, cx| {
+            assert_eq!(
+                view.menu.input.as_ref().unwrap().text,
+                "\u{65e5}\u{672c}\u{1f600}"
+            );
+            view.replace_and_mark_text_in_range(Some(2..4), "\u{304b}", Some(1..1), window, cx);
+            assert_eq!(view.marked_text_range(window, cx), Some(2..3));
+            assert_eq!(
+                view.selected_text_range(false, window, cx).unwrap().range,
+                3..3
+            );
+            view.replace_text_in_range(None, "\u{6f22}", window, cx);
+            assert_eq!(
+                view.menu.input.as_ref().unwrap().text,
+                "\u{65e5}\u{672c}\u{6f22}"
+            );
+            assert!(view.marked.is_empty());
+            view.command(crate::controls::Command::Workspace, window, cx);
+            assert!(view.local_error.is_none());
+        });
+        window.draw(cx).clear();
+        view.update(cx, |view, cx| {
+            let bounds = view
+                .bounds_for_range(3..3, Bounds::default(), window, cx)
+                .unwrap();
+            assert!(
+                view.menu
+                    .input
+                    .as_ref()
+                    .unwrap()
+                    .bounds
+                    .contains(&bounds.origin)
+            );
+        });
+    });
+    cx.simulate_keystrokes("enter");
+    cx.update(|_, cx| {
+        // No handle: a queue failure must preserve the draft, not claim success.
+        assert!(
+            view.read(cx).menu.page
+                == Some(crate::menu::Page::Dialog(
+                    crate::menu::WorkspaceAction::Rename
+                ))
+        );
+    });
+    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_input("   ");
+    cx.simulate_keystrokes("enter");
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        assert_eq!(view.read(cx).menu.input.as_ref().unwrap().text, "   ");
+        assert!(
+            view.read(cx).menu.page
+                == Some(crate::menu::Page::Dialog(
+                    crate::menu::WorkspaceAction::Rename
+                ))
+        );
+    });
+    assert!(cx.debug_bounds("dialog-error").is_some());
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| {
+        assert!(view.read(cx).menu.page.is_none());
+        assert!(view.read(cx).menu.input.is_none());
+        assert!(view.read(cx).focus.is_focused(window));
+    });
 }

@@ -4,6 +4,7 @@ mod app_icon;
 mod cli;
 mod connection;
 mod controls;
+mod dialog_input;
 mod input;
 mod menu;
 #[cfg(feature = "integration-test")]
@@ -144,6 +145,7 @@ impl HerdrWindow {
     }
 
     fn reconnect(&mut self) {
+        self.menu.reset();
         self.local_error = None;
         self.marked.clear();
         self.last_queued_options = None;
@@ -206,6 +208,9 @@ impl HerdrWindow {
     }
 
     fn navigate(&mut self, target: NavigationTarget<'_>, cx: &mut Context<Self>) {
+        if self.menu.page.is_some() {
+            return;
+        }
         if let (Some(handle), Some(snapshot)) = (&self.connection.handle, &self.live.snapshot) {
             let result = match target {
                 NavigationTarget::Workspace(id) => handle.focus_workspace(&snapshot.boot_id, id),
@@ -334,6 +339,7 @@ mod tests {
 
 impl Render for HerdrWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.restore_menu_focus(window);
         let font = font("Menlo");
         self.cell_width = self.painter.borrow_mut().cell_width(&font, window, cx);
         let sidebar = self.render_sidebar(cx);

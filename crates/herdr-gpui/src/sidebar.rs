@@ -45,6 +45,7 @@ impl HerdrWindow {
             {
                 let workspace = &snapshot.workspaces[index];
                 let id = workspace.workspace_id.clone();
+                let context_id = id.clone();
                 spaces = spaces.child(
                     row(
                         workspace_label(workspace, indented),
@@ -74,6 +75,13 @@ impl HerdrWindow {
                         )
                     })
                     .id(SharedString::from(format!("workspace-{id}")))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.open_workspace_menu(&context_id, event.position, window, cx);
+                        }),
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.navigate(NavigationTarget::Workspace(&id), cx);
                         window.focus(&this.focus);
