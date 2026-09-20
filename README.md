@@ -6,6 +6,10 @@
 
 [![CI](https://github.com/penso/herdr-gpui/actions/workflows/ci.yml/badge.svg)](https://github.com/penso/herdr-gpui/actions/workflows/ci.yml)
 
+> **Unaffiliated project.** Herdr GPUI is an independent client. It is not
+> affiliated with, endorsed by, or supported by Herdr or [herdr.dev](https://herdr.dev/);
+> it only speaks to a Herdr daemon you installed yourself.
+
 A native Rust/GPUI interface to local and saved SSH Herdr hosts. Workspaces and
 worktrees are on the left, agents below them, and the active workspace's tabs
 across the top. The center paints the daemon's terminal cells, including split
@@ -29,6 +33,12 @@ The sidebar's `menu` opens an in-app popover with read-only settings information
 keybind help, GUI and daemon config reload, available-update information, and safe
 detach/reconnect. Escape or clicking outside dismisses it; menu typing never
 reaches the terminal. Update commands are displayed, not executed automatically.
+
+**Herdr > About Herdr** in the menu bar — also `about` in the sidebar menu and in
+the command palette — opens a classic About box with the app icon, version, build
+branch, the unaffiliated notice above, and links to herdr.dev and this repository.
+Escape, Enter, or **OK** closes it; the links open in a browser and nothing is
+downloaded.
 
 This is an initial working macOS client with experimental Linux builds, not
 complete TUI feature parity. The integrated Linux build and headless tests have

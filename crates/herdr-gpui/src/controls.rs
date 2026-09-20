@@ -28,6 +28,7 @@ pub enum Command {
     Reconnect,
     Quit,
     Logs,
+    About,
 }
 
 pub struct CommandInfo {
@@ -202,6 +203,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         label: "Quit",
         shortcut: "cmd-q",
     },
+    CommandInfo {
+        command: Command::About,
+        label: "About Herdr",
+        shortcut: "",
+    },
 ];
 
 pub fn request(command: Command, snapshot: &ClientShellSnapshot) -> Option<(&'static str, Value)> {
@@ -308,7 +314,8 @@ pub fn request(command: Command, snapshot: &ClientShellSnapshot) -> Option<(&'st
         | Command::Palette
         | Command::Reconnect
         | Command::Quit
-        | Command::Logs => return None,
+        | Command::Logs
+        | Command::About => return None,
     })
 }
 
@@ -361,6 +368,7 @@ mod tests {
             (Palette, "cmd-shift-p"),
             (Reconnect, ""),
             (Quit, "cmd-q"),
+            (About, ""),
         ];
         assert_eq!(COMMANDS.len(), expected.len());
         for (info, (command, shortcut)) in COMMANDS.iter().zip(expected) {
@@ -388,6 +396,7 @@ mod tests {
             Command::Palette,
             Command::Reconnect,
             Command::Quit,
+            Command::About,
         ] {
             assert!(request(command, &s).is_none(), "{command:?}");
         }

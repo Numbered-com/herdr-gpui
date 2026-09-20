@@ -2,9 +2,10 @@ use super::HerdrWindow;
 use crate::config::Config;
 use gpui::{prelude::*, *};
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Page {
     Menu,
+    About,
     Preferences,
     Keybinds,
     Themes,
@@ -31,6 +32,11 @@ pub(super) struct MenuState {
     pub(super) palette: Option<crate::palette::Palette>,
     pub(super) close: Option<crate::close_modal::CloseConfirmation>,
     pub(super) tab: Option<crate::tab_menu::TabMenu>,
+}
+
+/// Mix the theme's blue with foreground so accents remain readable on dark themes.
+pub(super) fn accent(theme: &crate::config::Theme) -> Rgba {
+    rgb(theme.foreground).blend(rgba((theme.palette[4] << 8) | 0x70))
 }
 
 impl MenuState {
@@ -158,6 +164,7 @@ impl HerdrWindow {
             "commands",
             "workspaces",
             "reload GUI config",
+            "about",
         ];
         if self.live.status.is_connected() {
             items.push("reload daemon config");
@@ -186,6 +193,7 @@ impl HerdrWindow {
 
     fn activate_menu(&mut self, item: &str, window: &mut Window, cx: &mut Context<Self>) {
         match item {
+            "about" => self.open_about(window, cx),
             "settings" => self.open_preferences(window, cx),
             "keybinds" => self.open_keybinds(window, cx),
             "themes" => self.open_theme_picker(window, cx),
@@ -278,6 +286,9 @@ impl HerdrWindow {
                     .w((viewport.width - px(24.)).max(px(0.)).min(px(420.)))
                     .max_h((viewport.height - px(24.)).max(px(0.)))
             })
+            .when(page == Page::About, |panel| {
+                panel.w((viewport.width - px(24.)).max(px(0.)).min(px(340.)))
+            })
             .rounded(px(5.))
             .border_1()
             .border_color(rgb(theme.active))
@@ -322,6 +333,8 @@ impl HerdrWindow {
             panel = panel.child(self.render_close_confirmation(cx));
         } else if page == Page::Preferences {
             panel = panel.child(self.render_preferences(cx));
+        } else if page == Page::About {
+            panel = panel.child(self.render_about(cx));
         } else if page == Page::Install {
             panel = panel
                 .child(div().p(px(8.)).child("Herdr must be installed"))
@@ -345,7 +358,7 @@ impl HerdrWindow {
                                 .child("Install")
                                 .on_click(|_, _, cx| {
                                     cx.stop_propagation();
-                                    cx.open_url("https://herdr.dev/");
+                                    cx.open_url(crate::about::WEBSITE);
                                 }),
                         )
                         .child(
@@ -482,7 +495,10 @@ impl HerdrWindow {
                         cx.notify();
                     }
                     "enter" if this.menu.page == Some(Page::Install) => {
-                        cx.open_url("https://herdr.dev/");
+                        cx.open_url(crate::about::WEBSITE);
+                    }
+                    "enter" if this.menu.page == Some(Page::About) => {
+                        this.dismiss_menu(window, cx);
                     }
                     "up" | "down" if this.menu.page == Some(Page::Menu) => {
                         let count = this.menu_items().len();
@@ -525,8 +541,7 @@ impl HerdrWindow {
             .as_ref()
             .map(|search| search.read(cx).text())
             .unwrap_or("");
-        // Mix the theme's blue with foreground so accents remain readable on dark themes.
-        let accent = rgb(theme.foreground).blend(rgba((theme.palette[4] << 8) | 0x70));
+        let accent = accent(theme);
         let mut body = div()
             .id("keybinds-body")
             .debug_selector(|| "keybinds-body".into())
@@ -567,7 +582,8 @@ impl HerdrWindow {
                 | Command::Palette
                 | Command::Reconnect
                 | Command::Quit
-                | Command::Logs => 2,
+                | Command::Logs
+                | Command::About => 2,
             };
             groups[group].1.push((info.shortcut, info.label));
         }
