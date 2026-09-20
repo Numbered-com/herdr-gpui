@@ -17,6 +17,7 @@ lint:
     cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
 test:
+    cargo test --locked --workspace
     cargo test --locked --workspace --all-features
 
 # Explicit opt-in: launches and cleans up its own isolated daemon only.

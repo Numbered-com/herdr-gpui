@@ -1,16 +1,18 @@
 //! Requires an active native desktop and an explicitly selected daemon executable.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "../../test-support/sandbox.rs"]
+mod sandbox;
+
+use sandbox::{Sandbox, daemon_binary, stop_children};
 use std::{
-    fs::{self, DirBuilder, File},
-    os::unix::fs::DirBuilderExt,
-    path::PathBuf,
+    fs,
     process::{Child, Command, Stdio},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 struct Isolated {
-    dir: PathBuf,
+    sandbox: Sandbox,
     daemon: Option<Child>,
     gui: Option<Child>,
 }
@@ -40,49 +42,11 @@ fn native_sidebar() {
     assert!(log.contains("SIDEBAR native PASS:"));
 }
 
-impl Isolated {
-    fn command(&self, binary: impl AsRef<std::ffi::OsStr>, log: &str) -> Command {
-        let log = File::create(self.dir.join(log)).unwrap();
-        let mut command = Command::new(binary);
-        command
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
-            .env("HOME", &self.dir)
-            .env("XDG_CONFIG_HOME", self.dir.join("config"))
-            .env("XDG_STATE_HOME", self.dir.join("state"))
-            .env("XDG_DATA_HOME", self.dir.join("data"))
-            .env("XDG_CACHE_HOME", self.dir.join("cache"))
-            .env("XDG_RUNTIME_DIR", &self.dir)
-            .env("TMPDIR", &self.dir)
-            .env("HERDR_CONFIG_PATH", self.dir.join("config.toml"))
-            .env("HERDR_SOCKET_PATH", self.dir.join("a.sock"))
-            .env("HERDR_CLIENT_SOCKET_PATH", self.dir.join("a-client.sock"))
-            .env("SHELL", "/bin/sh")
-            .env("TERM", "xterm-256color")
-            .env("PS1", "LIVE> ")
-            .current_dir(&self.dir)
-            .stdin(Stdio::null())
-            .stdout(log.try_clone().unwrap())
-            .stderr(log);
-        // Preserve only desktop transport, not user config or daemon discovery variables.
-        for name in ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"] {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
-        command
-    }
-}
-
 impl Drop for Isolated {
     fn drop(&mut self) {
-        // Only the exact children created by this test. Never discover or stop a user daemon.
-        for child in [&mut self.gui, &mut self.daemon].into_iter().flatten() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        stop_children([&mut self.gui, &mut self.daemon]);
         for name in ["gui.log", "daemon.log"] {
-            if let Ok(log) = fs::read_to_string(self.dir.join(name)) {
+            if let Ok(log) = fs::read_to_string(self.sandbox.dir.join(name)) {
                 eprintln!("{name} (last 40 lines, at most 600 chars each):");
                 let lines = log.lines().rev().take(40).collect::<Vec<_>>();
                 for line in lines.into_iter().rev() {
@@ -90,79 +54,41 @@ impl Drop for Isolated {
                 }
             }
         }
-        let _ = fs::remove_dir_all(&self.dir);
     }
 }
 
 #[test]
 #[ignore = "requires active desktop and explicit HERDR_TEST_BINARY; launches a native GUI and isolated daemon"]
 fn native_gui_live() {
-    let binary = PathBuf::from(
-        std::env::var_os("HERDR_TEST_BINARY")
-            .expect("set HERDR_TEST_BINARY to an explicit absolute herdr executable"),
-    );
-    assert!(
-        binary.is_absolute() && binary.is_file(),
-        "explicit daemon binary must exist"
-    );
-    let parent = std::env::var_os("HERDR_TEST_TMPDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    assert!(parent.is_dir(), "temporary parent must already exist");
-    let dir = parent.join(format!(
-        "g{:x}-{:x}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos()
-    ));
-    DirBuilder::new().mode(0o700).create(&dir).unwrap();
+    let binary = daemon_binary();
     let mut isolated = Isolated {
-        dir,
+        sandbox: Sandbox::new(),
         daemon: None,
         gui: None,
     };
-    let socket = isolated.dir.join("a-client.sock");
-    assert!(
-        socket.as_os_str().len() < 104,
-        "temporary path too long for Unix socket"
-    );
-    fs::write(
-        isolated.dir.join("config.toml"),
-        "onboarding = false\n[terminal]\ndefault_shell = \"/bin/sh\"\nshell_mode = \"non_login\"\n",
-    )
-    .unwrap();
+    let socket = isolated.sandbox.socket();
     isolated.daemon = Some(
         isolated
+            .sandbox
             .command(binary, "daemon.log")
             .arg("server")
             .spawn()
             .unwrap(),
     );
-    eprintln!(
-        "isolated daemon pid={} dir={}",
-        isolated.daemon.as_ref().unwrap().id(),
-        isolated.dir.display()
-    );
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !socket.exists() {
-        assert!(
-            isolated
-                .daemon
-                .as_mut()
-                .unwrap()
-                .try_wait()
-                .unwrap()
-                .is_none(),
-            "daemon exited during startup"
-        );
-        assert!(Instant::now() < deadline, "daemon startup timeout");
-        thread::sleep(Duration::from_millis(20));
+    isolated
+        .sandbox
+        .wait_for_daemon(isolated.daemon.as_mut().unwrap(), Duration::from_secs(20));
+    let mut gui_command = isolated
+        .sandbox
+        .command(env!("CARGO_BIN_EXE_herdr-gpui"), "gui.log");
+    // Only the GUI needs desktop transport; never inherit user config or discovery variables.
+    for name in ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"] {
+        if let Some(value) = std::env::var_os(name) {
+            gui_command.env(name, value);
+        }
     }
     isolated.gui = Some(
-        isolated
-            .command(env!("CARGO_BIN_EXE_herdr-gpui"), "gui.log")
+        gui_command
             .arg("--socket")
             .arg(&socket)
             .arg("--integration-test")
@@ -191,7 +117,7 @@ fn native_gui_live() {
         thread::sleep(Duration::from_millis(50));
     };
     assert!(status.success(), "GUI failed: {status}");
-    let log = fs::read_to_string(isolated.dir.join("gui.log")).unwrap();
+    let log = fs::read_to_string(isolated.sandbox.dir.join("gui.log")).unwrap();
     assert!(
         log.contains("GUI integration PASS:"),
         "GUI exited without completing harness"

@@ -11,7 +11,6 @@ pub use herdr_protocol as protocol;
 use protocol::{endpoint::*, *};
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
     io::{self, Read, Write},
     os::unix::net::UnixStream,
     sync::{
@@ -29,7 +28,7 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConnectOptions {
     pub surface_size: ClientSurfaceSize,
     pub cell_width_px: u32,
@@ -100,7 +99,11 @@ pub enum SendError {
 }
 impl std::fmt::Display for SendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::Full => f.write_str("client command queue is full"),
+            Self::Disconnected => f.write_str("client is disconnected"),
+            Self::Invalid(reason) => write!(f, "invalid client command: {reason}"),
+        }
     }
 }
 impl std::error::Error for SendError {}
@@ -187,13 +190,13 @@ impl ClientHandle {
         &self,
         boot_id: &str,
         pane_id: &str,
-        events: Vec<ClientPaneInputEvent>,
+        events: impl IntoIterator<Item = ClientPaneInputEvent>,
     ) -> Result<(), SendError> {
         self.enqueue(
             boot_id,
             ClientMessage::ClientShellPaneInput {
                 pane_id: pane_id.into(),
-                events,
+                events: events.into_iter().collect(),
             },
             None,
         )
@@ -202,13 +205,13 @@ impl ClientHandle {
         &self,
         boot_id: &str,
         terminal_id: &str,
-        events: Vec<ClientPaneInputEvent>,
+        events: impl IntoIterator<Item = ClientPaneInputEvent>,
     ) -> Result<(), SendError> {
         self.enqueue(
             boot_id,
             ClientMessage::ClientShellPopupInput {
                 terminal_id: terminal_id.into(),
-                events,
+                events: events.into_iter().collect(),
             },
             None,
         )
@@ -317,7 +320,7 @@ impl FrameReader {
             started: None,
         }
     }
-    fn poll(&mut self, stream: &mut UnixStream) -> io::Result<Option<ServerMessage>> {
+    fn poll(&mut self, stream: &mut (impl Read + ?Sized)) -> io::Result<Option<ServerMessage>> {
         if self.started.is_some_and(|t| t.elapsed() > TIMEOUT) {
             return Err(invalid("partial frame timed out"));
         }
@@ -371,9 +374,64 @@ impl FrameReader {
 }
 
 struct Pending {
+    id: String,
     bytes: Vec<u8>,
     started: Instant,
 }
+
+struct Session {
+    started: Instant,
+    welcome: Option<EndpointServerWelcome>,
+    snapshot: Option<Arc<ClientShellSnapshot>>,
+    surface: Option<Arc<PaneSurfaceFrame>>,
+    pending: Option<Pending>,
+}
+
+impl Session {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            welcome: None,
+            snapshot: None,
+            surface: None,
+            pending: None,
+        }
+    }
+
+    fn check_timeouts(&self) -> io::Result<()> {
+        if self.snapshot.is_none() && self.started.elapsed() > TIMEOUT {
+            return Err(invalid("handshake/snapshot timed out"));
+        }
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.started.elapsed() > COMMAND_TIMEOUT)
+        {
+            return Err(invalid("endpoint request timed out; not replayed"));
+        }
+        Ok(())
+    }
+
+    fn rejection_reason(&self, command: &Command) -> Option<&'static str> {
+        if self
+            .snapshot
+            .as_ref()
+            .is_none_or(|s| s.boot_id != command.boot_id)
+        {
+            Some("command does not match a ready snapshot boot")
+        } else if let Some((_, method)) = &command.request
+            && self
+                .welcome
+                .as_ref()
+                .is_none_or(|w| !w.methods.contains(method))
+        {
+            Some("method not advertised by endpoint")
+        } else {
+            None
+        }
+    }
+}
+
 fn run(
     mut stream: UnixStream,
     options: ConnectOptions,
@@ -409,22 +467,10 @@ fn run(
         MAX_FRAME_SIZE,
     )?;
     let mut reader = FrameReader::new();
-    let started = Instant::now();
-    let mut welcome: Option<EndpointServerWelcome> = None;
-    let mut snapshot: Option<Arc<ClientShellSnapshot>> = None;
-    let mut surface: Option<Arc<PaneSurfaceFrame>> = None;
-    let mut pending: HashMap<String, Pending> = HashMap::new();
+    let mut session = Session::new();
     let mut queued: Option<Command> = None;
     while !stop.load(Ordering::Acquire) {
-        if snapshot.is_none() && started.elapsed() > TIMEOUT {
-            return Err(invalid("handshake/snapshot timed out"));
-        }
-        if pending
-            .values()
-            .any(|p| p.started.elapsed() > COMMAND_TIMEOUT)
-        {
-            return Err(invalid("endpoint request timed out; not replayed"));
-        }
+        session.check_timeouts()?;
         // Bound the batch so continuous input cannot starve reads.
         for _ in 0..16 {
             // Finish an inbound frame before dispatching against its old snapshot.
@@ -437,21 +483,7 @@ fn run(
             if stop.load(Ordering::Acquire) {
                 return Ok(());
             }
-            let reason = if snapshot
-                .as_ref()
-                .is_none_or(|s| s.boot_id != command.boot_id)
-            {
-                Some("command does not match a ready snapshot boot")
-            } else if let Some((_, method)) = &command.request {
-                if welcome.as_ref().is_none_or(|w| !w.methods.contains(method)) {
-                    Some("method not advertised by endpoint")
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            if let Some(reason) = reason {
+            if let Some(reason) = session.rejection_reason(&command) {
                 deliver(
                     tx,
                     ClientEvent::CommandRejected {
@@ -464,24 +496,41 @@ fn run(
             }
             // The daemon has one API command lease per connection. Keep FIFO order,
             // including input behind a waiting request, without draining the bound.
-            if command.request.is_some() && !pending.is_empty() {
+            if command.request.is_some() && session.pending.is_some() {
                 queued = Some(command);
                 break;
             }
             stream.write_all(&command.bytes)?;
             if let Some((id, _)) = command.request {
-                pending.insert(
+                session.pending = Some(Pending {
                     id,
-                    Pending {
-                        bytes: Vec::new(),
-                        started: Instant::now(),
-                    },
-                );
+                    bytes: Vec::new(),
+                    started: Instant::now(),
+                });
             }
         }
         let Some(message) = reader.poll(&mut stream)? else {
             continue;
         };
+        session.handle_message(message, |event| deliver(tx, event, stop))?;
+    }
+    // No queued commands are flushed on cancellation and nothing is replayed.
+    Ok(())
+}
+
+impl Session {
+    fn handle_message(
+        &mut self,
+        message: ServerMessage,
+        mut emit: impl FnMut(ClientEvent) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let Self {
+            welcome,
+            snapshot,
+            surface,
+            pending,
+            ..
+        } = self;
         if welcome.is_none() {
             let ServerMessage::EndpointControl { kind, data } = message else {
                 return Err(invalid("expected stable endpoint welcome"));
@@ -501,9 +550,9 @@ fn run(
             {
                 return Err(invalid("incompatible endpoint generation/codecs"));
             }
-            deliver(tx, ClientEvent::Connected(w.clone()), stop)?;
-            welcome = Some(w);
-            continue;
+            emit(ClientEvent::Connected(w.clone()))?;
+            *welcome = Some(w);
+            return Ok(());
         }
         match message {
             ServerMessage::EndpointControl { kind, data } if kind == ENDPOINT_SNAPSHOT_KIND => {
@@ -521,14 +570,14 @@ fn run(
                 let revision_changed = snapshot
                     .as_ref()
                     .is_none_or(|s| s.revision != next.revision);
-                snapshot = Some(next.clone());
-                deliver(tx, ClientEvent::Snapshot(next.clone()), stop)?;
+                *snapshot = Some(next.clone());
+                emit(ClientEvent::Snapshot(next.clone()))?;
                 if revision_changed
                     && let Some(current) = surface
                         .as_ref()
                         .filter(|current| current.projection_revision == next.revision)
                 {
-                    deliver(tx, ClientEvent::Surface(current.clone()), stop)?;
+                    emit(ClientEvent::Surface(current.clone()))?;
                 }
             }
             ServerMessage::EndpointControl { .. } => {} // Unknown optional named controls are ignored.
@@ -549,9 +598,9 @@ fn run(
                 }
                 let next = Arc::new(next);
                 if next.projection_revision == s.revision {
-                    deliver(tx, ClientEvent::Surface(next.clone()), stop)?;
+                    emit(ClientEvent::Surface(next.clone()))?;
                 }
-                surface = Some(next);
+                *surface = Some(next);
             }
             ServerMessage::PaneSurfacePatch(patch) => {
                 let current = surface
@@ -562,7 +611,7 @@ fn run(
                     .as_ref()
                     .is_some_and(|s| s.revision == current.projection_revision)
                 {
-                    deliver(tx, ClientEvent::Surface(current.clone()), stop)?;
+                    emit(ClientEvent::Surface(current.clone()))?;
                 }
             }
             ServerMessage::ClientShellEndpointResponseChunk {
@@ -574,38 +623,34 @@ fn run(
                 if snapshot.as_ref().is_none_or(|s| s.boot_id != boot_id) {
                     return Err(invalid("response boot mismatch"));
                 }
-                let total: usize = pending.values().map(|p| p.bytes.len()).sum();
+                let total = pending.as_ref().map_or(0, |p| p.bytes.len());
                 if data.len() > MAX_RESPONSE_BYTES.saturating_sub(total) {
                     return Err(invalid("response limit exceeded"));
                 }
                 let p = pending
-                    .get_mut(&request_id)
+                    .as_mut()
+                    .filter(|p| p.id == request_id)
                     .ok_or_else(|| invalid("unsolicited response"))?;
                 p.bytes.extend(data);
                 if final_chunk {
                     let p = pending
-                        .remove(&request_id)
+                        .take()
                         .ok_or_else(|| invalid("unsolicited response"))?;
                     let response: Value = serde_json::from_slice(&p.bytes)?;
                     if response.get("id").and_then(Value::as_str) != Some(&request_id) {
                         return Err(invalid("response ID mismatch"));
                     }
-                    deliver(
-                        tx,
-                        ClientEvent::Response {
-                            request_id,
-                            response,
-                        },
-                        stop,
-                    )?;
+                    emit(ClientEvent::Response {
+                        request_id,
+                        response,
+                    })?;
                 }
             }
             ServerMessage::ServerShutdown { reason } => {
                 return Err(invalid(reason.unwrap_or_else(|| "server shutdown".into())));
             }
-            other => deliver(tx, ClientEvent::Message(other), stop)?,
+            other => emit(ClientEvent::Message(other))?,
         }
+        Ok(())
     }
-    // No queued commands are flushed on cancellation and nothing is replayed.
-    Ok(())
 }
