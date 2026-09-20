@@ -2,6 +2,7 @@ use super::{Command, HerdrWindow, NavigationTarget};
 use gpui::{prelude::*, *};
 use herdr_client::protocol::{AgentStatus, ClientShellAgent, ClientShellWorkspace};
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock};
 
 pub(super) const BACKGROUND: u32 = 0x1c1c22;
 pub(super) const FOREGROUND: u32 = 0xc1bdce;
@@ -13,11 +14,32 @@ const STATUS_WIDTH: f32 = 5.;
 const LABEL_GAP: f32 = 8.;
 const CHILD_INDENT: f32 = 16.;
 const ARROW_RESERVE: f32 = 18.;
+pub(super) const ICON_RESERVE: f32 = 18.;
+pub(super) static GITHUB_ICON: LazyLock<Arc<Image>> = LazyLock::new(|| {
+    Arc::new(Image::from_bytes(
+        ImageFormat::Svg,
+        include_bytes!("../../../assets/icons/github.svg").to_vec(),
+    ))
+});
+#[cfg(any(test, feature = "integration-test"))]
 pub(super) const LABEL_WIDTH: f32 =
     SIDEBAR_WIDTH - 1. - 2. * ROW_PADDING - STATUS_WIDTH - LABEL_GAP;
 
 impl HerdrWindow {
-    pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn save_sidebar_width(&mut self) {
+        self.sidebar_modified = true;
+        if let Some(preferences) = &self.sidebar_preferences {
+            preferences.save(self.sidebar_width);
+        }
+    }
+
+    pub(super) fn render_sidebar(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let width = sidebar_width(self.sidebar_width, f32::from(window.viewport_size().width));
+        let view = cx.entity().downgrade();
         let mut spaces = div()
             .id("spaces-scroll")
             .debug_selector(|| "spaces-scroll".into())
@@ -53,6 +75,13 @@ impl HerdrWindow {
                         workspace.focused,
                         indented,
                         group.is_some() || indented,
+                        width,
+                        (!indented).then(|| {
+                            self.avatars
+                                .as_ref()
+                                .and_then(|avatars| avatars.image(&workspace.new_workspace_cwd))
+                                .unwrap_or_else(|| GITHUB_ICON.clone())
+                        }),
                     )
                     .when_some(group, |row, key| {
                         let collapsed = self.collapsed_repos.contains(&key);
@@ -63,7 +92,10 @@ impl HerdrWindow {
                                 .w(px(ARROW_RESERVE - LABEL_GAP))
                                 .h(px(32.))
                                 .flex_none()
-                                .child(label_text(if collapsed { ">" } else { "v" }))
+                                .text_size(px(16.))
+                                .text_color(rgb(MUTED))
+                                .hover(|s| s.text_color(rgb(FOREGROUND)))
+                                .child(label_text(if collapsed { "\u{25b8}" } else { "\u{25be}" }))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
                                     if !this.collapsed_repos.remove(&key) {
@@ -84,12 +116,21 @@ impl HerdrWindow {
                 let id = agent.pane_id.clone();
                 let (name, kind) = agent_labels(agent);
                 agents = agents.child(
-                    row(name, kind, agent.agent_status, agent.focused, false, false)
-                        .id(SharedString::from(format!("agent-{id}")))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.navigate(NavigationTarget::Pane(&id), cx);
-                            window.focus(&this.focus);
-                        })),
+                    row(
+                        name,
+                        kind,
+                        agent.agent_status,
+                        agent.focused,
+                        false,
+                        false,
+                        width,
+                        None,
+                    )
+                    .id(SharedString::from(format!("agent-{id}")))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.navigate(NavigationTarget::Pane(&id), cx);
+                        window.focus(&this.focus);
+                    })),
                 );
             }
         }
@@ -110,7 +151,8 @@ impl HerdrWindow {
         div()
             .id("sidebar")
             .debug_selector(|| "sidebar".into())
-            .w(px(SIDEBAR_WIDTH))
+            .relative()
+            .w(px(width))
             .flex_none()
             .h_full()
             .min_h_0()
@@ -180,7 +222,81 @@ impl HerdrWindow {
                     .child(header("agents"))
                     .child(agents),
             )
+            .child(
+                div()
+                    .id("sidebar-resize")
+                    .debug_selector(|| "sidebar-resize".into())
+                    .absolute()
+                    .right_0()
+                    .top_0()
+                    .h_full()
+                    .w(px(6.))
+                    .cursor(CursorStyle::ResizeLeftRight)
+                    .hover(|s| s.bg(rgba(0x78a9ff44)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.sidebar_modified = true;
+                            if event.click_count == 2 {
+                                this.sidebar_drag = None;
+                                this.sidebar_width = None;
+                                this.save_sidebar_width();
+                            } else {
+                                this.sidebar_drag = Some((f32::from(event.position.x), width));
+                            }
+                            cx.notify();
+                        }),
+                    ),
+            )
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, window, _| {
+                        // Capture globally so dragging continues outside the narrow divider,
+                        // and terminal handlers never receive the resize gesture's release.
+                        let moving = view.clone();
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                            if phase == DispatchPhase::Capture {
+                                let _ = moving.update(cx, |this, cx| {
+                                    if let Some((start, width)) = this.sidebar_drag {
+                                        this.sidebar_width = Some(sidebar_width(
+                                            Some(width + f32::from(event.position.x) - start),
+                                            f32::from(window.viewport_size().width),
+                                        ));
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        });
+                        let released = view.clone();
+                        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                            if phase == DispatchPhase::Capture && event.button == MouseButton::Left
+                            {
+                                let _ = released.update(cx, |this, cx| {
+                                    if this.sidebar_drag.take().is_some() {
+                                        this.save_sidebar_width();
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
     }
+}
+
+fn sidebar_width(preferred: Option<f32>, window_width: f32) -> f32 {
+    // Keep useful label space and reserve at least 240 logical pixels for the terminal.
+    preferred
+        .unwrap_or(SIDEBAR_WIDTH)
+        .clamp(160., 480.)
+        .min((window_width - 240.).max(0.))
 }
 
 fn header(label: &'static str) -> Div {
@@ -195,6 +311,7 @@ fn header(label: &'static str) -> Div {
         .child(label)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn row(
     name: &str,
     detail: &str,
@@ -202,9 +319,23 @@ fn row(
     focused: bool,
     indented: bool,
     reserve_arrow: bool,
+    width: f32,
+    workspace_icon: Option<Arc<Image>>,
 ) -> Div {
+    let icon_reserve = if workspace_icon.is_some() {
+        ICON_RESERVE
+    } else {
+        0.
+    };
     let indent = if indented { CHILD_INDENT } else { 0. };
-    let label_width = LABEL_WIDTH - indent - if reserve_arrow { ARROW_RESERVE } else { 0. };
+    let label_width = (width
+        - 1.
+        - 2. * ROW_PADDING
+        - STATUS_WIDTH
+        - LABEL_GAP
+        - indent
+        - if reserve_arrow { ARROW_RESERVE } else { 0. })
+    .max(0.);
     div()
         .debug_selector(|| format!("row-{name}"))
         .h(px(40.))
@@ -233,10 +364,47 @@ fn row(
                 .debug_selector(|| format!("column-{name}"))
                 .child(
                     div()
-                        .debug_selector(|| format!("name-{name}"))
+                        .relative()
                         .w(px(label_width))
-                        .truncate()
-                        .child(label_text(name)),
+                        .h(px(16.))
+                        .when_some(workspace_icon, |title, image| {
+                            title.child(
+                                div()
+                                    .debug_selector(|| format!("github-{name}"))
+                                    .absolute()
+                                    .left_0()
+                                    .top(px(2.))
+                                    .size(px(12.))
+                                    .flex_none()
+                                    .overflow_hidden()
+                                    .child(
+                                        img(image)
+                                            .size_full()
+                                            .rounded_full()
+                                            .with_fallback(|| {
+                                                img(GITHUB_ICON.clone())
+                                                    .size_full()
+                                                    .rounded_full()
+                                                    .into_any_element()
+                                            })
+                                            .with_loading(|| {
+                                                img(GITHUB_ICON.clone())
+                                                    .size_full()
+                                                    .rounded_full()
+                                                    .into_any_element()
+                                            }),
+                                    ),
+                            )
+                        })
+                        .child(
+                            div()
+                                .debug_selector(|| format!("name-{name}"))
+                                .ml(px(icon_reserve))
+                                .w(px((label_width - icon_reserve).max(0.)))
+                                .flex_none()
+                                .truncate()
+                                .child(label_text(name)),
+                        ),
                 )
                 .child(
                     div()
