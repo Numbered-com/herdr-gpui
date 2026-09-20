@@ -597,10 +597,30 @@ impl Render for HerdrWindow {
                             .id("report-issue")
                             .debug_selector(|| "report-issue".into())
                             .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.))
+                            .px_2()
                             .text_xs()
                             .cursor_pointer()
-                            .text_color(rgb(sidebar::MUTED))
-                            .hover(|s| s.text_color(rgb(sidebar::FOREGROUND)))
+                            .hover(|s| s.bg(rgb(sidebar::ACTIVE)))
+                            .child(
+                                div()
+                                    .size(px(12.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(rgb(sidebar::FOREGROUND))
+                                    .child(
+                                        div()
+                                            .size(px(3.))
+                                            .rounded_full()
+                                            .bg(rgb(sidebar::FOREGROUND)),
+                                    ),
+                            )
                             .child("Report issue")
                             .on_click(|_, _, cx| {
                                 cx.open_url(

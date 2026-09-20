@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 pub(super) const BACKGROUND: u32 = 0x1c1c22;
 pub(super) const FOREGROUND: u32 = 0xc1bdce;
-pub(super) const MUTED: u32 = 0x827e91;
+const MUTED: u32 = 0x827e91;
 pub(super) const ACTIVE: u32 = 0x2b2933;
 const SIDEBAR_WIDTH: f32 = 232.;
 const ROW_PADDING: f32 = 12.;
