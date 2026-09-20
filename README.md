@@ -21,8 +21,8 @@ per client using state-change sequences and coherent surfaces. A new connection
 starts with a seen baseline, so its dots can differ from a long-running TUI's
 unread history. Activity is never guessed from terminal output.
 
-The sidebar's `menu` opens an in-app popover with read-only settings information,
-keybind help, daemon config reload, available-update information, and safe
+The sidebar's `menu` opens an in-app popover with Preferences and theme selection,
+keybind help, GUI and daemon config reload, available-update information, and safe
 detach/reconnect. Escape or clicking outside dismisses it; menu typing never
 reaches the terminal. Update commands are displayed, not executed automatically.
 
@@ -67,10 +67,23 @@ just run --socket /absolute/path/to/herdr-client.sock
 slower with a dense terminal on screen.
 
 The explicit socket must be the binary **client** socket, not `herdr.sock`.
-The app never installs, starts, stops, or upgrades your personal daemon. A failed
-connection appears in the compact single-row status bar with a red dot (green
-when connected). Use Terminal > Reconnect after starting the daemon; there is no
-permanent reconnect button.
+The app starts `herdr server` if the default or named-session daemon is absent,
+then waits up to 20 seconds to connect without blocking the UI. Herdr must already
+be installed. A pulsing status indicator and "Starting Herdr server..." message
+remain visible while startup is pending. The executable is discovered
+on PATH or in a standard Homebrew, Cargo, or `~/.local/bin` location.
+If Herdr cannot be found, an installation modal offers an **Install** button that
+opens [herdr.dev](https://herdr.dev/). It does not download or run an installer.
+Use **QA > Show herdr non-detected modal** in the macOS menu bar to preview this
+warning without restarting, disconnecting, or changing daemon detection.
+Explicit `--socket` and `--dev` targets remain attach-only. The app never installs,
+stops, or upgrades the daemon, and closing the window leaves it running. A failed
+connection appears in the status bar with a red dot. Use Terminal > Reconnect to
+retry; there is no permanent reconnect button.
+
+Use **Report issue** on the right of the status bar to open this repository's
+GitHub issue forms in your browser. Choose a bug report, feature request, or
+documentation issue; redact secrets and private terminal content before submitting.
 
 New workspaces created through Herdr appear automatically while connected.
 Revisioned snapshots are pushed by the daemon and applied by the GUI without a
@@ -89,14 +102,95 @@ open target/release/Herdr.app
 ```
 
 The bundle is named **Herdr** and contains only the release GUI executable,
-`Info.plist`, and its native `.icns` icon. It connects to your existing daemon;
-it does not bundle, install, start, or stop a daemon. This is a local unsigned,
+`Info.plist`, and its native `.icns` icon. It starts an installed daemon if needed;
+it does not bundle, install, or stop a daemon. This is a local unsigned,
 unnotarized bundle, not a distribution/signing pipeline. Its version metadata lives
 in `assets/macos/Info.plist` and should be updated for releases.
 
 The original charcoal/blue connected-H artwork and provenance are in
 [`assets/icons`](assets/icons/README.md). `just icons` regenerates the checked-in
 PNG and ICNS from the SVG with macOS Swift/CoreGraphics and `iconutil`.
+
+## GUI Configuration
+
+Click **? Keybinds** at the bottom right of the status bar, or press `Cmd-/`,
+to open the native shortcut reference. Press Escape, click outside the modal,
+or use its close button to return to the terminal. Terminal input is blocked
+while the modal is open. Its search field filters by action, section, or key
+combination (for example `pane zoom` or `Cmd+Shift+P`).
+
+`Cmd-,` opens Preferences with Appearance, Fonts, Configuration, and Connection
+sections. The theme picker and GUI config reload are available directly from
+Preferences; font values remain read-only and are edited in the config file.
+
+Click **Theme** beside Keybinds to browse built-in themes and theme files discovered
+in the Herdr and Ghostty theme folders. Type to filter names (case-insensitive),
+use Up/Down to navigate, then press Enter or click a result to apply and save it.
+The current theme is marked in the list. Escape or clicking outside cancels without
+changing the theme. Saving updates only `theme` in the GUI config, preserving its
+comments and other settings; load/save errors leave the current appearance intact.
+
+GUI settings live in `$XDG_CONFIG_HOME/herdr/config-gpui.toml`, falling back to
+`~/.config/herdr/config-gpui.toml`. The GUI creates a commented default file if it
+is absent, without overwriting an existing file. These settings are independent
+of the daemon configuration and apply equally when connecting with `--dev`.
+
+See the complete [example config](crates/herdr-gpui/config-gpui.example.toml).
+Omitted settings keep their defaults, including individual fields inside a font
+section. Unknown keys, empty font families, and invalid sizes are errors.
+
+```toml
+theme = "Nord"
+
+[terminal]
+family = "Menlo"
+size = 14
+```
+
+| Section | Default Font Family | Default Size |
+| --- | --- | --- |
+| `sidebar` | `Menlo` | 12 |
+| `tabs` | `.SystemUIFont` | 14 |
+| `terminal` | `Menlo` | 14 |
+| `ui` | `.SystemUIFont` | 12 |
+
+Sizes are **logical pixels**, not points or physical display pixels. Fractional
+sizes are supported; values must be finite and between 8 and 48 inclusive. Line
+height scales as `size * 20 / 14`. Fonts must be installed locally; none are bundled.
+Restart the GUI or use its **GUI config reload** action after editing. Reloading
+daemon config is separate and does not apply these appearance settings. There is
+no automatic file watcher.
+
+### Themes
+
+Built-in names are case-sensitive: `Default`, `Nord`, `Dracula`,
+`Catppuccin Mocha`, and `Catppuccin Latte`. `Default` preserves the original
+terminal background, foreground, cursor, ANSI/256-color palette and sidebar
+surface/active/muted colors. Other themes derive chrome colors by blending the
+background and foreground. Built-ins have small hardcoded palettes, not bundled
+third-party assets; entries 16 through 255 retain the conventional color cube and
+grayscale ramp.
+
+`theme` also accepts an absolute path, a `~/` path, or a Ghostty theme filename.
+Built-in names take priority; use an explicit path to select a file with the same
+name. Named files are searched in this order:
+
+1. `$XDG_CONFIG_HOME/herdr/themes` (or `~/.config/herdr/themes`).
+2. `$XDG_CONFIG_HOME/ghostty/themes` (or `~/.config/ghostty/themes`).
+3. `$GHOSTTY_RESOURCES_DIR/themes`, when set.
+4. `/Applications/Ghostty.app/Contents/Resources/ghostty/themes`.
+5. `$XDG_DATA_HOME/ghostty/themes` (or `~/.local/share/ghostty/themes`).
+6. `ghostty/themes` under each `$XDG_DATA_DIRS` entry (defaults to
+   `/usr/local/share` and `/usr/share`).
+
+Ghostty files support `background`, `foreground`, `cursor-color`, and
+`palette = INDEX=COLOR` for indices 0 through 255. Colors must be exactly six hex
+digits, optionally prefixed with `#`. Blank lines and full-line `#` comments are
+allowed; inline comments and named colors are not supported for color values.
+Malformed supported colors report the file and line number. Other settings are
+ignored, including includes and commands: theme loading does not execute them.
+Repeated colors use the last value. Unspecified colors retain defaults, except
+that an omitted cursor color follows the theme foreground.
 
 ## Controls
 
@@ -109,6 +203,16 @@ PNG and ICNS from the SVG with macOS Swift/CoreGraphics and `iconutil`.
 | Cmd-T | New tab |
 | Cmd-D / Cmd-Shift-D | Split right / below |
 | Cmd-Shift-] / Cmd-Shift-[ | Next / previous tab |
+| Cmd-1 through Cmd-9 | Focus the corresponding numbered tab in the current workspace |
+| Cmd-Alt-Left/Right/Up/Down | Focus a pane in that direction |
+| Cmd-Alt-] / Cmd-Alt-[ | Next / previous pane in the current tab |
+| Cmd-Shift-Enter | Toggle focused pane zoom |
+| Cmd-W / Cmd-Shift-W | Confirm closing the focused pane / tab |
+| Cmd-P | Workspace picker |
+| Cmd-Shift-P | Command palette: native actions and configured daemon entries |
+| Cmd-B | Toggle the sidebar locally |
+| Cmd-, | Settings |
+| Cmd-/ | Native shortcut reference |
 | Wheel / trackpad | Scroll the hovered terminal through Herdr |
 | Cmd-V | Semantic paste |
 | Cmd-Q | Quit the GUI, leaving terminals running |
@@ -116,6 +220,16 @@ PNG and ICNS from the SVG with macOS Swift/CoreGraphics and `iconutil`.
 The native File and Terminal menus expose the creation and navigation actions.
 Terminal keyboard input and committed Unicode text go directly to Herdr's
 semantic input protocol.
+
+The command palette includes native actions (including unbound Themes and
+Reconnect) and configured daemon command entries. Cmd-P opens the workspace
+picker, not the command palette. Cmd-B only changes this client's sidebar
+visibility; it does not change daemon state.
+
+Closing a pane or tab requires confirmation because it can terminate running
+processes. **Cancel is selected by default**: Enter alone cancels; press Tab then
+Enter to select and confirm Close. Quitting the GUI remains a detach operation,
+not a pane/tab close.
 
 ## Structure
 
@@ -216,15 +330,30 @@ The live protocol and desktop GUI tests are deliberately ignored in hosted CI:
 they require an explicitly selected Herdr binary, and the GUI test also needs an
 active desktop. Run `just test-live` and `just test-gui` locally as shown above.
 
+## Sidebar Width
+
+Workspace titles show the GitHub organization or owner avatar, resolved from
+the local repository's `origin` remote. Git lookups and avatar downloads run
+in the background, with results shared per owner for the app session. The
+GitHub mark is used while loading or when an avatar is unavailable. No GitHub
+token is needed; avatar requests go to `avatars.githubusercontent.com`.
+
+Drag the sidebar's right edge to resize it; double-click the divider to restore
+the default width. The terminal resizes automatically. Width is remembered per
+daemon socket in `$XDG_STATE_HOME/herdr/gpui/local-<socket-hash>.json`, defaulting
+to `~/.local/state/herdr/gpui/`. These logical-pixel preferences are separate
+from the TUI's column-based settings. Narrow windows temporarily limit the
+displayed width without replacing your saved preference.
+
 ## Next Milestones
 
 - Selection/copy, hyperlink interaction, richer mouse support, and inline IME.
-- Full worktree/agent management and pane/tab close dialogs.
-- Resizable sidebar, editable settings and bundled fonts.
+- Full worktree/agent management.
+- Editable settings and bundled fonts.
 - Automatic reconnect, optimized terminal painting and graphics support.
 - Signed macOS app packaging, then SSH endpoints.
 
-Current rendering uses Menlo and a fixed ANSI palette. Images and terminal
+Current rendering defaults to Menlo with configurable fonts and themes. Images and terminal
 notifications/clipboard writes are deliberately not executed. See
 [`crates/herdr-gpui/README.md`](crates/herdr-gpui/README.md) for the detailed scope.
 

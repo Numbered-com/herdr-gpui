@@ -41,6 +41,9 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         .update(cx, |_, cx| cx.notify());
                     window.refresh();
                     window.draw(cx).clear();
+                    if frame > 0 && sidebar::GITHUB_ICON.clone().use_render_image(window, cx).is_none() {
+                        return Err("embedded GitHub SVG did not render".into());
+                    }
                     let probes = &cx.global::<PaintedProbes>().0;
                     let mut failed = false;
                     for input in [
@@ -61,13 +64,15 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                             eprintln!("SIDEBAR frame={frame} input={input:?} {p:?}");
                         }
                         let expected_short = input.len() < 20;
+                        let title_icon = matches!(input, "herdr" | "herdr-gpui-sidebar-rendering-regression-investigation");
+                        let expected_width = px(sidebar::LABEL_WIDTH - if title_icon { sidebar::ICON_RESERVE } else { 0. });
                         if p.glyph_text != p.cached
                             || (expected_short && p.glyph_text != input)
                             || (!expected_short
                                 && (p.width < px(150.) || !p.glyph_text.ends_with('\u{2026}')))
                             || p.clipped
-                            || p.bounds.size.width != px(sidebar::LABEL_WIDTH)
-                            || p.mask.size.width != px(sidebar::LABEL_WIDTH)
+                            || p.bounds.size.width != expected_width
+                            || p.mask.size.width != expected_width
                             || p.width > p.bounds.size.width
                             || p.bounds.size.height != px(16.)
                         {
@@ -115,8 +120,8 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     .clear();
                 window.draw(cx).clear();
                 let label = match step {
-                    0 => "v",
-                    1 => ">",
+                    0 => "\u{25be}",
+                    1 => "\u{25b8}",
                     _ => "menu",
                 };
                 cx.global::<sidebar::layout_tests::PaintedProbes>()
@@ -163,7 +168,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                             return Err("native footer click did not open menu".into());
                         }
                         let before = state.input_probe;
-                        window.dispatch_action(Box::new(NewTab), cx);
+                        window.dispatch_action(Box::new(RunCommand { command: Command::Tab }), cx);
                         for key in ["down", "enter", "x", "escape"] {
                             window.dispatch_keystroke(
                                 Keystroke {
@@ -204,7 +209,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                 ("down down enter", menu::WorkspaceAction::DeleteWorktree),
             ] {
                 let point = handle.update(cx, |view, window, cx| {
-                    view.live.status = state::ConnectionStatus::Connected;
+                    view.live.status = ConnectionStatus::Connected;
                     view.sidebar_scroll[0].set_offset(point(px(0.), px(if action == menu::WorkspaceAction::DeleteWorktree { -100. } else { 0. })));
                     cx.default_global::<sidebar::layout_tests::PaintedProbes>().0.clear();
                     cx.notify();
@@ -237,7 +242,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     }
                     window.draw(cx).clear();
                     if view.read(cx).menu.page != Some(menu::Page::Dialog(action)) { return Err("workspace menu opened wrong dialog".into()); }
-                    window.dispatch_action(Box::new(NewTab), cx);
+                    window.dispatch_action(Box::new(RunCommand { command: Command::Tab }), cx);
                     if action != menu::WorkspaceAction::Close {
                         window.dispatch_keystroke(Keystroke::parse("cmd-a").map_err(|error| error.to_string())?, cx);
                         for ch in "long-label-\u{65e5}\u{672c}-\u{1f600}".repeat(4).chars() {
@@ -450,7 +455,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                 frames += 1;
                 let focused = view.read(cx).focus.is_focused(window);
                 let active = window.is_window_active();
-                let actions_ready = window.is_action_available(&NewTab, cx);
+                let actions_ready = window.is_action_available(&RunCommand { command: Command::Tab }, cx);
                 let probe = view.read(cx).input_probe;
                 let (live, local_error, options, last_queued_options, bounds) = {
                     let view = view.read(cx);
@@ -516,10 +521,10 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         let old = surface.panes.iter().find(|p| p.pane_id == split_pane).ok_or("original split pane missing")?;
                         let new = surface.panes.iter().find(|p| Some(&p.pane_id) == snapshot.focused_pane_id.as_ref()).ok_or("focused split missing")?;
                         if new.rect.y <= old.rect.y || new.rect.x != old.rect.x { return Err(format!("down split geometry: {}", diagnostic())); }
-                        window.dispatch_action(Box::new(PreviousTab), cx);
+                        window.dispatch_action(Box::new(RunCommand { command: Command::PreviousTab }), cx);
                     }
                     4 if focused_tab == first_tab && surface.panes.len() == 1 => {
-                        window.dispatch_action(Box::new(NextTab), cx);
+                        window.dispatch_action(Box::new(RunCommand { command: Command::NextTab }), cx);
                     }
                     5 if focused_tab == second_tab && surface.panes.len() == 3 => {
                         key("cmd-n", window, cx)?;
@@ -529,7 +534,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     }
                     7 if focused_workspace == workspace && focused_tab == second_tab && surface.panes.len() == 3 => {
                         // Use the full-width tab so the exact output row cannot wrap in a split.
-                        window.dispatch_action(Box::new(PreviousTab), cx);
+                        window.dispatch_action(Box::new(RunCommand { command: Command::PreviousTab }), cx);
                     }
                     8 if focused_tab == first_tab && surface.panes.len() == 1 => {
                         let command = format!("echo HERDR_GUI_{}\"_OK\"", std::process::id());

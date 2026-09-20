@@ -2,7 +2,7 @@ use gpui::{prelude::*, *};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::{HerdrWindow, sidebar};
+use super::HerdrWindow;
 
 // Byte offsets internally; only the platform input boundary uses UTF-16.
 #[derive(Default)]
@@ -197,10 +197,10 @@ impl HerdrWindow {
             .id("dialog-input")
             .debug_selector(|| "dialog-input".into())
             .w_full()
-            .h(px(32.))
+            .h(px(self.config.ui.line_height() + 10.))
             .px(px(6.))
             .py(px(5.))
-            .bg(rgb(sidebar::ACTIVE))
+            .bg(rgb(self.theme.active))
             .overflow_hidden()
             .on_mouse_down(
                 MouseButton::Left,
@@ -230,15 +230,15 @@ impl HerdrWindow {
                             };
                             let run = TextRun {
                                 len: input.text.len(),
-                                font: font("Menlo"),
-                                color: rgb(sidebar::FOREGROUND).into(),
+                                font: font(this.config.ui.family.clone()),
+                                color: rgb(this.theme.foreground).into(),
                                 background_color: None,
                                 underline: None,
                                 strikethrough: None,
                             };
                             let line = window.text_system().shape_line(
                                 input.text.clone().into(),
-                                px(14.),
+                                px(this.config.ui.size),
                                 &[run],
                                 None,
                             );
@@ -258,7 +258,7 @@ impl HerdrWindow {
                                             point(left, bounds.top()),
                                             point(right, bounds.bottom()),
                                         ),
-                                        rgb(0x48445e),
+                                        rgb(this.theme.muted),
                                     ));
                                 }
                                 let _ = line.paint(origin, bounds.size.height, window, cx);
@@ -267,7 +267,7 @@ impl HerdrWindow {
                                         point(origin.x + caret, bounds.top()),
                                         size(px(1.), bounds.size.height),
                                     ),
-                                    rgb(sidebar::FOREGROUND),
+                                    rgb(this.theme.foreground),
                                 ));
                                 if let Some(marked) = &input.marked {
                                     window.paint_quad(fill(
@@ -282,7 +282,7 @@ impl HerdrWindow {
                                                 px(1.),
                                             ),
                                         ),
-                                        rgb(sidebar::FOREGROUND),
+                                        rgb(this.theme.foreground),
                                     ));
                                 }
                             });
