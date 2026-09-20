@@ -8,6 +8,7 @@ mod config;
 mod connection;
 mod controls;
 mod daemon;
+mod endpoint;
 mod input;
 mod menu;
 mod palette;
@@ -59,16 +60,44 @@ fn bind_keys(cx: &mut App) {
     );
 }
 
-enum NavigationTarget<'a> {
-    Workspace(&'a str),
-    Tab(&'a str),
-    Pane(&'a str),
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum NavigationTarget<T> {
+    Workspace(T),
+    Tab(T),
+    Pane(T),
+}
+
+type OwnedNavigationTarget = NavigationTarget<String>;
+
+impl<T: AsRef<str>> NavigationTarget<T> {
+    fn as_ref(&self) -> NavigationTarget<&str> {
+        match self {
+            Self::Workspace(id) => NavigationTarget::Workspace(id.as_ref()),
+            Self::Tab(id) => NavigationTarget::Tab(id.as_ref()),
+            Self::Pane(id) => NavigationTarget::Pane(id.as_ref()),
+        }
+    }
+
+    fn to_owned(&self) -> OwnedNavigationTarget {
+        match self.as_ref() {
+            NavigationTarget::Workspace(id) => NavigationTarget::Workspace(id.to_owned()),
+            NavigationTarget::Tab(id) => NavigationTarget::Tab(id.to_owned()),
+            NavigationTarget::Pane(id) => NavigationTarget::Pane(id.to_owned()),
+        }
+    }
 }
 
 struct HerdrWindow {
     config: config::Config,
     theme: config::Theme,
-    connection: ConnectionBridge,
+    endpoints: Vec<endpoint::Endpoint>,
+    selected_endpoint: usize,
+    selection_epoch: u64,
+    catalog: endpoint::Catalog,
+    activation_deadline: Option<std::time::Instant>,
+    pending_navigation: Option<OwnedNavigationTarget>,
+    pending_releases: Vec<endpoint::Release>,
+    selected_generation: u64,
     live: LiveState,
     focus: FocusHandle,
     options: ConnectOptions,
@@ -105,6 +134,12 @@ impl HerdrWindow {
         cx: &mut Context<Self>,
         #[cfg(feature = "integration-test")] sidebar_test: bool,
     ) -> Self {
+        #[cfg(feature = "integration-test")]
+        let target = if sidebar_test {
+            ConnectTarget::Socket("/unused-sidebar-fixture.sock".into())
+        } else {
+            target
+        };
         let focus = cx.focus_handle();
         window.focus(&focus);
         let timer = cx.background_executor().clone();
@@ -123,25 +158,20 @@ impl HerdrWindow {
                             this.sidebar_width = width;
                             cx.notify();
                         }
-                        let next = this.connection.take_update();
-                        if let Some(next) = next {
-                            if !next.status.is_connected() {
-                                this.local_error = None;
-                            }
-                            if this.live.snapshot.as_ref().map(|s| &s.focused_pane_id)
-                                != next.snapshot.as_ref().map(|s| &s.focused_pane_id)
-                            {
-                                this.marked.clear();
-                            }
-                            this.live = next;
-                            if let (Some(avatars), Some(snapshot)) =
-                                (&mut this.avatars, &this.live.snapshot)
-                            {
-                                for workspace in &snapshot.workspaces {
-                                    avatars.request(&workspace.new_workspace_cwd);
-                                }
-                            }
-                            cx.notify();
+                        let old_pane = this
+                            .live
+                            .snapshot
+                            .as_ref()
+                            .and_then(|s| s.focused_pane_id.clone());
+                        this.poll_endpoints(cx);
+                        if old_pane
+                            != this
+                                .live
+                                .snapshot
+                                .as_ref()
+                                .and_then(|s| s.focused_pane_id.clone())
+                        {
+                            this.marked.clear();
                         }
                         if this.live.missing_installation && !this.install_warning_shown {
                             this.install_warning_shown = true;
@@ -176,7 +206,19 @@ impl HerdrWindow {
         let mut this = Self {
             config,
             theme,
-            connection: ConnectionBridge::new(target),
+            catalog: endpoint::Catalog::new(&target),
+            endpoints: vec![endpoint::Endpoint::new(
+                endpoint::LOCAL.into(),
+                "Local".into(),
+                target,
+                true,
+            )],
+            selected_endpoint: 0,
+            selection_epoch: 0,
+            activation_deadline: None,
+            pending_navigation: None,
+            pending_releases: Vec::new(),
+            selected_generation: 0,
             live: LiveState::default(),
             focus,
             options: ConnectOptions::default(),
@@ -213,9 +255,13 @@ impl HerdrWindow {
         if sidebar_test {
             this._poll = Task::ready(());
             this.live.snapshot = Some(Arc::new(sidebar::layout_tests::snapshot(40)));
+            this.endpoints[0].live = this.live.clone();
+            if let Ok(mut inbox) = this.endpoints[0].connection.inbox.lock() {
+                *inbox = this.live.clone();
+            }
             return this;
         }
-        this.sidebar_preferences = this
+        this.sidebar_preferences = this.endpoints[0]
             .connection
             .target
             .socket_path()
@@ -229,22 +275,14 @@ impl HerdrWindow {
         this
     }
 
-    fn reconnect(&mut self) {
-        self.install_warning_shown = false;
-        self.local_error = None;
-        self.marked.clear();
-        self.last_queued_options = None;
-        self.wheel = WheelAccumulator::default();
-        self.sent_focus = None;
-        self.connection.reconnect(self.options, self.active);
-        self.live = self.connection.take_update().unwrap_or_default();
-    }
-
     fn resize(&mut self) {
         if self.last_queued_options == Some(self.options) {
             return;
         }
-        if let (Some(handle), Some(snapshot)) = (&self.connection.handle, &self.live.snapshot) {
+        if let (Some(handle), Some(snapshot)) = (
+            &self.endpoints[self.selected_endpoint].connection.handle,
+            &self.live.snapshot,
+        ) {
             match handle.resize(&snapshot.boot_id, self.options) {
                 Ok(()) => self.last_queued_options = Some(self.options),
                 Err(error) => self.local_error = Some(format!("Resize: {error}")),
@@ -253,26 +291,33 @@ impl HerdrWindow {
     }
 
     fn report_focus(&mut self) {
+        let focused = self.active && self.endpoints[self.selected_endpoint].surface_requested();
         // Update the authoritative event inbox, not just the rendered clone.
-        if let Ok(mut state) = self.connection.inbox.try_lock() {
-            state.set_outer_focus(self.active);
+        if let Ok(mut state) = self.endpoints[self.selected_endpoint]
+            .connection
+            .inbox
+            .try_lock()
+        {
+            state.set_outer_focus(self.active && self.input_ready());
         }
-        if self.sent_focus == Some(self.active) {
+        if self.sent_focus == Some(focused) {
             return;
         }
-        if let (Some(handle), Some(snapshot)) = (&self.connection.handle, &self.live.snapshot)
-            && handle.set_focus(&snapshot.boot_id, self.active).is_ok()
+        if let (Some(handle), Some(snapshot)) = (
+            &self.endpoints[self.selected_endpoint].connection.handle,
+            &self.live.snapshot,
+        ) && handle.set_focus(&snapshot.boot_id, focused).is_ok()
         {
-            self.sent_focus = Some(self.active);
+            self.sent_focus = Some(focused);
         }
     }
 
     fn send(&mut self, event: ClientPaneInputEvent, cx: &mut Context<Self>) {
-        if self.menu.page.is_some() {
+        if self.menu.page.is_some() || !self.input_ready() {
             return;
         }
         if let (Some(handle), Some(snapshot), Some(surface)) = (
-            &self.connection.handle,
+            &self.endpoints[self.selected_endpoint].connection.handle,
             &self.live.snapshot,
             &self.live.surface,
         ) {
@@ -292,19 +337,74 @@ impl HerdrWindow {
         }
     }
 
-    fn navigate(&mut self, target: NavigationTarget<'_>, cx: &mut Context<Self>) {
-        if let (Some(handle), Some(snapshot)) = (&self.connection.handle, &self.live.snapshot) {
-            let result = match target {
-                NavigationTarget::Workspace(id) => handle.focus_workspace(&snapshot.boot_id, id),
-                NavigationTarget::Tab(id) => handle.focus_tab(&snapshot.boot_id, id),
-                NavigationTarget::Pane(id) => handle.focus_pane(&snapshot.boot_id, id),
-            };
-            if let Err(error) = result {
-                self.local_error = Some(error.to_string());
-            }
+    fn navigate(&mut self, target: NavigationTarget<&str>, cx: &mut Context<Self>) {
+        if !self.input_ready() {
+            return;
         }
+        self.request_focus_change(
+            "Navigate",
+            Some(target.to_owned()),
+            |handle, boot| match target {
+                NavigationTarget::Workspace(id) => handle.focus_workspace(boot, id),
+                NavigationTarget::Tab(id) => handle.focus_tab(boot, id),
+                NavigationTarget::Pane(id) => handle.focus_pane(boot, id),
+            },
+        );
         self.marked.clear();
         cx.notify();
+    }
+
+    fn request_focus_change(
+        &mut self,
+        method: &str,
+        focus: Option<OwnedNavigationTarget>,
+        enqueue: impl FnOnce(
+            &herdr_client::ClientHandle,
+            &str,
+        ) -> Result<String, herdr_client::SendError>,
+    ) {
+        if let (Some(handle), Some(snapshot)) = (
+            &self.endpoints[self.selected_endpoint].connection.handle,
+            &self.live.snapshot,
+        ) && let Ok(mut state) = self.endpoints[self.selected_endpoint]
+            .connection
+            .inbox
+            .lock()
+        {
+            if let Err(error) = enqueue(handle, &snapshot.boot_id) {
+                self.local_error = Some(format!("{method}: {error}"));
+            } else if self.live.supports_surface {
+                // An ordered surface barrier prevents input hitting the previous
+                // pane while navigation/creation and its projection are in flight.
+                // Hold the inbox lock until both requests and the fence are set.
+                let (request, failed) = match handle.set_surface_active(&snapshot.boot_id, true) {
+                    Ok(request) => (request, false),
+                    Err(error) => {
+                        self.local_error = Some(error.to_string());
+                        (String::new(), true)
+                    }
+                };
+                state.activation = Some(state::SurfaceActivation {
+                    request,
+                    boot: snapshot.boot_id.clone(),
+                    revision: None,
+                    failed,
+                    focus,
+                    active: true,
+                });
+                state.surface = None;
+                state.dirty = true;
+                self.live = state.clone();
+                self.activation_deadline = Some(
+                    std::time::Instant::now()
+                        + if failed {
+                            Duration::ZERO
+                        } else {
+                            Duration::from_secs(5)
+                        },
+                );
+            }
+        }
     }
 
     fn command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
@@ -344,13 +444,17 @@ impl HerdrWindow {
             }
             _ => {}
         }
-        if let (Some(handle), Some(snapshot)) = (&self.connection.handle, &self.live.snapshot)
+        if self.activation_deadline.is_some()
+            || !self.endpoints[self.selected_endpoint].surface_requested()
+        {
+            return;
+        }
+        if let Some(snapshot) = &self.live.snapshot
             && let Some((method, params)) = controls::request(command, snapshot)
         {
-            self.local_error = handle
-                .request(&snapshot.boot_id, method, params)
-                .err()
-                .map(|error| format!("{method}: {error}"));
+            self.request_focus_change(method, None, |handle, boot| {
+                handle.request(boot, method, params)
+            });
             self.marked.clear();
         }
         window.focus(&self.focus);
@@ -358,11 +462,11 @@ impl HerdrWindow {
     }
 
     fn scroll_wheel(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.menu.page.is_some() {
+        if self.menu.page.is_some() || !self.input_ready() {
             return;
         }
         let (Some(handle), Some(snapshot), Some(surface)) = (
-            &self.connection.handle,
+            &self.endpoints[self.selected_endpoint].connection.handle,
             &self.live.snapshot,
             &self.live.surface,
         ) else {
@@ -424,10 +528,16 @@ mod tests {
             )
         });
         view.update(cx, |view, _| {
-            let client = herdr_client::connect(view.connection.target.clone(), view.options)
-                .unwrap_or_else(|error| panic!("cannot create test client: {error}"));
+            let client = herdr_client::connect(
+                view.endpoints[view.selected_endpoint]
+                    .connection
+                    .target
+                    .clone(),
+                view.options,
+            )
+            .unwrap_or_else(|error| panic!("cannot create test client: {error}"));
             client.handle.disconnect();
-            view.connection.handle = Some(client.handle);
+            view.endpoints[view.selected_endpoint].connection.handle = Some(client.handle);
             let queued = view.options;
             view.last_queued_options = Some(queued);
             view.resize();
@@ -498,9 +608,18 @@ impl Render for HerdrWindow {
                 );
             }
         }
-        let surface = self.live.surface.clone();
+        let surface = self
+            .live
+            .surface
+            .clone()
+            .filter(|_| self.live.surface_ready());
         let snapshot = self.live.snapshot.clone();
-        let inbox = self.connection.inbox.clone();
+        let inbox = self.endpoints[self.selected_endpoint]
+            .connection
+            .inbox
+            .clone();
+        let paint_epoch = self.selection_epoch;
+        let paint_generation = self.endpoints[self.selected_endpoint].generation;
         let entity = cx.entity();
         let paint_entity = entity.clone();
         let focus = self.focus.clone();
@@ -602,16 +721,26 @@ impl Render for HerdrWindow {
                                 let surface = surface.clone();
                                 // Defer projection/COW work until after paint. On contention,
                                 // retry via another draw, never by acknowledging inbox cells.
-                                cx.defer(move |cx| match inbox.try_lock() {
-                                    Ok(mut state) => {
-                                        state.acknowledge_presented_surface(
-                                            &snapshot, &surface, true,
-                                        );
+                                cx.defer(move |cx| {
+                                    let owned = paint_entity.read(cx).owns_paint(
+                                        paint_epoch,
+                                        paint_generation,
+                                        &inbox,
+                                    );
+                                    if !owned {
+                                        return;
                                     }
-                                    Err(std::sync::TryLockError::WouldBlock) => {
-                                        paint_entity.update(cx, |_, cx| cx.notify());
+                                    match inbox.try_lock() {
+                                        Ok(mut state) => {
+                                            state.acknowledge_presented_surface(
+                                                &snapshot, &surface, true,
+                                            );
+                                        }
+                                        Err(std::sync::TryLockError::WouldBlock) => {
+                                            paint_entity.update(cx, |_, cx| cx.notify());
+                                        }
+                                        Err(std::sync::TryLockError::Poisoned(_)) => {}
                                     }
-                                    Err(std::sync::TryLockError::Poisoned(_)) => {}
                                 });
                             }
                         }
@@ -826,7 +955,7 @@ fn run() -> std::process::ExitCode {
     };
     if mode == LaunchMode::Help {
         println!(
-            "herdr-gpui [--socket CLIENT_SOCKET | --session NAME [--dev]]\nStarts the local Herdr daemon if needed; never stops it.\nExplicit --socket and --dev targets are attach-only."
+            "herdr-gpui [--socket CLIENT_SOCKET | --session NAME [--dev]]\nConnects to Local and saved SSH hosts; never installs remote software.\nStarts the local Herdr daemon if needed; never stops it.\nExplicit --socket and --dev targets are attach-only; --socket isolates the GUI to one existing daemon."
         );
         #[cfg(feature = "integration-test")]
         println!(

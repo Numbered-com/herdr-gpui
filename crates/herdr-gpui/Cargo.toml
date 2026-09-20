@@ -21,7 +21,7 @@ ureq.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 
 [features]
-integration-test = ["dep:cocoa", "dep:objc", "dep:core-graphics", "dep:foreign-types"]
+integration-test = ["dep:cocoa", "dep:objc", "dep:core-graphics", "dep:foreign-types", "dep:raw-window-handle"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true
@@ -31,6 +31,7 @@ cocoa = { workspace = true, optional = true }
 objc = { workspace = true, optional = true }
 core-graphics = { workspace = true, optional = true }
 foreign-types = { workspace = true, optional = true }
+raw-window-handle = { workspace = true, optional = true }
 
 [[test]]
 name = "live_gui"

@@ -1,11 +1,13 @@
 # Herdr Native Shell
 
-A minimal macOS GPUI 0.2.2 client for a local Herdr daemon.
-It starts an installed `herdr server` when the local daemon is absent. Explicit
-socket and development targets remain attach-only. It does not link, install,
-stop, or upgrade Herdr, spawn a PTY, or emulate a terminal.
+A macOS GPUI 0.2.2 client for a Local daemon and saved SSH hosts.
+It starts an installed local `herdr server` when absent; explicit socket and
+development targets remain attach-only. It does not link or install Herdr, stop
+daemons, spawn a local PTY, or emulate a terminal. Herdr's remote bridge may start
+the named remote session. SSH requires an installed POSIX Herdr, noninteractive authentication,
+and an already trusted host key.
 Runtime dependencies include GPUI, `herdr-client`, `serde_json` for API parameters,
-and `serde`/`toml` for GUI configuration.
+`ureq` for background GitHub owner avatar downloads, and `serde`/`toml` for GUI configuration.
 
 ```sh
 cargo run -p herdr-gpui
@@ -17,9 +19,39 @@ cargo run -p herdr-gpui -- --socket /absolute/path/to/herdr-client.sock
 Without flags, discovery follows `herdr-client`'s environment and release-session
 rules. `--socket` must name the binary **client** socket, not the JSON API socket.
 `--dev` selects the `herdr-dev` config directory. Connection failure is displayed
-in the single-row status bar; Terminal > Reconnect makes a fresh connection with
-no input replay. The status dot is green when connected, pulses during startup,
-and turns red on connection failure.
+in the single-row status bar and host rows. Endpoints reconnect independently with
+bounded backoff; Terminal > Reconnect retries the selected endpoint immediately,
+without input replay. Detach pauses retries for that endpoint until Reconnect.
+The status dot pulses amber during local daemon startup, is green when connected,
+and red otherwise.
+
+Spaces lists Local first, then saved hosts in the upstream catalog's order.
+Enabled hosts connect in the background with inactive terminal surfaces; disabled
+hosts remain visible. Host and repository collapse state is endpoint-scoped, and
+Agents aggregates all connected endpoints with host labels. The catalog is read
+through `herdr-client` every two seconds; changes to targets, sessions, enablement,
+and ordering are reflected without restarting. Catalog errors preserve the last
+valid list. The GUI never edits saved hosts or installs remote software.
+An explicit `--socket` is isolated: it never loads or connects saved hosts, or
+reads/writes saved selection. Other launches read `client/endpoint-selection.json`
+once, under the same release/dev state root as the catalog. Local remains usable
+while the desired host connects; restoration waits for its first snapshot rather
+than timing out during SSH startup. Explicit host/workspace/agent choices cancel
+pending restoration and persist selection asynchronously, without editing hosts.
+Other running clients' choices never change this window's selection. Missing,
+malformed, disabled or removed saved choices fall back to the valid legacy
+catalog selection (normally Local), matching upstream. Live removal/disable
+returns to Local and cancels pending restoration; re-enabling does not steal focus.
+Automatic activation failure returns to Local without overwriting the saved
+preference or repeatedly attempting the same handoff. Write failures are shown
+in the status bar and do not undo the UI choice. Host editing remains in
+`herdr machine`.
+
+Switching revokes the old host's focus before releasing its surface, then resizes
+and activates the selected host. Input waits for the activation acknowledgement
+and a coherent surface at the current viewport size. Handoffs time out after five
+seconds and return to Local; returning to Local never waits on a remote release.
+Servers without surface-switching support remain usable as single targets.
 
 Default and named-session startup discovers Herdr on PATH or in standard
 Homebrew, Cargo, or `~/.local/bin` locations, then waits up to 20 seconds to
@@ -51,6 +83,9 @@ Config and theme I/O is synchronous; GUI callers should schedule it accordingly.
 - Workspace/worktree sidebar with main-checkout parents, indented linked
   workspaces, local collapse arrows, branch details, and daemon-driven
   filled/hollow activity indicators with client-local unseen-completion tracking.
+- Resizable sidebar with width persisted per local daemon socket, shared across
+  host groups. Local workspace titles show repository owner avatars; remote
+  workspaces use the GitHub fallback mark without resolving remote paths locally.
 - In-app sidebar menu for settings information, keybinds, config reload, update
   information, and detach/reconnect. Styled Preferences include Appearance,
   Fonts, Configuration, and Connection sections, with theme selection and GUI
@@ -142,8 +177,8 @@ GPUI native action/menu/keybinding patterns.
 - No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
   hyperlink activation, image rendering, or animated blinking.
 - No rename dialogs, workspace close/delete actions, horizontal wheel handling,
-  server-owned keybindings, SSH,
-  session picker, automatic reconnect, or daemon stop/upgrade management.
+  server-owned keybindings, session picker, saved-host editing, or daemon
+  stop/upgrade management.
 - IME uses a minimal transient buffer, not a local editable terminal document;
   composition appears in the status bar rather than inline. Key releases and
   physical-key/extended keyboard protocol metadata are not reported.
@@ -168,3 +203,10 @@ cell modifiers, viewport bounds, semantic key selection, revision coherence,
 creation request parameters, workspace-local tab cycling, wheel accumulation,
 pane-relative hit testing, and popup routing.
 They do not replace an interactive smoke test against a live daemon.
+
+`just test-sidebar` runs isolated, daemon-free native fixtures on the active
+desktop. On macOS it checks exact-window clicks with a decoy key window, host
+selection/disabled hosts, scoped collapse, duplicate-ID navigation routing,
+composition preservation, menu isolation, and long-label native glyph clipping.
+Scroll independence uses scroll handles and native draws, not trackpad events.
+See the root README for the full verification scope and remaining limitations.

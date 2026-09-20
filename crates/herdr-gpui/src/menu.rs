@@ -16,6 +16,8 @@ pub(super) enum Page {
 
 pub(super) struct MenuState {
     pub page: Option<Page>,
+    // Selection epoch and connection generation fence captured modal actions.
+    target: (u64, u64),
     pub anchor: Point<Pixels>,
     focus: FocusHandle,
     selected: usize,
@@ -32,6 +34,7 @@ impl MenuState {
     pub fn new(cx: &App) -> Self {
         Self {
             page: None,
+            target: (0, 0),
             anchor: Point::default(),
             focus: cx.focus_handle(),
             selected: 0,
@@ -97,6 +100,10 @@ impl HerdrWindow {
     }
 
     pub(super) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu.target = (
+            self.selection_epoch,
+            self.endpoints[self.selected_endpoint].generation,
+        );
         self.menu.page = Some(Page::Menu);
         self.menu.selected = 0;
         self.marked.clear();
@@ -109,6 +116,14 @@ impl HerdrWindow {
         self.menu.close = None;
         window.focus(&self.focus);
         cx.notify();
+    }
+
+    pub(super) fn menu_target_current(&self) -> bool {
+        self.menu.target
+            == (
+                self.selection_epoch,
+                self.endpoints[self.selected_endpoint].generation,
+            )
     }
 
     fn menu_items(&self) -> Vec<&'static str> {
@@ -131,11 +146,17 @@ impl HerdrWindow {
         {
             items.push("update ready");
         }
-        items.push(if self.connection.handle.is_some() {
-            "detach"
-        } else {
-            "reconnect"
-        });
+        items.push(
+            if self.endpoints[self.selected_endpoint]
+                .connection
+                .handle
+                .is_some()
+            {
+                "detach"
+            } else {
+                "reconnect"
+            },
+        );
         items
     }
 
@@ -149,9 +170,10 @@ impl HerdrWindow {
             "update ready" => self.menu.page = Some(Page::Update),
             "reload GUI config" => self.reload_gui_config(window, cx),
             "reload daemon config" => {
-                if let (Some(handle), Some(snapshot)) =
-                    (&self.connection.handle, &self.live.snapshot)
-                {
+                if let (Some(handle), Some(snapshot)) = (
+                    &self.endpoints[self.selected_endpoint].connection.handle,
+                    &self.live.snapshot,
+                ) {
                     self.local_error = handle
                         .request(
                             &snapshot.boot_id,
@@ -164,10 +186,7 @@ impl HerdrWindow {
                 self.dismiss_menu(window, cx);
             }
             "detach" => {
-                self.connection.detach(self.active);
-                self.live = self.connection.take_update().unwrap_or_default();
-                self.local_error = None;
-                self.marked.clear();
+                self.detach_endpoint();
                 self.dismiss_menu(window, cx);
             }
             "reconnect" => {

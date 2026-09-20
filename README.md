@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/penso/herdr-gpui/actions/workflows/ci.yml/badge.svg)](https://github.com/penso/herdr-gpui/actions/workflows/ci.yml)
 
-A native Rust/GPUI interface to an existing local Herdr daemon. Workspaces and
+A native Rust/GPUI interface to local and saved SSH Herdr hosts. Workspaces and
 worktrees are on the left, agents below them, and the active workspace's tabs
 across the top. The center paints the daemon's terminal cells, including split
 panes, without running another terminal emulator or wrapping the TUI.
@@ -33,7 +33,7 @@ The Herdr checkout does not need to be modified or linked into this build.
 ## Run
 
 Install Rust/rustup and the macOS Xcode command-line tools. The repository pins
-Rust 1.96.1 and GPUI 0.2.2. Start Herdr normally, then:
+Rust 1.96.1 and GPUI 0.2.2. Install Herdr, then:
 
 ```sh
 cargo run --locked --release -p herdr-gpui
@@ -48,23 +48,46 @@ just run --socket /absolute/path/to/herdr-client.sock
 slower with a dense terminal on screen.
 
 The explicit socket must be the binary **client** socket, not `herdr.sock`.
-The app starts `herdr server` if the default or named-session daemon is absent,
-then waits up to 20 seconds to connect without blocking the UI. Herdr must already
-be installed. A pulsing status indicator and "Starting Herdr server..." message
-remain visible while startup is pending. The executable is discovered
-on PATH or in a standard Homebrew, Cargo, or `~/.local/bin` location.
-If Herdr cannot be found, an installation modal offers an **Install** button that
-opens [herdr.dev](https://herdr.dev/). It does not download or run an installer.
-Use **QA > Show herdr non-detected modal** in the macOS menu bar to preview this
-warning without restarting, disconnecting, or changing daemon detection.
-Explicit `--socket` and `--dev` targets remain attach-only. The app never installs,
-stops, or upgrades the daemon, and closing the window leaves it running. A failed
-connection appears in the status bar with a red dot. Use Terminal > Reconnect to
-retry; there is no permanent reconnect button.
+The app starts `herdr server` if the default or named-session local daemon is
+absent, then waits up to 20 seconds without blocking the UI. A pulsing status
+indicator and "Starting Herdr server..." message remain visible during startup.
+Herdr must already be installed; discovery checks PATH and standard Homebrew,
+Cargo, and `~/.local/bin` locations. If missing, an installation modal's **Install**
+button opens [herdr.dev](https://herdr.dev/) without downloading or running an
+installer. **QA > Show herdr non-detected modal** previews the warning without
+disconnecting or changing detection. Explicit `--socket` and `--dev` targets
+remain attach-only. The app never installs, stops, or upgrades your daemons.
+Failed connections retry automatically; Terminal > Reconnect retries the selected
+host immediately. Closing the app leaves daemon sessions running.
 
 Use **Report issue** on the right of the status bar to open this repository's
-GitHub issue forms in your browser. Choose a bug report, feature request, or
-documentation issue; redact secrets and private terminal content before submitting.
+GitHub issue forms. Redact secrets and private terminal content before submitting.
+
+### Saved Hosts
+
+Normal launches read Herdr's existing saved-host catalog at
+`$XDG_STATE_HOME/herdr/client/endpoints.json` (default
+`~/.local/state/herdr/client/endpoints.json`). `--dev` selects `herdr-dev` instead.
+Manage this list with Herdr's `herdr machine` commands; GPUI reloads changes while
+running. An explicit `--socket` launch stays isolated and does not load saved hosts.
+Normal launches restore the choice in the adjacent `endpoint-selection.json`
+once the saved host's snapshot is ready. Explicit host choices persist there;
+other clients' later choices do not move this window's focus. Startup connection
+delays and automatic fallback never overwrite the preference. Disabled/removed
+choices fall back to Local (or a valid legacy catalog choice at startup).
+`--socket` never reads or writes saved selection.
+
+Spaces lists Local first, then collapsible saved-host groups in catalog order.
+Enabled hosts connect in the background so their workspaces and agents stay
+current. Selecting a remote workspace activates its terminal; input is held until
+the destination surface is ready. Only the selected host receives terminal input.
+
+SSH connects directly to each remote host, not through the local daemon. It uses
+noninteractive SSH authentication and existing trusted host keys. Remote Herdr
+must already be installed on a supported POSIX host; its `remote-client-bridge`
+may start the named remote session. GPUI does not install remote software or
+prompt for passwords/host trust. Configure and verify access with Herdr first.
+Closing GPUI detaches all connections without stopping remote sessions.
 
 New workspaces created through Herdr appear automatically while connected.
 Revisioned snapshots are pushed by the daemon and applied by the GUI without a
@@ -272,8 +295,22 @@ text truncation that protocol and action-dispatch tests cannot detect.
 font renderer and full application layout. It checks native glyphs and clipping
 over 12 draws at four window sizes. This catches truncated font runs that the
 mock text system does not model. It requires an active desktop, but uses only
-fixture data and never connects to your daemon. It is not a screenshot/pixel
-comparison test.
+fixture data and never connects to your daemon. Its process uses the shared
+cleared-environment sandbox; the fixture catalog and synthetic hosts use unused
+explicit socket targets, with polling stopped and no saved-state reads or writes.
+On macOS, exact-view AppKit clicks verify host selection and return, disabled
+selection, collapse without navigation or composition loss, agents remaining
+visible, duplicate workspace/pane ID routing, and endpoint-scoped repository
+collapse. A separate key window guards against accidentally targeting global
+focus. Native glyph probes check long host/agent labels at 480px and 360px window
+widths, plus wider/narrower sidebar preferences and restoration after truncation.
+Host and agent glyphs also run with 16px/20px sidebar fonts and Nord, then restore
+the default theme and 12px font.
+Independent list offsets are checked through GPUI scroll handles and native
+draws, not physical wheel/trackpad delivery. Routing checks stop at the queued
+navigation target; they do not claim daemon acknowledgement or SSH coverage.
+Menu keyboard isolation and outside dismissal remain covered. This is not a
+screenshot/pixel comparison or OS-level IME test.
 
 On macOS this also verifies that the running application's native Dock image is
 valid and 1024x1024; a normal unit test checks the embedded PNG header/dimensions.
@@ -313,21 +350,27 @@ the local repository's `origin` remote. Git lookups and avatar downloads run
 in the background, with results shared per owner for the app session. The
 GitHub mark is used while loading or when an avatar is unavailable. No GitHub
 token is needed; avatar requests go to `avatars.githubusercontent.com`.
+Saved-host workspaces use the GitHub fallback mark: their remote paths are never
+looked up on the local filesystem.
 
 Drag the sidebar's right edge to resize it; double-click the divider to restore
 the default width. The terminal resizes automatically. Width is remembered per
-daemon socket in `$XDG_STATE_HOME/herdr/gpui/local-<socket-hash>.json`, defaulting
+local daemon socket in `$XDG_STATE_HOME/herdr/gpui/local-<socket-hash>.json`, defaulting
 to `~/.local/state/herdr/gpui/`. These logical-pixel preferences are separate
 from the TUI's column-based settings. Narrow windows temporarily limit the
 displayed width without replacing your saved preference.
+Saves run in the background and continue after window close while the app remains
+alive. App exit does not wait for pending writes, so the latest change may be lost.
+The width applies to all host groups in the window; narrow sidebars hide host
+status text to leave room for labels.
 
 ## Next Milestones
 
 - Selection/copy, hyperlink interaction, richer mouse support, and inline IME.
 - Rename dialogs, workspace deletion, and full worktree/agent management.
 - Editable settings and bundled fonts.
-- Automatic reconnect, optimized terminal painting and graphics support.
-- Signed macOS app packaging, then SSH endpoints.
+- Optimized terminal painting and graphics support.
+- Signed macOS app packaging and broader remote-platform support.
 
 Current rendering defaults to Menlo with configurable fonts and themes. Images and terminal
 notifications/clipboard writes are deliberately not executed. See

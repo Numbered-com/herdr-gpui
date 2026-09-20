@@ -229,51 +229,182 @@ pub(crate) fn snapshot(workspace_count: usize) -> ClientShellSnapshot {
 
 #[gpui::test]
 fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
-    use gpui::{Modifiers, MouseButton, MouseDownEvent, point};
     let (fixture, cx) = cx.add_window_view(|window, cx| {
         crate::bind_keys(cx);
         // Deliberately do not call HerdrWindow::new: it connects and starts polling.
-        let view = cx.new(|cx| HerdrWindow {
-            connection: crate::connection::ConnectionBridge::new(ConnectTarget::Socket(
-                "/unused-layout-test.sock".into(),
-            )),
-            live: {
-                let mut live = LiveState::default();
-                live.snapshot = Some(Arc::new(snapshot(40)));
-                live
-            },
-            focus: cx.focus_handle(),
-            options: ConnectOptions::default(),
-            last_queued_options: None,
-            active: false,
-            sent_focus: None,
-            bounds: Bounds::default(),
-            cell_width: 9.,
-            painter: Default::default(),
-            config: Default::default(),
-            theme: Default::default(),
-            marked: String::new(),
-            local_error: None,
-            menu: crate::menu::MenuState::new(cx),
-            install_warning_shown: false,
-            collapsed_repos: Default::default(),
-            sidebar_visible: true,
-            wheel: WheelAccumulator::default(),
-            sidebar_width: None,
-            sidebar_drag: None,
-            sidebar_preferences: None,
-            sidebar_modified: false,
-            avatars: None,
-            #[cfg(feature = "integration-test")]
-            input_probe: crate::smoke::InputProbe::default(),
-            #[cfg(feature = "integration-test")]
-            sidebar_scroll: Default::default(),
-            _poll: Task::ready(()),
-            _activation: cx.observe_window_activation(window, |_, _, _| {}),
+        let view = cx.new(|cx| fixture_window(window, cx));
+        cx.observe(&view, |_, _, cx| cx.notify()).detach();
+        SidebarFixture(view)
+    });
+    check_sidebar(fixture, cx);
+}
+
+#[gpui::test]
+fn multi_host_rows_scope_duplicate_ids_and_keep_agents_when_host_collapses(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture_window(window, cx);
+            view.live.snapshot = Some(Arc::new(snapshot(1)));
+            let mut remote = crate::endpoint::Endpoint::new(
+                "ssh:test".into(),
+                "Remote".into(),
+                ConnectTarget::Ssh {
+                    target: "unused".into(),
+                    session: "default".into(),
+                },
+                true,
+            );
+            remote.live.snapshot = view.live.snapshot.clone();
+            Arc::make_mut(remote.live.snapshot.as_mut().unwrap()).workspaces[0].label =
+                "remote workspace".into();
+            view.endpoints.push(remote);
+            view
         });
         cx.observe(&view, |_, _, cx| cx.notify()).detach();
         SidebarFixture(view)
     });
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    for selector in [
+        "host-local",
+        "host-ssh:test",
+        "workspace-local-w0",
+        "workspace-ssh:test-w0",
+        "agent-local-p0",
+        "agent-ssh:test-p0",
+        "github-herdr",
+        "github-remote workspace",
+    ] {
+        assert!(cx.debug_bounds(selector).is_some(), "missing {selector}");
+    }
+    for (icon, title) in [
+        ("github-herdr", "name-herdr"),
+        ("github-remote workspace", "name-remote workspace"),
+    ] {
+        let icon = cx.debug_bounds(icon).unwrap();
+        let title = cx.debug_bounds(title).unwrap();
+        assert_eq!(icon.size, size(px(12.), px(12.)));
+        assert_eq!(title.left(), icon.right() + px(6.));
+        assert_eq!(
+            title.size.width,
+            px(super::LABEL_WIDTH - super::ICON_RESERVE)
+        );
+    }
+    fixture.update(cx, |fixture, cx| {
+        fixture.0.update(cx, |view, cx| {
+            view.endpoints[1].collapsed = true;
+            cx.notify();
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        cx.default_global::<TextProbes>().0.clear();
+        window.refresh();
+        let _ = window.draw(cx);
+        assert!(!cx.global::<TextProbes>().0.contains_key("remote workspace"));
+        assert!(
+            cx.global::<TextProbes>()
+                .0
+                .contains_key("Remote / Claude Code")
+        );
+    });
+    assert!(cx.debug_bounds("workspace-local-w0").is_some());
+    assert!(cx.debug_bounds("agent-ssh:test-p0").is_some());
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>) -> HerdrWindow {
+    HerdrWindow {
+        config: Default::default(),
+        theme: Default::default(),
+        sidebar_visible: true,
+        endpoints: vec![crate::endpoint::Endpoint::new(
+            crate::endpoint::LOCAL.into(),
+            "Local".into(),
+            ConnectTarget::Socket("/unused-layout-test.sock".into()),
+            true,
+        )],
+        selected_endpoint: 0,
+        selection_epoch: 0,
+        catalog: crate::endpoint::Catalog::new(&ConnectTarget::Socket(
+            "/unused-layout-test.sock".into(),
+        )),
+        activation_deadline: None,
+        pending_navigation: None,
+        pending_releases: Vec::new(),
+        selected_generation: 0,
+        live: {
+            let mut live = LiveState::default();
+            live.snapshot = Some(Arc::new(snapshot(40)));
+            live
+        },
+        focus: cx.focus_handle(),
+        options: ConnectOptions::default(),
+        last_queued_options: None,
+        active: false,
+        sent_focus: None,
+        bounds: Bounds::default(),
+        cell_width: 9.,
+        painter: Default::default(),
+        marked: String::new(),
+        local_error: None,
+        menu: crate::menu::MenuState::new(cx),
+        install_warning_shown: false,
+        collapsed_repos: Default::default(),
+        wheel: WheelAccumulator::default(),
+        sidebar_width: None,
+        sidebar_drag: None,
+        sidebar_preferences: None,
+        sidebar_modified: false,
+        avatars: None,
+        #[cfg(feature = "integration-test")]
+        input_probe: crate::smoke::InputProbe::default(),
+        #[cfg(feature = "integration-test")]
+        sidebar_scroll: Default::default(),
+        _poll: Task::ready(()),
+        _activation: cx.observe_window_activation(window, |_, _, _| {}),
+    }
+}
+
+#[gpui::test]
+fn palette_rejects_changed_endpoint_epoch_or_generation(cx: &mut gpui::TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        crate::bind_keys(cx);
+        fixture_window(window, cx)
+    });
+    for reconnect in [false, true] {
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| view.open_palette(false, window, cx));
+            window.draw(cx).clear();
+        });
+        cx.simulate_input("toggle sidebar");
+        cx.run_until_parked();
+        view.update(cx, |view, _| {
+            assert!(view.menu_target_current());
+            if reconnect {
+                view.endpoints[view.selected_endpoint].generation += 1;
+            } else {
+                view.selection_epoch += 1;
+            }
+            assert!(!view.menu_target_current());
+        });
+        cx.simulate_keystrokes("enter");
+        cx.update(|_, cx| {
+            assert!(view.read(cx).sidebar_visible);
+            assert!(view.read(cx).menu.page == Some(crate::menu::Page::Palette));
+        });
+        cx.simulate_keystrokes("escape");
+    }
+}
+
+#[cfg(test)]
+fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestContext) {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, point};
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.run_until_parked();
     cx.update(|window, cx| {
@@ -827,7 +958,13 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
             view.read(cx).menu.page == Some(crate::menu::Page::ConfirmClose),
             "disconnected confirmation stays open with error"
         );
-        assert!(view.read(cx).connection.handle.is_none());
+        let view = view.read(cx);
+        assert!(
+            view.endpoints[view.selected_endpoint]
+                .connection
+                .handle
+                .is_none()
+        );
     });
     cx.simulate_keystrokes("escape");
     cx.update(|window, cx| assert!(view.read(cx).focus.is_focused(window)));

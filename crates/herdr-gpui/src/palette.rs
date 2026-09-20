@@ -255,17 +255,22 @@ impl HerdrWindow {
     }
 
     fn activate_palette(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.menu_target_current() {
+            if let Some(palette) = &mut self.menu.palette {
+                palette.error = Some("The selected connection changed. Reopen the palette.".into());
+            }
+            cx.notify();
+            return;
+        }
         if let Action::Native(command) = action {
             self.dismiss_menu(window, cx);
             self.command(command, window, cx);
             return;
         }
         let result = (|| {
-            let handle = self
-                .connection
-                .handle
-                .as_ref()
-                .ok_or("Not connected to the daemon.")?;
+            if !self.input_ready() {
+                return Err("The selected connection is not ready.".into());
+            }
             let snapshot = self
                 .live
                 .snapshot
@@ -278,19 +283,21 @@ impl HerdrWindow {
                 .and_then(|p| p.target.as_ref())
                 .ok_or("No captured daemon session. Reopen the palette.")?;
             match &action {
-                Action::Workspace(id) => target.workspace_exists(snapshot, id),
+                Action::Workspace(id) => target.workspace_exists(snapshot, id).map(|()| None),
                 Action::Configured(id, action) => {
                     let params = target.invocation(snapshot, id, *action)?;
-                    handle
-                        .request(&target.boot, "command.invoke", params)
-                        .map(|_| ())
-                        .map_err(|error| format!("Command not sent: {error}"))
+                    Ok(Some(params))
                 }
                 Action::Native(_) => unreachable!(),
             }
         })();
         match result {
-            Ok(()) => {
+            Ok(params) => {
+                if let Some(params) = params {
+                    self.request_focus_change("command.invoke", None, |handle, boot| {
+                        handle.request(boot, "command.invoke", params)
+                    });
+                }
                 self.dismiss_menu(window, cx);
                 if let Action::Workspace(id) = action {
                     self.navigate(NavigationTarget::Workspace(&id), cx);
