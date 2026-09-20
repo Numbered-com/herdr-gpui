@@ -1,7 +1,9 @@
 # Herdr Native Shell
 
-A minimal macOS GPUI 0.2.2 client for an **already running** local Herdr daemon.
-It does not link, start, stop, or modify Herdr, spawn a PTY, or emulate a terminal.
+A minimal macOS GPUI 0.2.2 client for a local Herdr daemon.
+It starts an installed `herdr server` when the local daemon is absent. Explicit
+socket and development targets remain attach-only. It does not stop Herdr, spawn
+a PTY, or emulate a terminal.
 Runtime dependencies are GPUI, `herdr-client`, and `serde_json` for API parameters.
 
 ```sh
@@ -91,7 +93,7 @@ GPUI native action/menu/keybinding patterns.
   hyperlink activation, image rendering, or animated blinking.
 - No pane/tab/workspace close or delete actions (deferred until confirmation UI),
   horizontal wheel handling, command palette, server-owned keybindings, SSH,
-  session picker, automatic reconnect, or daemon lifecycle management.
+  session picker, automatic reconnect, or daemon stop/upgrade management.
 - IME uses a minimal transient buffer, not a local editable terminal document;
   composition appears in the status bar rather than inline. Key releases and
   physical-key/extended keyboard protocol metadata are not reported.
