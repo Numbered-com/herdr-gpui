@@ -8,11 +8,13 @@ mod config;
 mod connection;
 mod controls;
 mod daemon;
+mod diagnostics;
 mod endpoint;
 mod error;
 pub use error::{Error, Result};
 mod icons;
 mod input;
+mod log_window;
 mod menu;
 mod palette;
 #[cfg(feature = "integration-test")]
@@ -27,7 +29,6 @@ mod tab_menu;
 mod terminal;
 mod terminal_painter;
 mod theme_picker;
-#[cfg(target_os = "macos")]
 mod titlebar;
 
 use connection::ConnectionBridge;
@@ -40,7 +41,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use terminal::*;
 
-actions!(herdr, [Quit, ShowHerdrNotDetected]);
+actions!(herdr, [Quit, ShowHerdrNotDetected, ShowLogs]);
 
 #[derive(Clone, PartialEq, serde::Deserialize, Action)]
 #[action(no_json)]
@@ -210,6 +211,7 @@ impl HerdrWindow {
                     Some(error.to_string()),
                 ),
             };
+        log_window::set_appearance(&config, &theme, cx);
         let mut this = Self {
             config,
             theme,
@@ -277,6 +279,7 @@ impl HerdrWindow {
         this.avatars = Some(avatars::Avatars::new());
         this.reconnect();
         if config_error.is_some() {
+            tracing::warn!("GUI configuration could not be loaded; using defaults");
             this.local_error = config_error;
         }
         this
@@ -423,6 +426,10 @@ impl HerdrWindow {
             self.input_probe.actions += 1;
         }
         match command {
+            Command::Logs => {
+                log_window::open(cx);
+                return;
+            }
             Command::ClosePane | Command::CloseTab => {
                 self.open_close_confirmation(command, window, cx);
                 return;
@@ -1045,10 +1052,21 @@ fn run() -> std::process::ExitCode {
         smoke::EXIT_CODE.store(1, std::sync::atomic::Ordering::SeqCst);
     }
     let startup_failed = std::rc::Rc::new(std::cell::Cell::new(false));
+    if let Err(error) = diagnostics::init() {
+        eprintln!("Unable to initialize diagnostics: {error}");
+        return std::process::ExitCode::FAILURE;
+    }
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        os = std::env::consts::OS,
+        arch = std::env::consts::ARCH,
+        "GPUI client starting"
+    );
     let failed = startup_failed.clone();
     Application::new().with_assets(icons::Icons).run(move |cx| {
         app_icon::install();
         cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.on_action(|_: &ShowLogs, cx| log_window::open(cx));
         bind_keys(cx);
         cx.set_menus(vec![
             Menu {
@@ -1161,6 +1179,10 @@ fn run() -> std::process::ExitCode {
                 ],
             },
             Menu {
+                name: "Window".into(),
+                items: vec![MenuItem::action("GPUI Logs", ShowLogs)],
+            },
+            Menu {
                 name: "QA".into(),
                 items: vec![MenuItem::action(
                     "Show herdr non-detected modal",
@@ -1183,12 +1205,7 @@ fn run() -> std::process::ExitCode {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(640.), px(400.))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Herdr".into()),
-                    appears_transparent: cfg!(target_os = "macos"),
-                    traffic_light_position: cfg!(target_os = "macos")
-                        .then(|| point(px(9.), px(9.))),
-                }),
+                titlebar: Some(titlebar::options("Herdr")),
                 app_id: Some("so.pen.herdr-gpui".into()),
                 ..Default::default()
             },
@@ -1222,6 +1239,7 @@ fn run() -> std::process::ExitCode {
                 }
             }
             Err(error) => {
+                tracing::error!("Unable to open main window");
                 eprintln!("Unable to open Herdr window: {error}");
                 failed.set(true);
                 #[cfg(feature = "integration-test")]

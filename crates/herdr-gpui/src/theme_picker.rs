@@ -84,6 +84,7 @@ impl HerdrWindow {
             Ok(theme) => {
                 self.config.theme = name.into();
                 self.theme = theme;
+                crate::log_window::set_appearance(&self.config, &self.theme, cx);
                 self.dismiss_menu(window, cx);
             }
             Err(error) => {
