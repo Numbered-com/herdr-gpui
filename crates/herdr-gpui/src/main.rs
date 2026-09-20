@@ -584,8 +584,30 @@ impl Render for HerdrWindow {
                             .child(status),
                     )
                     .when(!self.marked.is_empty(), |d| {
-                        d.child(format!("Composing: {}", self.marked))
-                    }),
+                        d.child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .child(format!("Composing: {}", self.marked)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id("report-issue")
+                            .debug_selector(|| "report-issue".into())
+                            .flex_none()
+                            .text_xs()
+                            .cursor_pointer()
+                            .text_color(rgb(sidebar::MUTED))
+                            .hover(|s| s.text_color(rgb(sidebar::FOREGROUND)))
+                            .child("Report issue")
+                            .on_click(|_, _, cx| {
+                                cx.open_url(
+                                    "https://github.com/penso/herdr-gpui/issues/new/choose",
+                                );
+                            }),
+                    ),
             )
             .when(self.menu.page.is_some(), |root| {
                 root.child(self.render_menu(window, cx))

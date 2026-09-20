@@ -188,12 +188,15 @@ impl Element for ProbeText {
 }
 
 #[cfg(test)]
-struct SidebarFixture(Entity<HerdrWindow>);
+struct SidebarFixture(Entity<HerdrWindow>, bool);
 
 #[cfg(test)]
 impl Render for SidebarFixture {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.0.update(cx, |view, cx| {
+            if self.1 {
+                return view.render(window, cx).into_any_element();
+            }
             div()
                 .size_full()
                 .relative()
@@ -202,6 +205,7 @@ impl Render for SidebarFixture {
                 .when(view.menu.page.is_some(), |root| {
                     root.child(view.render_menu(window, cx))
                 })
+                .into_any_element()
         })
     }
 }
@@ -267,7 +271,7 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
             _activation: cx.observe_window_activation(window, |_, _, _| {}),
         });
         cx.observe(&view, |_, _, cx| cx.notify()).detach();
-        SidebarFixture(view)
+        SidebarFixture(view, false)
     });
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.run_until_parked();
@@ -438,4 +442,31 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     });
     cx.simulate_click(gpui::point(px(700.), px(500.)), Default::default());
     cx.update(|_, cx| assert!(view.read(cx).menu.page.is_none()));
+
+    // Exercise the real status bar without starting a daemon connection.
+    fixture.update(cx, |fixture, cx| {
+        fixture.1 = true;
+        cx.notify();
+    });
+    view.update(cx, |view, cx| {
+        view.marked = "composition ".repeat(100);
+        view.local_error = Some("long connection error ".repeat(100));
+        cx.notify();
+    });
+    for width in [480., 800.] {
+        cx.simulate_resize(size(px(width), px(600.)));
+        cx.update(|window, cx| window.draw(cx).clear());
+        let status = cx.debug_bounds("connection-status").unwrap();
+        let report = cx.debug_bounds("report-issue").unwrap();
+        assert!(report.size.width > px(50.));
+        assert!(report.left() >= status.left());
+        assert!(report.right() <= status.right());
+        assert!(report.top() >= status.top());
+        assert!(report.bottom() <= status.bottom());
+        cx.simulate_click(report.center(), Default::default());
+        assert_eq!(
+            cx.opened_url().as_deref(),
+            Some("https://github.com/penso/herdr-gpui/issues/new/choose")
+        );
+    }
 }

@@ -53,6 +53,10 @@ connection appears in the compact single-row status bar with a red dot (green
 when connected). Use Terminal > Reconnect after starting the daemon; there is no
 permanent reconnect button.
 
+Use **Report issue** on the right of the status bar to open this repository's
+GitHub issue forms in your browser. Choose a bug report, feature request, or
+documentation issue; redact secrets and private terminal content before submitting.
+
 New workspaces created through Herdr appear automatically while connected.
 Revisioned snapshots are pushed by the daemon and applied by the GUI without a
 manual refresh. The native integration test checks creation by a separate client,
