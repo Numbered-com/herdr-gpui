@@ -52,27 +52,31 @@ class ReleaseTests(unittest.TestCase):
     def test_linux_archive(self):
         binary = self.work / "input binary"
         binary.write_bytes(build_identity())
-        result = self.run_script("package-linux.sh", "1.2.3", "x86_64-unknown-linux-gnu", binary, self.work, self.notices)
-        with tarfile.open(result.stdout.strip()) as archive:
-            base = "Herdr-1.2.3-x86_64-unknown-linux-gnu/"
-            files = {m.name: m for m in archive.getmembers() if m.isfile()}
-            self.assertEqual(set(files), {base + p for p in [
-                "bin/herdr-gpui", "share/applications/herdr-gpui.desktop",
-                "share/icons/hicolor/1024x1024/apps/herdr-gpui.png",
-                "share/licenses/herdr-gpui/LICENSE-APACHE", "share/licenses/herdr-gpui/NOTICE.md",
-                "share/licenses/herdr-gpui/LICENSE", "share/licenses/herdr-gpui/NOTICE",
-                "share/licenses/herdr-gpui/LICENSE-octicons",
-                "share/licenses/herdr-gpui/THIRD-PARTY-NOTICES.txt",
-            ]})
-            self.assertEqual(files[base + "bin/herdr-gpui"].mode & 0o777, 0o755)
-            self.assertEqual(archive.extractfile(base + "share/icons/hicolor/1024x1024/apps/herdr-gpui.png").read(), (ROOT / "assets/icons/herdr-1024.png").read_bytes())
-            self.assertEqual(archive.extractfile(base + "share/licenses/herdr-gpui/THIRD-PARTY-NOTICES.txt").read(), self.notices.read_bytes())
-            for source in ("LICENSE", "NOTICE", "assets/icons/LICENSE-octicons", "crates/herdr-protocol/NOTICE.md"):
-                self.assertEqual(archive.extractfile(base + "share/licenses/herdr-gpui/" + Path(source).name).read(), (ROOT / source).read_bytes())
-        self.run_script("package-linux.sh", "1.2.3", "x86_64-unknown-linux-gnu", binary, self.work, self.notices, success=False)
+        for target in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"):
+            with self.subTest(target=target):
+                result = self.run_script("package-linux.sh", "1.2.3", target, binary, self.work, self.notices)
+                with tarfile.open(result.stdout.strip()) as archive:
+                    base = f"Herdr-1.2.3-{target}/"
+                    files = {m.name: m for m in archive.getmembers() if m.isfile()}
+                    self.assertEqual(set(files), {base + p for p in [
+                        "bin/herdr-gpui", "share/applications/herdr-gpui.desktop",
+                        "share/icons/hicolor/1024x1024/apps/herdr-gpui.png",
+                        "share/licenses/herdr-gpui/LICENSE-APACHE", "share/licenses/herdr-gpui/NOTICE.md",
+                        "share/licenses/herdr-gpui/LICENSE", "share/licenses/herdr-gpui/NOTICE",
+                        "share/licenses/herdr-gpui/LICENSE-octicons",
+                        "share/licenses/herdr-gpui/THIRD-PARTY-NOTICES.txt",
+                    ]})
+                    self.assertEqual(files[base + "bin/herdr-gpui"].mode & 0o777, 0o755)
+                    self.assertEqual(archive.extractfile(base + "bin/herdr-gpui").read(), binary.read_bytes())
+                    self.assertEqual(archive.extractfile(base + "share/icons/hicolor/1024x1024/apps/herdr-gpui.png").read(), (ROOT / "assets/icons/herdr-1024.png").read_bytes())
+                    self.assertEqual(archive.extractfile(base + "share/licenses/herdr-gpui/THIRD-PARTY-NOTICES.txt").read(), self.notices.read_bytes())
+                    for source in ("LICENSE", "NOTICE", "assets/icons/LICENSE-octicons", "crates/herdr-protocol/NOTICE.md"):
+                        self.assertEqual(archive.extractfile(base + "share/licenses/herdr-gpui/" + Path(source).name).read(), (ROOT / source).read_bytes())
+                self.run_script("package-linux.sh", "1.2.3", target, binary, self.work, self.notices, success=False)
         self.run_script("package-linux.sh", "1.2.3", "bad-target", binary, self.work, self.notices, success=False)
 
     def test_packaging_requires_notices(self):
+        self.mock_tools()
         binary = self.work / "binary"
         binary.touch()
         for script, inputs in [("package-linux.sh", ["x86_64-unknown-linux-gnu", binary]),
@@ -90,9 +94,20 @@ class ReleaseTests(unittest.TestCase):
         mock = tools / "mock.py"
         mock.write_bytes((SCRIPTS / "tests/mock-tool.py").read_bytes())
         mock.chmod(0o755)
-        for tool in ["security", "openssl", "plutil", "lipo", "ditto", "xcrun", "hdiutil", "codesign", "spctl"]:
+        for tool in ["uname", "security", "openssl", "base64", "plutil", "lipo", "ditto", "xcrun", "hdiutil", "codesign", "spctl"]:
             (tools / tool).symlink_to(mock)
         self.env.update(PATH=str(tools) + os.pathsep + self.env["PATH"], MOCK_LOG=str(self.work / "log"))
+
+    def test_macos_requires_darwin(self):
+        self.mock_tools()
+        self.env["MOCK_OS"] = "Linux"
+        for script, args in [
+            ("package-macos.sh", ["1.2.3", "arm", "intel", self.work, self.notices]),
+            ("sign-macos.sh", ["1.2.3", "app", self.work]),
+        ]:
+            result = self.run_script(script, *args, success=False)
+            self.assertIn("macOS required", result.stderr)
+        self.assertFalse((self.work / "log").exists())
 
     def test_unsigned_assembly(self):
         self.mock_tools()

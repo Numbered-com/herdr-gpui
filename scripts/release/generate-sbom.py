@@ -8,7 +8,8 @@ import shutil
 import subprocess
 import sys
 
-TARGETS = ("aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu")
+TARGETS = ("aarch64-apple-darwin", "x86_64-apple-darwin",
+           "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
 
 
 def main():

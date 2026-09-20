@@ -30,7 +30,10 @@ keybind help, GUI and daemon config reload, available-update information, and sa
 detach/reconnect. Escape or clicking outside dismisses it; menu typing never
 reaches the terminal. Update commands are displayed, not executed automatically.
 
-This is an initial working macOS client, not complete TUI feature parity.
+This is an initial working macOS client with experimental Linux builds, not
+complete TUI feature parity. The integrated Linux build and headless tests have
+been verified on Ubuntu 24.04 ARM64; native Linux desktop behavior is not yet
+verified.
 Herdr owns terminal processes and session state; closing this app only detaches.
 The Herdr checkout does not need to be modified or linked into this build.
 
@@ -74,9 +77,10 @@ does not manage it.
 
 ### Linux And Windows
 
-Linux releases are experimental x86_64 GNU/Linux tarballs built on Ubuntu 24.04,
+Linux releases are experimental x86_64/ARM64 GNU/Linux tarballs built on Ubuntu 24.04,
 not static or broadly portable binaries. Download
-`Herdr-VERSION-x86_64-unknown-linux-gnu.tar.gz` and `SHA256SUMS`, verify the archive
+`Herdr-VERSION-x86_64-unknown-linux-gnu.tar.gz` or
+`Herdr-VERSION-aarch64-unknown-linux-gnu.tar.gz` and `SHA256SUMS`, verify the archive
 against its checksum entry, and extract its tree into a chosen prefix with `bin`
 on `PATH`. The archive includes a desktop entry, icon, license and attribution.
 An active X11 or Wayland desktop, Vulkan-capable driver, system fonts, glibc 2.39+
@@ -95,8 +99,9 @@ Windows GUI packaging, transport support, and installers are deferred.
 
 ## Run
 
-Install Rust/rustup and the macOS Xcode command-line tools. The repository pins
-Rust 1.96.1 and GPUI 0.2.2. Install Herdr, then:
+Install Rust/rustup and, on macOS, the Xcode command-line tools. For Linux,
+see the dependencies below. The repository pins Rust 1.96.1 and GPUI 0.2.2.
+Install Herdr, then:
 
 ```sh
 cargo run --locked --release -p herdr-gpui
@@ -157,6 +162,46 @@ Revisioned snapshots are pushed by the daemon and applied by the GUI without a
 manual refresh. The native integration test checks creation by a separate client,
 including preservation of the GUI's current selection and connection. Observed
 latency is tens of milliseconds locally, not an instant-delivery guarantee.
+
+### Linux Builds
+
+CI and releases target `x86_64-unknown-linux-gnu` and
+`aarch64-unknown-linux-gnu` on native Ubuntu 24.04 runners. These are dynamically
+linked GNU/Linux builds, not portable static binaries or AppImages; older glibc
+distributions are not supported by this build baseline. Windows builds do not
+currently exist.
+
+On Ubuntu 24.04, install build dependencies with:
+
+```sh
+bash scripts/install-linux-deps.sh
+just ci
+just test-build
+```
+
+The script uses sudo/apt to install a C/C++ compiler, pkg-config, XKB/XCB,
+FreeType/Fontconfig development libraries, and DejaVu fonts. Pinned registry
+GPUI's default features enable both X11 and Wayland; no alternate GPUI fork,
+nightly toolchain, or cross-compilation SDK is used.
+
+Running the GUI requires an active X11 or Wayland desktop and working Vulkan
+loader/driver, plus XKB/XCB, Fontconfig/FreeType, and DejaVu fonts. On Ubuntu,
+runtime packages include `libxkbcommon0`, `libxkbcommon-x11-0`, `libxcb1`,
+`libfontconfig1`, `libfreetype6`, `libwayland-client0`, `libvulkan1`, and
+`fonts-dejavu-core`; install a Vulkan driver appropriate for your GPU
+(`mesa-vulkan-drivers` for supported Mesa hardware). These libraries, drivers,
+fonts, and Herdr itself are not bundled in release archives.
+
+Extract the matching versioned Linux `.tar.gz` and run `bin/herdr-gpui` inside
+the extracted directory. Linux defaults use DejaVu Sans Mono for terminal/sidebar
+and DejaVu Sans for other UI text. Explicit font configuration is preserved.
+The shortcuts documented as Cmd use **Super** on Linux, not Control, and may
+conflict with desktop shortcuts. macOS global menus and Dock integration do not
+exist on Linux; use the in-app controls and command palette.
+
+Native Linux X11/Wayland launch, Vulkan rendering, clipboard, keyboard/IME,
+scaling, and desktop shortcut behavior still need manual verification. Headless
+tests and successful linking do not establish native desktop support.
 
 ### macOS App Bundle
 
@@ -247,12 +292,12 @@ family = "Menlo"
 size = 14
 ```
 
-| Section | Default Font Family | Default Size |
-| --- | --- | --- |
-| `sidebar` | `Menlo` (macOS), `DejaVu Sans Mono` (elsewhere) | 12 |
-| `tabs` | `.SystemUIFont` | 14 |
-| `terminal` | `Menlo` (macOS), `DejaVu Sans Mono` (elsewhere) | 14 |
-| `ui` | `.SystemUIFont` | 12 |
+| Section | macOS Font Family | Linux Font Family | Default Size |
+| --- | --- | --- | --- |
+| `sidebar` | `Menlo` | `DejaVu Sans Mono` | 12 |
+| `tabs` | `.SystemUIFont` | `DejaVu Sans` | 14 |
+| `terminal` | `Menlo` | `DejaVu Sans Mono` | 14 |
+| `ui` | `.SystemUIFont` | `DejaVu Sans` | 12 |
 
 Sizes are **logical pixels**, not points or physical display pixels. Fractional
 sizes are supported; values must be finite and between 8 and 48 inclusive. Line
@@ -380,7 +425,8 @@ comparison or OS-level keyboard/IME delivery testing.
 ### Continuous Integration
 
 GitHub Actions checks formatting, denies Clippy warnings, and runs the tests with
-both default and all features. The tests include real executable CLI checks for
+both default and all features on macOS and native Ubuntu 24.04 x86_64/ARM64.
+The tests include real executable CLI checks for
 help, malformed arguments, conflicting options, and test-mode gating, with a
 timeout to catch startup hangs. These checks do not open windows.
 
@@ -439,10 +485,11 @@ remain opt-in rather than imposing machine-dependent timings on hosted CI.
 See [PERFORMANCE.md](crates/herdr-gpui/PERFORMANCE.md) for the before/after results,
 reference mode, workload, deterministic checks, and remaining limitations.
 
-Separate Apple Silicon and Intel macOS jobs build optimized executables and run
-the CLI tests against those release binaries. CI validates builds but does not
-publish distributable binaries. The separate manual release workflow described
-below handles packaging, dependency notices, signing, and notarization.
+Separate Apple Silicon/Intel macOS and x86_64/ARM64 Linux jobs build optimized
+executables and run the CLI tests against those release binaries. CI validates
+builds but does not publish distributable binaries. The separate manual release
+workflow described below handles packaging, dependency notices, signing, and
+notarization.
 GPUI compiles its Metal shaders at runtime, so CI does not need the separate
 build-time Metal compiler download.
 
@@ -553,8 +600,9 @@ silently releasing a different commit.
 The workflow checks the version against the workspace manifest and freezes the
 validated SHA for every checkout. Secret-free jobs run macOS formatting, Clippy,
 default/all-feature tests, native ARM/Intel optimized builds with a macOS 15.0
-deployment target, and release CLI tests. Ubuntu 24.04 runs the same Rust gates
-and release CLI tests before packaging; Windows tests only `herdr-protocol`.
+deployment target, and release CLI tests. Native Ubuntu 24.04 x86_64/ARM64 runners
+run the same Rust gates and release CLI tests before packaging; Windows tests only
+`herdr-protocol`.
 No opt-in live-daemon or desktop tests are enabled. Signing downloads only the
 current run's two macOS binaries into separate paths and calls the existing
 packaging/signing scripts without launching either executable. Signing secrets
@@ -562,15 +610,15 @@ are scoped only to the signing step, not tests or builds.
 
 The distinct `Release Workflow Security` audit gates validation and all subsequent
 jobs without replacing CI's required `Workflow Security` check. A secret-free
-metadata job generates a locked CycloneDX SBOM covering the three release targets
+metadata job generates a locked CycloneDX SBOM covering the four release targets
 and their build dependencies. A separate owner-approved OIDC job signs the final
-DMG, Linux archive, and SBOM with Sigstore and attests their provenance. Builds
+DMG, both Linux archives, and SBOM with Sigstore and attests their provenance. Builds
 restore no caches; Apple credentials are unavailable to metadata/OIDC jobs.
 
-Publication requires exactly those three base files and their `.sha256`, `.sha512`,
-`.sig`, and `.crt` sidecars, plus `SHA256SUMS` covering all 15 files. It refuses any
+Publication requires exactly those four base files and their `.sha256`, `.sha512`,
+`.sig`, and `.crt` sidecars, plus `SHA256SUMS` covering all 20 files. It refuses any
 existing `vVERSION` tag or release, creates a tag at the validated SHA, and uploads
-all 16 assets into a draft. Enable GitHub immutable releases before dispatch.
+all 21 assets into a draft. Enable GitHub immutable releases before dispatch.
 It checks the exact
 draft asset set and downloads it again to verify checksums before making it
 public. The separately approved Homebrew job runs only after publication and
@@ -616,14 +664,19 @@ runs shell syntax checks, mocked packaging and artifact/security tests, workflow
 lint/audits, and diff whitespace checks without remote mutation. See
 [`scripts/release/README.md`](scripts/release/README.md) for tool prerequisites.
 
-Local release validation on 2026-09-20 built both macOS architectures and produced
-a signed/notarized/stapled universal DMG. The mounted app and DMG passed signature,
+Before this merge, local release validation on 2026-09-20 built both macOS
+architectures and produced a signed/notarized/stapled universal DMG. The mounted
+app and DMG passed signature,
 ticket, and Gatekeeper checks; CLI checks and a three-second isolated process-start
 smoke passed. This was not visual/input QA or a published GitHub release.
 Ubuntu 24.04 amd64 Docker validation passed Clippy, release linking/CLI tests, and
 archive extraction. Default/all-feature tests each hit one emulation-specific
 nonexistent-executable spawn failure (`missing_executable_is_actionable`); all
 remaining tests passed. Native x86_64 hosted CI must confirm the unmodified test.
+After integration, the combined branch passed formatting, Clippy,
+default/all-feature tests, release linking and all six release CLI checks on
+macOS and native Ubuntu 24.04 ARM64 (isolated container). These checks do not
+validate native Linux desktop behavior or hosted release publication.
 Hosted publication, Sigstore/provenance verification of published artifacts,
 Homebrew install/upgrade/uninstall, and native Linux UI QA remain pending.
 No release is triggered by adding these files.
@@ -643,8 +696,9 @@ HERDR_TEST_SBOM=1 python3 scripts/release/test-release-security.py
 - Editable settings and bundled fonts.
 - Optimized terminal painting and graphics support.
 - First approved signed release, native distribution QA, and broader remote-platform support.
+- Native Linux desktop verification.
 
-Current rendering defaults to Menlo on macOS and DejaVu Sans Mono on other platforms,
+Current rendering defaults to Menlo on macOS and DejaVu Sans Mono on Linux,
 with configurable fonts and themes. Images and terminal
 notifications/clipboard writes are deliberately not executed. See
 [`crates/herdr-gpui/README.md`](crates/herdr-gpui/README.md) for the detailed scope.

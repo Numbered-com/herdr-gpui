@@ -38,16 +38,17 @@ pub fn install() {
 pub fn install() {}
 
 #[cfg(all(target_os = "macos", feature = "integration-test"))]
-pub fn verify_native() -> Result<(), String> {
+pub fn verify_native() -> anyhow::Result<()> {
+    use anyhow::Context as _;
     use objc2::MainThreadMarker;
     use objc2_app_kit::NSApplication;
-    let mtm = MainThreadMarker::new().ok_or("icon check must run on the main thread")?;
+    let mtm = MainThreadMarker::new().context("icon check must run on the main thread")?;
     let image = NSApplication::sharedApplication(mtm)
         .applicationIconImage()
-        .ok_or("NSApplication has no icon")?;
+        .context("NSApplication has no icon")?;
     let size = image.size();
     if !image.isValid() || size.width != 1024. || size.height != 1024. {
-        return Err(format!("invalid native icon: {size:?}"));
+        anyhow::bail!("invalid native icon: {size:?}");
     }
     eprintln!("ICON native PASS: valid NSApplication image, 1024x1024");
     Ok(())

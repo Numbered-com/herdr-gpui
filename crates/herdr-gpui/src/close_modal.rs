@@ -1,5 +1,5 @@
 use crate::{
-    HerdrWindow,
+    Error, HerdrWindow, Result,
     controls::{self, Command},
     menu::Page,
 };
@@ -63,7 +63,7 @@ impl CloseConfirmation {
         })
     }
 
-    fn request(&self, snapshot: &ClientShellSnapshot) -> Result<(&'static str, Value), String> {
+    fn request(&self, snapshot: &ClientShellSnapshot) -> Result<(&'static str, Value)> {
         if snapshot.boot_id != self.boot
             || !snapshot
                 .workspaces
@@ -81,9 +81,7 @@ impl CloseConfirmation {
                 })
             })
         {
-            return Err(
-                "The original target changed or no longer exists. Cancel and try again.".into(),
-            );
+            return Err(Error::StaleCloseTarget);
         }
         Ok(if let Some(id) = &self.pane {
             ("pane.close", json!({"pane_id": id}))
@@ -133,15 +131,9 @@ impl HerdrWindow {
         };
         let result = (|| {
             if !self.menu_target_current() || !self.input_ready() {
-                return Err(
-                    "The selected connection changed or is not ready. Cancel and try again.".into(),
-                );
+                return Err(Error::StaleConnection);
             }
-            let snapshot = self
-                .live
-                .snapshot
-                .as_ref()
-                .ok_or("Not connected to a daemon.")?;
+            let snapshot = self.live.snapshot.as_ref().ok_or(Error::NotConnected)?;
             close.request(snapshot)
         })();
         match result {
@@ -153,7 +145,7 @@ impl HerdrWindow {
             }
             Err(error) => {
                 if let Some(close) = &mut self.menu.close {
-                    close.error = Some(error);
+                    close.error = Some(error.to_string());
                 }
                 cx.notify();
             }
@@ -307,16 +299,16 @@ mod tests {
     }
 
     #[test]
-    fn explicit_tab_close_does_not_follow_focus() -> Result<(), String> {
+    fn explicit_tab_close_does_not_follow_focus() -> anyhow::Result<()> {
         let mut snapshot: ClientShellSnapshot = serde_json::from_str(include_str!(
             "../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json"
-        ))
-        .map_err(|error| error.to_string())?;
+        ))?;
         let mut inactive = snapshot.tabs[0].clone();
         inactive.tab_id = "inactive".into();
         inactive.focused = false;
         snapshot.tabs.push(inactive);
-        let close = CloseConfirmation::capture_tab(&snapshot, "inactive").ok_or("missing tab")?;
+        let close = CloseConfirmation::capture_tab(&snapshot, "inactive")
+            .ok_or_else(|| anyhow::anyhow!("missing tab"))?;
         assert!(!close.confirm_selected);
         assert_eq!(
             close.request(&snapshot)?,
@@ -327,13 +319,13 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn close_retains_original_target_and_rejects_replaced_sessions() -> Result<(), String> {
+    fn close_retains_original_target_and_rejects_replaced_sessions() -> anyhow::Result<()> {
         let mut snapshot: ClientShellSnapshot = serde_json::from_str(include_str!(
             "../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json"
-        ))
-        .map_err(|error| error.to_string())?;
+        ))?;
         for command in [Command::ClosePane, Command::CloseTab] {
-            let close = CloseConfirmation::capture(command, &snapshot).ok_or("missing target")?;
+            let close = CloseConfirmation::capture(command, &snapshot)
+                .ok_or_else(|| anyhow::anyhow!("missing target"))?;
             assert!(!close.confirm_selected, "Cancel is the safe default");
             let expected = close.request(&snapshot)?;
             let original = snapshot.clone();

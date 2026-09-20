@@ -30,44 +30,75 @@ while let Ok(event) = client.events.recv() {
 ## Public Interface
 
 ```text
-connect(ConnectTarget, ConnectOptions) -> io::Result<Client>
-connect_with_surface_active(ConnectTarget, ConnectOptions, bool) -> io::Result<Client>
-load_saved_hosts(development: bool) -> io::Result<Vec<SavedHost>>
-load_saved_host_selection(development: bool) -> io::Result<(Vec<SavedHost>, Option<String>)>
-store_saved_host_selection(development: bool, selected: Option<&str>) -> io::Result<()>
+connect(ConnectTarget, ConnectOptions) -> Result<Client>
+connect_with_surface_active(ConnectTarget, ConnectOptions, bool) -> Result<Client>
+load_saved_hosts(development: bool) -> Result<Vec<SavedHost>>
+load_saved_host_selection(development: bool) -> Result<(Vec<SavedHost>, Option<String>)>
+store_saved_host_selection(development: bool, selected: Option<&str>) -> Result<()>
 SavedHost { pub id: String, pub label: String, pub target: String, pub session: String, pub enabled: bool }
 Client { pub handle: ClientHandle, pub events: Receiver<ClientEvent> }
 ConnectTarget::Local
 ConnectTarget::Session { name: String, development: bool }
 ConnectTarget::Socket(PathBuf)
 ConnectTarget::Ssh { target: String, session: String }
-ConnectTarget::socket_path(&self) -> io::Result<PathBuf>
-session_socket(config_dir: &Path, name: &str) -> io::Result<PathBuf>
+ConnectTarget::socket_path(&self) -> Result<PathBuf>
+session_socket(config_dir: &Path, name: &str) -> Result<PathBuf>
 ConnectOptions { surface_size: ClientSurfaceSize, cell_width_px: u32, cell_height_px: u32 }
 ```
 
 `ClientHandle` is cloneable. Its exact methods are:
 
 ```text
-send_input(&self, boot_id: &str, pane_id: &str, events: impl IntoIterator<Item = ClientPaneInputEvent>) -> Result<(), SendError>
-send_popup_input(&self, boot_id: &str, terminal_id: &str, events: impl IntoIterator<Item = ClientPaneInputEvent>) -> Result<(), SendError>
-resize(&self, boot_id: &str, options: ConnectOptions) -> Result<(), SendError>
-set_focus(&self, boot_id: &str, focused: bool) -> Result<(), SendError>
-set_surface_active(&self, boot_id: &str, active: bool) -> Result<String, SendError>
-request(&self, boot_id: &str, method: &str, params: serde_json::Value) -> Result<String, SendError>
-focus_pane(&self, boot_id: &str, pane_id: &str) -> Result<String, SendError>
-focus_tab(&self, boot_id: &str, tab_id: &str) -> Result<String, SendError>
-focus_workspace(&self, boot_id: &str, workspace_id: &str) -> Result<String, SendError>
+send_input(&self, boot_id: &str, pane_id: &str, events: impl IntoIterator<Item = ClientPaneInputEvent>) -> Result<()>
+send_popup_input(&self, boot_id: &str, terminal_id: &str, events: impl IntoIterator<Item = ClientPaneInputEvent>) -> Result<()>
+resize(&self, boot_id: &str, options: ConnectOptions) -> Result<()>
+set_focus(&self, boot_id: &str, focused: bool) -> Result<()>
+set_surface_active(&self, boot_id: &str, active: bool) -> Result<String>
+request(&self, boot_id: &str, method: &str, params: serde_json::Value) -> Result<String>
+focus_pane(&self, boot_id: &str, pane_id: &str) -> Result<String>
+focus_tab(&self, boot_id: &str, tab_id: &str) -> Result<String>
+focus_workspace(&self, boot_id: &str, workspace_id: &str) -> Result<String>
 disconnect(&self)
 is_disconnected(&self) -> bool
 ```
 
-`SendError` is `Full | Disconnected | Invalid(String)`. Sending never waits for
+`Result<T>` is `std::result::Result<T, Error>`. `SendError` re-exports `Error`
+for existing callers naming the command error type. Queue failures are `Full`
+and `Disconnected`; invalid commands expose `MissingBootId`, `EmptySurface`,
+`GeometryLimit`, or `Protocol` with its original codec/validation source.
+Sending never waits for
 channel capacity; success means queued, not server acknowledgement. Request
 methods return a unique ID. The worker rejects stale boot IDs, requests before
 the first snapshot and unadvertised methods via
 `CommandRejected`. Navigation uses the real `pane.focus`, `tab.focus`, and
 `workspace.focus` API methods, not synthetic terminal keys.
+
+All fallible client APIs return the crate-root `Error`, derived with `thiserror`.
+I/O, protocol, and JSON failures retain their concrete sources; callers can match
+variants or inspect `std::error::Error::source()` rather than parsing messages.
+`Error::kind()` preserves transport retry/cancellation categories. Historical
+partial-frame, handshake, and request deadlines remain `InvalidData`; health and
+SSH discovery deadlines are `TimedOut`, cancellation is `Interrupted`.
+Errors are not `Clone`, `PartialEq`, or `Eq`; match their typed variants instead.
+
+`connect_with_connector` also returns `Result<Client>`. Its injected connector
+still returns `io::Result<UnixStream>` because it is an actual I/O interface.
+If adapting a typed error to that callback, use
+`io::Error::new(error.kind(), error)`, not `error.to_string()`, to retain sources.
+
+Catalog and selection failures carry `Error::Storage { operation, path, source }`.
+`StorageOperation` distinguishes filesystem, encoding, decoding, and validation
+steps; `Replace { destination }` retains both rename paths. The boxed source keeps
+the typed failure and its original I/O/serde cause, and `kind()` delegates through
+the context wrapper. Paths are diagnostic fields, not included in Display.
+`CatalogSchema` and `SelectionSchema` intentionally redact JSON details from
+Display while retaining the serde source, which may contain private field names.
+Only final `ClientEvent::Disconnected` reasons are strings: disconnect text removes
+controls and is capped at 1024 characters. `CommandRejected.reason` remains a typed
+`Error` (`CommandBoot`, `UnsupportedMethod`, or `UnsupportedSurfaceInterest`) with
+its original optional request ID. Convert it to display text only at the UI
+boundary. Raw errors and source chains are diagnostic data, not automatically
+safe UI text.
 
 `ClientEvent` variants:
 
@@ -76,7 +107,7 @@ Connected(EndpointServerWelcome)
 Snapshot(Arc<ClientShellSnapshot>)
 Surface(Arc<PaneSurfaceFrame>)
 Response { request_id: String, response: serde_json::Value }
-CommandRejected { request_id: Option<String>, reason: String }
+CommandRejected { request_id: Option<String>, reason: Error }
 Message(ServerMessage)
 Disconnected { reason: String }
 ```

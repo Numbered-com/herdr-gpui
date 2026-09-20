@@ -102,6 +102,11 @@ Gatekeeper before publishing the local output filename:
 `Herdr-VERSION-universal-apple-darwin.dmg`. Any failed operation aborts.
 
 Linux targets are `x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-gnu`.
+The release workflow builds both natively on Ubuntu 24.04 architecture runners,
+using the same `scripts/install-linux-deps.sh` library setup as CI. Both archives
+are mandatory in the single immutable asset manifest; signing, provenance and
+consumer verification cover both. The SBOM unions both Linux and both macOS
+target graphs. No separate per-platform manifest or publication job is used.
 The caller must supply the matching release binary; packaging does not cross-build
 or resolve shared libraries. Output is `Herdr-VERSION-TARGET.tar.gz`, with a
 same-named root containing `bin/herdr-gpui`, a PNG icon, desktop entry, license and
@@ -252,8 +257,9 @@ for script in scripts/release/*.sh; do bash -n "$script" || exit; done
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/release/tests -v
 ```
 
-Tests require macOS, Python 3, Git and `jq`. They use dummy credentials and mocked
-Apple tools, check rejection and cleanup paths, and inspect a real Linux tarball.
+Tests run on macOS and Linux with Python 3, Git and `jq`. They use dummy credentials
+and mocked Apple tools/OS detection, check rejection and cleanup paths (including
+macOS-only production guards), and inspect both Linux target tarballs.
 Tap tests mock HTTPS/SSH transport and push only to disposable local repositories;
 they cover default-branch resolution, cask-only commits, no-op updates and failures.
 They do not perform real signing, notarization, Gatekeeper assessment or native

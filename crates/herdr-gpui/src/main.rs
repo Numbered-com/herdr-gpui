@@ -9,6 +9,8 @@ mod connection;
 mod controls;
 mod daemon;
 mod endpoint;
+mod error;
+pub use error::{Error, Result};
 mod icons;
 mod input;
 mod menu;
@@ -206,7 +208,7 @@ impl HerdrWindow {
                 Err(error) => (
                     config::Config::default(),
                     config::Theme::default(),
-                    Some(error),
+                    Some(error.to_string()),
                 ),
             };
         let mut this = Self {

@@ -12,6 +12,7 @@ def base_names(version):
         raise ValueError("Expected numeric X.Y.Z version")
     return [f"Herdr-{version}-universal-apple-darwin.dmg",
             f"Herdr-{version}-x86_64-unknown-linux-gnu.tar.gz",
+            f"Herdr-{version}-aarch64-unknown-linux-gnu.tar.gz",
             f"Herdr-{version}.cdx.json"]
 
 
