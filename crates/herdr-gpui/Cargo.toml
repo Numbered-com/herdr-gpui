@@ -12,7 +12,11 @@ workspace = true
 [dependencies]
 gpui = { workspace = true, features = ["runtime_shaders"] }
 herdr-client.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+ureq.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

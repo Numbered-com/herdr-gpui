@@ -110,6 +110,17 @@ impl std::error::Error for SendError {}
 
 /// Returns immediately after spawning. Connection/handshake errors arrive as events.
 pub fn connect(target: ConnectTarget, options: ConnectOptions) -> io::Result<Client> {
+    connect_with_connector(options, move |_| {
+        target.socket_path().and_then(UnixStream::connect)
+    })
+}
+
+/// Connect using application-specific socket setup on the I/O worker.
+/// The connector should observe `stop` during waits so detach cancels setup.
+pub fn connect_with_connector(
+    options: ConnectOptions,
+    connector: impl FnOnce(&AtomicBool) -> io::Result<UnixStream> + Send + 'static,
+) -> io::Result<Client> {
     validate_options(options)?;
     let (commands, rx) = bounded(COMMAND_CAPACITY);
     let (tx, events) = bounded(EVENT_CAPACITY);
@@ -118,9 +129,7 @@ pub fn connect(target: ConnectTarget, options: ConnectOptions) -> io::Result<Cli
     thread::Builder::new()
         .name("herdr-client-io".into())
         .spawn(move || {
-            let result = target
-                .socket_path()
-                .and_then(UnixStream::connect)
+            let result = connector(&worker_stop)
                 .and_then(|stream| run(stream, options, rx, &tx, &worker_stop));
             if !worker_stop.load(Ordering::Acquire) {
                 let reason = result

@@ -77,6 +77,7 @@ impl EntityInputHandler for HerdrWindow {
             self.live.surface.as_deref(),
             self.bounds.origin,
             self.cell_width,
+            self.config.terminal.line_height(),
         ))
     }
     fn character_index_for_point(

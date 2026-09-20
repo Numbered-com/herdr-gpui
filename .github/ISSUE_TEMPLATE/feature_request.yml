@@ -1,31 +1,37 @@
-name: Feature request
-description: Suggest a capability for the GUI client
-labels: [enhancement]
+name: Feature Request
+description: Suggest an improvement to Herdr GPUI
+title: "[Feature]: "
+labels:
+  - enhancement
 body:
-  - type: markdown
+  - type: checkboxes
+    id: preflight
     attributes:
-      value: |
-        Check the *Next Milestones* section of the README first — several
-        obvious gaps (selection/copy, resizable sidebar, automatic reconnect,
-        signed packaging) are already planned.
-
+      label: Preflight checklist
+      options:
+        - label: I have searched [existing issues](https://github.com/penso/herdr-gpui/issues) for duplicates.
+          required: true
   - type: textarea
     id: problem
     attributes:
-      label: What are you trying to do
-      description: The task that is hard today, not the solution you have in mind.
+      label: What problem would this solve?
+      description: Describe your workflow and what is currently difficult or missing.
     validations:
       required: true
-
   - type: textarea
-    id: proposal
+    id: solution
     attributes:
-      label: What you'd like instead
+      label: Proposed solution
+      description: Describe how you would like the native client to behave.
     validations:
       required: true
-
   - type: textarea
-    id: tui-parity
+    id: alternatives
     attributes:
-      label: Does Herdr's TUI already do this?
-      description: If so, how it behaves there — the GUI generally follows the TUI's semantics.
+      label: Alternatives considered
+      description: Include any current workarounds or relevant Herdr TUI behavior.
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Mockups or examples are welcome. Redact secrets and private terminal content.

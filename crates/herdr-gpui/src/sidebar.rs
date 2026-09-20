@@ -1,23 +1,44 @@
 use super::{Command, HerdrWindow, NavigationTarget};
+use crate::config::{FontConfig, Theme};
 use gpui::{prelude::*, *};
 use herdr_client::protocol::{AgentStatus, ClientShellAgent, ClientShellWorkspace};
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock};
 
-pub(super) const BACKGROUND: u32 = 0x1c1c22;
-pub(super) const FOREGROUND: u32 = 0xc1bdce;
-const MUTED: u32 = 0x827e91;
-pub(super) const ACTIVE: u32 = 0x2b2933;
 const SIDEBAR_WIDTH: f32 = 232.;
 const ROW_PADDING: f32 = 12.;
 const STATUS_WIDTH: f32 = 5.;
 const LABEL_GAP: f32 = 8.;
 const CHILD_INDENT: f32 = 16.;
 const ARROW_RESERVE: f32 = 18.;
+pub(super) const ICON_RESERVE: f32 = 18.;
+pub(super) static GITHUB_ICON: LazyLock<Arc<Image>> = LazyLock::new(|| {
+    Arc::new(Image::from_bytes(
+        ImageFormat::Svg,
+        include_bytes!("../../../assets/icons/github.svg").to_vec(),
+    ))
+});
+#[cfg(any(test, feature = "integration-test"))]
 pub(super) const LABEL_WIDTH: f32 =
     SIDEBAR_WIDTH - 1. - 2. * ROW_PADDING - STATUS_WIDTH - LABEL_GAP;
 
 impl HerdrWindow {
-    pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn save_sidebar_width(&mut self) {
+        self.sidebar_modified = true;
+        if let Some(preferences) = &self.sidebar_preferences {
+            preferences.save(self.sidebar_width);
+        }
+    }
+
+    pub(super) fn render_sidebar(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let width = sidebar_width(self.sidebar_width, f32::from(window.viewport_size().width));
+        let view = cx.entity().downgrade();
+        let font = &self.config.sidebar;
+        let theme = &self.theme;
         let mut spaces = div()
             .id("spaces-scroll")
             .debug_selector(|| "spaces-scroll".into())
@@ -53,6 +74,14 @@ impl HerdrWindow {
                         workspace.focused,
                         indented,
                         group.is_some() || indented,
+                        width,
+                        (!indented).then(|| {
+                            self.avatars
+                                .as_ref()
+                                .and_then(|avatars| avatars.image(&workspace.new_workspace_cwd))
+                                .unwrap_or_else(|| GITHUB_ICON.clone())
+                        }),
+                        (font, theme),
                     )
                     .when_some(group, |row, key| {
                         let collapsed = self.collapsed_repos.contains(&key);
@@ -61,9 +90,12 @@ impl HerdrWindow {
                                 .id(SharedString::from(format!("collapse-{id}")))
                                 .debug_selector(move || format!("collapse-{index}"))
                                 .w(px(ARROW_RESERVE - LABEL_GAP))
-                                .h(px(32.))
+                                .h(px(2. * line_height(font)))
                                 .flex_none()
-                                .child(label_text(if collapsed { ">" } else { "v" }))
+                                .text_size(px(16.))
+                                .text_color(rgb(theme.muted))
+                                .hover(|s| s.text_color(rgb(theme.foreground)))
+                                .child(label_text(if collapsed { "\u{25b8}" } else { "\u{25be}" }))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
                                     if !this.collapsed_repos.remove(&key) {
@@ -84,12 +116,22 @@ impl HerdrWindow {
                 let id = agent.pane_id.clone();
                 let (name, kind) = agent_labels(agent);
                 agents = agents.child(
-                    row(name, kind, agent.agent_status, agent.focused, false, false)
-                        .id(SharedString::from(format!("agent-{id}")))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.navigate(NavigationTarget::Pane(&id), cx);
-                            window.focus(&this.focus);
-                        })),
+                    row(
+                        name,
+                        kind,
+                        agent.agent_status,
+                        agent.focused,
+                        false,
+                        false,
+                        width,
+                        None,
+                        (font, theme),
+                    )
+                    .id(SharedString::from(format!("agent-{id}")))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.navigate(NavigationTarget::Pane(&id), cx);
+                        window.focus(&this.focus);
+                    })),
                 );
             }
         }
@@ -102,7 +144,7 @@ impl HerdrWindow {
             agents = agents.child(
                 div()
                     .px(px(12.))
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(theme.muted))
                     .truncate()
                     .child("no agents"),
             );
@@ -110,20 +152,21 @@ impl HerdrWindow {
         div()
             .id("sidebar")
             .debug_selector(|| "sidebar".into())
-            .w(px(SIDEBAR_WIDTH))
+            .relative()
+            .w(px(width))
             .flex_none()
             .h_full()
             .min_h_0()
             .overflow_hidden()
             .flex()
             .flex_col()
-            .font_family("Menlo")
-            .text_size(px(12.))
-            .line_height(px(16.))
-            .text_color(rgb(FOREGROUND))
-            .bg(rgb(BACKGROUND))
+            .font_family(font.family.clone())
+            .text_size(px(font.size))
+            .line_height(px(line_height(font)))
+            .text_color(rgb(theme.foreground))
+            .bg(rgb(theme.surface))
             .border_r_1()
-            .border_color(rgb(ACTIVE))
+            .border_color(rgb(theme.active))
             // Zero flex bases keep long workspace lists from displacing agents.
             .child(
                 div()
@@ -132,22 +175,22 @@ impl HerdrWindow {
                     .flex_1()
                     .min_h_0()
                     .overflow_hidden()
-                    .child(header("spaces"))
+                    .child(header("spaces", font, theme))
                     .child(spaces)
                     .child(
                         div()
                             .flex_none()
-                            .h(px(26.))
+                            .h(px(line_height(font) + 10.))
                             .px(px(12.))
                             .flex()
                             .items_center()
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(theme.muted))
                             .gap(px(20.))
                             .child(
                                 div()
                                     .id("new-workspace")
                                     .cursor_pointer()
-                                    .hover(|s| s.text_color(rgb(FOREGROUND)))
+                                    .hover(|s| s.text_color(rgb(theme.foreground)))
                                     .child("new")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.command(Command::Workspace, window, cx)
@@ -158,7 +201,7 @@ impl HerdrWindow {
                                     .id("sidebar-menu")
                                     .debug_selector(|| "sidebar-menu".into())
                                     .cursor_pointer()
-                                    .hover(|s| s.text_color(rgb(FOREGROUND)))
+                                    .hover(|s| s.text_color(rgb(theme.foreground)))
                                     .child(label_text("menu"))
                                     .on_click(cx.listener(
                                         |this, event: &ClickEvent, window, cx| {
@@ -169,7 +212,7 @@ impl HerdrWindow {
                             ),
                     ),
             )
-            .child(div().h(px(1.)).flex_none().bg(rgb(ACTIVE)))
+            .child(div().h(px(1.)).flex_none().bg(rgb(theme.active)))
             .child(
                 div()
                     .flex()
@@ -177,24 +220,104 @@ impl HerdrWindow {
                     .flex_1()
                     .min_h_0()
                     .overflow_hidden()
-                    .child(header("agents"))
+                    .child(header("agents", font, theme))
                     .child(agents),
+            )
+            .child(
+                div()
+                    .id("sidebar-resize")
+                    .debug_selector(|| "sidebar-resize".into())
+                    .absolute()
+                    .right_0()
+                    .top_0()
+                    .h_full()
+                    .w(px(6.))
+                    .cursor(CursorStyle::ResizeLeftRight)
+                    .hover(|s| s.bg(rgba(0x78a9ff44)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.sidebar_modified = true;
+                            if event.click_count == 2 {
+                                this.sidebar_drag = None;
+                                this.sidebar_width = None;
+                                this.save_sidebar_width();
+                            } else {
+                                this.sidebar_drag = Some((f32::from(event.position.x), width));
+                            }
+                            cx.notify();
+                        }),
+                    ),
+            )
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, window, _| {
+                        // Capture globally so dragging continues outside the narrow divider,
+                        // and terminal handlers never receive the resize gesture's release.
+                        let moving = view.clone();
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                            if phase == DispatchPhase::Capture {
+                                let _ = moving.update(cx, |this, cx| {
+                                    if let Some((start, width)) = this.sidebar_drag {
+                                        this.sidebar_width = Some(sidebar_width(
+                                            Some(width + f32::from(event.position.x) - start),
+                                            f32::from(window.viewport_size().width),
+                                        ));
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        });
+                        let released = view.clone();
+                        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                            if phase == DispatchPhase::Capture && event.button == MouseButton::Left
+                            {
+                                let _ = released.update(cx, |this, cx| {
+                                    if this.sidebar_drag.take().is_some() {
+                                        this.save_sidebar_width();
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .size_full(),
             )
     }
 }
 
-fn header(label: &'static str) -> Div {
+// Preserve the sidebar's compact 12px font / 16px line defaults as fonts scale.
+fn line_height(font: &FontConfig) -> f32 {
+    font.size * 4. / 3.
+}
+
+fn sidebar_width(preferred: Option<f32>, window_width: f32) -> f32 {
+    // Keep useful label space and reserve at least 240 logical pixels for the terminal.
+    preferred
+        .unwrap_or(SIDEBAR_WIDTH)
+        .clamp(160., 480.)
+        .min((window_width - 240.).max(0.))
+}
+
+fn header(label: &'static str, font: &FontConfig, theme: &Theme) -> Div {
     div()
         .flex_none()
-        .h(px(28.))
+        .h(px(line_height(font) + 12.))
         .px(px(12.))
         .flex()
         .items_center()
-        .text_size(px(10.))
-        .text_color(rgb(MUTED))
+        .text_size(px(font.size * 5. / 6.))
+        .text_color(rgb(theme.muted))
         .child(label)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn row(
     name: &str,
     detail: &str,
@@ -202,12 +325,28 @@ fn row(
     focused: bool,
     indented: bool,
     reserve_arrow: bool,
+    width: f32,
+    workspace_icon: Option<Arc<Image>>,
+    appearance: (&FontConfig, &Theme),
 ) -> Div {
+    let (font, theme) = appearance;
+    let icon_reserve = if workspace_icon.is_some() {
+        ICON_RESERVE
+    } else {
+        0.
+    };
     let indent = if indented { CHILD_INDENT } else { 0. };
-    let label_width = LABEL_WIDTH - indent - if reserve_arrow { ARROW_RESERVE } else { 0. };
+    let label_width = (width
+        - 1.
+        - 2. * ROW_PADDING
+        - STATUS_WIDTH
+        - LABEL_GAP
+        - indent
+        - if reserve_arrow { ARROW_RESERVE } else { 0. })
+    .max(0.);
     div()
         .debug_selector(|| format!("row-{name}"))
-        .h(px(40.))
+        .h(px(2. * line_height(font) + 8.))
         .w_full()
         .min_w_0()
         .flex_none()
@@ -218,9 +357,9 @@ fn row(
         .gap(px(LABEL_GAP))
         .py(px(4.))
         .cursor_pointer()
-        .when(focused, |s| s.bg(rgb(ACTIVE)))
-        .hover(|s| s.bg(rgb(0x26252e)))
-        .child(status_indicator(status))
+        .when(focused, |s| s.bg(rgb(theme.active)))
+        .hover(|s| s.bg(rgb(theme.active)))
+        .child(status_indicator(status, font, theme))
         .child(
             div()
                 .flex()
@@ -233,17 +372,54 @@ fn row(
                 .debug_selector(|| format!("column-{name}"))
                 .child(
                     div()
-                        .debug_selector(|| format!("name-{name}"))
+                        .relative()
                         .w(px(label_width))
-                        .truncate()
-                        .child(label_text(name)),
+                        .h(px(line_height(font)))
+                        .when_some(workspace_icon, |title, image| {
+                            title.child(
+                                div()
+                                    .debug_selector(|| format!("github-{name}"))
+                                    .absolute()
+                                    .left_0()
+                                    .top(px((line_height(font) - 12.) / 2.))
+                                    .size(px(12.))
+                                    .flex_none()
+                                    .overflow_hidden()
+                                    .child(
+                                        img(image)
+                                            .size_full()
+                                            .rounded_full()
+                                            .with_fallback(|| {
+                                                img(GITHUB_ICON.clone())
+                                                    .size_full()
+                                                    .rounded_full()
+                                                    .into_any_element()
+                                            })
+                                            .with_loading(|| {
+                                                img(GITHUB_ICON.clone())
+                                                    .size_full()
+                                                    .rounded_full()
+                                                    .into_any_element()
+                                            }),
+                                    ),
+                            )
+                        })
+                        .child(
+                            div()
+                                .debug_selector(|| format!("name-{name}"))
+                                .ml(px(icon_reserve))
+                                .w(px((label_width - icon_reserve).max(0.)))
+                                .flex_none()
+                                .truncate()
+                                .child(label_text(name)),
+                        ),
                 )
                 .child(
                     div()
                         .debug_selector(|| format!("detail-{name}"))
                         .w(px(label_width))
                         .truncate()
-                        .text_color(rgb(MUTED))
+                        .text_color(rgb(theme.muted))
                         .child(label_text(detail)),
                 ),
         )
@@ -350,12 +526,12 @@ fn workspace_label(workspace: &ClientShellWorkspace, indented: bool) -> &str {
     first_text([branch, Some(&workspace.label)], "workspace")
 }
 
-fn status_indicator(status: AgentStatus) -> Div {
+fn status_indicator(status: AgentStatus, font: &FontConfig, theme: &Theme) -> Div {
     // Upstream dots: working/blocked/done filled, idle hollow, unknown a small dot.
-    let (diameter, filled, color) = status_style(status);
+    let (diameter, filled, color) = status_style(status, theme);
     div()
         .size(px(STATUS_WIDTH))
-        .mt(px(5.))
+        .mt(px((line_height(font) - STATUS_WIDTH) / 2.))
         .flex_none()
         .flex()
         .items_center()
@@ -370,13 +546,13 @@ fn status_indicator(status: AgentStatus) -> Div {
         )
 }
 
-fn status_style(status: AgentStatus) -> (f32, bool, u32) {
+fn status_style(status: AgentStatus, theme: &Theme) -> (f32, bool, u32) {
     match status {
-        AgentStatus::Working => (STATUS_WIDTH, true, 0xf9e2af),
-        AgentStatus::Blocked => (STATUS_WIDTH, true, 0xf38ba8),
-        AgentStatus::Done => (STATUS_WIDTH, true, 0x94e2d5),
-        AgentStatus::Idle => (STATUS_WIDTH, false, 0xa6e3a1),
-        AgentStatus::Unknown => (2., true, MUTED),
+        AgentStatus::Working => (STATUS_WIDTH, true, theme.palette[3]),
+        AgentStatus::Blocked => (STATUS_WIDTH, true, theme.palette[1]),
+        AgentStatus::Done => (STATUS_WIDTH, true, theme.palette[6]),
+        AgentStatus::Idle => (STATUS_WIDTH, false, theme.palette[2]),
+        AgentStatus::Unknown => (2., true, theme.muted),
     }
 }
 
@@ -514,6 +690,25 @@ mod tests {
     }
 
     #[test]
+    fn status_colors_follow_the_supplied_theme() {
+        let mut theme = crate::config::Theme::default();
+        theme.palette[1] = 0x112233;
+        theme.palette[2] = 0x223344;
+        theme.palette[3] = 0x334455;
+        theme.palette[6] = 0x667788;
+        theme.muted = 0x778899;
+        for (status, color) in [
+            (AgentStatus::Blocked, 0x112233),
+            (AgentStatus::Idle, 0x223344),
+            (AgentStatus::Working, 0x334455),
+            (AgentStatus::Done, 0x667788),
+            (AgentStatus::Unknown, 0x778899),
+        ] {
+            assert_eq!(status_style(status, &theme).2, color);
+        }
+    }
+
+    #[test]
     fn status_shapes_match_upstream_dots_and_wire_casing() {
         let snapshot = layout_tests::snapshot(1);
         for (wire, status) in [
@@ -532,15 +727,16 @@ mod tests {
             let agent: ClientShellAgent = serde_json::from_value(value).unwrap();
             assert_eq!(agent.agent_status, status);
             assert_eq!(serde_json::to_value(status).unwrap(), wire);
-            let (diameter, filled, color) = status_style(status);
+            let theme = crate::config::Theme::default();
+            let (diameter, filled, color) = status_style(status, &theme);
             assert_eq!(
                 color,
                 match status {
-                    AgentStatus::Working => 0xf9e2af,
-                    AgentStatus::Blocked => 0xf38ba8,
-                    AgentStatus::Done => 0x94e2d5,
-                    AgentStatus::Idle => 0xa6e3a1,
-                    AgentStatus::Unknown => super::MUTED,
+                    AgentStatus::Working => theme.palette[3],
+                    AgentStatus::Blocked => theme.palette[1],
+                    AgentStatus::Done => theme.palette[6],
+                    AgentStatus::Idle => theme.palette[2],
+                    AgentStatus::Unknown => theme.muted,
                 }
             );
             assert_eq!(filled, status != AgentStatus::Idle);
