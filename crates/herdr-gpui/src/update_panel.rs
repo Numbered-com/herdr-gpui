@@ -23,7 +23,10 @@ impl HerdrWindow {
         });
     }
 
-    pub(super) fn render_app_update(&self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn render_app_update(&self, window: &Window, cx: &mut Context<Self>) -> Div {
+        let font = &self.config.ui;
+        let theme = &self.theme;
+        let accent = rgb(theme.foreground).blend(rgba((theme.palette[4] << 8) | 0x70));
         let state = self.update_preview.as_ref().unwrap_or(self.updater.state());
         let (message, action) = match state {
             State::Disabled(reason) => (format!("In-app updates unavailable: {reason}"), None),
@@ -75,26 +78,125 @@ impl HerdrWindow {
             .debug_selector(|| "app-update-panel".into())
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .p(px(12.))
             .min_w_0()
+            .min_h_0()
+            .max_h((window.viewport_size().height - px(34.)).max(px(0.)))
             .overflow_hidden()
-            .child(div().text_size(px(self.config.ui.size * 1.3)).child("App Updates"))
-            .when(self.update_preview.is_some(), |panel| {
-                panel.child(div().debug_selector(|| "app-update-preview".into()).child(
-                    "QA preview: Download simulates Ready; Install and Restart only closes this panel. No network, installation, or settings changes.",
-                ))
-            })
-            .child(div().truncate().child(format!("Current version: {APP_VERSION}")))
-            .child(div().truncate().child(format!("Latest version: {latest}")))
-            .child(div().child(message))
-            .child(div().text_color(rgb(self.theme.muted)).child(
-                "Signed archive manifests verify downloads. Installation requires approval. Daemon sessions keep running.",
-            ))
-            .child(div().text_color(rgb(self.theme.muted)).child(
-                "Close does not cancel downloads or an approved restart. Use Cancel to request cancellation.",
-            ));
-        let mut buttons = div().flex().flex_wrap().gap(px(8.));
+            .child(
+                div()
+                    .debug_selector(|| "app-update-header".into())
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(12.))
+                    .p(px(16.))
+                    .border_b_1()
+                    .border_color(rgb(theme.active))
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(3.))
+                            .h(px(font.size * 2.5))
+                            .rounded_full()
+                            .bg(accent),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_size(px(font.size * 1.35))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("App Updates"),
+                            )
+                            .child(div().text_color(rgb(theme.muted)).child("Updates from GitHub")),
+                    )
+                    .child(
+                        div()
+                            .id("app-update-close")
+                            .debug_selector(|| "app-update-close".into())
+                            .flex_none()
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .rounded(px(4.))
+                            .text_color(rgb(theme.muted))
+                            .hover(|s| s.bg(rgb(theme.active)).text_color(rgb(theme.foreground)))
+                            .child("Close")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.dismiss_menu(window, cx);
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .id("app-update-body")
+                    .debug_selector(|| "app-update-body".into())
+                    .flex()
+                    .flex_col()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p(px(16.))
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .children([
+                                ("Current version", APP_VERSION, "app-update-current-version"),
+                                ("Latest version", latest, "app-update-latest-version"),
+                            ].into_iter().map(|(label, value, selector)| {
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(16.))
+                                    .child(div().flex_none().w(px(font.size * 8.)).text_color(rgb(theme.muted)).child(label))
+                                    .child(div().debug_selector(move || selector.into()).flex_1().min_w_0().truncate().child(value.to_owned()))
+                            })),
+                    )
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child(message))
+                    .child(div().text_color(rgb(theme.muted)).child(
+                        "Downloads are verified before installation. Your daemon and terminal sessions stay running.",
+                    ))
+                    .when(self.update_preview.is_some(), |body| {
+                        body.child(
+                            div()
+                                .debug_selector(|| "app-update-preview".into())
+                                .p(px(12.))
+                                .rounded(px(4.))
+                                .bg(rgb(theme.background))
+                                .child(div().font_weight(FontWeight::SEMIBOLD).child("QA preview"))
+                                .child(div().pt(px(4.)).text_color(rgb(theme.muted)).child(
+                                    "Download simulates a verified update. Install and Restart only closes this preview. No network or installation is performed.",
+                                )),
+                        )
+                    }),
+            );
+        let mut buttons = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_end()
+            .gap(px(8.))
+            .child(
+                div()
+                    .id("app-update-releases")
+                    .debug_selector(|| "app-update-releases".into())
+                    .px(px(12.))
+                    .py(px(8.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .text_color(rgb(theme.muted))
+                    .hover(|s| s.bg(rgb(theme.active)).text_color(rgb(theme.foreground)))
+                    .child("Manual Releases")
+                    .on_click(|_, _, cx| {
+                        cx.stop_propagation();
+                        cx.open_url("https://github.com/penso/herdr-gpui/releases");
+                    }),
+            );
         if let Some(action) = action {
             let label = match action {
                 UpdateAction::Check if matches!(state, State::Error(_)) => "Retry",
@@ -107,8 +209,9 @@ impl HerdrWindow {
                 div()
                     .id("app-update-action")
                     .debug_selector(|| "app-update-action".into())
-                    .p(px(8.))
-                    .rounded(px(3.))
+                    .px(px(12.))
+                    .py(px(8.))
+                    .rounded(px(4.))
                     .bg(rgb(self.theme.active))
                     .cursor_pointer()
                     .child(label)
@@ -147,31 +250,14 @@ impl HerdrWindow {
                     })),
             );
         }
-        buttons = buttons
-            .child(
-                div()
-                    .id("app-update-releases")
-                    .debug_selector(|| "app-update-releases".into())
-                    .p(px(8.))
-                    .cursor_pointer()
-                    .child("Manual Releases")
-                    .on_click(|_, _, cx| {
-                        cx.stop_propagation();
-                        cx.open_url("https://github.com/penso/herdr-gpui/releases");
-                    }),
-            )
-            .child(
-                div()
-                    .id("app-update-close")
-                    .debug_selector(|| "app-update-close".into())
-                    .p(px(8.))
-                    .cursor_pointer()
-                    .child("Close (Escape)")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.dismiss_menu(window, cx);
-                    })),
-            );
-        panel.child(buttons)
+        panel.child(
+            div()
+                .debug_selector(|| "app-update-footer".into())
+                .flex_none()
+                .p(px(16.))
+                .border_t_1()
+                .border_color(rgb(theme.active))
+                .child(buttons),
+        )
     }
 }

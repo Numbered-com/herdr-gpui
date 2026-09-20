@@ -243,7 +243,11 @@ impl HerdrWindow {
             .when(
                 !matches!(
                     page,
-                    Page::Keybinds | Page::Themes | Page::Palette | Page::Preferences
+                    Page::Keybinds
+                        | Page::Themes
+                        | Page::Palette
+                        | Page::Preferences
+                        | Page::AppUpdate
                 ),
                 |panel| panel.overflow_y_scroll().p(px(6.)),
             )
@@ -266,6 +270,9 @@ impl HerdrWindow {
                 panel
                     .w((viewport.width - px(24.)).max(px(0.)).min(px(420.)))
                     .max_h((viewport.height - px(24.)).max(px(0.)))
+            })
+            .when(page == Page::AppUpdate, |panel| {
+                panel.flex().flex_col().overflow_hidden().shadow_lg()
             })
             .rounded(px(5.))
             .border_1()
@@ -312,7 +319,7 @@ impl HerdrWindow {
         } else if page == Page::Preferences {
             panel = panel.child(self.render_preferences(cx));
         } else if page == Page::AppUpdate {
-            panel = panel.child(self.render_app_update(cx));
+            panel = panel.child(self.render_app_update(window, cx));
         } else if page == Page::Install {
             panel = panel
                 .child(div().p(px(8.)).child("Herdr must be installed"))

@@ -1004,9 +1004,16 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
         cx.opened_url().as_deref(),
         Some("https://github.com/penso/herdr-gpui/releases")
     );
-    cx.simulate_keystrokes("escape");
-    for width in [320., 480., 800.] {
-        cx.simulate_resize(size(px(width), px(600.)));
+    let close = cx.debug_bounds("app-update-close").unwrap();
+    cx.simulate_click(close.center(), Default::default());
+    cx.update(|window, cx| {
+        let view = view.read(cx);
+        assert!(view.menu.page.is_none());
+        assert!(view.focus.is_focused(window));
+        assert_eq!(view.updater.state(), &updater_before);
+    });
+    for (width, height) in [(320., 360.), (320., 600.), (480., 600.), (800., 600.)] {
+        cx.simulate_resize(size(px(width), px(height)));
         cx.update(|window, cx| window.dispatch_action(Box::new(crate::ShowUpdatePreview), cx));
         for ready in [false, true] {
             cx.update(|window, cx| {
@@ -1029,6 +1036,25 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
             });
             let panel = cx.debug_bounds("app-update-panel").unwrap();
             let action = cx.debug_bounds("app-update-action").unwrap();
+            let header = cx.debug_bounds("app-update-header").unwrap();
+            let close = cx.debug_bounds("app-update-close").unwrap();
+            assert_eq!(close.right(), header.right() - px(16.));
+            assert!(close.left() > header.center().x);
+            assert!(close.top() >= header.top() && close.bottom() <= header.bottom());
+            assert!(header.bottom() < action.top());
+            let body = cx.debug_bounds("app-update-body").unwrap();
+            let footer = cx.debug_bounds("app-update-footer").unwrap();
+            let current = cx.debug_bounds("app-update-current-version").unwrap();
+            let latest = cx.debug_bounds("app-update-latest-version").unwrap();
+            assert_eq!(current.left(), latest.left());
+            assert_eq!(current.right(), latest.right());
+            assert!(current.bottom() < latest.top());
+            assert_eq!(header.left(), panel.left());
+            assert_eq!(header.right(), panel.right());
+            assert!(body.top() >= header.bottom());
+            assert!((footer.top() - body.bottom()).abs() <= px(1.));
+            assert!(panel.top() >= px(0.) && panel.bottom() <= px(height));
+            assert!(action.top() >= footer.top() && action.bottom() <= footer.bottom());
             assert!(panel.left() >= px(0.) && panel.right() <= px(width));
             assert!(action.left() >= panel.left() && action.right() <= panel.right());
             assert!(action.top() >= panel.top() && action.bottom() <= panel.bottom());
