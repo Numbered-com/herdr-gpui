@@ -1,5 +1,16 @@
-use gpui::{prelude::*, *};
+#[cfg(target_os = "macos")]
+use gpui::prelude::*;
+use gpui::*;
 
+pub(super) fn options(title: &str) -> TitlebarOptions {
+    TitlebarOptions {
+        title: Some(title.to_owned().into()),
+        appears_transparent: cfg!(target_os = "macos"),
+        traffic_light_position: cfg!(target_os = "macos").then(|| point(px(9.), px(9.))),
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn render(surface: u32, foreground: u32) -> impl IntoElement {
     let background = rgb(surface).blend(rgba(0xffffff1a));
     // AppKit owns dragging. GPUI 0.2.2's macOS backend cannot start a custom move.
@@ -66,7 +77,7 @@ pub(super) fn render(surface: u32, foreground: u32) -> impl IntoElement {
         })
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use gpui::{Bounds, TestAppContext, point, px, size};

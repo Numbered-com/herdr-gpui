@@ -182,7 +182,7 @@ impl HerdrWindow {
             .is_some_and(|picker| picker.saving)
     }
 
-    pub(super) fn cancel_theme_preview(&mut self) -> bool {
+    pub(super) fn cancel_theme_preview(&mut self, cx: &mut Context<Self>) -> bool {
         // Starting the disk write is the commit boundary. Its result must be
         // reconciled before another modal, cancellation, or reload can proceed.
         if self.theme_save_in_flight() {
@@ -191,6 +191,7 @@ impl HerdrWindow {
         if let Some(picker) = &mut self.menu.themes {
             if let Some(theme) = picker.baseline.take() {
                 self.theme = theme;
+                crate::log_window::set_appearance(&self.config, &self.theme, cx);
             }
             picker.session += 1;
             picker.desired = None;
@@ -231,6 +232,7 @@ impl HerdrWindow {
         picker.search.update(cx, |input, cx| {
             input.set_appearance(self.config.ui.clone(), self.theme.clone(), cx)
         });
+        crate::log_window::set_appearance(&self.config, &self.theme, cx);
         self.drive_picker_load(cx);
         cx.notify();
     }
@@ -328,9 +330,11 @@ impl HerdrWindow {
                     if let Some(name) = &picker.desired {
                         self.config.theme = name.clone();
                     }
+                    crate::log_window::set_appearance(&self.config, &self.theme, cx);
                     picker.baseline = None;
                     self.dismiss_menu(window, cx);
                 } else {
+                    crate::log_window::set_appearance(&self.config, &self.theme, cx);
                     self.drive_picker_load(cx);
                 }
             }

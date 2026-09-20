@@ -269,30 +269,39 @@ impl Preferences {
             .spawn(move || {
                 let path = match path {
                     Ok(path) => path,
-                    Err(error) => {
-                        eprintln!("Cannot locate GPUI preferences: {error}");
+                    Err(_) => {
+                        tracing::warn!(
+                            category = "preferences_location",
+                            "Cannot locate GPUI preferences"
+                        );
                         let _ = loaded_tx.send(None);
                         return;
                     }
                 };
                 let width = match read_width(&path) {
                     Ok(width) => width,
-                    Err(error) => {
-                        eprintln!("Cannot read GPUI preferences {}: {error}", path.display());
+                    Err(_) => {
+                        tracing::warn!(
+                            category = "preferences_read",
+                            "Cannot read GPUI preferences"
+                        );
                         None
                     }
                 };
                 let _ = loaded_tx.send(width);
                 for width in requests {
-                    if let Err(error) = write_width(&path, width) {
-                        eprintln!("Cannot save GPUI preferences {}: {error}", path.display());
+                    if write_width(&path, width).is_err() {
+                        tracing::warn!(
+                            category = "preferences_write",
+                            "Cannot save GPUI preferences"
+                        );
                     }
                 }
             });
         let worker = match worker {
             Ok(worker) => Some(worker),
             Err(error) => {
-                eprintln!("Cannot start GPUI preferences worker: {error}");
+                tracing::warn!(category = "preferences_worker_start", error_kind = ?error.kind(), "Cannot start GPUI preferences worker");
                 None
             }
         };
@@ -320,7 +329,10 @@ impl Preferences {
         if let Some(saves) = &self.saves
             && saves.send(width).is_err()
         {
-            eprintln!("Cannot queue GPUI preferences save: worker disconnected");
+            tracing::warn!(
+                category = "preferences_worker_disconnected",
+                "Cannot queue GPUI preferences save"
+            );
         }
     }
 }
@@ -398,10 +410,7 @@ fn write_width(path: &Path, width: Option<f32>) -> crate::Result<()> {
     if result.is_err()
         && let Err(error) = fs::remove_file(&temporary)
     {
-        eprintln!(
-            "Cannot clean up GPUI preferences {}: {error}",
-            temporary.display()
-        );
+        tracing::warn!(category = "preferences_cleanup", error_kind = ?error.kind(), "Cannot clean up GPUI preferences");
     }
     result
 }

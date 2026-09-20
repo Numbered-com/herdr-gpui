@@ -94,9 +94,10 @@ impl HerdrWindow {
             Ok((config, theme))
         }) {
             Ok((config, theme)) => {
-                self.cancel_theme_preview();
+                self.cancel_theme_preview(cx);
                 self.config = config;
                 self.theme = theme;
+                crate::log_window::set_appearance(&self.config, &self.theme, cx);
                 self.wheel = Default::default();
                 self.last_queued_options = None;
                 self.local_error = None;
@@ -114,7 +115,7 @@ impl HerdrWindow {
     }
 
     pub(super) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if !self.cancel_theme_preview() {
+        if !self.cancel_theme_preview(cx) {
             return false;
         }
         self.menu.tab = None;
@@ -131,7 +132,7 @@ impl HerdrWindow {
     }
 
     pub(super) fn dismiss_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.cancel_theme_preview() {
+        if !self.cancel_theme_preview(cx) {
             return;
         }
         self.menu.page = None;
@@ -565,7 +566,8 @@ impl HerdrWindow {
                 | Command::Themes
                 | Command::Palette
                 | Command::Reconnect
-                | Command::Quit => 2,
+                | Command::Quit
+                | Command::Logs => 2,
             };
             groups[group].1.push((info.shortcut, info.label));
         }
