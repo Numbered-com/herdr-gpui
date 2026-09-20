@@ -19,7 +19,7 @@ pub fn install() {
         return;
     }
     let Some(image) = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(PNG)) else {
-        eprintln!("Unable to decode the embedded Herdr icon");
+        tracing::error!("Unable to decode the embedded Herdr icon");
         return;
     };
     // SAFETY: GPUI has initialized AppKit, the main-thread marker gates access,

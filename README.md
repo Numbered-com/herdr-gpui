@@ -348,6 +348,89 @@ ignored, including includes and commands: theme loading does not execute them.
 Repeated colors use the last value. Unspecified colors retain defaults, except
 that an omitted cursor color follows the theme foreground.
 
+## Client Diagnostics
+
+Open **Window > GPUI Logs** in the macOS menu, or **GPUI Logs** in the command
+palette. This separate console tails this client's structured `TRACE`, `DEBUG`,
+`INFO`, `WARN`, and `ERROR` events, including its client transport library, not
+the Herdr daemon's logs. The **Minimum** dropdown selects the least severe level
+to show: `TRACE` includes everything, `DEBUG` excludes trace, and `INFO` includes
+info, warnings and errors. `WARN` and `ERROR` narrow it further. `Cmd-L` or Tab
+focuses the selector; Enter/Space/Up/Down opens it, arrows navigate, and Enter
+selects. The current threshold is marked `*`; Escape or clicking outside cancels.
+Shift-Tab returns to search. Scroll or use
+**Pause** to freeze the view, then **Resume tail** to catch up. Click a row to
+read its full message in the detail area. Rows wrap (including long unbroken data)
+in a variable-height virtual list; message content aligns after fixed-width levels.
+`Cmd-F` focuses search; `Cmd-W` closes only the log window.
+
+Search terms are whitespace-separated, case-insensitive, and combined with AND:
+`namespace:herdr_gpui` matches the exact namespace, while
+`target:herdr_gpui::terminal_painter` matches a target substring. Namespace is the
+first `::`-separated component of the tracing target, not a span or message field.
+Other terms match the message, field names/values (for example `elapsed_ms=32`),
+target, span names, timestamp or level. These structured filters inspect record
+properties, so a target mentioned only in a message does not satisfy `target:`.
+Use the dropdown, rather than a `level:` query, for minimum severity.
+
+The console follows the active GUI theme, including theme changes and successful
+GUI config reloads while it is open. It shares the main window's integrated macOS
+title bar. Controls and search use the configured UI font; log rows and details
+use the terminal font (Menlo on macOS or DejaVu Sans Mono on Linux by default).
+Timestamps are muted, levels use severity colors, targets use the theme's cyan,
+and event fields use its blue; messages use the foreground color. Palette colors
+are blended with the foreground for readability on the UI background.
+
+**Copy** and **Export...** share the currently filtered snapshot as newline-delimited
+JSON (NDJSON). Export suggests `herdr-gpui.jsonl`, uses a native save dialog, and
+serializes/writes in the background. Both use the query and minimum level at the
+time of the click, even before the displayed rows refresh. Paused filtering and
+export use the frozen snapshot, not newly arriving events. Clear search and select
+`TRACE` to export all retained records. Nothing is uploaded or automatically saved.
+Review exports before sharing them in an issue.
+
+The first JSON line has `type: "metadata"`, `schema_version: 1`, `app_version`,
+`os`, `arch`, `dropped`, and `timestamp_format`. Every subsequent line is an event
+with `type: "event"`, uppercase `level`, `timestamp`, `target`, `namespace`,
+`message`, `fields` (an object), `spans` (leaf-first names), and `truncated`.
+There are no prose headers or display wrap breaks. An empty export still contains
+the metadata record. For example, an event line is:
+
+```json
+{"type":"event","level":"INFO","timestamp":"[2025-09-26 15:03:45]","target":"herdr_gpui::terminal_painter","namespace":"herdr_gpui","message":"Paint complete","fields":{"elapsed_ms":8,"ready":true},"spans":["paint"],"truncated":false}
+```
+
+Records, not parsed display text, are the source of truth. Booleans, supported
+integers, finite floats and strings retain their JSON types. Debug-formatted
+values, nonfinite floats and integers outside JSON's supported numeric range are
+strings. Span fields are never captured.
+
+Logging starts before client connections and stays enabled even when the console
+is closed. It is local, in memory, and limited to the latest 5,000 records with
+4 KiB of serialized JSON per record (excluding the NDJSON newline), plus bounded
+in-memory collection overhead. The shared budget includes JSON escaping and
+field/key overhead; capture keeps at most 32 event fields (including message),
+16 span names (64 encoded bytes each), and 256 encoded target bytes. Oversized
+field names are omitted; exhausted budgets set `truncated: true`. Control
+characters are replaced with spaces. Debug formatters must cooperate with
+formatting errors; the capture writer stops accepting data when full. Capture
+uses nonblocking locks, drops on contention/reentrancy, and accepts only the
+`herdr_gpui`, `herdr_client`, and `herdr_protocol` target namespaces.
+The console reports evicted/dropped records; logs are lost when
+the app exits unless exported. Dependency logs, daemon payloads, terminal text,
+keystrokes, connection paths and credentials are not captured. Timestamps are
+local time at capture in `[YYYY-MM-DD HH:MM:SS]` format, for example
+`[2025-09-26 15:03:45] INFO  herdr_gpui Connected`. Levels are
+left-aligned in a five-character display column. Copy/export retain the exact
+captured timestamp as a JSON string, without display padding.
+
+Performance diagnostics include request/response elapsed time (excluding queue
+wait), warnings above 250 ms, event-delivery backpressure, and CPU terminal paint
+summaries approximately every five seconds while painting. Paint summaries report
+count, mean, maximum and frames above 16 ms, warning when any exceeded that
+threshold. These measure CPU scene construction, not GPU completion or actual
+display latency. Use a release build for meaningful performance measurements.
+
 ## Controls
 
 | Control | Action |
