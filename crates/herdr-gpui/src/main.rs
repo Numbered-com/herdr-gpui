@@ -7,6 +7,7 @@ mod close_modal;
 mod config;
 mod connection;
 mod controls;
+mod daemon;
 mod input;
 mod menu;
 mod palette;
@@ -26,13 +27,13 @@ use connection::ConnectionBridge;
 use controls::Command;
 use gpui::{prelude::*, *};
 use herdr_client::{ConnectOptions, ConnectTarget, protocol::*};
-use state::LiveState;
+use state::{ConnectionStatus, LiveState};
 #[cfg(feature = "integration-test")]
 use std::sync::Arc;
 use std::time::Duration;
 use terminal::*;
 
-actions!(herdr, [Quit]);
+actions!(herdr, [Quit, ShowHerdrNotDetected]);
 
 #[derive(Clone, PartialEq, serde::Deserialize, Action)]
 #[action(no_json)]
@@ -80,6 +81,7 @@ struct HerdrWindow {
     marked: String,
     local_error: Option<String>,
     menu: menu::MenuState,
+    install_warning_shown: bool,
     collapsed_repos: std::collections::HashSet<String>,
     sidebar_visible: bool,
     wheel: WheelAccumulator,
@@ -106,11 +108,11 @@ impl HerdrWindow {
         let focus = cx.focus_handle();
         window.focus(&focus);
         let timer = cx.background_executor().clone();
-        let poll = cx.spawn(async move |this, cx| {
+        let poll = cx.spawn_in(window, async move |this, cx| {
             loop {
                 timer.timer(Duration::from_millis(16)).await;
                 if this
-                    .update(cx, |this, cx| {
+                    .update_in(cx, |this, window, cx| {
                         if this.avatars.as_mut().is_some_and(|avatars| avatars.poll()) {
                             cx.notify();
                         }
@@ -140,6 +142,10 @@ impl HerdrWindow {
                                 }
                             }
                             cx.notify();
+                        }
+                        if this.live.missing_installation && !this.install_warning_shown {
+                            this.install_warning_shown = true;
+                            this.show_install_modal(window, cx);
                         }
                         this.resize();
                         this.report_focus();
@@ -183,6 +189,7 @@ impl HerdrWindow {
             marked: String::new(),
             local_error: None,
             menu: menu::MenuState::new(cx),
+            install_warning_shown: false,
             collapsed_repos: Default::default(),
             sidebar_visible: true,
             wheel: WheelAccumulator::default(),
@@ -223,6 +230,7 @@ impl HerdrWindow {
     }
 
     fn reconnect(&mut self) {
+        self.install_warning_shown = false;
         self.local_error = None;
         self.marked.clear();
         self.last_queued_options = None;
@@ -616,6 +624,9 @@ impl Render for HerdrWindow {
             .on_action(cx.listener(|this, action: &RunCommand, window, cx| {
                 this.command(action.command, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &ShowHerdrNotDetected, window, cx| {
+                this.show_install_modal(window, cx);
+            }))
             .size_full()
             .relative()
             .flex()
@@ -673,16 +684,53 @@ impl Render for HerdrWindow {
                     .px_3()
                     .bg(rgb(self.theme.surface))
                     .text_color(rgb(self.theme.foreground))
-                    .child(div().size(px(6.)).flex_none().rounded_full().bg(rgb(
-                        if self.live.status.is_connected() {
-                            self.theme.palette[2]
+                    .child(
+                        if matches!(self.live.status, ConnectionStatus::StartingDaemon) {
+                            div()
+                                .size(px(8.))
+                                .flex_none()
+                                .rounded_full()
+                                .bg(rgb(self.theme.palette[3]))
+                                .with_animation(
+                                    "daemon-starting-loader",
+                                    Animation::new(Duration::from_secs(1)).repeat(),
+                                    |dot, delta| {
+                                        dot.opacity(
+                                            0.3 + 0.7 * (delta * std::f32::consts::PI).sin(),
+                                        )
+                                    },
+                                )
+                                .into_any_element()
                         } else {
-                            self.theme.palette[1]
+                            div()
+                                .size(px(6.))
+                                .flex_none()
+                                .rounded_full()
+                                .bg(rgb(if self.live.status.is_connected() {
+                                    self.theme.palette[2]
+                                } else {
+                                    self.theme.palette[1]
+                                }))
+                                .into_any_element()
                         },
-                    )))
-                    .child(div().flex_1().min_w_0().overflow_hidden().child(status))
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(status),
+                    )
                     .when(!self.marked.is_empty(), |d| {
-                        d.child(format!("Composing: {}", self.marked))
+                        d.child(
+                            div()
+                                .min_w_0()
+                                .max_w(px(160.))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .child(format!("Composing: {}", self.marked)),
+                        )
                     })
                     .child(
                         div()
@@ -709,6 +757,41 @@ impl Render for HerdrWindow {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_keybinds(window, cx);
                             })),
+                    )
+                    .child(
+                        div()
+                            .id("report-issue")
+                            .debug_selector(|| "report-issue".into())
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.))
+                            .px_2()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgb(self.theme.active)))
+                            .child(
+                                div()
+                                    .size(px(12.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(rgb(self.theme.foreground))
+                                    .child(
+                                        div()
+                                            .size(px(3.))
+                                            .rounded_full()
+                                            .bg(rgb(self.theme.foreground)),
+                                    ),
+                            )
+                            .child("Report issue")
+                            .on_click(|_, _, cx| {
+                                cx.open_url(
+                                    "https://github.com/penso/herdr-gpui/issues/new/choose",
+                                );
+                            }),
                     ),
             )
             .when(self.menu.page.is_some(), |root| {
@@ -743,7 +826,7 @@ fn run() -> std::process::ExitCode {
     };
     if mode == LaunchMode::Help {
         println!(
-            "herdr-gpui [--socket CLIENT_SOCKET | --session NAME [--dev]]\nConnects to an existing local Herdr daemon; never starts or stops it."
+            "herdr-gpui [--socket CLIENT_SOCKET | --session NAME [--dev]]\nStarts the local Herdr daemon if needed; never stops it.\nExplicit --socket and --dev targets are attach-only."
         );
         #[cfg(feature = "integration-test")]
         println!(
@@ -876,6 +959,13 @@ fn run() -> std::process::ExitCode {
                         },
                     ),
                 ],
+            },
+            Menu {
+                name: "QA".into(),
+                items: vec![MenuItem::action(
+                    "Show herdr non-detected modal",
+                    ShowHerdrNotDetected,
+                )],
             },
         ]);
         cx.on_window_closed(move |cx| {

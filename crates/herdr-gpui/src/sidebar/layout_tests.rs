@@ -255,6 +255,7 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
             marked: String::new(),
             local_error: None,
             menu: crate::menu::MenuState::new(cx),
+            install_warning_shown: false,
             collapsed_repos: Default::default(),
             sidebar_visible: true,
             wheel: WheelAccumulator::default(),
@@ -830,4 +831,53 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     });
     cx.simulate_keystrokes("escape");
     cx.update(|window, cx| assert!(view.read(cx).focus.is_focused(window)));
+
+    let before_install = cx.update(|_, cx| view.read(cx).live.snapshot.clone());
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| view.show_install_modal(window, cx));
+    });
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        let view = view.read(cx);
+        assert!(view.menu.page == Some(crate::menu::Page::Install));
+        assert!(!view.live.missing_installation);
+        assert_eq!(view.live.snapshot, before_install);
+    });
+    assert!(cx.debug_bounds("menu-install").is_some());
+    assert!(cx.debug_bounds("menu-dismiss").is_some());
+    cx.simulate_keystrokes("escape");
+    cx.update(|_, cx| assert!(view.read(cx).menu.page.is_none()));
+
+    // Exercise the real status bar without starting a daemon connection.
+    view.update(cx, |view, cx| {
+        view.marked = "composition ".repeat(100);
+        view.local_error = Some("long connection error ".repeat(100));
+        cx.notify();
+    });
+    for width in [480., 800.] {
+        cx.simulate_resize(size(px(width), px(600.)));
+        cx.update(|window, cx| window.draw(cx).clear());
+        let status = cx.debug_bounds("connection-status").unwrap();
+        let report = cx.debug_bounds("report-issue").unwrap();
+        assert!(report.size.width > px(50.));
+        assert!(report.left() >= status.left());
+        assert!(report.right() <= status.right());
+        assert!(report.top() >= status.top());
+        assert!(report.bottom() <= status.bottom());
+        let theme = cx.debug_bounds("status-theme").unwrap();
+        let keybinds = cx.debug_bounds("status-keybinds").unwrap();
+        assert!(theme.left() >= status.left());
+        assert!(theme.right() <= keybinds.left());
+        assert!(keybinds.right() <= report.left());
+        for button in [theme, keybinds] {
+            assert!(button.size.width > px(0.));
+            assert!(button.top() >= status.top());
+            assert!(button.bottom() <= status.bottom());
+        }
+        cx.simulate_click(report.center(), Default::default());
+        assert_eq!(
+            cx.opened_url().as_deref(),
+            Some("https://github.com/penso/herdr-gpui/issues/new/choose")
+        );
+    }
 }

@@ -48,10 +48,23 @@ just run --socket /absolute/path/to/herdr-client.sock
 slower with a dense terminal on screen.
 
 The explicit socket must be the binary **client** socket, not `herdr.sock`.
-The app never installs, starts, stops, or upgrades your personal daemon. A failed
-connection appears in the compact single-row status bar with a red dot (green
-when connected). Use Terminal > Reconnect after starting the daemon; there is no
-permanent reconnect button.
+The app starts `herdr server` if the default or named-session daemon is absent,
+then waits up to 20 seconds to connect without blocking the UI. Herdr must already
+be installed. A pulsing status indicator and "Starting Herdr server..." message
+remain visible while startup is pending. The executable is discovered
+on PATH or in a standard Homebrew, Cargo, or `~/.local/bin` location.
+If Herdr cannot be found, an installation modal offers an **Install** button that
+opens [herdr.dev](https://herdr.dev/). It does not download or run an installer.
+Use **QA > Show herdr non-detected modal** in the macOS menu bar to preview this
+warning without restarting, disconnecting, or changing daemon detection.
+Explicit `--socket` and `--dev` targets remain attach-only. The app never installs,
+stops, or upgrades the daemon, and closing the window leaves it running. A failed
+connection appears in the status bar with a red dot. Use Terminal > Reconnect to
+retry; there is no permanent reconnect button.
+
+Use **Report issue** on the right of the status bar to open this repository's
+GitHub issue forms in your browser. Choose a bug report, feature request, or
+documentation issue; redact secrets and private terminal content before submitting.
 
 New workspaces created through Herdr appear automatically while connected.
 Revisioned snapshots are pushed by the daemon and applied by the GUI without a
@@ -70,8 +83,8 @@ open target/release/Herdr.app
 ```
 
 The bundle is named **Herdr** and contains only the release GUI executable,
-`Info.plist`, and its native `.icns` icon. It connects to your existing daemon;
-it does not bundle, install, start, or stop a daemon. This is a local unsigned,
+`Info.plist`, and its native `.icns` icon. It starts an installed daemon if needed;
+it does not bundle, install, or stop a daemon. This is a local unsigned,
 unnotarized bundle, not a distribution/signing pipeline. Its version metadata lives
 in `assets/macos/Info.plist` and should be updated for releases.
 

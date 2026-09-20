@@ -11,6 +11,7 @@ pub(super) enum Page {
     Palette,
     ConfirmClose,
     Update,
+    Install,
 }
 
 pub(super) struct MenuState {
@@ -88,6 +89,11 @@ impl HerdrWindow {
             Err(error) => self.local_error = Some(format!("Reload GUI config: {error}")),
         }
         self.dismiss_menu(window, cx);
+    }
+
+    pub(super) fn show_install_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_menu(window, cx);
+        self.menu.page = Some(Page::Install);
     }
 
     pub(super) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -216,6 +222,11 @@ impl HerdrWindow {
                         .shadow_lg()
                 },
             )
+            .when(page == Page::Install, |panel| {
+                panel
+                    .w((viewport.width - px(24.)).max(px(0.)).min(px(420.)))
+                    .max_h((viewport.height - px(24.)).max(px(0.)))
+            })
             .rounded(px(5.))
             .border_1()
             .border_color(rgb(theme.active))
@@ -257,6 +268,47 @@ impl HerdrWindow {
             panel = panel.child(self.render_close_confirmation(cx));
         } else if page == Page::Preferences {
             panel = panel.child(self.render_preferences(cx));
+        } else if page == Page::Install {
+            panel = panel
+                .child(div().p(px(8.)).child("Herdr must be installed"))
+                .child(div().p(px(8.)).child(
+                    "Install Herdr first, then choose Terminal > Reconnect. The Install button opens the Herdr website; nothing is installed automatically.",
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(8.))
+                        .p(px(8.))
+                        .child(
+                            div()
+                                .id("menu-install")
+                                .debug_selector(|| "menu-install".into())
+                                .p(px(8.))
+                                .rounded(px(3.))
+                                .bg(rgb(theme.active))
+                                .cursor_pointer()
+                                .child("Install")
+                                .on_click(|_, _, cx| {
+                                    cx.stop_propagation();
+                                    cx.open_url("https://herdr.dev/");
+                                }),
+                        )
+                        .child(
+                            div()
+                                .id("menu-dismiss")
+                                .debug_selector(|| "menu-dismiss".into())
+                                .p(px(8.))
+                                .rounded(px(3.))
+                                .hover(|button| button.bg(rgb(theme.active)))
+                                .cursor_pointer()
+                                .child("Dismiss")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.dismiss_menu(window, cx);
+                                })),
+                        ),
+                );
         } else {
             let (title, rows) = {
                 let snapshot = self.live.snapshot.as_ref();
@@ -363,6 +415,9 @@ impl HerdrWindow {
                         let direction = if key.ends_with("up") { 1. } else { -1. };
                         scroll.set_offset(scroll.offset() + point(px(0.), distance * direction));
                         cx.notify();
+                    }
+                    "enter" if this.menu.page == Some(Page::Install) => {
+                        cx.open_url("https://herdr.dev/");
                     }
                     "up" | "down" if this.menu.page == Some(Page::Menu) => {
                         let count = this.menu_items().len();

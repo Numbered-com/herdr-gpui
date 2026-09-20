@@ -1,7 +1,9 @@
 # Herdr Native Shell
 
-A minimal macOS GPUI 0.2.2 client for an **already running** local Herdr daemon.
-It does not link, start, stop, or modify Herdr, spawn a PTY, or emulate a terminal.
+A minimal macOS GPUI 0.2.2 client for a local Herdr daemon.
+It starts an installed `herdr server` when the local daemon is absent. Explicit
+socket and development targets remain attach-only. It does not link, install,
+stop, or upgrade Herdr, spawn a PTY, or emulate a terminal.
 Runtime dependencies include GPUI, `herdr-client`, `serde_json` for API parameters,
 and `serde`/`toml` for GUI configuration.
 
@@ -16,7 +18,17 @@ Without flags, discovery follows `herdr-client`'s environment and release-sessio
 rules. `--socket` must name the binary **client** socket, not the JSON API socket.
 `--dev` selects the `herdr-dev` config directory. Connection failure is displayed
 in the single-row status bar; Terminal > Reconnect makes a fresh connection with
-no input replay. The status dot is green when connected and red otherwise.
+no input replay. The status dot is green when connected, pulses during startup,
+and turns red on connection failure.
+
+Default and named-session startup discovers Herdr on PATH or in standard
+Homebrew, Cargo, or `~/.local/bin` locations, then waits up to 20 seconds to
+connect without blocking the UI. If Herdr cannot be found, an installation modal
+offers an **Install** button that opens [herdr.dev](https://herdr.dev/); it never
+downloads or runs an installer. After installing, choose Terminal > Reconnect.
+**QA > Show herdr non-detected modal** previews the warning without restarting,
+disconnecting, or changing daemon detection. Closing the GUI leaves the daemon
+and its terminals running.
 
 ## Configuration
 
@@ -40,7 +52,12 @@ Config and theme I/O is synchronous; GUI callers should schedule it accordingly.
   workspaces, local collapse arrows, branch details, and daemon-driven
   filled/hollow activity indicators with client-local unseen-completion tracking.
 - In-app sidebar menu for settings information, keybinds, config reload, update
-  information, and detach/reconnect. Settings are read-only for now.
+  information, and detach/reconnect. Styled Preferences include Appearance,
+  Fonts, Configuration, and Connection sections, with theme selection and GUI
+  config reload; font values remain read-only and are edited in the config file.
+- A searchable theme picker previews the available names from built-ins and
+  Herdr/Ghostty theme folders. Selecting a theme applies and saves it while
+  preserving other GUI config settings and comments.
 - Title-only tabs, without an added tab number. Externally created workspaces
   arrive through pushed snapshots without manual refresh.
 - Click workspace, tab, agent, or a visible split pane to focus through the API.
@@ -65,7 +82,10 @@ Config and theme I/O is synchronous; GUI callers should schedule it accordingly.
 - Cmd-B toggles sidebar visibility locally without changing daemon state.
   Cmd-, opens Settings; Cmd-/ opens the grouped native shortcut reference.
   Native shortcut labels and keycaps come from the shared `controls::COMMANDS`
-  catalog, with Cmd-V semantic paste shown separately.
+  catalog, with Cmd-V semantic paste shown separately. Search filters by action,
+  section, or key combination. Preferences, keybinds, theme/palette pickers, and
+  close confirmations use themed centered modals and configured UI fonts;
+  modal input does not reach the terminal.
 - Creation omits `cwd`, labels, environment overrides, and split ratio: the
   daemon applies its existing defaults and directory policy. Workspace creation
   supplies the currently focused source workspace when available; tabs and splits
@@ -123,7 +143,7 @@ GPUI native action/menu/keybinding patterns.
   hyperlink activation, image rendering, or animated blinking.
 - No rename dialogs, workspace close/delete actions, horizontal wheel handling,
   server-owned keybindings, SSH,
-  session picker, automatic reconnect, or daemon lifecycle management.
+  session picker, automatic reconnect, or daemon stop/upgrade management.
 - IME uses a minimal transient buffer, not a local editable terminal document;
   composition appears in the status bar rather than inline. Key releases and
   physical-key/extended keyboard protocol metadata are not reported.
