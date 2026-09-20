@@ -55,7 +55,9 @@ impl MenuState {
 
 impl HerdrWindow {
     pub(super) fn open_keybinds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_menu(window, cx);
+        if !self.open_menu(window, cx) {
+            return;
+        }
         self.menu.page = Some(Page::Keybinds);
         self.menu.keybinds_scroll.set_offset(Point::default());
         let search = cx.new(crate::search_input::SearchInput::new);
@@ -75,18 +77,24 @@ impl HerdrWindow {
     }
 
     pub(super) fn open_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_menu(window, cx);
+        if !self.open_menu(window, cx) {
+            return;
+        }
         self.menu.page = Some(Page::Preferences);
         self.menu.preferences_scroll.set_offset(Point::default());
     }
 
     pub(super) fn reload_gui_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.theme_save_in_flight() {
+            return;
+        }
         // Load both before replacing either, so invalid themes preserve the UI.
         match Config::load().and_then(|config| {
             let theme = config.theme()?;
             Ok((config, theme))
         }) {
             Ok((config, theme)) => {
+                self.cancel_theme_preview();
                 self.config = config;
                 self.theme = theme;
                 self.wheel = Default::default();
@@ -99,11 +107,16 @@ impl HerdrWindow {
     }
 
     pub(super) fn show_install_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_menu(window, cx);
+        if !self.open_menu(window, cx) {
+            return;
+        }
         self.menu.page = Some(Page::Install);
     }
 
-    pub(super) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.cancel_theme_preview() {
+            return false;
+        }
         self.menu.tab = None;
         self.menu.target = (
             self.selection_epoch,
@@ -114,9 +127,13 @@ impl HerdrWindow {
         self.marked.clear();
         window.focus(&self.menu.focus);
         cx.notify();
+        true
     }
 
     pub(super) fn dismiss_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.cancel_theme_preview() {
+            return;
+        }
         self.menu.page = None;
         self.menu.close = None;
         self.menu.tab = None;

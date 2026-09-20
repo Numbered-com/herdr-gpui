@@ -37,7 +37,7 @@ def main():
         raise ValueError("Input binaries have different build identities")
     worktree, _, _ = identities.pop()
     suffix = "-worktree" if worktree == b"1" else ""
-    name = f"herdr{suffix}-1024.png" if sys.argv[1] == "png" else f"Herdr{suffix}.icns"
+    name = ("herdr-square-worktree-1024.png" if worktree == b"1" else "herdr-icon-square-clean.png") if sys.argv[1] == "png" else f"Herdr{suffix}.icns"
     print(Path(__file__).resolve().parents[2] / "assets/icons" / name)
 
 

@@ -100,10 +100,11 @@ double-clicking it does not invoke the title-bar action.
 The header and clearance remain in fullscreen so the body layout stays stable.
 Windows/Linux keep the existing native frame and do not render this header.
 
-Linked-worktree builds add a full-width, 28px amber `WORKTREE BUILD` banner below
+Linked-worktree builds add a full-width, 22px amber banner below
 the macOS header (above the body on Linux), with the compile-time branch or short
-SHA and optional open PR number. The branch truncates while the warning and PR
-stay visible. It participates in the root flex layout, so terminal painting,
+SHA and optional open PR number, clickable to open that PR on GitHub. The branch
+truncates while the PR stays visible. It participates in the root flex
+layout, so terminal painting,
 hit testing, resize, and IME geometry continue to use the actual canvas bounds.
 The banner does not query Git/GitHub or intercept keyboard focus. Main-checkout
 builds have no banner. Headless tests cover banner presence/absence, long branch

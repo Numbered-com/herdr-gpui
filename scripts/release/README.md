@@ -9,7 +9,7 @@ prerelease/build suffixes, or leading zeros.
 
 Packaging and `just bundle` require Python 3 and read a versioned identity record
 embedded in the supplied executable, never the packaging checkout's Git state.
-Linked-worktree binaries select `assets/icons/herdr-worktree-1024.png` or
+Linked-worktree binaries select `assets/icons/herdr-square-worktree-1024.png` or
 `assets/icons/Herdr-worktree.icns`; other builds use the standard assets. The
 installed icon keeps its standard filename. No binary is executed, so foreign
 Linux architectures and both macOS slices work on the packaging host. macOS

@@ -10,7 +10,7 @@ pub static EXIT_CODE: AtomicU8 = AtomicU8::new(0);
 
 fn banner_height() -> f32 {
     if env!("HERDR_BUILD_WORKTREE") == "1" {
-        28.
+        22.
     } else {
         0.
     }

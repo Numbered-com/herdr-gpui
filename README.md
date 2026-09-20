@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icons/herdr-1024.png" alt="Herdr ram on an ivory application window" width="160" height="160">
+  <img src="assets/icons/herdr-ui-icon-clean.png" alt="Herdr ram on a simple ivory tile" width="160" height="160">
 </p>
 
 # Herdr GPUI
@@ -228,7 +228,7 @@ it does not bundle, install, or stop a daemon. This is a local unsigned,
 unnotarized bundle, not a distribution/signing pipeline. Its version metadata lives
 in `assets/macos/Info.plist` and should be updated for releases.
 
-The ivory window and upstream Herdr ram artwork and provenance are in
+The ivory tile and upstream Herdr ram artwork and provenance are in
 [`assets/icons`](assets/icons/README.md). Linux packages and the README use the
 supplied PNG export; `just icons` regenerates the macOS ICNS from that PNG with
 Swift/CoreGraphics and `iconutil`.
@@ -241,7 +241,7 @@ Artifacts go to `target/distribution/VERSION`; nothing is published.
 ### Worktree Builds
 
 Builds from a linked Git worktree are deliberately unmistakable: a **red app
-icon** and a persistent **amber WORKTREE BUILD banner** showing the build's
+icon** and a persistent **amber banner** showing the build's
 branch (or detached commit) and open PR number when available. This applies to
 release-mode source runs as well as macOS bundles and Linux packages. The normal
 checkout and published main builds keep the ivory icon and no banner. Linux
@@ -270,10 +270,13 @@ Preferences; font values remain read-only and are edited in the config file.
 
 Click **Theme** beside Keybinds to browse built-in themes and theme files discovered
 in the Herdr and Ghostty theme folders. Type to filter names (case-insensitive),
-use Up/Down to navigate, then press Enter or click a result to apply and save it.
-The current theme is marked in the list. Escape or clicking outside cancels without
-changing the theme. Saving updates only `theme` in the GUI config, preserving its
-comments and other settings; load/save errors leave the current appearance intact.
+hover a result or use Up/Down to preview it immediately, then press Enter or click
+to save it. Filtering also previews the selected result. Previews never write
+configuration. The saved theme is marked in the list. Escape, Close, or clicking
+outside restores the appearance from before the picker opened. File loading and
+saving run in the background; once a save begins, the picker waits for its result
+before closing. Saving updates only `theme` in the GUI config, preserving comments
+and other settings. Errors remain visible without moving the theme rows.
 
 GUI settings live in `$XDG_CONFIG_HOME/herdr/config-gpui.toml`, falling back to
 `~/.config/herdr/config-gpui.toml`. The GUI creates a commented default file if it

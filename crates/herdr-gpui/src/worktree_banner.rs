@@ -10,17 +10,11 @@ pub(super) fn render(worktree: bool, branch: &str, pr: &str) -> Option<Div> {
             .gap(px(10.))
             .px(px(12.))
             .w_full()
-            .h(px(28.))
+            .h(px(22.))
             .overflow_hidden()
             .bg(rgb(0xf6c453))
             .text_color(rgb(0x402b08))
             .text_size(px(12.))
-            .child(
-                div()
-                    .flex_none()
-                    .font_weight(FontWeight::BOLD)
-                    .child("WORKTREE BUILD"),
-            )
             .child(
                 div()
                     .debug_selector(|| "worktree-branch".into())
@@ -30,11 +24,16 @@ pub(super) fn render(worktree: bool, branch: &str, pr: &str) -> Option<Div> {
                     .child(branch.to_owned()),
             )
             .when(!pr.is_empty(), |row| {
+                let url = format!("https://github.com/penso/herdr-gpui/pull/{pr}");
                 row.child(
                     div()
+                        .id("worktree-pr")
                         .debug_selector(|| "worktree-pr".into())
                         .flex_none()
-                        .child(format!("PR #{pr}")),
+                        .cursor_pointer()
+                        .hover(|style| style.underline())
+                        .child(format!("PR #{pr}"))
+                        .on_click(move |_, _, cx| cx.open_url(&url)),
                 )
             })
     })
@@ -87,17 +86,23 @@ mod tests {
                         let _ = window.draw(cx);
                     });
                     let body = cx.debug_bounds("body").unwrap();
-                    assert_eq!(body.top(), px(if worktree { 28. } else { 0. }));
+                    assert_eq!(body.top(), px(if worktree { 22. } else { 0. }));
                     assert_eq!(body.bottom(), px(400.));
                     if worktree {
                         let banner = cx.debug_bounds("worktree-banner").unwrap();
                         let branch = cx.debug_bounds("worktree-branch").unwrap();
-                        assert_eq!(banner.size, size(px(width), px(28.)));
+                        assert_eq!(banner.size, size(px(width), px(22.)));
+                        assert_eq!(branch.left(), banner.left() + px(12.));
                         assert!(branch.right() <= banner.right());
                         if !pr.is_empty() {
                             let pr = cx.debug_bounds("worktree-pr").unwrap();
                             assert!(pr.left() >= branch.right());
                             assert!(pr.right() <= banner.right());
+                            cx.simulate_click(pr.center(), Default::default());
+                            assert_eq!(
+                                cx.opened_url().as_deref(),
+                                Some("https://github.com/penso/herdr-gpui/pull/12345")
+                            );
                         } else {
                             assert!(cx.debug_bounds("worktree-pr").is_none());
                         }

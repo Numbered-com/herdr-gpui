@@ -110,7 +110,7 @@ mod tests {
                 );
                 let body = cx.debug_bounds("window-body").unwrap();
                 let banner_height = if env!("HERDR_BUILD_WORKTREE") == "1" {
-                    28.
+                    22.
                 } else {
                     0.
                 };

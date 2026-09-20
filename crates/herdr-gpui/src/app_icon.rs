@@ -3,7 +3,7 @@
 const PNG: &[u8] = if env!("HERDR_BUILD_WORKTREE").as_bytes()[0] == b'1' {
     include_bytes!("../../../assets/icons/herdr-worktree-1024.png")
 } else {
-    include_bytes!("../../../assets/icons/herdr-1024.png")
+    include_bytes!("../../../assets/icons/herdr-ui-icon-clean.png")
 };
 
 #[cfg(target_os = "macos")]
@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn embedded_icon_is_a_nonempty_1024_square_png() {
-        let stable = include_bytes!("../../../assets/icons/herdr-1024.png").as_slice();
+        let stable = include_bytes!("../../../assets/icons/herdr-ui-icon-clean.png").as_slice();
         let worktree = include_bytes!("../../../assets/icons/herdr-worktree-1024.png").as_slice();
         assert_ne!(stable, worktree);
         for png in [stable, worktree] {

@@ -68,7 +68,7 @@ class ReleaseTests(unittest.TestCase):
                     ]})
                     self.assertEqual(files[base + "bin/herdr-gpui"].mode & 0o777, 0o755)
                     self.assertEqual(archive.extractfile(base + "bin/herdr-gpui").read(), binary.read_bytes())
-                    self.assertEqual(archive.extractfile(base + "share/icons/hicolor/1024x1024/apps/herdr-gpui.png").read(), (ROOT / "assets/icons/herdr-1024.png").read_bytes())
+                    self.assertEqual(archive.extractfile(base + "share/icons/hicolor/1024x1024/apps/herdr-gpui.png").read(), (ROOT / "assets/icons/herdr-icon-square-clean.png").read_bytes())
                     self.assertEqual(archive.extractfile(base + "share/licenses/herdr-gpui/THIRD-PARTY-NOTICES.txt").read(), self.notices.read_bytes())
                     for source in ("LICENSE", "NOTICE", "assets/icons/LICENSE-octicons", "crates/herdr-protocol/NOTICE.md"):
                         self.assertEqual(archive.extractfile(base + "share/licenses/herdr-gpui/" + Path(source).name).read(), (ROOT / source).read_bytes())
@@ -140,7 +140,7 @@ class ReleaseTests(unittest.TestCase):
             destination = fixture / path
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / path, destination)
-        for name in ["Herdr-worktree.icns", "herdr-worktree-1024.png"]:
+        for name in ["Herdr-worktree.icns", "herdr-square-worktree-1024.png"]:
             (fixture / "assets/icons" / name).write_bytes(b"red fixture " + name.encode())
         self.scripts = fixture / "scripts/release"
         arm, intel = self.work / "arm64", self.work / "x86_64"
@@ -153,7 +153,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual((self.work / "Herdr.app/Contents/Resources/Herdr.icns").read_bytes(), (fixture / "assets/icons/Herdr-worktree.icns").read_bytes())
         result = self.run_script("package-linux.sh", "1.2.3", "aarch64-unknown-linux-gnu", arm, self.work, self.notices)
         with tarfile.open(result.stdout.strip()) as archive:
-            self.assertEqual(archive.extractfile("Herdr-1.2.3-aarch64-unknown-linux-gnu/share/icons/hicolor/1024x1024/apps/herdr-gpui.png").read(), (fixture / "assets/icons/herdr-worktree-1024.png").read_bytes())
+            self.assertEqual(archive.extractfile("Herdr-1.2.3-aarch64-unknown-linux-gnu/share/icons/hicolor/1024x1024/apps/herdr-gpui.png").read(), (fixture / "assets/icons/herdr-square-worktree-1024.png").read_bytes())
 
     def test_missing_malformed_conflicting_identity_fails_closed(self):
         binary = self.work / "binary"
