@@ -1,4 +1,5 @@
 //! GUI-only fonts and themes; no daemon settings are read or changed.
+use crate::{Error, Result, error::ThemeParseError};
 use serde::Deserialize;
 use std::{
     env, fs,
@@ -32,16 +33,21 @@ impl FontConfig {
 
 impl Default for Config {
     fn default() -> Self {
+        let (monospace, ui) = if cfg!(target_os = "linux") {
+            ("DejaVu Sans Mono", "DejaVu Sans")
+        } else {
+            ("Menlo", ".SystemUIFont")
+        };
         let font = |family: &str, size| FontConfig {
             family: family.into(),
             size,
         };
         Self {
             theme: "Default".into(),
-            sidebar: font("Menlo", 12.0),
-            tabs: font(".SystemUIFont", 14.0),
-            terminal: font("Menlo", 14.0),
-            ui: font(".SystemUIFont", 12.0),
+            sidebar: font(monospace, 12.0),
+            tabs: font(ui, 14.0),
+            terminal: font(monospace, 14.0),
+            ui: font(ui, 12.0),
         }
     }
 }
@@ -63,19 +69,19 @@ struct FontSettings {
     size: Option<f32>,
 }
 
-fn home() -> Result<PathBuf, String> {
+fn home() -> Result<PathBuf> {
     env::var_os("HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .ok_or_else(|| "HOME is not set".into())
+        .ok_or(Error::MissingHome)
 }
 
-fn config_root() -> Result<PathBuf, String> {
+fn config_root() -> Result<PathBuf> {
     match env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
         Some(value) => {
             let path = PathBuf::from(value);
             if !path.is_absolute() {
-                return Err("XDG_CONFIG_HOME must be an absolute path".into());
+                return Err(Error::RelativeConfigRoot);
             }
             Ok(path)
         }
@@ -83,7 +89,7 @@ fn config_root() -> Result<PathBuf, String> {
     }
 }
 
-fn theme_directories() -> Result<Vec<PathBuf>, String> {
+fn theme_directories() -> Result<Vec<PathBuf>> {
     let root = config_root()?;
     let mut directories = vec![root.join("herdr/themes"), root.join("ghostty/themes")];
     if let Some(resources) = env::var_os("GHOSTTY_RESOURCES_DIR").filter(|value| !value.is_empty())
@@ -106,46 +112,44 @@ fn theme_directories() -> Result<Vec<PathBuf>, String> {
 }
 
 impl Config {
-    pub fn path() -> Result<PathBuf, String> {
+    pub fn path() -> Result<PathBuf> {
         Ok(config_root()?.join("herdr/config-gpui.toml"))
     }
 
-    pub fn load() -> Result<Self, String> {
+    pub fn load() -> Result<Self> {
         Self::load_path(&Self::path()?)
     }
 
-    fn load_path(path: &Path) -> Result<Self, String> {
+    fn load_path(path: &Path) -> Result<Self> {
         let result = (|| {
             match fs::read_to_string(path) {
                 Ok(text) => return Self::parse(&text),
                 Err(error) if error.kind() == ErrorKind::NotFound => {}
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(error.into()),
             }
             if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                fs::create_dir_all(parent)?;
             }
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(path)
             {
-                Ok(mut file) => file
-                    .write_all(DEFAULT_CONFIG.as_bytes())
-                    .map_err(|error| error.to_string())?,
+                Ok(mut file) => file.write_all(DEFAULT_CONFIG.as_bytes())?,
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(error.into()),
             }
-            Self::parse(&fs::read_to_string(path).map_err(|error| error.to_string())?)
+            Self::parse(&fs::read_to_string(path)?)
         })();
-        result.map_err(|error| format!("{}: {error}", path.display()))
+        result.map_err(|error| error.at_path(path))
     }
 
-    fn parse(text: &str) -> Result<Self, String> {
-        let settings: Settings = toml::from_str(text).map_err(|error| error.to_string())?;
+    fn parse(text: &str) -> Result<Self> {
+        let settings: Settings = toml::from_str(text)?;
         let mut config = Self::default();
         if let Some(theme) = settings.theme {
             if theme.trim().is_empty() {
-                return Err("theme must not be empty".into());
+                return Err(Error::EmptyTheme);
             }
             config.theme = theme;
         }
@@ -162,12 +166,10 @@ impl Config {
                 font.size = size;
             }
             if font.family.trim().is_empty() {
-                return Err(format!("{name}.family must not be empty"));
+                return Err(Error::EmptyFontFamily(name));
             }
             if !font.size.is_finite() || !(8.0..=48.0).contains(&font.size) {
-                return Err(format!(
-                    "{name}.size must be finite and between 8 and 48 logical pixels"
-                ));
+                return Err(Error::InvalidFontSize(name));
             }
         }
         Ok(config)
@@ -175,11 +177,11 @@ impl Config {
 
     /// Discover names without parsing every theme. On failure, callers can use
     /// `Theme::BUILTIN_NAMES`, which remain loadable without any directories.
-    pub fn available_themes(&self) -> Result<Vec<String>, String> {
+    pub fn available_themes(&self) -> Result<Vec<String>> {
         self.available_themes_in(&theme_directories()?)
     }
 
-    fn available_themes_in(&self, directories: &[PathBuf]) -> Result<Vec<String>, String> {
+    fn available_themes_in(&self, directories: &[PathBuf]) -> Result<Vec<String>> {
         let mut names: Vec<String> = Theme::BUILTIN_NAMES
             .iter()
             .map(|name| (*name).into())
@@ -188,15 +190,15 @@ impl Config {
             let entries = match fs::read_dir(directory) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == ErrorKind::NotFound => continue,
-                Err(error) => return Err(format!("{}: {error}", directory.display())),
+                Err(error) => return Err(Error::from(error).at_path(directory)),
             };
             for entry in entries {
-                let entry = entry.map_err(|error| format!("{}: {error}", directory.display()))?;
+                let entry = entry.map_err(|error| Error::from(error).at_path(directory))?;
                 // Follow symlinks just as the named theme loader does.
                 let metadata = match fs::metadata(entry.path()) {
                     Ok(metadata) => metadata,
                     Err(error) if error.kind() == ErrorKind::NotFound => continue,
-                    Err(error) => return Err(format!("{}: {error}", entry.path().display())),
+                    Err(error) => return Err(Error::from(error).at_path(&entry.path())),
                 };
                 if metadata.is_file()
                     && let Some(name) = entry.file_name().to_str()
@@ -215,25 +217,23 @@ impl Config {
     }
 
     /// Persist only the theme selection, retaining the latest on-disk settings.
-    pub fn save_theme(&self, name: &str) -> Result<(), String> {
+    pub fn save_theme(&self, name: &str) -> Result<()> {
         self.save_theme_path(name, &Self::path()?)
     }
 
-    fn save_theme_path(&self, name: &str, path: &Path) -> Result<(), String> {
+    fn save_theme_path(&self, name: &str, path: &Path) -> Result<()> {
         let selected = Self {
             theme: name.into(),
             ..self.clone()
         };
         selected.theme()?;
-        let result = (|| -> Result<(), String> {
+        let result = (|| -> Result<()> {
             let text = match fs::read_to_string(path) {
                 Ok(text) => text,
                 Err(error) if error.kind() == ErrorKind::NotFound => DEFAULT_CONFIG.into(),
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(error.into()),
             };
-            let mut document = text
-                .parse::<toml_edit::DocumentMut>()
-                .map_err(|error| error.to_string())?;
+            let mut document = text.parse::<toml_edit::DocumentMut>()?;
             let mut value = toml_edit::Value::from(name);
             if let Some(previous) = document.get("theme").and_then(toml_edit::Item::as_value) {
                 *value.decor_mut() = previous.decor().clone();
@@ -243,7 +243,7 @@ impl Config {
                 .parent()
                 .filter(|parent| !parent.as_os_str().is_empty())
                 .unwrap_or_else(|| Path::new("."));
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            fs::create_dir_all(parent)?;
             static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
             let (temporary, mut file) = loop {
                 let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
@@ -256,7 +256,7 @@ impl Config {
                 {
                     Ok(file) => break (temporary, file),
                     Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-                    Err(error) => return Err(error.to_string()),
+                    Err(error) => return Err(error.into()),
                 }
             };
             let write_result = (|| {
@@ -266,24 +266,28 @@ impl Config {
                 fs::rename(&temporary, path)
             })();
             if let Err(error) = write_result {
-                fs::remove_file(&temporary).map_err(|cleanup| {
-                    format!("{error}; removing {}: {cleanup}", temporary.display())
-                })?;
-                return Err(error.to_string());
+                if let Err(cleanup) = fs::remove_file(&temporary) {
+                    return Err(Error::Cleanup {
+                        source: error,
+                        path: temporary,
+                        cleanup,
+                    });
+                }
+                return Err(error.into());
             }
             Ok(())
         })();
-        result.map_err(|error| format!("{}: {error}", path.display()))
+        result.map_err(|error| error.at_path(path))
     }
 
-    pub fn theme(&self) -> Result<Theme, String> {
+    pub fn theme(&self) -> Result<Theme> {
         self.theme_with_directories(theme_directories)
     }
 
     fn theme_with_directories(
         &self,
-        directories: impl FnOnce() -> Result<Vec<PathBuf>, String>,
-    ) -> Result<Theme, String> {
+        directories: impl FnOnce() -> Result<Vec<PathBuf>>,
+    ) -> Result<Theme> {
         let name = self.theme.trim();
         if let Some(theme) = Theme::builtin(name) {
             return Ok(theme);
@@ -300,7 +304,7 @@ impl Config {
                     Some(Component::Normal(_))
                 )
             {
-                return Err("theme must be a name, absolute path, or ~/ path".into());
+                return Err(Error::InvalidThemePath);
             }
             let directories = directories()?;
             let mut found = None;
@@ -313,14 +317,16 @@ impl Config {
                     }
                     Ok(_) => {}
                     Err(error) if error.kind() == ErrorKind::NotFound => {}
-                    Err(error) => return Err(format!("{}: {error}", candidate.display())),
+                    Err(error) => return Err(Error::from(error).at_path(&candidate)),
                 }
             }
-            found.ok_or_else(|| format!("theme {name:?} not found in {directories:?}"))?
+            found.ok_or_else(|| Error::ThemeNotFound {
+                name: name.into(),
+                directories,
+            })?
         };
-        let text =
-            fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-        Theme::parse_ghostty(&text).map_err(|error| format!("{}: {error}", path.display()))
+        let text = fs::read_to_string(&path).map_err(|error| Error::from(error).at_path(&path))?;
+        Theme::parse_ghostty(&text).map_err(|error| error.at_path(&path))
     }
 }
 
@@ -437,7 +443,7 @@ impl Theme {
         Some(theme)
     }
 
-    fn parse_ghostty(text: &str) -> Result<Self, String> {
+    fn parse_ghostty(text: &str) -> Result<Self> {
         let mut theme = Self::default();
         let mut cursor_set = false;
         for (index, line) in text.lines().enumerate() {
@@ -448,15 +454,18 @@ impl Theme {
             let (key, value) = line.split_once('=').unwrap_or((line, ""));
             let key = key.trim();
             let value = value.trim();
-            let error = |message| format!("line {}: {key}: {message}", index + 1);
-            let color = |value: &str| -> Result<u32, String> {
+            let error = |source| Error::ThemeLine {
+                line: index + 1,
+                key: key.into(),
+                source,
+            };
+            let color = |value: &str| -> Result<u32> {
                 let hex = value.strip_prefix('#').unwrap_or(value);
                 if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                    return Err(error(
-                        "expected a six-digit RGB hex color (optionally prefixed by #)",
-                    ));
+                    return Err(error(ThemeParseError::InvalidColor));
                 }
-                u32::from_str_radix(hex, 16).map_err(|_| error("invalid hex color"))
+                u32::from_str_radix(hex, 16)
+                    .map_err(|source| error(ThemeParseError::InvalidHex(source)))
             };
             match key {
                 "background" => theme.background = color(value)?,
@@ -468,13 +477,14 @@ impl Theme {
                 "palette" => {
                     let (index, value) = value
                         .split_once('=')
-                        .ok_or_else(|| error("expected index=color"))?;
+                        .ok_or_else(|| error(ThemeParseError::MissingPaletteColor))?;
                     let index = index
                         .trim()
                         .parse::<usize>()
-                        .ok()
-                        .filter(|index| *index < 256)
-                        .ok_or_else(|| error("palette index must be between 0 and 255"))?;
+                        .map_err(|source| error(ThemeParseError::InvalidPaletteIndex(source)))?;
+                    if index >= 256 {
+                        return Err(error(ThemeParseError::PaletteIndexOutOfRange));
+                    }
                     theme.palette[index] = color(value.trim())?;
                 }
                 _ => {} // Never interpret includes, commands, or unrelated Ghostty settings.
@@ -491,6 +501,71 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context as _;
+
+    #[test]
+    fn errors_retain_paths_categories_and_parser_sources() -> anyhow::Result<()> {
+        use std::error::Error as _;
+
+        let temp = TempDirectory::new()?;
+        let path = temp.0.join("invalid.toml");
+        fs::write(&path, "theme = [")?;
+        let error = Config::load_path(&path)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("accepted invalid TOML"))?;
+        assert!(
+            error
+                .to_string()
+                .starts_with(&format!("{}: ", path.display()))
+        );
+        let Error::Path {
+            path: actual,
+            source,
+        } = error
+        else {
+            anyhow::bail!("missing path context");
+        };
+        assert_eq!(actual, path);
+        assert!(
+            source
+                .source()
+                .is_some_and(|source| source.is::<toml::de::Error>())
+        );
+        assert!(matches!(
+            Config::parse("[ui]\nsize = nan"),
+            Err(Error::InvalidFontSize("ui"))
+        ));
+
+        let error = Theme::parse_ghostty("# ignored\npalette=bad=ffffff")
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("accepted invalid palette index"))?;
+        assert_eq!(
+            error.to_string(),
+            "line 2: palette: palette index must be between 0 and 255"
+        );
+        assert!(matches!(
+            &error,
+            Error::ThemeLine {
+                line: 2,
+                source: ThemeParseError::InvalidPaletteIndex(_),
+                ..
+            }
+        ));
+        assert!(
+            error
+                .source()
+                .and_then(|source| source.source())
+                .is_some_and(|source| source.is::<std::num::ParseIntError>())
+        );
+        assert!(matches!(
+            Theme::parse_ghostty("palette=256=ffffff"),
+            Err(Error::ThemeLine {
+                source: ThemeParseError::PaletteIndexOutOfRange,
+                ..
+            })
+        ));
+        Ok(())
+    }
 
     struct TempDirectory(PathBuf);
 
@@ -519,8 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn discovers_sorted_names_and_loads_in_precedence_order()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn discovers_sorted_names_and_loads_in_precedence_order() -> anyhow::Result<()> {
         let temp = TempDirectory::new()?;
         let first = temp.0.join("first");
         let second = temp.0.join("second");
@@ -562,14 +636,13 @@ mod tests {
         };
         assert_eq!(
             builtin.theme_with_directories(|| Ok(directories))?,
-            Theme::builtin("Nord").ok_or("missing builtin")?
+            Theme::builtin("Nord").context("missing builtin")?
         );
         Ok(())
     }
 
     #[test]
-    fn discovery_includes_explicit_selection_and_reports_errors()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn discovery_includes_explicit_selection_and_reports_errors() -> anyhow::Result<()> {
         let temp = TempDirectory::new()?;
         for name in [
             temp.0.join("custom").to_string_lossy().into_owned(),
@@ -595,7 +668,7 @@ mod tests {
             };
             assert!(
                 config
-                    .theme_with_directories(|| Err("unavailable directories".into()))
+                    .theme_with_directories(|| Err(Error::MissingHome))
                     .is_ok()
             );
         }
@@ -603,8 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn saves_only_theme_and_preserves_latest_settings_and_comments()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn saves_only_theme_and_preserves_latest_settings_and_comments() -> anyhow::Result<()> {
         let temp = TempDirectory::new()?;
         let path = temp.0.join("config.toml");
         let config = Config::default();
@@ -631,13 +703,13 @@ mod tests {
     }
 
     #[test]
-    fn save_validates_theme_and_toml_before_writing() -> Result<(), Box<dyn std::error::Error>> {
+    fn save_validates_theme_and_toml_before_writing() -> anyhow::Result<()> {
         let temp = TempDirectory::new()?;
         let path = temp.0.join("config.toml");
         let config = Config::default();
         let custom = temp.0.join("custom");
         fs::write(&custom, "background=invalid")?;
-        let custom_name = custom.to_str().ok_or("non-UTF8 temporary path")?;
+        let custom_name = custom.to_str().context("non-UTF8 temporary path")?;
         for name in ["", "../invalid", custom_name] {
             assert!(config.save_theme_path(name, &path).is_err());
             assert!(!path.exists());
@@ -653,26 +725,69 @@ mod tests {
         config.save_theme_path(custom_name, &new_path)?;
         assert_eq!(Config::load_path(&new_path)?.theme()?.background, 0x112233);
         assert_eq!(
-            fs::read_dir(new_path.parent().ok_or("missing parent")?)?.count(),
+            fs::read_dir(new_path.parent().context("missing parent")?)?.count(),
             1
         );
         Ok(())
     }
 
     #[test]
-    fn defaults_and_partial_settings() -> Result<(), String> {
-        let config = Config::parse(DEFAULT_CONFIG)?;
-        assert_eq!(config.theme()?, Theme::default());
-        assert_eq!(config.sidebar.size, 12.0);
-        assert_eq!(config.tabs.family, ".SystemUIFont");
-        assert_eq!(config.terminal.line_height(), 20.0);
-        assert_eq!(config.ui.size, 12.0);
-        let config = Config::parse("[tabs]\nsize = 18\n[terminal]\nfamily = 'Monaco'")?;
-        assert_eq!(config.tabs.family, ".SystemUIFont");
-        assert_eq!(config.tabs.size, 18.0);
-        assert_eq!(config.terminal.size, 14.0);
-        assert_eq!(config.terminal.family, "Monaco");
-        assert_eq!(Config::parse("")?.theme, "Default");
+    fn defaults_and_partial_settings() -> anyhow::Result<()> {
+        #[cfg(target_os = "linux")]
+        let families = [
+            "DejaVu Sans Mono",
+            "DejaVu Sans",
+            "DejaVu Sans Mono",
+            "DejaVu Sans",
+        ];
+        #[cfg(not(target_os = "linux"))]
+        let families = ["Menlo", ".SystemUIFont", "Menlo", ".SystemUIFont"];
+
+        for config in [
+            Config::default(),
+            Config::parse("")?,
+            Config::parse(DEFAULT_CONFIG)?,
+        ] {
+            assert_eq!(config.theme()?, Theme::default());
+            assert_eq!(config.terminal.line_height(), 20.0);
+            for ((font, family), size) in [config.sidebar, config.tabs, config.terminal, config.ui]
+                .into_iter()
+                .zip(families)
+                .zip([12.0, 14.0, 14.0, 12.0])
+            {
+                assert_eq!(font.family, family);
+                assert_eq!(font.size, size);
+            }
+        }
+
+        for settings in ["", "size = 18", "family = 'Custom Font'"] {
+            let text = ["sidebar", "tabs", "terminal", "ui"]
+                .map(|section| format!("[{section}]\n{settings}\n"))
+                .join("\n");
+            let config = Config::parse(&text)?;
+            for ((font, family), size) in [config.sidebar, config.tabs, config.terminal, config.ui]
+                .into_iter()
+                .zip(families)
+                .zip([12.0, 14.0, 14.0, 12.0])
+            {
+                assert_eq!(
+                    font.family,
+                    if settings.starts_with("family") {
+                        "Custom Font"
+                    } else {
+                        family
+                    }
+                );
+                assert_eq!(
+                    font.size,
+                    if settings.starts_with("size") {
+                        18.0
+                    } else {
+                        size
+                    }
+                );
+            }
+        }
         Ok(())
     }
 
@@ -698,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn default_palette_and_builtins() -> Result<(), String> {
+    fn default_palette_and_builtins() -> anyhow::Result<()> {
         let default = Theme::default();
         assert_eq!(default.palette[16], 0);
         assert_eq!(default.palette[21], 0x0000ff);
@@ -720,7 +835,7 @@ mod tests {
     }
 
     #[test]
-    fn ghostty_colors_and_ignored_settings() -> Result<(), String> {
+    fn ghostty_colors_and_ignored_settings() -> anyhow::Result<()> {
         let theme = Theme::parse_ghostty(
             "# comment\nbackground = #123aBC\nforeground=abcdef\n\
              palette = 0 = #010203\npalette=255=fefefe\npalette=0=040506\n\
@@ -753,35 +868,28 @@ mod tests {
         ] {
             let result = Theme::parse_ghostty(&format!("# comment\n{line}"));
             assert!(
-                matches!(result, Err(ref error) if error.starts_with("line 2:")),
+                matches!(result, Err(Error::ThemeLine { line: 2, .. })),
                 "{result:?}"
             );
         }
     }
 
     #[test]
-    fn creates_config_without_overwriting_and_loads_absolute_theme() -> Result<(), String> {
+    fn creates_config_without_overwriting_and_loads_absolute_theme() -> anyhow::Result<()> {
         let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| error.to_string())?
+            .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let directory =
             env::temp_dir().join(format!("herdr-config-{}-{unique}", std::process::id()));
         let path = directory.join("config-gpui.toml");
         let result = (|| {
             Config::load_path(&path)?;
-            assert_eq!(
-                fs::read_to_string(&path).map_err(|e| e.to_string())?,
-                DEFAULT_CONFIG
-            );
-            fs::write(&path, "theme = 'Nord'").map_err(|e| e.to_string())?;
+            assert_eq!(fs::read_to_string(&path)?, DEFAULT_CONFIG);
+            fs::write(&path, "theme = 'Nord'")?;
             assert_eq!(Config::load_path(&path)?.theme, "Nord");
-            assert_eq!(
-                fs::read_to_string(&path).map_err(|e| e.to_string())?,
-                "theme = 'Nord'"
-            );
+            assert_eq!(fs::read_to_string(&path)?, "theme = 'Nord'");
             let theme_path = directory.join("custom-theme");
-            fs::write(&theme_path, "background=112233").map_err(|e| e.to_string())?;
+            fs::write(&theme_path, "background=112233")?;
             let config = Config {
                 theme: theme_path.to_string_lossy().into_owned(),
                 ..Config::default()
@@ -789,7 +897,7 @@ mod tests {
             assert_eq!(config.theme()?.background, 0x112233);
             Ok(())
         })();
-        fs::remove_dir_all(directory).map_err(|e| e.to_string())?;
+        fs::remove_dir_all(directory)?;
         result
     }
 }

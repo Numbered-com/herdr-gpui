@@ -1,88 +1,133 @@
 name: Release
+run-name: Release ${{ inputs.VERSION }} @ ${{ inputs.expected_sha }} [${{ inputs.request_id }}]
 
 on:
-  push:
-    tags:
-      - "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].[0-9][0-9]"
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: "Build and package without signing, notarizing, or publishing"
+      VERSION:
+        description: Workspace version (X.Y.Z, no v or leading zeros)
+        required: true
+        type: string
+      expected_sha:
+        description: Full commit SHA of main HEAD
+        required: true
+        type: string
+      request_id:
+        description: Optional unique dispatch correlation ID (set by just release)
         required: false
-        default: true
-        type: boolean
+        default: ''
+        type: string
 
-# Deny by default; every job below declares the scopes it actually needs.
 permissions: {}
 
+# Serialize publication and tap updates across versions; never cancel a signer.
 concurrency:
-  group: release-${{ github.ref }}
+  group: manual-release
   cancel-in-progress: false
 
-env:
-  RELEASE_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  # Gates everything: a workflow change that leaks the Apple certificate or the
-  # release token is caught before any secret is loaded into a runner.
-  zizmor:
-    name: Workflow Security
-    runs-on: ubuntu-latest
+  audit:
+    name: Release Workflow Security
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'penso/herdr-gpui' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'penso' && github.triggering_actor == 'penso'
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: zizmorcore/zizmor-action@135698455da5c3b3e55f73f4419e481ab68cdd95 # v0.4.1
         with:
           advanced-security: false
           online-audits: false
 
-  validate-tag:
-    name: Validate Tag
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
+  validate:
+    needs: audit
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'penso/herdr-gpui' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'penso' && github.triggering_actor == 'penso'
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
-    steps:
-      - name: Check tag matches YYYYMMDD.NN
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          if [[ ! "$TAG" =~ ^[0-9]{8}\.[0-9]{2}$ ]]; then
-            echo "::error::Tag '$TAG' must match YYYYMMDD.NN"
-            exit 1
-          fi
-          # Reject an impossible date early rather than shipping it in a bundle version.
-          if ! date -d "${TAG%%.*}" >/dev/null 2>&1; then
-            echo "::error::Tag '$TAG' does not start with a real YYYYMMDD date"
-            exit 1
-          fi
-
-  validate-updater:
-    name: Validate Updater Configuration
-    needs: [zizmor]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
+    outputs:
+      sha: ${{ steps.validate.outputs.sha }}
+      version: ${{ steps.validate.outputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Validate embedded public key
+      - id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.VERSION }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          REQUEST_ID: ${{ inputs.request_id }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$REQUEST_ID" =~ ^[a-zA-Z0-9-]{0,64}$ ]]
+          [[ "$EXPECTED_SHA" == "$GITHUB_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
+          [[ "$(gh api repos/penso/herdr-gpui/git/ref/heads/main --jq .object.sha)" == "$EXPECTED_SHA" ]]
+          python3 - <<'PY'
+          import os, tomllib
+          with open("Cargo.toml", "rb") as manifest:
+              version = tomllib.load(manifest)["workspace"]["package"]["version"]
+          if version != os.environ["VERSION"]:
+              raise SystemExit("VERSION must match workspace.package.version")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={version}\nsha={os.environ['EXPECTED_SHA']}\n")
+          PY
+      - name: Validate embedded updater public key
         env:
           HERDR_UPDATE_PUBLIC_KEY: ${{ vars.HERDR_UPDATE_PUBLIC_KEY }}
         run: python3 scripts/update-manifest.py validate-public-key
-      - name: Test packaging contract
-        run: python3 -m unittest discover -s scripts -p 'test_update_manifest.py' -v
 
-  build:
-    name: Build (${{ matrix.arch }})
-    needs: [zizmor, validate-updater]
+  macos-checks:
+    needs: validate
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          persist-credentials: false
+      - name: Test release scripts and security contracts without credentials
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ required"'
+          jq --version
+          python3 -m unittest discover -s scripts/release/tests -v
+          python3 scripts/release/test-release-security.py
+          OPENSSL="$(brew --prefix openssl@3)/bin/openssl" python3 -m unittest discover -s scripts -p 'test_update_manifest.py' -v
+      - run: rustup show
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --workspace
+      - run: cargo test --locked --workspace --all-features
+
+  macos-build:
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
@@ -94,242 +139,184 @@ jobs:
             arch: x86_64
             target: x86_64-apple-darwin
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - name: Install pinned Rust toolchain
-        run: rustup show
-
-      # No dependency cache here on purpose. A published binary should be built
-      # from source every time: a poisoned cache entry restored into a release
-      # build would be signed and notarized along with everything else.
-      - name: Build optimized native executable
-        env:
-          HERDR_RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '00000000.00' }}
-          HERDR_UPDATE_PUBLIC_KEY: ${{ vars.HERDR_UPDATE_PUBLIC_KEY }}
-        run: cargo build --locked --release -p herdr-gpui
-
-      - name: Exercise release executable without opening a window
-        env:
-          HERDR_RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '00000000.00' }}
-          HERDR_UPDATE_PUBLIC_KEY: ${{ vars.HERDR_UPDATE_PUBLIC_KEY }}
-        run: cargo test --locked --release -p herdr-gpui --test cli
-
-      - name: Stage executable
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          set -euo pipefail
-          mkdir -p staging
-          cp target/release/herdr-gpui "staging/herdr-gpui-${TARGET}"
-          # Fail loudly if the runner produced the wrong architecture.
-          file "staging/herdr-gpui-${TARGET}"
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: executable-${{ matrix.arch }}
-          path: staging/herdr-gpui-${{ matrix.target }}
-          if-no-files-found: error
-          retention-days: 7
-
-  package:
-    name: Package, Sign, and Notarize
-    needs: [build, validate-tag]
-    # validate-tag is skipped on workflow_dispatch; don't let that skip packaging.
-    if: ${{ always() && needs.build.result == 'success' && needs.validate-tag.result != 'failure' }}
-    runs-on: macos-15
     timeout-minutes: 60
     permissions:
       contents: read
-      id-token: write # Sigstore keyless signing
-      attestations: write # Build provenance
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+      TARGET: ${{ matrix.target }}
+      HERDR_RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      HERDR_UPDATE_PUBLIC_KEY: ${{ vars.HERDR_UPDATE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ needs.validate.outputs.sha }}
           persist-credentials: false
+      - run: rustup show
+      - run: cargo build --locked --release -p herdr-gpui --target "$TARGET"
+      - run: cargo test --locked --release -p herdr-gpui --test cli --target "$TARGET"
+      - run: cargo install cargo-about --version 0.9.2 --locked
+      - run: python3 scripts/release/generate-notices.py "target/$TARGET/release/THIRD-PARTY-NOTICES.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4, Arbor/Moltis
+        with:
+          name: macos-${{ matrix.arch }}
+          path: |
+            target/${{ matrix.target }}/release/herdr-gpui
+            target/${{ matrix.target }}/release/THIRD-PARTY-NOTICES.txt
+          if-no-files-found: error
+          retention-days: 7
 
+  linux:
+    name: Linux (${{ matrix.target }})
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      HERDR_RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      HERDR_UPDATE_PUBLIC_KEY: ${{ vars.HERDR_UPDATE_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          persist-credentials: false
+      - name: Install GPUI build dependencies
+        run: bash scripts/install-linux-deps.sh
+      - run: rustup show
+      - name: Require the declared native target
+        run: |
+          test "$(rustc -vV | sed -n 's/^host: //p')" = "$TARGET"
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --workspace
+      - run: cargo test --locked --workspace --all-features
+      - run: cargo build --locked --release -p herdr-gpui --target "$TARGET"
+      - run: cargo test --locked --release -p herdr-gpui --test cli --target "$TARGET"
+      - run: cargo install cargo-about --version 0.9.2 --locked
+      - run: python3 scripts/release/generate-notices.py "target/$TARGET/release/THIRD-PARTY-NOTICES.txt"
+      - name: Package experimental Linux executable
+        run: |
+          mkdir dist
+          bash scripts/release/package-linux.sh "$VERSION" "$TARGET" "target/$TARGET/release/herdr-gpui" dist "target/$TARGET/release/THIRD-PARTY-NOTICES.txt"
+          python3 scripts/update-manifest.py package-linux "target/$TARGET/release/herdr-gpui" "$TARGET" "$VERSION" \
+            "dist/herdr-gpui-$VERSION-$TARGET-update.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-package-${{ matrix.target }}
+          path: |
+            dist/Herdr-${{ needs.validate.outputs.version }}-${{ matrix.target }}.tar.gz
+            dist/herdr-gpui-${{ needs.validate.outputs.version }}-${{ matrix.target }}-update.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-protocol:
+    needs: validate
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          persist-credentials: false
+      - run: rustup show
+      - run: cargo test --locked -p herdr-protocol
+
+  metadata:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          persist-credentials: false
+      - run: cargo install cargo-cyclonedx --locked --version 0.5.9
+      - name: Generate locked release-platform graph including build dependencies
+        run: |
+          mkdir dist
+          chmod +x scripts/release/cargo-locked.sh
+          python3 scripts/release/generate-sbom.py "dist/Herdr-$VERSION.cdx.json"
+          git diff --exit-code -- Cargo.lock
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-sbom
+          path: dist/Herdr-${{ needs.validate.outputs.version }}.cdx.json
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    needs: [validate, macos-checks, macos-build, linux, windows-protocol]
+    if: >-
+      github.repository == 'penso/herdr-gpui' && github.ref == 'refs/heads/main' &&
+      github.actor == 'penso' && github.triggering_actor == 'penso'
+    runs-on: macos-15
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          persist-credentials: false
+      # No token/run-id override: artifacts can only come from this workflow run.
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          path: artifacts
-          pattern: executable-*
-          merge-multiple: true
-
-      - name: Determine version
-        id: version
+          name: macos-arm64
+          path: binaries/arm64
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: macos-x86_64
+          path: binaries/x86_64
+      - name: Assemble without executing the downloaded binaries
+        run: |
+          mkdir dist
+          chmod +x binaries/arm64/herdr-gpui binaries/x86_64/herdr-gpui
+          cmp binaries/arm64/THIRD-PARTY-NOTICES.txt binaries/x86_64/THIRD-PARTY-NOTICES.txt
+          bash scripts/release/package-macos.sh "$VERSION" binaries/arm64/herdr-gpui binaries/x86_64/herdr-gpui dist binaries/arm64/THIRD-PARTY-NOTICES.txt
+      - name: Sign and notarize app and DMG (never launch the app)
         env:
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            VERSION="$REF_NAME"
-          else
-            VERSION="00000000.00"
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Packaging version $VERSION"
-
-      - name: Build universal executable and app bundle
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          ARM="artifacts/herdr-gpui-aarch64-apple-darwin"
-          X86="artifacts/herdr-gpui-x86_64-apple-darwin"
-          for f in "$ARM" "$X86"; do
-            [ -f "$f" ] || { echo "::error::missing built executable $f"; exit 1; }
-            chmod +x "$f"
-          done
-
-          APP="dist/Herdr.app"
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-
-          # One bundle that runs natively on both architectures.
-          lipo -create -output "$APP/Contents/MacOS/Herdr" "$ARM" "$X86"
-          lipo -info "$APP/Contents/MacOS/Herdr"
-          chmod +x "$APP/Contents/MacOS/Herdr"
-
-          cp assets/macos/Info.plist "$APP/Contents/Info.plist"
-          cp assets/icons/Herdr.icns "$APP/Contents/Resources/Herdr.icns"
-
-          # The checked-in plist carries the Cargo version; stamp the release tag
-          # so a downloaded build reports what it actually is.
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
-          plutil -lint "$APP/Contents/Info.plist"
-
-          # Per-architecture tarballs for people who only want the executable.
-          mkdir -p dist
-          cp "$ARM" "dist/herdr-gpui-${VERSION}-aarch64-apple-darwin"
-          cp "$X86" "dist/herdr-gpui-${VERSION}-x86_64-apple-darwin"
-          ( cd dist && tar -czf "herdr-gpui-${VERSION}-aarch64-apple-darwin.tar.gz" "herdr-gpui-${VERSION}-aarch64-apple-darwin" )
-          ( cd dist && tar -czf "herdr-gpui-${VERSION}-x86_64-apple-darwin.tar.gz" "herdr-gpui-${VERSION}-x86_64-apple-darwin" )
-          rm -f "dist/herdr-gpui-${VERSION}-aarch64-apple-darwin" "dist/herdr-gpui-${VERSION}-x86_64-apple-darwin"
-
-      - name: Import Apple Developer ID certificate
-        if: ${{ env.RELEASE_DRY_RUN != 'true' }}
-        env:
-          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          set -euo pipefail
-          CERTIFICATE_PATH="$RUNNER_TEMP/certificate.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
-          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
-
-          printf '%s' "$APPLE_CERTIFICATE_BASE64" | base64 --decode -o "$CERTIFICATE_PATH"
-
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERTIFICATE_PATH" \
-            -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 \
-            -k "$KEYCHAIN_PATH"
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security list-keychain -d user -s "$KEYCHAIN_PATH"
-
-          rm -f "$CERTIFICATE_PATH"
-
-      - name: Code-sign app bundle
-        if: ${{ env.RELEASE_DRY_RUN != 'true' }}
-        run: |
-          set -euo pipefail
-          # Identity is matched by prefix against the freshly created keychain,
-          # which holds exactly the one certificate imported above.
-          # Hardened runtime with no entitlements for Herdr: the client opens a Unix socket
-          # and draws with Metal, and needs no relaxed-security exception.
-          /usr/bin/codesign --force --timestamp --options runtime \
-            --sign "Developer ID Application" \
-            dist/Herdr.app
-
-          /usr/bin/codesign --verify --deep --strict --verbose=2 dist/Herdr.app
-
-      - name: Package app bundle
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          # ditto, not zip: preserves the signature and bundle metadata.
-          ditto -c -k --sequesterRsrc --keepParent \
-            dist/Herdr.app "dist/herdr-gpui-${VERSION}-macos-universal.app.zip"
-
-      # An App Store Connect API key, not an Apple ID and app-specific password.
-      # An app-specific password is not scoped to notarization: it bypasses its
-      # owner's two-factor auth and grants IMAP/CalDAV access to their iCloud
-      # mail, contacts and calendar. An API key is team-owned, carries only the
-      # role it was granted, and is revoked on its own. Apple says the same in
-      # TN3147; so does docs/guide/02-running-it.md in seneschal.
-      - name: Notarize and staple
-        if: ${{ env.RELEASE_DRY_RUN != 'true' }}
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
-        run: |
-          set -euo pipefail
-          ZIP="dist/herdr-gpui-${VERSION}-macos-universal.app.zip"
-
-          KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
-          trap 'rm -f "$KEY_PATH"' EXIT
-          (umask 077 && printf '%s' "$APPLE_API_KEY_P8" > "$KEY_PATH")
-
-          NOTARY_AUTH=(--key "$KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID")
-
-          SUBMIT_OUT="$(xcrun notarytool submit "$ZIP" "${NOTARY_AUTH[@]}" --wait 2>&1)" || true
-          echo "$SUBMIT_OUT"
-
-          SUBMISSION_ID="$(echo "$SUBMIT_OUT" | awk '/^ *id: /{print $2; exit}')"
-          if ! echo "$SUBMIT_OUT" | grep -q 'status: Accepted'; then
-            echo "::error::Notarization did not succeed"
-            [ -n "$SUBMISSION_ID" ] && xcrun notarytool log "$SUBMISSION_ID" \
-              "${NOTARY_AUTH[@]}" || true
-            exit 1
-          fi
-
-          # Staple the ticket so the app validates without a network round trip,
-          # then re-package: the stapled bundle differs from the submitted one.
-          xcrun stapler staple dist/Herdr.app
-          xcrun stapler validate dist/Herdr.app
-          rm -f "$ZIP"
-          ditto -c -k --sequesterRsrc --keepParent dist/Herdr.app "$ZIP"
-
-          # Prove Gatekeeper actually accepts what we are about to publish.
-          spctl --assess --type execute --verbose=4 dist/Herdr.app
-
-      - name: Package updater archives
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          python3 scripts/update-manifest.py package-macos dist/Herdr.app \
-            "dist/herdr-gpui-${VERSION}-macos-universal.app.tar.gz"
-          # Future Linux builders must upload these exact executable names.
-          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
-            binary="artifacts/herdr-gpui-${target}"
-            if [[ -e "$binary" || -L "$binary" ]]; then
-              python3 scripts/update-manifest.py package-linux "$binary" "$target" "$VERSION" \
-                "dist/herdr-gpui-${VERSION}-${target}.tar.gz"
-            fi
-          done
-
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ vars.APPLE_API_ISSUER_ID }}
+          MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+        run: bash scripts/release/sign-macos.sh "$VERSION" dist/Herdr.app dist
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: linux-package-x86_64-unknown-linux-gnu
+          path: dist
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: linux-package-aarch64-unknown-linux-gnu
+          path: dist
       - name: Generate and verify signed update manifest
-        if: ${{ env.RELEASE_DRY_RUN != 'true' }}
         env:
-          VERSION: ${{ steps.version.outputs.version }}
           HERDR_UPDATE_PUBLIC_KEY: ${{ vars.HERDR_UPDATE_PUBLIC_KEY }}
           HERDR_UPDATE_SIGNING_KEY: ${{ secrets.HERDR_UPDATE_SIGNING_KEY }}
         run: |
           set -euo pipefail
           set +x
-          # Explicit OpenSSL 3 path: /usr/bin/openssl can be LibreSSL on macOS.
           OPENSSL="$(brew --prefix openssl@3)/bin/openssl"
           "$OPENSSL" version | grep -q '^OpenSSL 3\.'
           umask 077
@@ -339,130 +326,183 @@ jobs:
           printf '%s' "$HERDR_UPDATE_SIGNING_KEY" > "$KEY_DIR/private.pem"
           unset HERDR_UPDATE_SIGNING_KEY
           python3 scripts/update-manifest.py check-key "$OPENSSL" "$KEY_DIR/private.pem"
-          python3 scripts/update-manifest.py create dist "$VERSION"
+          python3 scripts/update-manifest.py create dist "$VERSION" --require-all-targets
           "$OPENSSL" pkeyutl -sign -rawin -inkey "$KEY_DIR/private.pem" -passin pass: \
             -in dist/update-manifest.json -out dist/update-manifest.sig
           "$OPENSSL" pkey -in "$KEY_DIR/private.pem" -passin pass: -pubout -out "$KEY_DIR/public.pem"
           "$OPENSSL" pkeyutl -verify -rawin -pubin -inkey "$KEY_DIR/public.pem" \
             -in dist/update-manifest.json -sigfile dist/update-manifest.sig
           test "$(wc -c < dist/update-manifest.sig | tr -d ' ')" = 64
-
-      - name: Generate SBOM
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          cargo install cargo-cyclonedx --locked --version 0.5.9
-          # Emits one SBOM per workspace member next to its Cargo.toml; the
-          # application crate's is the one that describes a shipped artifact.
-          cargo cyclonedx --format json --spec-version 1.5 --all \
-            --target aarch64-apple-darwin \
-            --override-filename sbom
-          cp crates/herdr-gpui/sbom.json "dist/herdr-gpui-${VERSION}.cdx.json"
-          python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d['components']), 'components')" \
-            "dist/herdr-gpui-${VERSION}.cdx.json"
-
-      - name: Install cosign
-        if: ${{ env.RELEASE_DRY_RUN != 'true' }}
-        uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
-
-      - name: Generate checksums and Sigstore signatures
-        if: ${{ env.RELEASE_DRY_RUN != 'true' }}
-        uses: ./.github/actions/sign-artifacts
-        with:
-          working-directory: dist
-          files: "*.app.zip *.tar.gz *.cdx.json update-manifest.json update-manifest.sig"
-
-      - name: Attest build provenance
-        if: ${{ env.RELEASE_DRY_RUN != 'true' }}
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
-        with:
-          subject-path: |
-            dist/*.app.zip
-            dist/*.tar.gz
-
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-assets
+          name: macos-signed
           path: |
-            dist/*.app.zip
-            dist/*.tar.gz
-            dist/*.cdx.json
+            dist/Herdr-${{ needs.validate.outputs.version }}-universal-apple-darwin.dmg
+            dist/herdr-gpui-${{ needs.validate.outputs.version }}-macos-universal.app.tar.gz
             dist/update-manifest.json
-            dist/*.sha256
-            dist/*.sha512
-            dist/*.sig
-            dist/*.crt
+            dist/update-manifest.sig
           if-no-files-found: error
           retention-days: 7
 
-      - name: Clean up signing keychain
-        if: always()
-        run: |
-          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
-          if [ -f "$KEYCHAIN_PATH" ]; then
-            security delete-keychain "$KEYCHAIN_PATH"
-          fi
+  attest:
+    needs: [validate, sign, linux, metadata]
+    if: >-
+      github.repository == 'penso/herdr-gpui' && github.ref == 'refs/heads/main' &&
+      github.actor == 'penso' && github.triggering_actor == 'penso'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: macos-signed
+          path: dist
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: linux-package-x86_64-unknown-linux-gnu
+          path: dist
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: linux-package-aarch64-unknown-linux-gnu
+          path: dist
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-sbom
+          path: dist
+      - run: python3 scripts/release/artifact-manifest.py base "$VERSION" dist
+      - uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
+      # Deliberately execute the action from the already SHA-validated checkout.
+      - uses: ./.github/actions/sign-artifacts # zizmor: ignore[self-repository]
+        with:
+          working-directory: dist
+          files: Herdr-${{ needs.validate.outputs.version }}-universal-apple-darwin.dmg Herdr-${{ needs.validate.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz Herdr-${{ needs.validate.outputs.version }}-aarch64-unknown-linux-gnu.tar.gz Herdr-${{ needs.validate.outputs.version }}.cdx.json herdr-gpui-${{ needs.validate.outputs.version }}-macos-universal.app.tar.gz herdr-gpui-${{ needs.validate.outputs.version }}-x86_64-unknown-linux-gnu-update.tar.gz herdr-gpui-${{ needs.validate.outputs.version }}-aarch64-unknown-linux-gnu-update.tar.gz update-manifest.json update-manifest.sig
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            dist/Herdr-${{ needs.validate.outputs.version }}-universal-apple-darwin.dmg
+            dist/Herdr-${{ needs.validate.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz
+            dist/Herdr-${{ needs.validate.outputs.version }}-aarch64-unknown-linux-gnu.tar.gz
+            dist/Herdr-${{ needs.validate.outputs.version }}.cdx.json
+            dist/herdr-gpui-${{ needs.validate.outputs.version }}-macos-universal.app.tar.gz
+            dist/herdr-gpui-${{ needs.validate.outputs.version }}-x86_64-unknown-linux-gnu-update.tar.gz
+            dist/herdr-gpui-${{ needs.validate.outputs.version }}-aarch64-unknown-linux-gnu-update.tar.gz
+            dist/update-manifest.json
+            dist/update-manifest.sig
+      - run: python3 scripts/release/artifact-manifest.py create "$VERSION" dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
 
   publish:
-    name: Publish Release
-    needs: [package]
-    if: ${{ startsWith(github.ref, 'refs/tags/') && needs.package.result == 'success' }}
-    runs-on: ubuntu-latest
+    needs: [validate, attest]
+    if: >-
+      github.repository == 'penso/herdr-gpui' && github.ref == 'refs/heads/main' &&
+      github.actor == 'penso' && github.triggering_actor == 'penso'
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
+    environment: release
     permissions:
-      contents: write # Create the release and upload assets
+      contents: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      RELEASE_SHA: ${{ needs.validate.outputs.sha }}
+      GH_REPO: penso/herdr-gpui
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: release-assets
           path: dist
-
-      - name: Create release
+      - run: python3 scripts/release/artifact-manifest.py verify "$VERSION" dist
+      - name: Refuse existing tag or release, then create immutable tag and draft
         env:
           GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          VERSION: ${{ github.ref_name }}
-          DRY_RUN: ${{ env.RELEASE_DRY_RUN }}
         run: |
           set -euo pipefail
-          if [ "$DRY_RUN" = "true" ]; then
-            echo "Dry run: skipping release creation"
-            ls -la dist
-            exit 0
-          fi
-          test -s dist/update-manifest.json || { echo '::error::Update manifest missing'; exit 1; }
-          test "$(wc -c < dist/update-manifest.sig | tr -d ' ')" = 64 || { echo '::error::Update signature must be raw 64-byte Ed25519'; exit 1; }
-
-          {
-            echo "Native macOS client for Herdr. Requires a running Herdr daemon."
-            echo
-            echo "## Install"
-            echo
-            echo "Download \`herdr-gpui-${VERSION}-macos-universal.app.zip\`, unzip, and move"
-            echo "\`Herdr.app\` to /Applications. The bundle is a universal binary, signed with a"
-            echo "Developer ID certificate and notarized by Apple, so Gatekeeper opens it directly."
-            echo
-            echo "## Verify"
-            echo
-            echo "Every asset ships \`.sha256\`, \`.sha512\`, and a Sigstore keyless signature"
-            echo "(\`.sig\` + \`.crt\`). Builds also carry GitHub provenance attestation:"
-            echo
-            echo '```sh'
-            echo "shasum -a 256 -c herdr-gpui-${VERSION}-macos-universal.app.zip.sha256"
-            echo "gh attestation verify herdr-gpui-${VERSION}-macos-universal.app.zip --repo ${REPO}"
-            echo '```'
-            echo
-            echo "Detached GPG signatures (\`.asc\`) from the maintainer's key are added shortly"
-            echo "after publication; the key is not held by CI. Verify them with"
-            echo "\`./scripts/verify-release.sh --version ${VERSION} --checksums\`."
-            echo
-            echo "A CycloneDX SBOM of the dependency graph is attached as \`.cdx.json\`."
-          } > notes.md
-
-          gh release create "$VERSION" \
-            --repo "$REPO" \
-            --title "$VERSION" \
-            --latest \
-            --notes-file notes.md \
+          python3 - <<'PY'
+          import os, urllib.error, urllib.request
+          tag = "v" + os.environ["VERSION"]
+          for path in (f"git/ref/tags/{tag}", f"releases/tags/{tag}"):
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/penso/herdr-gpui/{path}",
+                  headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                           "Accept": "application/vnd.github+json"})
+              try:
+                  urllib.request.urlopen(request).close()
+              except urllib.error.HTTPError as error:
+                  if error.code != 404:
+                      raise
+              else:
+                  raise SystemExit(f"Refusing existing {path}")
+          PY
+          gh api repos/penso/herdr-gpui/git/refs -X POST \
+            -f "ref=refs/tags/v$VERSION" -f "sha=$RELEASE_SHA"
+          gh release create "v$VERSION" --verify-tag --target "$RELEASE_SHA" --draft \
+            --title "Herdr GPUI $VERSION" \
+            --notes "GUI-only release. macOS 15+ universal signed/notarized DMG; experimental Ubuntu 24.04 x86_64 and ARM64 archives. Requires an existing Herdr daemon. Source: $RELEASE_SHA." \
             dist/*
+      - name: Verify uploaded draft bytes and exact asset set before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          expected=$(python3 scripts/release/artifact-manifest.py names "$VERSION" dist | jq -R . | jq -s .)
+          gh release view "v$VERSION" --json isDraft,assets | \
+            jq -e --argjson expected "$expected" \
+              '.isDraft and (([.assets[].name] | sort) == ($expected | sort))'
+          gh release download "v$VERSION" --dir verified
+          cmp dist/SHA256SUMS verified/SHA256SUMS
+          python3 scripts/release/artifact-manifest.py verify "$VERSION" verified
+          [[ "$(gh api "repos/penso/herdr-gpui/git/ref/tags/v$VERSION" --jq .object.sha)" == "$RELEASE_SHA" ]]
+          gh release edit "v$VERSION" --draft=false
+
+  homebrew:
+    needs: [validate, publish]
+    if: >-
+      github.repository == 'penso/herdr-gpui' && github.ref == 'refs/heads/main' &&
+      github.actor == 'penso' && github.triggering_actor == 'penso'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: homebrew
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      GH_REPO: penso/herdr-gpui
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          persist-credentials: false
+      - name: Download published final DMG and validate its published checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.validate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh release view "v$VERSION" --json isDraft | jq -e '.isDraft == false'
+          [[ "$(gh api "repos/penso/herdr-gpui/git/ref/tags/v$VERSION" --jq .object.sha)" == "$RELEASE_SHA" ]]
+          gh release download "v$VERSION" --dir final \
+            --pattern "Herdr-$VERSION-universal-apple-darwin.dmg" --pattern SHA256SUMS
+          checksum=$(python3 scripts/release/artifact-manifest.py dmg "$VERSION" final)
+          bash scripts/release/render-cask.sh "$VERSION" "$checksum" > rendered-cask.rb
+      - name: Commit only the tap cask using its dedicated deploy key
+        env:
+          HOMEBREW_TAP_SSH_KEY: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
+        run: bash scripts/release/update-homebrew.sh "$VERSION" rendered-cask.rb

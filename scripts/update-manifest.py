@@ -2,7 +2,6 @@
 """Package updater archives and emit the exact schema-1 authentication payload."""
 
 import argparse
-import datetime
 import gzip
 import hashlib
 import json
@@ -23,9 +22,10 @@ ED25519_SPKI = bytes.fromhex("302a300506032b6570032100")
 
 
 def version(value):
-    if not re.fullmatch(r"[0-9]{8}\.[0-9]{2}", value):
-        raise ValueError("version must be YYYYMMDD.NN")
-    datetime.date(int(value[:4]), int(value[4:6]), int(value[6:8]))
+    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", value):
+        raise ValueError("version must be numeric X.Y.Z without leading zeros")
+    if any(int(component) > 2**64 - 1 for component in value.split(".")):
+        raise ValueError("version components must fit unsigned 64-bit integers")
     return value
 
 
@@ -49,7 +49,7 @@ def asset_name(release, target):
     version(release)
     if target not in TARGETS:
         raise ValueError("unsupported target")
-    suffix = "macos-universal.app" if target == TARGETS[0] else target
+    suffix = "macos-universal.app" if target == TARGETS[0] else f"{target}-update"
     return f"herdr-gpui-{release}-{suffix}.tar.gz"
 
 
@@ -131,19 +131,20 @@ def package_macos(app, destination):
 
 
 def package_linux(binary, target, release, destination):
-    name = asset_name(release, target).removesuffix(".tar.gz")
+    version(release)
+    name = f"herdr-gpui-{release}-{target}"
     if target not in LINUX_TARGETS:
         raise ValueError("package-linux requires a supported Linux target")
     package([(Path(binary), name)], destination, linux=True)
 
 
-def create(directory, release):
+def create(directory, release, require_all_targets=False):
     directory = Path(directory)
     assets = []
     for target in TARGETS:
         name = asset_name(release, target)
         path = directory / name
-        if not path.exists() and not path.is_symlink() and target != TARGETS[0]:
+        if not require_all_targets and not path.exists() and not path.is_symlink() and target != TARGETS[0]:
             continue
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"missing or non-regular archive: {name}")
@@ -177,6 +178,7 @@ def main():
     manifest = commands.add_parser("create")
     manifest.add_argument("directory")
     manifest.add_argument("version")
+    manifest.add_argument("--require-all-targets", action="store_true")
     commands.add_parser("validate-public-key")
     key = commands.add_parser("check-key")
     key.add_argument("openssl")
@@ -188,7 +190,7 @@ def main():
         elif args.command == "package-linux":
             package_linux(args.binary, args.target, args.version, args.destination)
         elif args.command == "create":
-            create(args.directory, args.version)
+            create(args.directory, args.version, args.require_all_targets)
         elif args.command == "validate-public-key":
             public_key(os.environ.get("HERDR_UPDATE_PUBLIC_KEY", ""))
         else:

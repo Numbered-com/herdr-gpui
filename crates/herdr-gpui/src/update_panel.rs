@@ -19,7 +19,7 @@ impl HerdrWindow {
         self.open_menu(window, cx);
         self.menu.page = Some(Page::AppUpdate);
         self.update_preview = preview.then(|| State::Available {
-            version: "99991231.99".into(),
+            version: "9999.0.0".into(),
         });
     }
 

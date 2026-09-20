@@ -9,24 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Debug)]
-struct MissingInstallation(io::Error);
-
-impl std::fmt::Display for MissingInstallation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Could not start herdr server: {}. Install Herdr and use Terminal > Reconnect.",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for MissingInstallation {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.0)
-    }
-}
+#[derive(Debug, thiserror::Error)]
+#[error("Could not start herdr server: {0}. Install Herdr and use Terminal > Reconnect.")]
+struct MissingInstallation(#[source] io::Error);
 
 pub(super) fn is_missing_installation(error: &io::Error) -> bool {
     error
@@ -39,7 +24,9 @@ pub fn connect(
     stop: &AtomicBool,
     on_start: impl FnOnce(),
 ) -> io::Result<UnixStream> {
-    let socket = target.socket_path()?;
+    let socket = target
+        .socket_path()
+        .map_err(|error| io::Error::new(error.kind(), error))?;
     connect_or_start(
         &socket,
         stop,
@@ -103,7 +90,7 @@ fn connect_or_start(
     if stop.load(Ordering::Acquire) {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
-            "daemon startup cancelled",
+            crate::Error::DaemonCancelled,
         ));
     }
     let mut child = command()
@@ -116,12 +103,7 @@ fn connect_or_start(
             if error.kind() == io::ErrorKind::NotFound {
                 io::Error::new(error.kind(), MissingInstallation(error))
             } else {
-                io::Error::new(
-                    error.kind(),
-                    format!(
-                        "Could not start herdr server: {error}. Use Terminal > Reconnect to retry."
-                    ),
-                )
+                io::Error::new(error.kind(), crate::Error::DaemonSpawn { source: error })
             }
         })?;
     // The daemon outlives the window. Reap it if it exits while the GUI is alive.
@@ -136,7 +118,7 @@ fn connect_or_start(
         if stop.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
-                "daemon startup cancelled",
+                crate::Error::DaemonCancelled,
             ));
         }
         match UnixStream::connect(socket) {
@@ -151,17 +133,11 @@ fn connect_or_start(
         if Instant::now() >= deadline {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                format!(
-                    "Timed out waiting for herdr server at {}. Check the Herdr server log and use Terminal > Reconnect.",
-                    socket.display()
-                ),
+                crate::Error::DaemonTimeout(socket.to_owned()),
             ));
         }
         if let Ok(status) = exit_rx.try_recv() {
-            return Err(io::Error::other(format!(
-                "herdr server exited before accepting connections: {}. Check the Herdr server log.",
-                status?
-            )));
+            return Err(io::Error::other(crate::Error::DaemonExited(status?)));
         }
         thread::sleep(Duration::from_millis(50));
     }
@@ -248,6 +224,13 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         assert!(is_missing_installation(&error));
         assert!(error.to_string().contains("Could not start herdr server"));
+        assert!(
+            error
+                .get_ref()
+                .and_then(|source| source.source())
+                .and_then(|source| source.downcast_ref::<io::Error>())
+                .is_some_and(|source| source.kind() == io::ErrorKind::NotFound)
+        );
     }
 
     #[test]

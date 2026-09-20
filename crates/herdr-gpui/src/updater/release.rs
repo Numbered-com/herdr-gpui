@@ -1,6 +1,7 @@
 //! Blocking release transport and authentication. Run only on a worker thread.
 //! The caller supplies the compile-time HERDR_UPDATE_PUBLIC_KEY, never a secret.
 
+use super::error::{Result, UpdateError as Error};
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Write},
@@ -45,27 +46,20 @@ pub(super) struct Offer {
     pub(super) signature: Vec<u8>,
 }
 
-pub(super) fn parse_version(value: &str) -> Option<(u32, u8)> {
-    let bytes = value.as_bytes();
-    if bytes.len() != 11
-        || bytes[8] != b'.'
-        || !bytes[..8].iter().chain(&bytes[9..]).all(u8::is_ascii_digit)
-    {
-        return None;
-    }
-    let date: u32 = value[..8].parse().ok()?;
-    let year = date / 10000;
-    let month = date / 100 % 100;
-    let day = date % 100;
-    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
-    let days = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap => 29,
-        2 => 28,
-        _ => return None,
+pub(super) fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = value.split('.');
+    let mut component = || {
+        let part = parts.next()?;
+        if part.is_empty()
+            || (part.len() > 1 && part.starts_with('0'))
+            || !part.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return None;
+        }
+        part.parse::<u64>().ok()
     };
-    (year != 0 && (1..=days).contains(&day)).then_some((date, value[9..].parse().ok()?))
+    let version = (component()?, component()?, component()?);
+    parts.next().is_none().then_some(version)
 }
 
 pub(super) fn target() -> Option<&'static str> {
@@ -88,37 +82,38 @@ pub(super) fn target() -> Option<&'static str> {
     }
 }
 
-fn hex32(value: &str) -> Result<[u8; 32], String> {
+fn hex32(value: &str) -> Result<[u8; 32]> {
     if value.len() != 64 {
-        return Err("Expected 64 lowercase hexadecimal characters".into());
+        return Err(Error::InvalidHex);
     }
     let mut result = [0; 32];
     for (out, pair) in result.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
         let digit = |b| match b {
             b'0'..=b'9' => Ok(b - b'0'),
             b'a'..=b'f' => Ok(b - b'a' + 10),
-            _ => Err("Expected lowercase hexadecimal characters".to_string()),
+            _ => Err(Error::InvalidHex),
         };
         *out = digit(pair[0])? * 16 + digit(pair[1])?;
     }
     Ok(result)
 }
 
-fn asset_name(version: &str, target: &str) -> Result<String, String> {
+fn asset_name(version: &str, target: &str) -> Result<String> {
     let suffix = match target {
         "universal-apple-darwin" => "macos-universal.app",
-        "x86_64-unknown-linux-gnu" | "aarch64-unknown-linux-gnu" => target,
-        _ => return Err("Unsupported update target".into()),
+        "x86_64-unknown-linux-gnu" => "x86_64-unknown-linux-gnu-update",
+        "aarch64-unknown-linux-gnu" => "aarch64-unknown-linux-gnu-update",
+        _ => return Err(Error::UnsupportedTarget),
     };
     Ok(format!("herdr-gpui-{version}-{suffix}.tar.gz"))
 }
 
-fn validate_manifest(manifest: &Manifest) -> Result<(), String> {
+fn validate_manifest(manifest: &Manifest) -> Result<()> {
     if manifest.schema != 1 || parse_version(&manifest.version).is_none() {
-        return Err("Invalid update manifest schema or version".into());
+        return Err(Error::ManifestSchema);
     }
     if manifest.assets.is_empty() || manifest.assets.len() > 3 {
-        return Err("Invalid update manifest asset count".into());
+        return Err(Error::ManifestAssetCount);
     }
     for (index, asset) in manifest.assets.iter().enumerate() {
         if asset.name != asset_name(&manifest.version, &asset.target)?
@@ -126,16 +121,16 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), String> {
                 .iter()
                 .any(|other| other.target == asset.target)
         {
-            return Err("Invalid update asset name or duplicate target".into());
+            return Err(Error::ManifestAsset);
         }
         validate_digest(asset)?;
     }
     Ok(())
 }
 
-fn validate_digest(asset: &Asset) -> Result<[u8; 32], String> {
+fn validate_digest(asset: &Asset) -> Result<[u8; 32]> {
     if asset.size == 0 || asset.size > ARCHIVE_LIMIT {
-        return Err("Update archive size is outside permitted bounds".into());
+        return Err(Error::ArchiveSize);
     }
     hex32(&asset.sha256)
 }
@@ -145,34 +140,32 @@ pub(super) fn verify_manifest(
     signature: &[u8],
     key_hex: &str,
     expected_version: &str,
-) -> Result<Manifest, String> {
+) -> Result<Manifest> {
     if bytes.len() > MANIFEST_LIMIT || parse_version(expected_version).is_none() {
-        return Err("Invalid manifest size or expected version".into());
+        return Err(Error::ManifestBounds);
     }
-    let key =
-        VerifyingKey::from_bytes(&hex32(key_hex)?).map_err(|_| "Invalid update public key")?;
-    let signature = Signature::from_slice(signature).map_err(|_| "Invalid signature length")?;
+    let key = VerifyingKey::from_bytes(&hex32(key_hex)?).map_err(Error::PublicKey)?;
+    let signature = Signature::from_slice(signature).map_err(Error::SignatureLength)?;
     key.verify_strict(bytes, &signature)
-        .map_err(|_| "Update manifest signature verification failed")?;
-    let manifest: Manifest = serde_json::from_slice(bytes)
-        .map_err(|error| format!("Invalid update manifest: {error}"))?;
+        .map_err(Error::Signature)?;
+    let manifest: Manifest = serde_json::from_slice(bytes).map_err(Error::ManifestJson)?;
     validate_manifest(&manifest)?;
     if manifest.version != expected_version {
-        return Err("Update manifest version does not match release".into());
+        return Err(Error::ManifestVersion);
     }
     Ok(manifest)
 }
 
-fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
+fn cancelled(cancel: &AtomicBool) -> Result<()> {
     if cancel.load(Ordering::Relaxed) {
-        Err("Update cancelled".into())
+        Err(Error::Cancelled)
     } else {
         Ok(())
     }
 }
 
 fn release_url(version: &str, name: &str) -> String {
-    format!("https://github.com/penso/herdr-gpui/releases/download/{version}/{name}")
+    format!("https://github.com/penso/herdr-gpui/releases/download/v{version}/{name}")
 }
 
 fn allowed_url(value: &str) -> bool {
@@ -220,13 +213,13 @@ fn request(
     url: &str,
     profile: RequestProfile,
     cancel: &AtomicBool,
-) -> Result<ureq::http::Response<ureq::Body>, String> {
+) -> Result<ureq::http::Response<ureq::Body>> {
     let agent: ureq::Agent = request_config(profile).into();
     let mut url = url.to_owned();
     for redirects in 0..=5 {
         cancelled(cancel)?;
         if !allowed_url(&url) {
-            return Err("Update URL is outside the permitted HTTPS hosts".into());
+            return Err(Error::UntrustedUrl);
         }
         let response = agent
             .get(&url)
@@ -241,7 +234,7 @@ fn request(
             )
             .header("Accept-Encoding", "identity")
             .call()
-            .map_err(|_| "Update HTTPS request failed")?;
+            .map_err(|source| Error::Http(Box::new(source)))?;
         match response.status().as_u16() {
             200 => return Ok(response),
             301 | 302 | 303 | 307 | 308 if redirects < 5 => {
@@ -252,33 +245,27 @@ fn request(
                     .get("location")
                     .and_then(|value| value.to_str().ok())
                     .filter(|value| value.len() <= 8192)
-                    .ok_or("Missing or invalid update redirect")?
+                    .ok_or(Error::InvalidRedirect)?
                     .to_owned();
             }
-            status => return Err(format!("Update request returned HTTP {status}")),
+            status => return Err(Error::HttpStatus(status)),
         }
     }
-    Err("Too many update redirects".into())
+    Err(Error::RedirectLimit)
 }
 
-fn read_bounded(
-    mut reader: impl Read,
-    limit: usize,
-    cancel: &AtomicBool,
-) -> Result<Vec<u8>, String> {
+fn read_bounded(mut reader: impl Read, limit: usize, cancel: &AtomicBool) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut buffer = [0; 8192];
     loop {
         cancelled(cancel)?;
-        let count = reader
-            .read(&mut buffer)
-            .map_err(|error| format!("Reading update: {error}"))?;
+        let count = reader.read(&mut buffer).map_err(Error::ReadUpdate)?;
         if count == 0 {
             cancelled(cancel)?;
             return Ok(bytes);
         }
         if count > limit.saturating_sub(bytes.len()) {
-            return Err("Update response exceeds size limit".into());
+            return Err(Error::ResponseLimit);
         }
         bytes.extend_from_slice(&buffer[..count]);
     }
@@ -286,7 +273,8 @@ fn read_bounded(
 
 #[derive(Deserialize)]
 struct Release {
-    tag_name: String,
+    #[serde(rename = "tag_name")]
+    version: String,
     draft: bool,
     prerelease: bool,
     assets: Vec<ReleaseAsset>,
@@ -299,17 +287,21 @@ struct ReleaseAsset {
     browser_download_url: String,
 }
 
-fn parse_release(bytes: &[u8]) -> Result<Release, String> {
+fn parse_release(bytes: &[u8]) -> Result<Release> {
     if bytes.len() > METADATA_LIMIT {
-        return Err("Release metadata exceeds size limit".into());
+        return Err(Error::MetadataLimit);
     }
-    let release: Release = serde_json::from_slice(bytes)
-        .map_err(|error| format!("Invalid GitHub release metadata: {error}"))?;
-    if release.draft || release.prerelease || parse_version(&release.tag_name).is_none() {
-        return Err("GitHub release is not a stable date-versioned release".into());
+    let mut release: Release = serde_json::from_slice(bytes).map_err(Error::ReleaseJson)?;
+    let version = release
+        .version
+        .strip_prefix('v')
+        .ok_or(Error::ReleaseVersion)?;
+    if release.draft || release.prerelease || parse_version(version).is_none() {
+        return Err(Error::UnstableRelease);
     }
+    release.version = version.to_owned();
     if release.assets.len() > 128 {
-        return Err("GitHub release has too many assets".into());
+        return Err(Error::ReleaseAssetCount);
     }
     for (index, asset) in release.assets.iter().enumerate() {
         if asset.name.is_empty()
@@ -322,12 +314,12 @@ fn parse_release(bytes: &[u8]) -> Result<Release, String> {
             || asset.name == ".."
             || asset.size == 0
             || asset.size > ARCHIVE_LIMIT
-            || asset.browser_download_url != release_url(&release.tag_name, &asset.name)
+            || asset.browser_download_url != release_url(&release.version, &asset.name)
             || release.assets[..index]
                 .iter()
                 .any(|other| other.name == asset.name)
         {
-            return Err("Invalid GitHub release asset metadata".into());
+            return Err(Error::ReleaseAsset);
         }
     }
     Ok(release)
@@ -337,11 +329,10 @@ pub(super) fn check(
     current_version: &str,
     key_hex: &str,
     cancel: &AtomicBool,
-) -> Result<Option<Offer>, String> {
+) -> Result<Option<Offer>> {
     cancelled(cancel)?;
-    let current =
-        parse_version(current_version).ok_or("Current build has no valid release version")?;
-    VerifyingKey::from_bytes(&hex32(key_hex)?).map_err(|_| "Invalid update public key")?;
+    let current = parse_version(current_version).ok_or(Error::CurrentVersion)?;
+    VerifyingKey::from_bytes(&hex32(key_hex)?).map_err(Error::PublicKey)?;
     let Some(target) = target() else {
         return Ok(None);
     };
@@ -353,7 +344,7 @@ pub(super) fn check(
         cancel,
     )?;
     let release = parse_release(&metadata)?;
-    if parse_version(&release.tag_name).ok_or("Invalid release version")? <= current {
+    if parse_version(&release.version).ok_or(Error::ReleaseVersion)? <= current {
         return Ok(None);
     }
     for (name, limit) in [
@@ -364,15 +355,15 @@ pub(super) fn check(
             .assets
             .iter()
             .find(|asset| asset.name == name)
-            .ok_or("Release is missing signed update metadata")?;
+            .ok_or(Error::MissingSignedMetadata)?;
         if asset.size > limit || (name == "update-manifest.sig" && asset.size != 64) {
-            return Err("Invalid signed metadata size".into());
+            return Err(Error::SignedMetadataSize);
         }
     }
     let fetch = |name, limit| {
         read_bounded(
             request(
-                &release_url(&release.tag_name, name),
+                &release_url(&release.version, name),
                 RequestProfile::Metadata,
                 cancel,
             )?
@@ -384,19 +375,19 @@ pub(super) fn check(
     };
     let manifest_bytes = fetch("update-manifest.json", MANIFEST_LIMIT)?;
     let signature = fetch("update-manifest.sig", 64)?;
-    let manifest = verify_manifest(&manifest_bytes, &signature, key_hex, &release.tag_name)?;
+    let manifest = verify_manifest(&manifest_bytes, &signature, key_hex, &release.version)?;
     let asset = manifest
         .assets
         .iter()
         .find(|asset| asset.target == target)
-        .ok_or("Release has no update for this platform")?
+        .ok_or(Error::MissingPlatformAsset)?
         .clone();
     if !release
         .assets
         .iter()
         .any(|metadata| metadata.name == asset.name && metadata.size == asset.size)
     {
-        return Err("Signed archive does not match GitHub release metadata".into());
+        return Err(Error::ArchiveMetadata);
     }
     cancelled(cancel)?;
     Ok(Some(Offer {
@@ -413,7 +404,7 @@ fn copy_archive(
     asset: &Asset,
     cancel: &AtomicBool,
     mut progress: impl FnMut(u64, u64),
-) -> Result<(), String> {
+) -> Result<()> {
     let expected_hash = validate_digest(asset)?;
     let mut hash = Sha256::new();
     let mut total = 0u64;
@@ -422,37 +413,33 @@ fn copy_archive(
     progress(0, asset.size);
     loop {
         cancelled(cancel)?;
-        let count = reader
-            .read(&mut buffer)
-            .map_err(|error| format!("Reading archive: {error}"))?;
+        let count = reader.read(&mut buffer).map_err(Error::ReadArchive)?;
         cancelled(cancel)?;
         if count == 0 {
             break;
         }
         if count as u64 > asset.size - total {
-            return Err("Update archive exceeds signed size".into());
+            return Err(Error::ArchiveExceedsSize);
         }
         writer
             .write_all(&buffer[..count])
-            .map_err(|error| format!("Writing archive: {error}"))?;
+            .map_err(Error::WriteArchive)?;
         hash.update(&buffer[..count]);
         total += count as u64;
         progress(total, asset.size);
     }
     if total != asset.size || hash.finalize().as_slice() != expected_hash {
-        return Err("Update archive size or SHA-256 mismatch".into());
+        return Err(Error::ArchiveDigest);
     }
     cancelled(cancel)
 }
 
-fn create_archive(destination: &Path) -> Result<File, String> {
+fn create_archive(destination: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     options.mode(0o600);
-    options
-        .open(destination)
-        .map_err(|error| format!("Creating update archive: {error}"))
+    options.open(destination).map_err(Error::CreateArchive)
 }
 
 /// Requires an offer authenticated by `check`/`verify_manifest`. On error, the
@@ -464,13 +451,13 @@ pub(super) fn download(
     destination: &Path,
     cancel: &AtomicBool,
     progress: impl FnMut(u64, u64),
-) -> Result<(), String> {
+) -> Result<()> {
     cancelled(cancel)?;
     validate_manifest(&offer.manifest)?;
     if !offer.manifest.assets.contains(&offer.asset)
         || Some(offer.asset.target.as_str()) != target()
     {
-        return Err("Update offer asset does not match manifest or platform".into());
+        return Err(Error::OfferAsset);
     }
     let response = request(
         &release_url(&offer.manifest.version, &offer.asset.name),
@@ -486,20 +473,15 @@ pub(super) fn download(
         cancel,
         progress,
     )?;
-    file.sync_all()
-        .map_err(|error| format!("Syncing update archive: {error}"))?;
+    file.sync_all().map_err(Error::SyncArchive)?;
     cancelled(cancel)
 }
 
 /// Recheck a staged archive against an authenticated asset immediately before
 /// extraction. The caller must keep the staging directory private throughout.
-pub(super) fn verify_archive(
-    path: &Path,
-    asset: &Asset,
-    cancel: &AtomicBool,
-) -> Result<(), String> {
+pub(super) fn verify_archive(path: &Path, asset: &Asset, cancel: &AtomicBool) -> Result<()> {
     cancelled(cancel)?;
-    let file = File::open(path).map_err(|error| format!("Opening update archive: {error}"))?;
+    let file = File::open(path).map_err(Error::OpenArchive)?;
     copy_archive(file, std::io::sink(), asset, cancel, |_, _| {})
 }
 
@@ -569,59 +551,114 @@ mod tests {
     fn fixture() -> Manifest {
         Manifest {
             schema: 1,
-            version: "20260920.01".into(),
+            version: "0.2.0".into(),
             assets: vec![Asset {
                 target: "universal-apple-darwin".into(),
-                name: "herdr-gpui-20260920.01-macos-universal.app.tar.gz".into(),
+                name: "herdr-gpui-0.2.0-macos-universal.app.tar.gz".into(),
                 size: 3,
                 sha256: hex(&Sha256::digest(b"abc")),
             }],
         }
     }
 
-    fn signed(bytes: &[u8]) -> Result<Manifest, String> {
+    fn signed(bytes: &[u8]) -> Result<Manifest> {
         let key = SigningKey::from_bytes(&[42; 32]);
         verify_manifest(
             bytes,
             &key.sign(bytes).to_bytes(),
             &hex(key.verifying_key().as_bytes()),
-            "20260920.01",
+            "0.2.0",
         )
     }
 
     #[test]
-    fn date_versions_are_canonical_real_dates() {
-        for value in ["20260920.01", "20000229.99", "20240229.00", "00010101.01"] {
+    fn versions_are_canonical_bounded_numeric_triples() {
+        for value in ["0.0.0", "0.2.0", "1.10.123", "18446744073709551615.0.0"] {
             assert!(parse_version(value).is_some(), "{value}");
         }
         for value in [
-            "00000000.00",
-            "00000101.01",
-            "19000229.01",
-            "20260229.01",
-            "20260431.01",
-            "20261301.01",
-            "20260900.01",
-            "20260920.1",
-            "v20260920.01",
-            "20260920.001",
-            "２０２６0920.01",
+            "",
+            "1",
+            "1.2",
+            "1.2.3.4",
+            ".1.2",
+            "1..2",
+            "1.2.",
+            "01.2.3",
+            "1.02.3",
+            "1.2.03",
+            "v1.2.3",
+            "vv1.2.3",
+            "1.2.3-alpha",
+            "1.2.3+build",
+            "+1.2.3",
+            "-1.2.3",
+            " 1.2.3",
+            "1.2.3\n",
+            "１.2.3",
+            "20260920.01",
+            "18446744073709551616.0.0",
+            "0.18446744073709551616.0",
+            "0.0.18446744073709551616",
         ] {
             assert!(parse_version(value).is_none(), "{value}");
         }
-        assert!(parse_version("20260920.02") > parse_version("20260920.01"));
+        assert_eq!(parse_version("1.2.3"), Some((1, 2, 3)));
+        for (new, old) in [
+            ("0.2.0", "0.1.0"),
+            ("1.0.0", "0.99.99"),
+            ("0.10.0", "0.9.99"),
+            ("0.2.10", "0.2.9"),
+        ] {
+            assert!(parse_version(new) > parse_version(old));
+        }
+    }
+
+    #[test]
+    fn linux_update_assets_are_distinct_from_manual_archives() {
+        for target in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
+            let mut manifest = fixture();
+            manifest.assets[0].target = target.into();
+            manifest.assets[0].name = format!("herdr-gpui-0.2.0-{target}-update.tar.gz");
+            assert_eq!(
+                signed(&serde_json::to_vec(&manifest).unwrap()).unwrap(),
+                manifest
+            );
+            for name in [
+                format!("herdr-gpui-0.2.0-{target}.tar.gz"),
+                format!("Herdr-0.2.0-{target}.tar.gz"),
+            ] {
+                manifest.assets[0].name = name;
+                assert!(matches!(
+                    signed(&serde_json::to_vec(&manifest).unwrap()),
+                    Err(Error::ManifestAsset)
+                ));
+            }
+        }
     }
 
     #[test]
     fn authentication_binds_exact_bytes_key_and_version() {
+        use std::error::Error as _;
         let manifest = fixture();
         let bytes = serde_json::to_vec(&manifest).unwrap();
         assert_eq!(signed(&bytes).unwrap(), manifest);
         let key = SigningKey::from_bytes(&[42; 32]);
         let signature = key.sign(&bytes).to_bytes();
         let public = hex(key.verifying_key().as_bytes());
-        assert!(verify_manifest(&bytes, &signature[..63], &public, &manifest.version).is_err());
-        assert!(verify_manifest(&bytes, &signature, &public, "20260920.02").is_err());
+        let error =
+            verify_manifest(&bytes, &signature[..63], &public, &manifest.version).unwrap_err();
+        assert!(matches!(error, Error::SignatureLength(_)));
+        assert!(
+            error
+                .source()
+                .unwrap()
+                .is::<ed25519_dalek::SignatureError>()
+        );
+        assert!(matches!(
+            verify_manifest(&bytes, &signature, &public, "0.2.1"),
+            Err(Error::ManifestVersion)
+        ));
         let wrong_key = SigningKey::from_bytes(&[43; 32]);
         assert!(
             verify_manifest(
@@ -634,9 +671,21 @@ mod tests {
         );
         let mut changed = bytes.clone();
         changed.push(b' ');
-        assert!(verify_manifest(&changed, &signature, &public, &manifest.version).is_err());
-        assert!(signed(&vec![b' '; MANIFEST_LIMIT + 1]).is_err());
-        assert!(signed(b"not json").is_err());
+        let error = verify_manifest(&changed, &signature, &public, &manifest.version).unwrap_err();
+        assert!(matches!(error, Error::Signature(_)));
+        assert!(
+            error
+                .source()
+                .unwrap()
+                .is::<ed25519_dalek::SignatureError>()
+        );
+        assert!(matches!(
+            signed(&vec![b' '; MANIFEST_LIMIT + 1]),
+            Err(Error::ManifestBounds)
+        ));
+        let error = signed(b"not json").unwrap_err();
+        assert!(matches!(error, Error::ManifestJson(_)));
+        assert!(error.source().unwrap().is::<serde_json::Error>());
     }
 
     #[test]
@@ -673,7 +722,7 @@ mod tests {
         let mut value = serde_json::to_value(base).unwrap();
         value["extra"] = true.into();
         assert!(signed(&serde_json::to_vec(&value).unwrap()).is_err());
-        assert!(signed(br#"{"schema":1,"schema":1,"version":"20260920.01","assets":[]}"#).is_err());
+        assert!(signed(br#"{"schema":1,"schema":1,"version":"0.2.0","assets":[]}"#).is_err());
     }
 
     #[test]
@@ -696,10 +745,68 @@ mod tests {
                 .store(true, Ordering::Relaxed))
             .is_err()
         );
-        assert!(read_bounded(&b"abc"[..], 3, &cancel).is_err());
+        assert!(matches!(
+            read_bounded(&b"abc"[..], 3, &cancel),
+            Err(Error::Cancelled)
+        ));
         cancel.store(false, Ordering::Relaxed);
         assert_eq!(read_bounded(&b"abc"[..], 3, &cancel).unwrap(), b"abc");
-        assert!(read_bounded(&b"abcd"[..], 3, &cancel).is_err());
+        assert!(matches!(
+            read_bounded(&b"abcd"[..], 3, &cancel),
+            Err(Error::ResponseLimit)
+        ));
+    }
+
+    #[test]
+    fn transport_io_failures_keep_sources_and_do_not_masquerade_as_cancellation() {
+        use std::{error::Error as _, io};
+
+        struct FailedRead;
+        impl Read for FailedRead {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::from(io::ErrorKind::TimedOut))
+            }
+        }
+        struct FailedWrite;
+        impl Write for FailedWrite {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::from(io::ErrorKind::StorageFull))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let cancel = AtomicBool::new(false);
+        let error = read_bounded(FailedRead, 3, &cancel).unwrap_err();
+        assert!(matches!(error, Error::ReadUpdate(_)));
+        assert_eq!(
+            error
+                .source()
+                .unwrap()
+                .downcast_ref::<io::Error>()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        let asset = fixture().assets.remove(0);
+        let error = copy_archive(FailedRead, io::sink(), &asset, &cancel, |_, _| {}).unwrap_err();
+        assert!(matches!(error, Error::ReadArchive(_)));
+        let error = copy_archive(&b"abc"[..], FailedWrite, &asset, &cancel, |_, _| {}).unwrap_err();
+        assert!(matches!(error, Error::WriteArchive(_)));
+        assert_eq!(
+            error
+                .source()
+                .unwrap()
+                .downcast_ref::<io::Error>()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::StorageFull
+        );
+        cancel.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            read_bounded(FailedRead, 3, &cancel),
+            Err(Error::Cancelled)
+        ));
     }
 
     #[test]
@@ -727,11 +834,42 @@ mod tests {
 
     #[test]
     fn release_metadata_rejects_unstable_and_untrusted_names() {
-        let value = serde_json::json!({"tag_name":"20260920.01", "draft":false, "prerelease":false, "assets":[{
+        let value = serde_json::json!({"tag_name":"v0.2.0", "draft":false, "prerelease":false, "assets":[{
             "name":"update-manifest.json", "size":100,
-            "browser_download_url":release_url("20260920.01", "update-manifest.json")
+            "browser_download_url":"https://github.com/penso/herdr-gpui/releases/download/v0.2.0/update-manifest.json"
         }]});
-        assert!(parse_release(&serde_json::to_vec(&value).unwrap()).is_ok());
+        assert_eq!(
+            parse_release(&serde_json::to_vec(&value).unwrap())
+                .unwrap()
+                .version,
+            "0.2.0"
+        );
+        for tag in [
+            "0.2.0",
+            "vv0.2.0",
+            "V0.2.0",
+            "v00.2.0",
+            "v0.2.0-rc.1",
+            "v20260920.01",
+        ] {
+            let mut bad = value.clone();
+            bad["tag_name"] = tag.into();
+            assert!(
+                parse_release(&serde_json::to_vec(&bad).unwrap()).is_err(),
+                "{tag}"
+            );
+        }
+        for tag in ["0.2.0", "vv0.2.0", "v0.1.0"] {
+            let mut bad = value.clone();
+            bad["assets"][0]["browser_download_url"] = format!(
+                "https://github.com/penso/herdr-gpui/releases/download/{tag}/update-manifest.json"
+            )
+            .into();
+            assert!(matches!(
+                parse_release(&serde_json::to_vec(&bad).unwrap()),
+                Err(Error::ReleaseAsset)
+            ));
+        }
         for field in ["draft", "prerelease"] {
             let mut bad = value.clone();
             bad[field] = true.into();

@@ -8,8 +8,10 @@ human and agent contributors alike.
 
 ## Before You Start
 
-- **macOS only.** The client is built on GPUI and Metal. There is no Linux or
-  Windows build, and adding one is not a small patch.
+- **macOS and experimental Linux builds.** GPUI uses Metal on macOS and
+  Vulkan with X11/Wayland on Linux. CI/release builds cover Linux x86_64 and
+  ARM64; native Linux desktop verification is still pending. No Windows build
+  currently exists.
 - **You need a running Herdr daemon.** This repository is a client of the
   daemon from [herdrdev/herdr](https://github.com/herdrdev/herdr); it never
   installs, starts, or upgrades one for you. Bugs in the daemon, its session
@@ -20,7 +22,10 @@ human and agent contributors alike.
 
 ## Setup
 
-Install rustup and the Xcode command-line tools. The toolchain is pinned in
+Install rustup and, on macOS, the Xcode command-line tools. On Ubuntu 24.04,
+run `bash scripts/install-linux-deps.sh` for build libraries and fonts;
+see [Linux builds](README.md#linux-builds) for runtime requirements and limitations.
+The toolchain is pinned in
 `rust-toolchain.toml` and GPUI is pinned to an exact version, so `rustup show`
 is enough — do not upgrade either as a side effect of another change.
 
@@ -41,7 +46,14 @@ just ci
 `just ci` is exactly what CI runs: `cargo fmt --all -- --check`, a
 `-D warnings` clippy pass over all targets and features, and the test suite
 under both default and all features. CI additionally builds release binaries
-for Apple Silicon and Intel.
+for Apple Silicon, Intel macOS, and native Ubuntu 24.04 x86_64/ARM64, exercising
+their release CLI without a desktop. Run `just test-build` for linking or
+packaging changes and `just release-check` for archive/release changes. The latter
+runs the release packaging/security tests and workflow audits; see
+[release tooling](scripts/release/README.md) for prerequisites. Owner-authored
+internal PRs run audit/test jobs; optimized release builds run only on `main`.
+Outside-contributor and Dependabot PR jobs are skipped, not considered validated;
+see the [CI policy](README.md#continuous-integration).
 
 Some tests are opt-in because they need resources CI does not have:
 
@@ -56,6 +68,9 @@ Never point a live test at your personal daemon — they create and clean up
 their own isolated one. For visual changes, check the real native window:
 narrow layouts, long labels, focus, and clipping. Headless layout tests do not
 prove native glyph or input correctness.
+Linux X11 and Wayland both need manual desktop coverage; the performance harness
+and AppKit click probes remain macOS-only. The GUI test sandbox resolves the
+parent Wayland socket without exposing its HOME or runtime directory to daemons.
 
 ## Pull Requests
 

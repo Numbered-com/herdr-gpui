@@ -5,7 +5,9 @@
 //! `previous-installation` backup are retained; never blindly overwrite an
 //! existing installation with that backup. No startup health ACK is assumed.
 
+use super::error::{Result, UpdateError as Error};
 use super::release;
+use Error::Io as io;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -33,12 +35,9 @@ const LIMIT: u64 = 1024 * 1024 * 1024;
 const REQUEST_LIMIT: u64 = 256 * 1024;
 const WAIT: Duration = Duration::from_secs(120);
 
-fn io(error: std::io::Error) -> String {
-    error.to_string()
-}
-fn check(cancel: &AtomicBool) -> Result<(), String> {
+fn check(cancel: &AtomicBool) -> Result<()> {
     if cancel.load(Ordering::Relaxed) {
-        Err("Update cancelled".into())
+        Err(Error::Cancelled)
     } else {
         Ok(())
     }
@@ -75,7 +74,7 @@ struct Request {
     token: Vec<u8>,
 }
 
-fn private_directory(parent: &Path) -> Result<TempDir, String> {
+fn private_directory(parent: &Path) -> Result<TempDir> {
     let dir = tempfile::Builder::new()
         .prefix(".herdr-update-")
         .tempdir_in(parent)
@@ -85,7 +84,7 @@ fn private_directory(parent: &Path) -> Result<TempDir, String> {
 }
 
 // Drain both pipes concurrently, with a hard memory cap and a finite deadline.
-fn output(command: &mut Command, cancel: &AtomicBool) -> Result<String, String> {
+fn output(command: &mut Command, cancel: &AtomicBool) -> Result<String> {
     check(cancel)?;
     command
         .env_clear()
@@ -96,7 +95,7 @@ fn output(command: &mut Command, cancel: &AtomicBool) -> Result<String, String> 
     let mut child = command.spawn().map_err(io)?;
     let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
         kill(&mut child);
-        return Err("Missing validation output pipes".into());
+        return Err(Error::MissingValidationPipes);
     };
     let (sender, receiver) = mpsc::sync_channel(2);
     let pipes: [Box<dyn Read + Send>; 2] = [Box::new(stdout), Box::new(stderr)];
@@ -112,22 +111,23 @@ fn output(command: &mut Command, cancel: &AtomicBool) -> Result<String, String> 
     let start = Instant::now();
     let mut bytes = Vec::new();
     let mut received = 0;
-    let result: Result<(), String> = (|| {
+    let result: Result<()> = (|| {
         loop {
-            if check(cancel).is_err() || start.elapsed() > Duration::from_secs(30) {
-                break Err("Update validation cancelled or timed out".into());
+            check(cancel)?;
+            if start.elapsed() > Duration::from_secs(30) {
+                break Err(Error::ValidationTimeout);
             }
             while let Ok(result) = receiver.try_recv() {
                 let part = result.map_err(io)?;
                 if bytes.len() + part.len() > 65536 {
-                    return Err("Update validation output exceeded limit".into());
+                    return Err(Error::ValidationOutputLimit);
                 }
                 bytes.extend_from_slice(&part);
                 received += 1;
             }
             match child.try_wait().map_err(io)? {
                 Some(status) if !status.success() => {
-                    break Err(format!("Update validation command failed ({status})"));
+                    break Err(Error::ValidationFailed(status));
                 }
                 Some(_) if received == 2 => break Ok(()),
                 _ => thread::sleep(Duration::from_millis(10)),
@@ -139,10 +139,10 @@ fn output(command: &mut Command, cancel: &AtomicBool) -> Result<String, String> 
     }
     let _ = child.wait();
     result?;
-    String::from_utf8(bytes).map_err(|_| "Non-UTF-8 validation output".into())
+    String::from_utf8(bytes).map_err(Error::ValidationEncoding)
 }
 
-fn owned(path: &Path, uid: u32, directory: bool) -> Result<fs::Metadata, String> {
+fn owned(path: &Path, uid: u32, directory: bool) -> Result<fs::Metadata> {
     let meta = fs::symlink_metadata(path).map_err(io)?;
     if meta.file_type().is_symlink()
         || meta.is_dir() != directory
@@ -151,22 +151,19 @@ fn owned(path: &Path, uid: u32, directory: bool) -> Result<fs::Metadata, String>
         || meta.mode() & 0o6022 != 0
         || meta.permissions().readonly()
     {
-        return Err(format!(
-            "Unsafe or non-user-owned installation path: {}",
-            path.display()
-        ));
+        return Err(Error::UnsafeInstallation(path.to_owned()));
     }
     Ok(meta)
 }
 
-fn no_links(path: &Path) -> Result<(), String> {
+fn no_links(path: &Path) -> Result<()> {
     if !path.is_absolute() {
-        return Err("Installation path must be absolute".into());
+        return Err(Error::RelativeInstallation);
     }
     let mut prefix = PathBuf::new();
     for part in path.components() {
         if matches!(part, Component::ParentDir | Component::CurDir) {
-            return Err("Noncanonical installation path".into());
+            return Err(Error::NoncanonicalInstallation);
         }
         prefix.push(part);
         if fs::symlink_metadata(&prefix)
@@ -174,7 +171,7 @@ fn no_links(path: &Path) -> Result<(), String> {
             .file_type()
             .is_symlink()
         {
-            return Err("Symlinked installation path".into());
+            return Err(Error::SymlinkedInstallation);
         }
     }
     Ok(())
@@ -184,16 +181,14 @@ fn trusted_mac_parent(owner: u32, mode: u32, uid: u32) -> bool {
     (owner == uid || owner == 0) && mode & 0o6002 == 0
 }
 
-fn installation_parent(path: &Path, mode: Mode, uid: u32) -> Result<(), String> {
+fn installation_parent(path: &Path, mode: Mode, uid: u32) -> Result<()> {
     no_links(path)?;
     if mode == Mode::Linux {
         owned(path, uid, true)?;
     } else {
         let meta = fs::symlink_metadata(path).map_err(io)?;
         if !meta.is_dir() || !trusted_mac_parent(meta.uid(), meta.mode(), uid) {
-            return Err(
-                "macOS installation parent must be user/root-owned and not world-writable".into(),
-            );
+            return Err(Error::UnsafeMacParent);
         }
         // /Applications is normally root:admin 0775. Do not equate ownership
         // with access: creating our private stage must succeed without elevation.
@@ -201,18 +196,18 @@ fn installation_parent(path: &Path, mode: Mode, uid: u32) -> Result<(), String> 
     Ok(())
 }
 
-fn linux_location(executable: &Path, home: &Path, uid: u32, packaged: bool) -> Result<(), String> {
+fn linux_location(executable: &Path, home: &Path, uid: u32, packaged: bool) -> Result<()> {
     if packaged {
-        return Err("Package-managed installations cannot self-update".into());
+        return Err(Error::PackageManaged);
     }
     no_links(executable)?;
     owned(home, uid, true)?;
     if !executable.starts_with(home) {
-        return Err("Standalone Linux updates require installation under HOME".into());
+        return Err(Error::OutsideHome);
     }
     for ancestor in executable
         .parent()
-        .ok_or("No executable parent")?
+        .ok_or(Error::MissingExecutableParent)?
         .ancestors()
         .take_while(|p| p.starts_with(home))
     {
@@ -220,23 +215,23 @@ fn linux_location(executable: &Path, home: &Path, uid: u32, packaged: bool) -> R
     }
     let metadata = owned(executable, uid, false)?;
     if metadata.mode() & 0o111 == 0 || metadata.nlink() != 1 {
-        return Err("Installation must be an ordinary standalone executable".into());
+        return Err(Error::NotStandalone);
     }
     Ok(())
 }
 
-fn detect(cancel: &AtomicBool) -> Result<Installation, String> {
+fn detect(cancel: &AtomicBool) -> Result<Installation> {
     if release::parse_version(crate::APP_VERSION).is_none()
         || option_env!("HERDR_UPDATE_PUBLIC_KEY").is_none()
     {
-        return Err("Updates are disabled for local builds".into());
+        return Err(Error::LocalBuild);
     }
     let uid: u32 = output(Command::new("/usr/bin/id").arg("-u"), cancel)?
         .trim()
         .parse()
-        .map_err(|_| "Cannot determine effective UID")?;
+        .map_err(Error::EffectiveUid)?;
     if uid == 0 {
-        return Err("Updating as root is not supported".into());
+        return Err(Error::RootUser);
     }
     // Linux current_exe identifies the loaded executable, not a symlink launcher.
     // Eligibility applies to that resolved origin and its ancestors under HOME.
@@ -247,18 +242,15 @@ fn detect(cancel: &AtomicBool) -> Result<Installation, String> {
     } else if cfg!(target_os = "linux") {
         Mode::Linux
     } else {
-        return Err("Unsupported installation platform".into());
+        return Err(Error::UnsupportedPlatform);
     };
     let destination = match mode {
         Mode::Mac => {
-            let root = executable
-                .ancestors()
-                .nth(3)
-                .ok_or("Not an installed Herdr.app")?;
+            let root = executable.ancestors().nth(3).ok_or(Error::NotHerdrBundle)?;
             if root.file_name() != Some("Herdr.app".as_ref())
                 || executable != root.join("Contents/MacOS/Herdr")
             {
-                return Err("Not an installed Herdr.app".into());
+                return Err(Error::NotHerdrBundle);
             }
             root.to_owned()
         }
@@ -267,21 +259,23 @@ fn detect(cancel: &AtomicBool) -> Result<Installation, String> {
                 .iter()
                 .any(|key| env::var_os(key).is_some());
             let home =
-                fs::canonicalize(env::var_os("HOME").ok_or("HOME is not set")?).map_err(io)?;
+                fs::canonicalize(env::var_os("HOME").ok_or(Error::MissingHome)?).map_err(io)?;
             linux_location(&executable, &home, uid, packaged)?;
             executable.clone()
         }
     };
     owned(&destination, uid, mode == Mode::Mac)?;
     installation_parent(
-        destination.parent().ok_or("No installation parent")?,
+        destination
+            .parent()
+            .ok_or(Error::MissingInstallationParent)?,
         mode,
         uid,
     )?;
     if mode == Mode::Mac {
         for ancestor in executable
             .parent()
-            .ok_or("No executable parent")?
+            .ok_or(Error::MissingExecutableParent)?
             .ancestors()
             .take_while(|path| path.starts_with(&destination))
         {
@@ -289,7 +283,7 @@ fn detect(cancel: &AtomicBool) -> Result<Installation, String> {
         }
     }
     if owned(&executable, uid, false)?.mode() & 0o111 == 0 {
-        return Err("Installed file is not executable".into());
+        return Err(Error::NotExecutable);
     }
     if mode == Mode::Mac {
         identity(&destination, crate::APP_VERSION, cancel)?;
@@ -302,7 +296,7 @@ fn detect(cancel: &AtomicBool) -> Result<Installation, String> {
     })
 }
 
-fn lock(installation: &Installation) -> Result<File, String> {
+fn lock(installation: &Installation) -> Result<File> {
     let lease = lock_file(installation, ".update-lock")?;
     // A helper holds the handoff lease before READY until replacement finishes.
     // This closes the primary-lock handoff gap without inheriting raw FDs.
@@ -316,19 +310,19 @@ fn lock(installation: &Installation) -> Result<File, String> {
     Ok(lease)
 }
 
-fn lock_file(installation: &Installation, suffix: &str) -> Result<File, String> {
+fn lock_file(installation: &Installation, suffix: &str) -> Result<File> {
     installation_parent(
         installation
             .destination
             .parent()
-            .ok_or("No installation parent")?,
+            .ok_or(Error::MissingInstallationParent)?,
         installation.mode,
         installation.uid,
     )?;
     let name = installation
         .destination
         .file_name()
-        .ok_or("No installation name")?;
+        .ok_or(Error::MissingInstallationName)?;
     let mut lock_name = OsString::from(".");
     lock_name.push(name);
     lock_name.push(suffix);
@@ -360,14 +354,16 @@ fn lock_file(installation: &Installation, suffix: &str) -> Result<File, String> 
         || opened.uid() != installation.uid
         || opened.mode() & 0o6022 != 0
     {
-        return Err("Unsafe update lock".into());
+        return Err(Error::UnsafeLock);
     }
-    file.try_lock()
-        .map_err(|_| "Another updater owns this installation".to_string())?;
+    file.try_lock().map_err(|error| match error {
+        fs::TryLockError::WouldBlock => Error::LockContended,
+        fs::TryLockError::Error(source) => Error::Io(source),
+    })?;
     Ok(file)
 }
 
-fn identity(bundle: &Path, version: &str, cancel: &AtomicBool) -> Result<(String, String), String> {
+fn identity(bundle: &Path, version: &str, cancel: &AtomicBool) -> Result<(String, String)> {
     output(
         Command::new("/usr/bin/codesign")
             .args([
@@ -395,46 +391,46 @@ fn identity(bundle: &Path, version: &str, cancel: &AtomicBool) -> Result<(String
             cancel,
         )?;
         if actual.trim() != version {
-            return Err("Bundle version differs from signed manifest".into());
+            return Err(Error::BundleVersion);
         }
     }
     Ok(identity)
 }
 
-fn signing_identity(text: &str) -> Result<(String, String), String> {
-    let field = |prefix: &str| {
+fn signing_identity(text: &str) -> Result<(String, String)> {
+    let field = |prefix: &'static str| {
         text.lines()
             .find_map(|line| line.strip_prefix(prefix))
             .filter(|value| !value.is_empty() && *value != "not set")
             .map(str::to_owned)
-            .ok_or_else(|| format!("Missing code signature {prefix}"))
+            .ok_or(Error::MissingSignatureField(prefix))
     };
     let team = field("TeamIdentifier=")?;
     let identifier = field("Identifier=")?;
     if identifier != "so.pen.herdr-gpui" {
-        return Err("Installed or candidate bundle is not so.pen.herdr-gpui".into());
+        return Err(Error::BundleIdentifier);
     }
     Ok((team, identifier))
 }
 
-fn authenticate(request: &Request) -> Result<release::Offer, String> {
+fn authenticate(request: &Request) -> Result<release::Offer> {
     if request.current_version != crate::APP_VERSION
         || release::parse_version(crate::APP_VERSION).is_none()
         || release::parse_version(&request.version) <= release::parse_version(crate::APP_VERSION)
     {
-        return Err("Update request is stale or not a newer release".into());
+        return Err(Error::StaleRequest);
     }
     let manifest = release::verify_manifest(
         &request.manifest,
         &request.signature,
-        option_env!("HERDR_UPDATE_PUBLIC_KEY").ok_or("Local build cannot update")?,
+        option_env!("HERDR_UPDATE_PUBLIC_KEY").ok_or(Error::LocalBuild)?,
         &request.version,
     )?;
     let asset = manifest
         .assets
         .iter()
         .find(|asset| Some(asset.target.as_str()) == release::target())
-        .ok_or("No asset for this platform")?
+        .ok_or(Error::MissingPlatformAsset)?
         .clone();
     Ok(release::Offer {
         manifest,
@@ -474,7 +470,7 @@ fn extract(
     mode: Mode,
     name: &str,
     cancel: &AtomicBool,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf> {
     let decoder = flate2::read::MultiGzDecoder::new(File::open(archive).map_err(io)?);
     // Bound even tar headers, padding and extension records, not only file data.
     let mut archive = tar::Archive::new(decoder.take(LIMIT + 1));
@@ -487,12 +483,12 @@ fn extract(
     for (index, entry) in archive.entries().map_err(io)?.raw(true).enumerate() {
         check(cancel)?;
         if index >= 20000 {
-            return Err("Too many archive entries".into());
+            return Err(Error::ArchiveEntryLimit);
         }
         let mut entry = entry.map_err(io)?;
         let path = entry.path().map_err(io)?.into_owned();
         if !safe_path(&path) || !seen.insert(path.clone()) {
-            return Err("Unsafe or duplicate archive path".into());
+            return Err(Error::ArchivePath);
         }
         for parent in path
             .ancestors()
@@ -504,40 +500,40 @@ fn extract(
         let kind = entry.header().entry_type();
         if mode == Mode::Linux {
             if path != Path::new(name) || !kind.is_file() {
-                return Err("Linux archive must contain exactly the release executable".into());
+                return Err(Error::LinuxPayload);
             }
         } else if !path.starts_with("Herdr.app") {
-            return Err("Archive is outside Herdr.app".into());
+            return Err(Error::OutsideBundle);
         }
         expanded = expanded
             .checked_add(entry.size())
             .filter(|size| *size <= LIMIT)
-            .ok_or("Expanded archive exceeds limit")?;
+            .ok_or(Error::ExpandedArchiveLimit)?;
         let destination = root.join(&path);
         // Symlinks are created only after every regular write has finished.
         if kind.is_symlink() && mode == Mode::Mac {
             let target = entry
                 .link_name()
                 .map_err(io)?
-                .ok_or("Missing link target")?
+                .ok_or(Error::MissingLinkTarget)?
                 .into_owned();
             if !safe_link(&path, &target) || entry.size() != 0 {
-                return Err("Unsafe archive symlink".into());
+                return Err(Error::ArchiveSymlink);
             }
             links.push((path, target));
         } else if kind.is_dir() && mode == Mode::Mac {
             if entry.size() != 0 {
-                return Err("Directory contains data".into());
+                return Err(Error::DirectoryData);
             }
             directories.create(&destination).map_err(io)?;
             distribution_directories.insert(path.clone());
         } else if kind.is_file() {
             directories
-                .create(destination.parent().ok_or("Missing archive parent")?)
+                .create(destination.parent().ok_or(Error::MissingArchiveParent)?)
                 .map_err(io)?;
             let executable = entry.header().mode().map_err(io)? & 0o111 != 0;
             if mode == Mode::Linux && !executable {
-                return Err("Release file is not executable".into());
+                return Err(Error::PayloadNotExecutable);
             }
             let mut file = OpenOptions::new()
                 .write(true)
@@ -564,7 +560,7 @@ fn extract(
             .map_err(io)?;
             file.sync_all().map_err(io)?;
         } else {
-            return Err("Unsupported archive entry type".into());
+            return Err(Error::ArchiveEntryType);
         }
     }
     let mut reader = archive.into_inner();
@@ -576,11 +572,11 @@ fn extract(
             break;
         }
         if buffer[..count].iter().any(|byte| *byte != 0) {
-            return Err("Trailing archive data".into());
+            return Err(Error::TrailingArchiveData);
         }
     }
     if reader.limit() == 0 {
-        return Err("Expanded archive exceeds limit".into());
+        return Err(Error::ExpandedArchiveLimit);
     }
     let link_paths: HashSet<&Path> = links.iter().map(|(path, _)| path.as_path()).collect();
     for path in &seen {
@@ -589,7 +585,7 @@ fn extract(
             .skip(1)
             .any(|parent| link_paths.contains(parent))
         {
-            return Err("Archive writes beneath a symlink".into());
+            return Err(Error::ArchiveSymlinkParent);
         }
     }
     // Include implicit parents and empty directories, but never the private
@@ -603,7 +599,7 @@ fn extract(
     for (path, target) in &links {
         let destination = root.join(path);
         directories
-            .create(destination.parent().ok_or("Missing symlink parent")?)
+            .create(destination.parent().ok_or(Error::MissingSymlinkParent)?)
             .map_err(io)?;
         std::os::unix::fs::symlink(target, destination).map_err(io)?;
     }
@@ -613,12 +609,12 @@ fn extract(
             .map_err(io)?
             .starts_with(fs::canonicalize(root.join("Herdr.app")).map_err(io)?)
         {
-            return Err("Symlink chain escapes bundle".into());
+            return Err(Error::SymlinkEscape);
         }
     }
     let candidate = root.join(if mode == Mode::Mac { "Herdr.app" } else { name });
     if seen.is_empty() || !candidate.exists() {
-        return Err("Empty update archive".into());
+        return Err(Error::EmptyArchive);
     }
     Ok(candidate)
 }
@@ -628,7 +624,7 @@ fn candidate(
     installation: &Installation,
     offer: &release::Offer,
     cancel: &AtomicBool,
-) -> Result<(TempDir, PathBuf), String> {
+) -> Result<(TempDir, PathBuf)> {
     let archive = stage.join("archive.tar.gz");
     owned(&archive, installation.uid, false)?;
     release::verify_archive(&archive, &offer.asset, cancel)?;
@@ -640,11 +636,11 @@ fn candidate(
     let path = extract(&archive, tree.path(), installation.mode, &name, cancel)?;
     if installation.mode == Mode::Mac {
         if owned(&path.join("Contents/MacOS/Herdr"), installation.uid, false)?.mode() & 0o111 == 0 {
-            return Err("Bundle executable is not executable".into());
+            return Err(Error::BundleNotExecutable);
         }
         let old = identity(&installation.destination, crate::APP_VERSION, cancel)?;
         if identity(&path, &offer.manifest.version, cancel)? != old {
-            return Err("Update code signing identity changed".into());
+            return Err(Error::SigningIdentityChanged);
         }
     }
     Ok((tree, path))
@@ -654,7 +650,7 @@ pub(super) fn prepare(
     offer: &release::Offer,
     cancel: &AtomicBool,
     progress: impl FnMut(u64, u64),
-) -> Result<Prepared, String> {
+) -> Result<Prepared> {
     check(cancel)?;
     let installation = detect(cancel)?;
     let lease = lock(&installation)?;
@@ -662,7 +658,7 @@ pub(super) fn prepare(
         installation
             .destination
             .parent()
-            .ok_or("No installation parent")?,
+            .ok_or(Error::MissingInstallationParent)?,
     )?;
     let mut token = vec![0; 32];
     File::open("/dev/urandom")
@@ -680,11 +676,11 @@ pub(super) fn prepare(
     };
     let authenticated = authenticate(&request)?;
     if authenticated != *offer {
-        return Err("Offer differs from authenticated manifest".into());
+        return Err(Error::UnauthenticatedOffer);
     }
-    let bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec(&request)?;
     if bytes.len() as u64 > REQUEST_LIMIT {
-        return Err("Restart arguments exceed limit".into());
+        return Err(Error::RestartArgumentsLimit);
     }
     let mut file = OpenOptions::new()
         .write(true)
@@ -709,7 +705,7 @@ pub(super) fn prepare(
     })
 }
 
-fn read_request(stage: &Path, uid: u32) -> Result<Request, String> {
+fn read_request(stage: &Path, uid: u32) -> Result<Request> {
     let path = stage.join("request.json");
     owned(&path, uid, false)?;
     let mut bytes = Vec::new();
@@ -719,14 +715,14 @@ fn read_request(stage: &Path, uid: u32) -> Result<Request, String> {
         .read_to_end(&mut bytes)
         .map_err(io)?;
     if bytes.len() as u64 > REQUEST_LIMIT {
-        return Err("Oversized update request".into());
+        return Err(Error::RequestLimit);
     }
-    let request: Request = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let request: Request = serde_json::from_slice(&bytes)?;
     if request.token.len() != 32
         || request.args.iter().any(|arg| arg.contains(&0))
         || request.cwd.contains(&0)
     {
-        return Err("Malformed update request".into());
+        return Err(Error::MalformedRequest);
     }
     Ok(request)
 }
@@ -747,18 +743,18 @@ pub(super) struct RestartGuard {
 
 impl RestartGuard {
     /// Call only once the UI has decided to quit. Retain the guard until teardown.
-    pub(super) fn commit(&mut self) -> Result<(), String> {
+    pub(super) fn commit(&mut self) -> Result<()> {
         if self.committed {
             return Ok(());
         }
         self.input
             .as_mut()
-            .ok_or("Missing helper control pipe")?
+            .ok_or(Error::MissingControlPipe)?
             .write_all(&self.instruction)
             .map_err(io)?;
         self.control
             .send(Control::Commit)
-            .map_err(|_| "Update helper owner stopped")?;
+            .map_err(|_| Error::HelperOwnerStopped)?;
         self.committed = true;
         Ok(())
     }
@@ -776,10 +772,7 @@ fn kill(child: &mut Child) {
     let _ = child.wait();
 }
 
-pub(super) fn install_and_restart(
-    prepared: Prepared,
-    cancel: &AtomicBool,
-) -> Result<RestartGuard, String> {
+pub(super) fn install_and_restart(prepared: Prepared, cancel: &AtomicBool) -> Result<RestartGuard> {
     check(cancel)?;
     let request = read_request(prepared.stage.path(), prepared.installation.uid)?;
     let mut child = Command::new(&prepared.installation.executable)
@@ -792,7 +785,7 @@ pub(super) fn install_and_restart(
         .map_err(io)?;
     let Some(stdout) = child.stdout.take() else {
         kill(&mut child);
-        return Err("Missing helper stdout".into());
+        return Err(Error::MissingHelperOutput);
     };
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     thread::spawn(move || {
@@ -802,16 +795,24 @@ pub(super) fn install_and_restart(
     });
     let start = Instant::now();
     loop {
-        if check(cancel).is_err() || start.elapsed() > WAIT {
+        if let Err(error) = check(cancel) {
             kill(&mut child);
-            return Err("Update helper cancelled or timed out".into());
+            return Err(error);
+        }
+        if start.elapsed() > WAIT {
+            kill(&mut child);
+            return Err(Error::HelperTimeout);
         }
         match ready_rx.recv_timeout(Duration::from_millis(10)) {
             Ok(Ok(bytes)) if bytes == b"READY\n" => break,
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Ok(Err(source)) => {
+                kill(&mut child);
+                return Err(Error::Io(source));
+            }
             _ => {
                 kill(&mut child);
-                return Err("Update helper did not become ready".into());
+                return Err(Error::HelperNotReady);
             }
         }
     }
@@ -871,13 +872,13 @@ fn own_helper(
     )
 }
 
-fn record_result(file: &mut File, result: &Result<(), String>) -> Result<(), String> {
+fn record_result(file: &mut File, result: &Result<()>) -> Result<()> {
     let text = match result {
         Ok(()) => "Update installed and restart process spawned. Startup health is not confirmed.\nKeep previous-installation until the new app is verified working.\n".to_owned(),
         Err(error) => {
             // Bound and escape even filenames/error text; no terminal controls
             // or shell commands from an error are copied into recovery guidance.
-            let error: String = error.chars().flat_map(char::escape_default).take(4096).collect();
+            let error: String = error.to_string().chars().flat_map(char::escape_default).take(4096).collect();
             format!("Update installation or restart failed.\nError: {error}\n\nRecovery:\nKeep this private staging directory, archive.tar.gz, and previous-installation (if present).\nClose all Herdr GUI instances; leave the daemon running.\nIf the original installation exists, try launching it manually; rollback may already have restored it.\nIf it is missing, restore previous-installation to the original installation location. Preserve any existing destination before replacing it; do not merge app bundles.\nIf there is no usable backup, manually install a verified signed release.\nNo automatic retry or cleanup will run.\n")
         }
     };
@@ -892,10 +893,10 @@ fn replace(
     candidate: &Path,
     backup: &Path,
     mode: Mode,
-    launch: impl FnOnce() -> Result<(), String>,
-) -> Result<(), String> {
+    launch: impl FnOnce() -> Result<()>,
+) -> Result<()> {
     if backup.try_exists().map_err(io)? {
-        return Err("Recovery path already exists".into());
+        return Err(Error::RecoveryExists);
     }
     let original = fs::symlink_metadata(destination).map_err(io)?;
     match mode {
@@ -904,50 +905,51 @@ fn replace(
     }
     if let Err(error) = fs::rename(candidate, destination) {
         if mode == Mode::Mac {
-            fs::rename(backup, destination).map_err(|rollback| {
-                format!(
-                    "Replacement failed: {error}; rollback failed: {rollback}; recovery: {}",
-                    backup.display()
-                )
-            })?;
-        } else {
-            remove_failed_linux_backup(destination, backup, &original).map_err(|cleanup| {
-                format!(
-                    "Replacement failed: {error}; backup cleanup failed: {cleanup}; recovery: {}",
-                    backup.display()
-                )
-            })?;
+            if let Err(rollback) = fs::rename(backup, destination) {
+                return Err(Error::ReplacementRollback {
+                    source: error,
+                    rollback,
+                    backup: backup.to_owned(),
+                });
+            }
+        } else if let Err(cleanup) = remove_failed_linux_backup(destination, backup, &original) {
+            return Err(Error::ReplacementCleanup {
+                source: error,
+                cleanup: Box::new(cleanup),
+                backup: backup.to_owned(),
+            });
         }
         return Err(io(error));
     }
     if let Err(error) = launch() {
         // Move aside only the exact candidate we just installed; never delete
         // an arbitrary installation tree. Both copies survive failed recovery.
-        fs::rename(destination, candidate).map_err(|e| {
-            format!(
-                "Restart failed: {error}; preserving recovery at {}: {e}",
-                backup.display()
-            )
-        })?;
-        fs::rename(backup, destination).map_err(|e| {
-            format!(
-                "Restart failed: {error}; recovery at {}: {e}",
-                backup.display()
-            )
-        })?;
+        if let Err(recovery) =
+            fs::rename(destination, candidate).and_then(|()| fs::rename(backup, destination))
+        {
+            return Err(Error::RestartRecovery {
+                source: Box::new(error),
+                recovery,
+                backup: backup.to_owned(),
+            });
+        }
         return Err(error);
     }
-    File::open(destination.parent().ok_or("No destination parent")?)
-        .map_err(io)?
-        .sync_all()
-        .map_err(io)
+    File::open(
+        destination
+            .parent()
+            .ok_or(Error::MissingDestinationParent)?,
+    )
+    .map_err(io)?
+    .sync_all()
+    .map_err(io)
 }
 
 fn remove_failed_linux_backup(
     destination: &Path,
     backup: &Path,
     original: &fs::Metadata,
-) -> Result<(), String> {
+) -> Result<()> {
     let current = fs::symlink_metadata(destination).map_err(io)?;
     let saved = fs::symlink_metadata(backup).map_err(io)?;
     // Remove only our extra hardlink, never a changed destination, symlink,
@@ -957,12 +959,12 @@ fn remove_failed_linux_backup(
             !meta.is_file() || meta.dev() != original.dev() || meta.ino() != original.ino()
         })
     {
-        return Err("Installation or backup changed; recovery was retained".into());
+        return Err(Error::RecoveryChanged);
     }
     fs::remove_file(backup).map_err(io)
 }
 
-fn helper(stage: &Path) -> Result<(), String> {
+fn helper(stage: &Path) -> Result<()> {
     let cancel = AtomicBool::new(false);
     let installation = detect(&cancel)?;
     no_links(stage)?;
@@ -971,10 +973,10 @@ fn helper(stage: &Path) -> Result<(), String> {
             .file_name()
             .is_some_and(|name| name.as_encoded_bytes().starts_with(b".herdr-update-"))
     {
-        return Err("Stage is not adjacent to installation".into());
+        return Err(Error::StageLocation);
     }
     if owned(stage, installation.uid, true)?.mode() & 0o077 != 0 {
-        return Err("Stage is not private".into());
+        return Err(Error::StagePermissions);
     }
     let request = read_request(stage, installation.uid)?;
     let offer = authenticate(&request)?;
@@ -1005,19 +1007,19 @@ fn helper(stage: &Path) -> Result<(), String> {
     std::io::stdout().flush().map_err(io)?;
     let instruction = receiver
         .recv_timeout(WAIT)
-        .map_err(|_| "Update commit barrier timed out")?
+        .map_err(Error::CommitBarrier)?
         .map_err(io)?;
     let mut expected = b"COMMIT\n".to_vec();
     expected.extend_from_slice(&request.token);
     if instruction != expected {
-        return Err("Update was not committed".into());
+        return Err(Error::NotCommitted);
     }
     let result = (|| {
         let start = Instant::now();
         let _lease = loop {
             match lock_file(&installation, ".update-lock") {
                 Ok(lease) => break lease,
-                Err(_) if start.elapsed() < Duration::from_secs(5) => {
+                Err(Error::LockContended) if start.elapsed() < Duration::from_secs(5) => {
                     thread::sleep(Duration::from_millis(10))
                 }
                 Err(error) => return Err(error),
@@ -1025,7 +1027,7 @@ fn helper(stage: &Path) -> Result<(), String> {
         };
         let fresh = detect(&cancel)?;
         if fresh.destination != installation.destination {
-            return Err("Installation changed during update".into());
+            return Err(Error::InstallationChanged);
         }
         // Never install the previously inspected tree. Rebuild from the authenticated
         // archive after the parent closes the barrier, then validate again.
@@ -1056,9 +1058,10 @@ fn helper(stage: &Path) -> Result<(), String> {
     })();
     let recorded = record_result(&mut report, &result);
     match (result, recorded) {
-        (Err(error), Err(record)) => Err(format!(
-            "{error}; could not record recovery outcome: {record}"
-        )),
+        (Err(error), Err(record)) => Err(Error::RecordOutcome {
+            source: Box::new(error),
+            record: Box::new(record),
+        }),
         (Err(error), _) => Err(error),
         (Ok(()), recorded) => recorded,
     }
@@ -1417,7 +1420,7 @@ mod tests {
         let offer = release::Offer {
             manifest: release::Manifest {
                 schema: 1,
-                version: "20260920.02".into(),
+                version: "0.2.0".into(),
                 assets: vec![asset.clone()],
             },
             asset,
@@ -1440,7 +1443,7 @@ mod tests {
                 fs::write(&candidate, b"new").unwrap();
                 let result = replace(&destination, &candidate, &backup, mode, || {
                     if fail {
-                        Err("spawn failed".into())
+                        Err(io(std::io::Error::other("spawn failed")))
                     } else {
                         Ok(())
                     }
@@ -1554,7 +1557,7 @@ mod tests {
             fs::write(candidate.join("new-only"), b"new").unwrap();
             assert_eq!(
                 replace(&destination, &candidate, &backup, Mode::Mac, || if fail {
-                    Err("launch failed".into())
+                    Err(io(std::io::Error::other("launch failed")))
                 } else {
                     Ok(())
                 })
@@ -1572,9 +1575,15 @@ mod tests {
     #[test]
     fn process_output_and_cancellation_are_bounded() {
         let cancel = AtomicBool::new(false);
-        assert!(output(&mut Command::new("/usr/bin/yes"), &cancel).is_err());
+        assert!(matches!(
+            output(&mut Command::new("/usr/bin/yes"), &cancel),
+            Err(Error::ValidationOutputLimit)
+        ));
         cancel.store(true, Ordering::Relaxed);
-        assert!(output(Command::new("/bin/sleep").arg("30"), &cancel).is_err());
+        assert!(matches!(
+            output(Command::new("/bin/sleep").arg("30"), &cancel),
+            Err(Error::Cancelled)
+        ));
         assert!(run_helper(&[HELPER.into()]).is_some());
         assert!(run_helper(&["--help".into()]).is_none());
     }
@@ -1592,7 +1601,7 @@ mod tests {
             uid,
         };
         let lease = lock(&installation).unwrap();
-        assert!(lock(&installation).is_err());
+        assert!(matches!(lock(&installation), Err(Error::LockContended)));
         // Explicit unlock avoids a concurrently spawning test's brief fork/exec
         // window retaining an inherited descriptor after this thread drops it.
         lease.unlock().unwrap();
@@ -1702,7 +1711,11 @@ mod tests {
         let outside = root.path().join("do-not-touch");
         fs::write(&outside, b"unchanged").unwrap();
         std::os::unix::fs::symlink(&outside, &path).unwrap();
-        record_result(&mut report, &Err("\x1b[31m unsafe\n".repeat(4096))).unwrap();
+        record_result(
+            &mut report,
+            &Err(io(std::io::Error::other("\x1b[31m unsafe\n".repeat(4096)))),
+        )
+        .unwrap();
         let text = fs::read_to_string(&held_path).unwrap();
         assert!(text.len() < 8192);
         assert!(!text.contains('\x1b'));
@@ -1755,7 +1768,7 @@ mod tests {
             let mut archive = tar::Builder::new(encoder);
             archive
                 .append_file(
-                    "herdr-gpui-20260920.02-portable-test",
+                    "herdr-gpui-0.2.0-portable-test",
                     &mut File::open(&payload).unwrap(),
                 )
                 .unwrap();
@@ -1773,7 +1786,7 @@ mod tests {
             let offer = release::Offer {
                 manifest: release::Manifest {
                     schema: 1,
-                    version: "20260920.02".into(),
+                    version: "0.2.0".into(),
                     assets: vec![asset.clone()],
                 },
                 asset,

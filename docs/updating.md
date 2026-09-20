@@ -5,31 +5,35 @@ embedded in the executable. macOS updates replace `Herdr.app`; the Linux archive
 contract replaces a standalone executable. Installation requires explicit user
 approval. Updating the GUI must not stop or upgrade the daemon or its terminals.
 
-The release pipeline currently **builds macOS only**, on Apple Silicon and Intel,
-and combines both executables into a universal app. Linux archive packaging is
-ready for a separate Linux builder, but no Linux artifacts are generated until
-that builder is added. Package-managed Linux installs should use their package
-manager rather than overwrite managed files.
+The protected release pipeline builds macOS on Apple Silicon and Intel, combining
+both executables into a universal app, and Linux on native Ubuntu 24.04 x86_64 and
+ARM64 runners. Linux remains experimental. Homebrew and other package-managed
+installs should use their package manager rather than overwrite managed files.
 
 ## Repository Configuration
 
 | Setting | Kind | Contents |
 | --- | --- | --- |
-| `HERDR_UPDATE_PUBLIC_KEY` | Actions variable | Exactly 64 lowercase hex characters encoding the 32-byte Ed25519 public key |
-| `HERDR_UPDATE_SIGNING_KEY` | Actions secret | Unencrypted Ed25519 private key PEM, including header/footer and line breaks |
+| `HERDR_UPDATE_PUBLIC_KEY` | Repository Actions variable | Exactly 64 lowercase hex characters encoding the 32-byte Ed25519 public key |
+| `HERDR_UPDATE_SIGNING_KEY` | Protected `release` environment secret | Unencrypted Ed25519 private key PEM, including header/footer and line breaks |
 
-Both macOS architecture builds receive `HERDR_UPDATE_PUBLIC_KEY` and
-`HERDR_RELEASE_VERSION` as compile-time environment variables. Future Linux builds
-must embed the same values. The public key is required and format-validated even
-for dry runs. The private key is loaded only in the real-release manifest signing
-step, never in compilation or pull-request tests. Signing rejects a missing key,
+Both macOS architecture builds and both Linux builds receive
+`HERDR_UPDATE_PUBLIC_KEY` and `HERDR_RELEASE_VERSION` as compile-time environment
+variables. The version is the validated workspace `X.Y.Z`, without `v`.
+The public key is required and format-validated before builds. The private key is
+loaded only in the manifest-signing step of the protected `sign` job, never in
+compilation, tests, metadata, OIDC attestation, or publication. Signing rejects a missing key,
 a non-Ed25519 key, or a key whose DER public-key encoding does not exactly match
 the configured public key.
 
-Apple signing/notarization separately requires `APPLE_CERTIFICATE_BASE64`,
-`APPLE_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, and
-`APPLE_API_ISSUER_ID`. Sigstore uses GitHub OIDC. Protect release tags and workflow
-changes: trusted release code can use these credentials.
+Apple signing/notarization separately requires `MACOS_CERTIFICATE_P12_BASE64`,
+`MACOS_CERTIFICATE_PASSWORD`, and `APPLE_API_PRIVATE_KEY` as protected `release`
+environment secrets, plus `MACOS_SIGNING_IDENTITY`, `APPLE_API_KEY_ID`, and
+`APPLE_API_ISSUER_ID` as environment variables. Sigstore uses GitHub OIDC in a
+separate protected job. Configure the owner approval, main-only environment
+policies, protected main/tags, and immutable releases described in
+[Release Operations](../README.md#release-operations) before dispatch. Do not put
+private signing keys in repository-wide secrets.
 
 ### Initial Key Setup
 
@@ -56,7 +60,7 @@ print(der[12:].hex())
 PY
 )"
 gh variable set HERDR_UPDATE_PUBLIC_KEY --repo penso/herdr-gpui --body "$public"
-gh secret set HERDR_UPDATE_SIGNING_KEY --repo penso/herdr-gpui < "$work/private.pem"
+gh secret set HERDR_UPDATE_SIGNING_KEY --repo penso/herdr-gpui --env release < "$work/private.pem"
 # Securely back up the private key in encrypted storage before leaving this shell.
 ```
 
@@ -82,11 +86,11 @@ here only for readability:
 ```json
 {
   "schema": 1,
-  "version": "20260920.01",
+  "version": "0.1.0",
   "assets": [
     {
       "target": "universal-apple-darwin",
-      "name": "herdr-gpui-20260920.01-macos-universal.app.tar.gz",
+      "name": "herdr-gpui-0.1.0-macos-universal.app.tar.gz",
       "size": 123456,
       "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
@@ -94,12 +98,18 @@ here only for readability:
 }
 ```
 
-- Versions are real calendar dates in fixed-width `YYYYMMDD.NN` form.
+- Versions are numeric SemVer `X.Y.Z`, without `v`, leading zeros, prerelease or
+  build suffixes. GitHub release tags are `vX.Y.Z`.
 - JSON has exactly these fields, schema 1, at most 65536 bytes, and one to three
   unique supported targets. The release generator always requires the current
-  version's macOS archive and includes either Linux archive when present.
+  version's macOS archive and includes either Linux archive when present. Release
+  CI uses `--require-all-targets`, requiring all three archives before signing.
 - Supported targets are `universal-apple-darwin`, `x86_64-unknown-linux-gnu`, and
-  `aarch64-unknown-linux-gnu`. Linux names are `herdr-gpui-VERSION-TARGET.tar.gz`.
+  `aarch64-unknown-linux-gnu`. Linux updater names are
+  `herdr-gpui-VERSION-TARGET-update.tar.gz`, distinct from the manual-install
+  `Herdr-VERSION-TARGET.tar.gz` trees containing desktop files, icons, licenses,
+  and third-party notices. The manual archives require the external
+  [Linux desktop/runtime dependencies](../README.md#linux-and-windows).
 - Each compressed archive is 1 through 268435456 bytes, with its exact byte length
   and lowercase 64-character SHA-256 digest in the manifest.
 - `update-manifest.sig` is a **raw 64-byte Ed25519 signature**, not hex, base64,
@@ -109,13 +119,15 @@ here only for readability:
 The client discovers the latest stable release through
 `https://api.github.com/repos/penso/herdr-gpui/releases/latest`. Manifest, signature,
 and archive downloads use version-specific GitHub release URLs. The authenticated
-version must match the release tag; archive names and sizes must also match the
+version must match the release tag after removing its `v` prefix; archive names and sizes must also match the
 release metadata. SHA-256 and length are checked before extraction.
 
 The JSON signature is named `update-manifest.sig`. Sigstore sidecars remain
 separate: `update-manifest.json.sig` signs the JSON through Sigstore, while
 `update-manifest.sig.sig` signs the raw Ed25519 signature through Sigstore. The
 updater's trust anchor is the embedded Ed25519 key, not these Sigstore sidecars.
+See [release verification](../SECURITY.md#verifying-a-release) for the separate
+Sigstore/provenance trust policy and exact published asset checks.
 
 ## Packaging API
 
@@ -124,11 +136,12 @@ parent directories; commands refuse to overwrite existing outputs.
 
 ```sh
 python3 scripts/update-manifest.py package-macos dist/Herdr.app \
-  dist/herdr-gpui-20260920.01-macos-universal.app.tar.gz
+  dist/herdr-gpui-0.1.0-macos-universal.app.tar.gz
 python3 scripts/update-manifest.py package-linux path/to/herdr-gpui \
-  x86_64-unknown-linux-gnu 20260920.01 \
-  dist/herdr-gpui-20260920.01-x86_64-unknown-linux-gnu.tar.gz
-python3 scripts/update-manifest.py create dist 20260920.01
+  x86_64-unknown-linux-gnu 0.1.0 \
+  dist/herdr-gpui-0.1.0-x86_64-unknown-linux-gnu-update.tar.gz
+# Package the aarch64 Linux archive too before requiring all release targets:
+python3 scripts/update-manifest.py create dist 0.1.0 --require-all-targets
 HERDR_UPDATE_PUBLIC_KEY="$public" python3 scripts/update-manifest.py validate-public-key
 HERDR_UPDATE_PUBLIC_KEY="$public" python3 scripts/update-manifest.py check-key \
   "$OPENSSL" path/to/private.pem
@@ -158,49 +171,52 @@ commands on trusted build outputs first.
 
 ## Release Pipeline
 
-1. Validate the public key and packaging tests, build both native macOS executables
-   with the same embedded key/version, and assemble the universal app.
-2. Stamp the bundle version, sign the app with Developer ID and hardened runtime,
-   verify its signature, and create the existing manual-install ZIP.
-3. Notarize the ZIP, staple and validate the bundle, rebuild the ZIP from that
-   final bundle, and check Gatekeeper acceptance.
-4. Package the **final signed, stapled bundle** as the updater USTAR tar.gz. No
-   app files are modified after signing/stapling. The tar does not replace the ZIP.
-5. Package optional Linux executables, create the manifest, check the PEM/public
-   key match, sign the exact JSON, verify the signature, and require 64 raw bytes.
-6. Generate the SBOM, checksums, Sigstore sidecars, and archive build provenance.
-   Publish all assets together, refusing missing manifest/signature outputs.
+1. Audit the workflow, validate owner/main/SHA/workspace version and public key,
+   then test and build both macOS and Linux architectures without private keys.
+   Every shipped binary embeds the same version and public key. Linux builders
+   package both the unchanged manual tree and a single-binary updater USTAR.
+2. After protected environment approval, assemble the universal app including all
+   notices, then sign its temporary copy with Developer ID and hardened runtime.
+   Notarize a temporary ZIP, staple and validate the app, and check Gatekeeper.
+3. Build the manual DMG from that final app, sign/notarize/staple the DMG, and
+   validate it. Package the **same final signed, stapled app copy** as updater
+   USTAR before signing-script cleanup. The input `dist/Herdr.app` is still
+   unsigned and must never be used for the updater. No ZIP is published.
+4. Download both current-run Linux artifacts without executing their contents.
+   Require all three updater archives, check the PEM/public-key match, sign the
+   exact JSON, verify the signature, and require 64 raw bytes. Upload the DMG,
+   macOS updater archive, JSON and raw signature for the attestation job.
+5. In the separate protected OIDC job, combine these with both Linux artifact
+   pairs and the locked four-target SBOM. Require the exact nine-file base set,
+   then checksum, Sigstore-sign and attest all nine files. Each has four sidecars
+   (`.sha256`, `.sha512`, `.sig`, `.crt`); `SHA256SUMS` covers all 45 files.
+6. The protected publication job refuses existing tags/releases, creates a
+   `vVERSION` tag at the validated SHA and a draft, uploads all 46 assets, then
+   re-downloads and verifies the exact set and hashes before publication. The
+   separately approved Homebrew job uses only the verified published DMG.
 
-The existing per-architecture macOS executable tarballs remain manual-download
-assets, not updater targets. Apple code signing and notarization are independent
-of the manifest signature and remain required for the app.
-
-Artifact download uses `executable-*`. A future Linux build job must emit
-`herdr-gpui-x86_64-unknown-linux-gnu` or
-`herdr-gpui-aarch64-unknown-linux-gnu` at its artifact root and be added to the
-package job's dependencies. The packaging loop detects those exact filenames.
-That builder must embed the same release version and public key and validate its
-own architecture, linkage, and runtime support. No speculative Linux GPUI build
-matrix is included here.
+Apple code signing and notarization are independent of the Ed25519 manifest
+signature and remain required. Manual Linux archives preserve desktop/icon/license
+installation; updater archives only replace the existing executable. Their matching
+manual archive supplies release-specific attribution and notices.
 
 ### Publication Security
 
-Publish increasing `YYYYMMDD.NN` versions **in order**. The workflow uses
-`gh release create --latest`; its concurrency group serializes only the same ref,
-not all release versions. Rerunning an old tag or finishing an older release after
-a newer one can move GitHub's latest pointer backward. Clients reject downgrades,
-but a stale latest pointer can prevent them discovering a newer release. This
-pipeline does not enforce global release ordering. Coordinate releases and never
-overwrite published signed assets. HTTPS and GitHub account security remain
-important; a valid old signature alone does not prove freshness.
+Publish increasing `X.Y.Z` versions **in order**. The manual-only workflow is
+restricted to `penso` dispatching/rerunning from main, serializes all releases and
+never cancels an active signer. It refuses existing tags/releases and verifies all
+draft assets before immutable publication. Coordinate dispatches: concurrency
+alone does not enforce numeric release ordering, and a valid old signature does
+not prove freshness. HTTPS and GitHub account security remain important.
 
-## Dry Runs And Verification
+## Local Verification
 
-Dispatch Release with `dry_run: true` to build and package without Apple signing,
-notarization, Ed25519 signing, Sigstore signing, or publication. The public key is
-still required; no private update key is loaded and no manifest is created or
-uploaded. Non-tag builds embed `00000000.00`, which is intentionally not a valid
-updater release version. Dry-run output does not prove real installation works.
+There is no release workflow dry-run input. Use the credential-free script tests
+and workflow audits below. `just dmg VERSION` builds both macOS targets locally
+and signs without publishing; it requires the public key in the caller's
+environment, strips private signing keys from Cargo's environment, and embeds
+`VERSION` in both native and cross-compiled executables. Its updater tar has no
+Ed25519 release manifest until the protected workflow runs.
 
 Run the standalone contract tests locally:
 
@@ -227,6 +243,9 @@ without GPUI's desktop build dependencies. On Linux it also exercises a signed
 helper handoff, actual standalone replacement/relaunch, tampering refusal,
 cancellation, and rollback in private temporary installations under a test HOME.
 It does not build or test the complete Linux GUI or prove macOS Gatekeeper acceptance.
+The helper and updater use typed `UpdateError` variants; active unit tests check
+source preservation, diagnostic redaction, and compound recovery failures. These
+tests are included in the standalone harness, not disabled integration fixtures.
 
 ## Runtime And Recovery
 
@@ -258,8 +277,8 @@ new version is confirmed working; cleanup is manual.
 ## Native QA
 
 The GPUI **QA > Show app update available** action presents safe synthetic
-update state, without network requests, installing files, or changing real update
-preferences. Verify modal focus, keyboard isolation, dismissal, long labels, and
+update state for version `9999.0.0`, without network requests, installing files,
+or changing real update preferences. Verify modal focus, keyboard isolation, dismissal, long labels, and
 narrow-window clipping. Preview actions must not initiate a real update. No
 external framework or signing credentials should be needed for synthetic QA.
 
@@ -277,9 +296,11 @@ edit a signed bundle to fake an older version.
    signatures, invalid paths, oversized inputs, offline/404 responses, read-only
    destinations, translocation, cancellation, and interrupted replacement. Failures
    must leave a usable installation and an actionable message.
-5. When a Linux builder exists, separately test supported standalone installation
+5. Separately test supported Linux standalone installation
    locations, executable mode, replacement/relaunch, and failure recovery on both
    supported architectures. Do not infer Linux success from macOS or Python tests.
 
 Record OS, architecture, versions, observed UI, and outcomes. Headless tests are
 not a substitute for these native two-version checks.
+Native two-version updater installation/restart QA remains pending on macOS and
+Linux; the existing build, headless, helper, and packaging checks do not establish it.

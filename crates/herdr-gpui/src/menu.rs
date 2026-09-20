@@ -13,6 +13,8 @@ pub(super) enum Page {
     Update,
     AppUpdate,
     Install,
+    Tab,
+    RenameTab,
 }
 
 pub(super) struct MenuState {
@@ -20,7 +22,7 @@ pub(super) struct MenuState {
     // Selection epoch and connection generation fence captured modal actions.
     target: (u64, u64),
     pub anchor: Point<Pixels>,
-    focus: FocusHandle,
+    pub(super) focus: FocusHandle,
     selected: usize,
     keybinds_scroll: ScrollHandle,
     pub(super) keybinds_search: Option<Entity<crate::search_input::SearchInput>>,
@@ -29,6 +31,7 @@ pub(super) struct MenuState {
     pub(super) themes: Option<crate::theme_picker::ThemePicker>,
     pub(super) palette: Option<crate::palette::Palette>,
     pub(super) close: Option<crate::close_modal::CloseConfirmation>,
+    pub(super) tab: Option<crate::tab_menu::TabMenu>,
 }
 
 impl MenuState {
@@ -46,6 +49,7 @@ impl MenuState {
             themes: None,
             palette: None,
             close: None,
+            tab: None,
         }
     }
 }
@@ -101,6 +105,7 @@ impl HerdrWindow {
     }
 
     pub(super) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu.tab = None;
         self.menu.target = (
             self.selection_epoch,
             self.endpoints[self.selected_endpoint].generation,
@@ -116,6 +121,7 @@ impl HerdrWindow {
         self.menu.page = None;
         self.update_preview = None;
         self.menu.close = None;
+        self.menu.tab = None;
         window.focus(&self.focus);
         cx.notify();
     }
@@ -209,6 +215,7 @@ impl HerdrWindow {
         let font = &self.config.ui;
         let theme = &self.theme;
         let viewport = window.viewport_size();
+        let pointer_anchored = matches!(page, Page::Tab | Page::RenameTab);
         let mut panel = div()
             .id("menu-panel")
             .debug_selector(|| "menu-panel".into())
@@ -220,7 +227,14 @@ impl HerdrWindow {
                     .w(px(180.))
                     .max_h((viewport.height / 2. - px(12.)).max(px(0.)))
             })
-            .when(page != Page::Menu, |panel| {
+            .when(pointer_anchored, |panel| {
+                panel
+                    .w((viewport.width - px(24.))
+                        .max(px(0.))
+                        .min(px(if page == Page::Tab { 180. } else { 360. })))
+                    .max_h((viewport.height - px(24.)).max(px(0.)))
+            })
+            .when(page != Page::Menu && !pointer_anchored, |panel| {
                 panel
                     .w((viewport.width - px(32.)).max(px(0.)).min(px(480.)))
                     .max_h((viewport.height - px(32.)).max(px(0.)))
@@ -262,6 +276,7 @@ impl HerdrWindow {
             .line_height(px(font.line_height()))
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
             .on_click(|_, _, cx| cx.stop_propagation());
         if page == Page::Menu {
             for (index, item) in self.menu_items().into_iter().enumerate() {
@@ -283,6 +298,8 @@ impl HerdrWindow {
                         })),
                 );
             }
+        } else if pointer_anchored {
+            panel = panel.child(self.render_tab_menu(cx));
         } else if page == Page::Keybinds {
             panel = panel.child(self.render_keybinds(cx));
         } else if page == Page::Themes {
@@ -377,7 +394,7 @@ impl HerdrWindow {
             .id("menu-overlay")
             .absolute()
             .inset_0()
-            .when(page != Page::Menu, |overlay| {
+            .when(page != Page::Menu && !pointer_anchored, |overlay| {
                 overlay
                     .flex()
                     .items_center()
@@ -394,7 +411,18 @@ impl HerdrWindow {
                 }),
             )
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.dismiss_menu(window, cx);
+                }),
+            )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if matches!(this.menu.page, Some(Page::Tab | Page::RenameTab)) {
+                    this.tab_menu_key(event, window, cx);
+                    return;
+                }
                 if this.menu.page == Some(Page::Palette) {
                     this.palette_key(event, window, cx);
                     return;
@@ -465,7 +493,15 @@ impl HerdrWindow {
                     _ => {}
                 }
             }))
-            .child(panel)
+            .child(if pointer_anchored {
+                anchored()
+                    .position(self.menu.anchor)
+                    .snap_to_window_with_margin(Edges::all(px(12.)))
+                    .child(panel)
+                    .into_any_element()
+            } else {
+                panel.into_any_element()
+            })
     }
 
     fn render_keybinds(&self, cx: &mut Context<Self>) -> Div {

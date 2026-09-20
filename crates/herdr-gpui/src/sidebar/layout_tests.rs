@@ -1018,11 +1018,11 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
                     view.update_preview,
                     Some(if ready {
                         crate::updater::State::Ready {
-                            version: "99991231.99".into(),
+                            version: "9999.0.0".into(),
                         }
                     } else {
                         crate::updater::State::Available {
-                            version: "99991231.99".into(),
+                            version: "9999.0.0".into(),
                         }
                     })
                 );

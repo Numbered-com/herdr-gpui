@@ -1,5 +1,5 @@
 use herdr_client::ConnectTarget;
-use std::{ffi::OsString, fmt};
+use std::ffi::OsString;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LaunchMode {
@@ -20,16 +20,35 @@ pub struct LaunchOptions {
     pub mode: LaunchMode,
 }
 
-#[derive(Debug)]
-pub struct CliError(String);
-
-impl fmt::Display for CliError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum CliError {
+    #[error("--socket requires a path")]
+    MissingSocketPath,
+    #[error("--session requires a name")]
+    MissingSessionName,
+    #[error("--socket may only be specified once")]
+    DuplicateSocket,
+    #[error("--session may only be specified once")]
+    DuplicateSession,
+    #[error("--session requires a UTF-8 name")]
+    InvalidSessionEncoding(OsString),
+    #[error("Unknown option: {}", .0.to_string_lossy())]
+    UnknownOption(OsString),
+    #[error("--socket cannot be combined with --session or --dev")]
+    ConflictingConnectionOptions,
+    #[cfg(feature = "integration-test")]
+    #[error("native test modes are mutually exclusive and may only be specified once")]
+    ConflictingTestModes,
+    #[cfg(feature = "integration-test")]
+    #[error("fixture tests cannot be combined with connection options or --integration-test")]
+    ConflictingFixtureOptions,
+    #[cfg(feature = "integration-test")]
+    #[error("--integration-test requires an explicit --socket")]
+    MissingIntegrationSocket,
+    #[cfg(all(feature = "integration-test", not(target_os = "macos")))]
+    #[error("--performance-test currently requires macOS native event delivery")]
+    UnsupportedPerformancePlatform,
 }
-
-impl std::error::Error for CliError {}
 
 impl LaunchOptions {
     pub fn parse(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result<Self, CliError> {
@@ -52,26 +71,26 @@ impl LaunchOptions {
                 Some("--socket" | "--session") => {
                     let is_socket = arg == "--socket";
                     let missing = if is_socket {
-                        "--socket requires a path"
+                        CliError::MissingSocketPath
                     } else {
-                        "--session requires a name"
+                        CliError::MissingSessionName
                     };
                     let value = args
                         .next()
                         .filter(|value| {
                             !value.is_empty() && !value.as_encoded_bytes().starts_with(b"-")
                         })
-                        .ok_or_else(|| CliError(missing.into()))?;
+                        .ok_or(missing)?;
                     if is_socket {
                         if socket.replace(value).is_some() {
-                            return Err(CliError("--socket may only be specified once".into()));
+                            return Err(CliError::DuplicateSocket);
                         }
                     } else {
                         let value = value
                             .into_string()
-                            .map_err(|_| CliError("--session requires a UTF-8 name".into()))?;
+                            .map_err(CliError::InvalidSessionEncoding)?;
                         if session.replace(value).is_some() {
-                            return Err(CliError("--session may only be specified once".into()));
+                            return Err(CliError::DuplicateSession);
                         }
                     }
                 }
@@ -84,40 +103,31 @@ impl LaunchOptions {
                         _ => LaunchMode::Performance,
                     };
                     if mode != LaunchMode::Normal {
-                        return Err(CliError("native test modes are mutually exclusive and may only be specified once".into()));
+                        return Err(CliError::ConflictingTestModes);
                     }
                     mode = next;
                 }
                 _ => {
-                    return Err(CliError(format!(
-                        "Unknown option: {}",
-                        arg.to_string_lossy()
-                    )));
+                    return Err(CliError::UnknownOption(arg));
                 }
             }
         }
         if socket.is_some() && (session.is_some() || development) {
-            return Err(CliError(
-                "--socket cannot be combined with --session or --dev".into(),
-            ));
+            return Err(CliError::ConflictingConnectionOptions);
         }
         #[cfg(feature = "integration-test")]
         {
             if matches!(mode, LaunchMode::Sidebar | LaunchMode::Performance)
                 && (socket.is_some() || session.is_some() || development)
             {
-                return Err(CliError("fixture tests cannot be combined with connection options or --integration-test".into()));
+                return Err(CliError::ConflictingFixtureOptions);
             }
             if mode == LaunchMode::Integration && socket.is_none() {
-                return Err(CliError(
-                    "--integration-test requires an explicit --socket".into(),
-                ));
+                return Err(CliError::MissingIntegrationSocket);
             }
             #[cfg(not(target_os = "macos"))]
             if mode == LaunchMode::Performance {
-                return Err(CliError(
-                    "--performance-test currently requires macOS native event delivery".into(),
-                ));
+                return Err(CliError::UnsupportedPerformancePlatform);
             }
         }
         let target = match (socket, session) {
@@ -156,14 +166,61 @@ mod tests {
 
     #[test]
     fn rejects_missing_and_duplicate_values() {
-        for args in [
-            vec!["--socket", "--help"],
-            vec!["--session", "--dev"],
-            vec!["--socket", ""],
-            vec!["--socket", "a", "--socket", "b"],
-            vec!["--session", "a", "--session", "b"],
+        for (args, expected, message) in [
+            (
+                vec!["--socket"],
+                CliError::MissingSocketPath,
+                "--socket requires a path",
+            ),
+            (
+                vec!["--session"],
+                CliError::MissingSessionName,
+                "--session requires a name",
+            ),
+            (
+                vec!["--socket", "--help"],
+                CliError::MissingSocketPath,
+                "--socket requires a path",
+            ),
+            (
+                vec!["--session", "--dev"],
+                CliError::MissingSessionName,
+                "--session requires a name",
+            ),
+            (
+                vec!["--socket", ""],
+                CliError::MissingSocketPath,
+                "--socket requires a path",
+            ),
+            (
+                vec!["--socket", "a", "--socket", "b"],
+                CliError::DuplicateSocket,
+                "--socket may only be specified once",
+            ),
+            (
+                vec!["--session", "a", "--session", "b"],
+                CliError::DuplicateSession,
+                "--session may only be specified once",
+            ),
+            (
+                vec!["--socket", "a", "--dev"],
+                CliError::ConflictingConnectionOptions,
+                "--socket cannot be combined with --session or --dev",
+            ),
+            (
+                vec!["--socket", "a", "--session", "b"],
+                CliError::ConflictingConnectionOptions,
+                "--socket cannot be combined with --session or --dev",
+            ),
+            (
+                vec!["--unknown"],
+                CliError::UnknownOption("--unknown".into()),
+                "Unknown option: --unknown",
+            ),
         ] {
-            assert!(LaunchOptions::parse(args).is_err());
+            let error = LaunchOptions::parse(args).unwrap_err();
+            assert_eq!(error, expected);
+            assert_eq!(error.to_string(), message);
         }
     }
 
@@ -175,7 +232,15 @@ mod tests {
         assert!(
             matches!(options.target, ConnectTarget::Socket(actual) if actual.as_os_str() == path)
         );
-        assert!(LaunchOptions::parse([OsString::from("--session"), path]).is_err());
+        let error = LaunchOptions::parse([OsString::from("--session"), path.clone()]).unwrap_err();
+        assert_eq!(error, CliError::InvalidSessionEncoding(path.clone()));
+        assert_eq!(error.to_string(), "--session requires a UTF-8 name");
+        let error = LaunchOptions::parse([path.clone()]).unwrap_err();
+        assert_eq!(error, CliError::UnknownOption(path.clone()));
+        assert_eq!(
+            error.to_string(),
+            format!("Unknown option: {}", path.to_string_lossy())
+        );
     }
 
     #[cfg(feature = "integration-test")]
@@ -183,8 +248,27 @@ mod tests {
     fn test_modes_are_exclusive() {
         for first in ["--integration-test", "--sidebar-test", "--performance-test"] {
             for second in ["--integration-test", "--sidebar-test", "--performance-test"] {
-                assert!(LaunchOptions::parse([first, second]).is_err());
+                let error = LaunchOptions::parse([first, second]).unwrap_err();
+                assert_eq!(error, CliError::ConflictingTestModes);
+                assert_eq!(
+                    error.to_string(),
+                    "native test modes are mutually exclusive and may only be specified once"
+                );
             }
+        }
+        let error = LaunchOptions::parse(["--integration-test"]).unwrap_err();
+        assert_eq!(error, CliError::MissingIntegrationSocket);
+        assert_eq!(
+            error.to_string(),
+            "--integration-test requires an explicit --socket"
+        );
+        for flag in ["--sidebar-test", "--performance-test"] {
+            let error = LaunchOptions::parse([flag, "--dev"]).unwrap_err();
+            assert_eq!(error, CliError::ConflictingFixtureOptions);
+            assert_eq!(
+                error.to_string(),
+                "fixture tests cannot be combined with connection options or --integration-test"
+            );
         }
     }
 }

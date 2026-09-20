@@ -73,14 +73,91 @@ fn baseline() -> PaneSurfaceFrame {
     }
 }
 
-fn test_client() -> (Client, UnixStream, thread::JoinHandle<io::Result<()>>) {
+fn test_client() -> (Client, UnixStream, thread::JoinHandle<Result<()>>) {
     test_client_mode(true, false)
+}
+
+#[test]
+fn errors_preserve_sources_and_retry_categories() {
+    use std::error::Error as _;
+
+    struct Denied;
+    impl Read for Denied {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::from_raw_os_error(13))
+        }
+    }
+    let error = FrameReader::new().poll(&mut Denied).unwrap_err();
+    assert!(matches!(error, Error::Io(_)));
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    assert_eq!(
+        error
+            .source()
+            .unwrap()
+            .downcast_ref::<io::Error>()
+            .unwrap()
+            .raw_os_error(),
+        Some(13)
+    );
+
+    let mut reader = FrameReader::new();
+    let mut input = io::Cursor::new(vec![1, 0, 0, 0, 255]);
+    assert!(reader.poll(&mut input).unwrap().is_none());
+    let error = reader.poll(&mut input).unwrap_err();
+    assert!(matches!(error, Error::Protocol(protocol::Error::Decode(_))));
+    assert!(error.source().unwrap().is::<protocol::Error>());
+    assert!(error.source().unwrap().source().is_some());
+
+    let error = Session::new(true, false)
+        .handle_message(
+            ServerMessage::EndpointControl {
+                kind: ENDPOINT_WELCOME_KIND.into(),
+                data: "{".into(),
+            },
+            |_| Ok(()),
+        )
+        .unwrap_err();
+    assert!(matches!(error, Error::Json(_)));
+    assert!(error.source().unwrap().is::<serde_json::Error>());
+    assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+
+    for (error, kind) in [
+        (Error::Cancelled, io::ErrorKind::Interrupted),
+        (Error::SshCancelled, io::ErrorKind::Interrupted),
+        (Error::EventReceiverDropped, io::ErrorKind::BrokenPipe),
+        (Error::SocketClosed, io::ErrorKind::UnexpectedEof),
+        (Error::SshClosed, io::ErrorKind::UnexpectedEof),
+        (Error::HealthTimeout, io::ErrorKind::TimedOut),
+        (Error::SshTimeout, io::ErrorKind::TimedOut),
+        (Error::PartialFrameTimeout, io::ErrorKind::InvalidData),
+        (Error::HandshakeTimeout, io::ErrorKind::InvalidData),
+        (Error::RequestTimeout, io::ErrorKind::InvalidData),
+        (Error::InvalidSession, io::ErrorKind::InvalidInput),
+    ] {
+        assert_eq!(error.kind(), kind, "{error}");
+    }
+}
+
+#[test]
+fn disconnect_presentation_is_sanitized_and_bounded() {
+    let client = connect_with_connector(
+        ConnectTarget::Local,
+        ConnectOptions::default(),
+        true,
+        |_, _| Err(io::Error::other("\u{1b}\n\r\t\0x".repeat(2048))),
+    )
+    .unwrap();
+    let ClientEvent::Disconnected { reason } = event(&client) else {
+        panic!("expected disconnect")
+    };
+    assert_eq!(reason.chars().count(), 1024);
+    assert!(!reason.chars().any(char::is_control));
 }
 
 fn test_client_mode(
     active: bool,
     remote: bool,
-) -> (Client, UnixStream, thread::JoinHandle<io::Result<()>>) {
+) -> (Client, UnixStream, thread::JoinHandle<Result<()>>) {
     let (stream, server) = UnixStream::pair().unwrap();
     let (commands, rx) = bounded(COMMAND_CAPACITY);
     let (tx, events) = bounded(EVENT_CAPACITY);
@@ -422,7 +499,7 @@ fn stale_boot_and_unsupported_commands_never_reach_socket() {
         event(&client),
         ClientEvent::CommandRejected {
             request_id: None,
-            ..
+            reason: Error::CommandBoot,
         }
     ));
     let unsupported = client
@@ -430,7 +507,7 @@ fn stale_boot_and_unsupported_commands_never_reach_socket() {
         .request("boot-v1", "not.advertised", json!({}))
         .unwrap();
     assert!(
-        matches!(event(&client), ClientEvent::CommandRejected { request_id: Some(id), .. } if id == unsupported)
+        matches!(event(&client), ClientEvent::CommandRejected { request_id: Some(id), reason: Error::UnsupportedMethod } if id == unsupported)
     );
     client.handle.set_focus("boot-v1", true).unwrap();
     assert_eq!(
@@ -528,23 +605,23 @@ fn bounded_command_queue_and_outbound_limit_are_explicit() {
     };
     assert!(matches!(
         handle.set_focus("", true),
-        Err(SendError::Invalid(_))
+        Err(Error::MissingBootId)
     ));
     handle.set_focus("boot", true).unwrap();
-    assert_eq!(handle.set_focus("boot", false), Err(SendError::Full));
+    assert!(matches!(handle.set_focus("boot", false), Err(Error::Full)));
     assert!(matches!(
         handle.send_input(
             "boot",
             "p",
             vec![ClientPaneInputEvent::Paste("x".repeat(MAX_FRAME_SIZE))]
         ),
-        Err(SendError::Invalid(_))
+        Err(Error::Protocol(protocol::Error::Encode(_)))
     ));
     handle.disconnect();
-    assert_eq!(
+    assert!(matches!(
         handle.set_focus("boot", false),
         Err(SendError::Disconnected)
-    );
+    ));
 }
 
 #[test]
@@ -716,7 +793,7 @@ fn inactive_and_remote_require_negotiated_capabilities() {
     event(&client);
     let id = client.handle.set_surface_active("boot-v1", false).unwrap();
     assert!(
-        matches!(event(&client), ClientEvent::CommandRejected { request_id: Some(rejected), .. } if rejected == id)
+        matches!(event(&client), ClientEvent::CommandRejected { request_id: Some(rejected), reason: Error::UnsupportedSurfaceInterest } if rejected == id)
     );
     client.handle.disconnect();
     worker.join().unwrap().unwrap();
@@ -942,7 +1019,7 @@ fn connect_options_equality_and_send_error_display() {
         "client is disconnected"
     );
     assert_eq!(
-        SendError::Invalid("snapshot boot ID required".into()).to_string(),
+        Error::MissingBootId.to_string(),
         "invalid client command: snapshot boot ID required"
     );
 }
@@ -1037,7 +1114,7 @@ fn session_response_slot_correlates_chunks_and_clears_only_on_completion() {
             final_chunk,
             data: data.into(),
         };
-    let no_event = |_| -> io::Result<()> { panic!("unexpected event") };
+    let no_event = |_| -> Result<()> { panic!("unexpected event") };
     assert_eq!(
         session
             .handle_message(chunk("one", true, b"{}"), no_event)

@@ -83,6 +83,7 @@ impl ConnectionBridge {
                 }
                 result
             })
+            .map_err(crate::Error::from)
             .and_then(|client| {
                 self.handle = Some(client.handle);
                 let inbox = self.inbox.clone();
@@ -96,6 +97,7 @@ impl ConnectionBridge {
                     }
                     drained.store(true, Ordering::Release);
                 }))
+                .map_err(crate::Error::from)
             });
         if let Err(error) = result {
             self.drained.store(true, Ordering::Release);

@@ -32,13 +32,21 @@ class PackagingTests(unittest.TestCase):
         self.archive = self.root / "archive.tar.gz"
 
     def test_versions_and_names(self):
-        for value in ("20260920.01", "20000229.99", "00010101.00"):
+        for value in ("0.1.0", "1.2.3", "10.20.99", "18446744073709551615.0.0"):
             self.assertEqual(updater.version(value), value)
-        for value in ("00000000.00", "19000229.01", "20260431.00", "20260920.1", "v20260920.01", "２０２６0920.01", "20260920.01\n"):
+        for value in ("20260920.01", "1.2", "01.2.3", "1.02.3", "1.2.03", "v1.2.3", "１.2.3", "1.2.3\n", "1.2.3-rc1", "1.2.3+build"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 updater.version(value)
         with self.assertRaises(ValueError):
-            updater.asset_name("20260920.01", "../escape")
+            updater.asset_name("1.2.3", "../escape")
+        for value in ("18446744073709551616.0.0", "0.18446744073709551616.0", "0.0.18446744073709551616"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                updater.version(value)
+        self.assertEqual(updater.asset_name("1.2.3", updater.TARGETS[0]),
+                         "herdr-gpui-1.2.3-macos-universal.app.tar.gz")
+        for target in updater.LINUX_TARGETS:
+            self.assertEqual(updater.asset_name("1.2.3", target),
+                             f"herdr-gpui-1.2.3-{target}-update.tar.gz")
 
     def test_macos_ustar_permissions_symlinks_and_stable_bytes(self):
         (self.app / "link").symlink_to("Herdr")
@@ -98,38 +106,48 @@ class PackagingTests(unittest.TestCase):
         def run(*args):
             return subprocess.run([sys.executable, str(script), *map(str, args)], capture_output=True, check=True)
 
-        release = "20260920.01"
+        release = "1.2.3"
         run("package-macos", self.app, self.root / updater.asset_name(release, updater.TARGETS[0]))
         target = updater.LINUX_TARGETS[0]
         run("package-linux", self.binary, target, release, self.root / updater.asset_name(release, target))
         run("create", self.root, release)
         self.assertEqual(len(json.loads((self.root / "update-manifest.json").read_bytes())["assets"]), 2)
+        (self.root / "update-manifest.json").unlink()
+        missing = subprocess.run([sys.executable, str(script), "create", str(self.root), release,
+                                  "--require-all-targets"], capture_output=True)
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertFalse((self.root / "update-manifest.json").exists())
+        target = updater.LINUX_TARGETS[1]
+        run("package-linux", self.binary, target, release, self.root / updater.asset_name(release, target))
+        run("create", self.root, release, "--require-all-targets")
+        self.assertEqual(len(json.loads((self.root / "update-manifest.json").read_bytes())["assets"]), 3)
 
     def test_linux_single_executable(self):
         self.binary.chmod(0o644)
         for target in updater.LINUX_TARGETS:
-            archive_path = self.root / updater.asset_name("20260920.01", target)
-            updater.package_linux(self.binary, target, "20260920.01", archive_path)
+            archive_path = self.root / updater.asset_name("1.2.3", target)
+            updater.package_linux(self.binary, target, "1.2.3", archive_path)
+            self.assertEqual(gzip.decompress(archive_path.read_bytes())[257:265], b"ustar\x0000")
             with tarfile.open(archive_path) as archive:
                 members = archive.getmembers()
                 self.assertEqual(len(members), 1)
-                self.assertEqual(members[0].name, f"herdr-gpui-20260920.01-{target}")
+                self.assertEqual(members[0].name, f"herdr-gpui-1.2.3-{target}")
                 self.assertEqual(members[0].mode, 0o755)
                 self.assertTrue(members[0].isreg())
                 self.assertEqual(archive.extractfile(members[0]).read(), self.binary.read_bytes())
         link = self.root / "link"
         link.symlink_to(self.binary)
         with self.assertRaises(ValueError):
-            updater.package_linux(link, updater.LINUX_TARGETS[0], "20260920.01", self.archive)
+            updater.package_linux(link, updater.LINUX_TARGETS[0], "1.2.3", self.archive)
 
     def test_manifest_exact_stable_bytes_and_optional_targets(self):
-        release = "20260920.01"
+        release = "1.2.3"
         expected = []
         for target in updater.TARGETS:
             name = updater.asset_name(release, target)
             (self.root / name).write_bytes(b"abc")
             expected.append(dict(target=target, name=name, size=3, sha256=hashlib.sha256(b"abc").hexdigest()))
-        for name in ("herdr-gpui-20260919.01-macos-universal.app.tar.gz", "herdr-gpui-20260920.01-unknown.tar.gz", "unrelated.zip"):
+        for name in ("herdr-gpui-1.2.2-macos-universal.app.tar.gz", "herdr-gpui-1.2.3-unknown.tar.gz", "Herdr-1.2.3-x86_64-unknown-linux-gnu.tar.gz", "unrelated.zip"):
             (self.root / name).write_bytes(b"ignored")
         raw = updater.create(self.root, release)
         self.assertEqual(raw, json.dumps(dict(schema=1, version=release, assets=expected), separators=(",", ":")).encode())
@@ -141,9 +159,13 @@ class PackagingTests(unittest.TestCase):
         for target in updater.LINUX_TARGETS:
             (self.root / updater.asset_name(release, target)).unlink()
         self.assertEqual(len(json.loads(updater.create(self.root, release))["assets"]), 1)
+        manifest.unlink()
+        with self.assertRaisesRegex(ValueError, "missing or non-regular archive"):
+            updater.create(self.root, release, require_all_targets=True)
+        self.assertFalse(manifest.exists())
 
     def test_manifest_requires_current_mac_and_bounded_regular_files(self):
-        release = "20260920.01"
+        release = "1.2.3"
         with self.assertRaises(ValueError):
             updater.create(self.root, release)
         path = self.root / updater.asset_name(release, updater.TARGETS[0])
@@ -192,8 +214,8 @@ class PackagingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             updater.check_key(openssl, other, public)
         payload = self.root / "update-manifest.json"
-        (self.root / updater.asset_name("20260920.01", updater.TARGETS[0])).write_bytes(b"abc")
-        updater.create(self.root, "20260920.01")
+        (self.root / updater.asset_name("1.2.3", updater.TARGETS[0])).write_bytes(b"abc")
+        updater.create(self.root, "1.2.3")
         signature = self.root / "update-manifest.sig"
         run("pkeyutl", "-sign", "-rawin", "-inkey", pem, "-in", payload, "-out", signature)
         self.assertEqual(signature.stat().st_size, 64)

@@ -1,4 +1,7 @@
 //! GUI-local update service. Workers own all transport, staging, and process waits.
+mod error;
+pub use error::UpdateError;
+use error::{Result, UpdateError as Error};
 mod install;
 mod release;
 
@@ -217,7 +220,7 @@ impl Updater {
         changed || scheduled
     }
 
-    pub(super) fn commit_restart(&mut self) -> Result<bool, String> {
+    pub(super) fn commit_restart(&mut self) -> Result<bool> {
         if self.committed {
             return Ok(false);
         }
@@ -230,7 +233,7 @@ impl Updater {
             return Ok(false);
         }
         if let Err(error) = guard.commit() {
-            self.state = State::Error(error.clone());
+            self.state = State::Error(error.to_string());
             self.restart = None;
             return Err(error);
         }
@@ -277,7 +280,7 @@ fn worker(
             break;
         }
         let generation = command.generation;
-        let result: Result<State, String> = match command.operation {
+        let result: Result<State> = match command.operation {
             Operation::Check => {
                 publish(&mailbox, generation, State::Checking, None);
                 release::check(crate::APP_VERSION, key, &cancelled).map(|found| {
@@ -305,7 +308,7 @@ fn worker(
                         version: offer.manifest.version.clone(),
                     }
                 }),
-                None => Err("Check for a release before downloading".into()),
+                None => Err(Error::MissingOffer),
             },
             Operation::Install => match prepared.take() {
                 Some(candidate) => match install::install_and_restart(candidate, &cancelled) {
@@ -317,7 +320,7 @@ fn worker(
                     }
                     Err(error) => Err(error),
                 },
-                None => Err("Download and verify an update before installing".into()),
+                None => Err(Error::MissingPrepared),
             },
             Operation::Cancel => {
                 prepared = None;
@@ -331,7 +334,7 @@ fn worker(
             prepared = None;
             State::Idle
         } else {
-            result.unwrap_or_else(State::Error)
+            result.unwrap_or_else(|error| State::Error(error.to_string()))
         };
         publish(&mailbox, generation, state, None);
     }
@@ -383,7 +386,7 @@ mod tests {
             &updater.mailbox,
             command.generation,
             State::Ready {
-                version: "20260920.01".into(),
+                version: "0.2.0".into(),
             },
             None,
         );

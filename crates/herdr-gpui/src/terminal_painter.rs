@@ -87,9 +87,9 @@ impl TerminalPainter {
     }
 
     #[cfg(feature = "integration-test")]
-    pub fn verify_native_cache(&self, window: &Window) -> Result<usize, String> {
+    pub fn verify_native_cache(&self, window: &Window) -> Result<usize> {
         let Some(base) = &self.config else {
-            return Err("missing font config".into());
+            anyhow::bail!("missing font config");
         };
         for ((color, flags), lines) in &self.lines {
             let mut font = base.clone();
@@ -115,7 +115,7 @@ impl TerminalPainter {
                 );
                 // Includes native glyph IDs/positions, font IDs, metrics and colors.
                 if format!("{fresh:?}") != format!("{cached:?}") {
-                    return Err(format!("cached glyph/style mismatch: {symbol:?}"));
+                    anyhow::bail!("cached glyph/style mismatch: {symbol:?}");
                 }
             }
         }
