@@ -1,4 +1,4 @@
-//! GUI-only fonts and themes; no daemon settings are read or changed.
+//! GUI-only settings; no daemon settings are read or changed.
 use serde::Deserialize;
 use std::{
     env, fs,
@@ -16,6 +16,56 @@ pub struct Config {
     pub tabs: FontConfig,
     pub terminal: FontConfig,
     pub ui: FontConfig,
+    pub github: GitHubConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GitHubConfig {
+    pub oauth_client_id: Option<String>,
+    pub allow_plaintext_credentials: bool,
+}
+
+impl GitHubConfig {
+    pub fn client_id(&self) -> Result<Option<String>, String> {
+        self.client_id_with_override(env::var_os("HERDR_GITHUB_OAUTH_CLIENT_ID").as_deref())
+    }
+
+    fn client_id_with_override(
+        &self,
+        value: Option<&std::ffi::OsStr>,
+    ) -> Result<Option<String>, String> {
+        let (id, source) = match value {
+            Some(value) => (
+                Some(
+                    value
+                        .to_str()
+                        .ok_or("HERDR_GITHUB_OAUTH_CLIENT_ID must be UTF-8")?,
+                ),
+                "HERDR_GITHUB_OAUTH_CLIENT_ID",
+            ),
+            None => (
+                Some(
+                    self.oauth_client_id
+                        .as_deref()
+                        .unwrap_or("Iv23liurUcwxPjrdIFYT"),
+                ),
+                "github.oauth_client_id",
+            ),
+        };
+        if let Some(id) = id
+            && (id.is_empty()
+                || id.len() > 256
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')))
+        {
+            return Err(format!(
+                "{source} must be 1..256 ASCII letters, digits, '.', '_' or '-' (public client ID, not a secret)"
+            ));
+        }
+        Ok(id.map(str::to_owned))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -42,6 +92,7 @@ impl Default for Config {
             tabs: font(".SystemUIFont", 14.0),
             terminal: font("Menlo", 14.0),
             ui: font(".SystemUIFont", 12.0),
+            github: GitHubConfig::default(),
         }
     }
 }
@@ -54,6 +105,7 @@ struct Settings {
     tabs: FontSettings,
     terminal: FontSettings,
     ui: FontSettings,
+    github: GitHubConfig,
 }
 
 #[derive(Default, Deserialize)]
@@ -141,8 +193,22 @@ impl Config {
     }
 
     fn parse(text: &str) -> Result<Self, String> {
-        let settings: Settings = toml::from_str(text).map_err(|error| error.to_string())?;
+        let loaded = config_loader::Config::builder()
+            .add_source(config_loader::File::from_str(
+                text,
+                config_loader::FileFormat::Toml,
+            ))
+            .build()
+            .map_err(|error| error.to_string())?;
+        // Config's typed deserializer coerces strings/numbers. Preserve TOML
+        // types so existing strict font and theme validation remains intact.
+        let value: toml::Value = loaded
+            .try_deserialize()
+            .map_err(|error| error.to_string())?;
+        let settings: Settings = value.try_into().map_err(|error| error.to_string())?;
         let mut config = Self::default();
+        settings.github.client_id_with_override(None)?;
+        config.github = settings.github;
         if let Some(theme) = settings.theme {
             if theme.trim().is_empty() {
                 return Err("theme must not be empty".into());
@@ -610,7 +676,7 @@ mod tests {
         let config = Config::default();
         // These on-disk settings differ from the in-memory snapshot, including
         // a setting this version does not understand.
-        let original = "# heading\ntheme = 'Default' # selection\nfuture = true\n\n[tabs] # fonts\nsize = 19 # keep\n";
+        let original = "# heading\ntheme = 'Default' # selection\nfuture = true\n\n[tabs] # fonts\nsize = 19 # keep\n\n[github] # public only\noauth_client_id = 'Iv1.fixture' # keep ID\n";
         fs::write(&path, original)?;
         config.save_theme_path("Nord", &path)?;
         assert_eq!(
@@ -620,12 +686,19 @@ mod tests {
         assert_eq!(config.theme, "Default");
         assert_eq!(fs::read_dir(&temp.0)?.count(), 1);
 
-        fs::write(&path, "# no theme\n[tabs]\nsize = 19\n")?;
+        fs::write(
+            &path,
+            "# no theme\n[tabs]\nsize = 19\n[github]\noauth_client_id = 'Iv1.fixture'\n",
+        )?;
         config.save_theme_path("Dracula", &path)?;
         let saved = fs::read_to_string(&path)?;
         let parsed = Config::parse(&saved)?;
         assert_eq!(parsed.theme, "Dracula");
         assert_eq!(parsed.tabs.size, 19.0);
+        assert_eq!(
+            parsed.github.oauth_client_id.as_deref(),
+            Some("Iv1.fixture")
+        );
         assert!(saved.contains("# no theme"));
         Ok(())
     }
@@ -667,6 +740,7 @@ mod tests {
         assert_eq!(config.tabs.family, ".SystemUIFont");
         assert_eq!(config.terminal.line_height(), 20.0);
         assert_eq!(config.ui.size, 12.0);
+        assert!(config.github.oauth_client_id.is_none());
         let config = Config::parse("[tabs]\nsize = 18\n[terminal]\nfamily = 'Monaco'")?;
         assert_eq!(config.tabs.family, ".SystemUIFont");
         assert_eq!(config.tabs.size, 18.0);
@@ -691,10 +765,76 @@ mod tests {
             "[sidebar]\nsize = -inf",
             "[tabs]\nsize = '14'",
             "[tabs]\nfamily = 14",
+            "[github]\nunknown = 'value'",
+            "[github]\nclient_secret = 'not-allowed'",
+            "[github]\nprivate_key = 'not-allowed'",
+            "[github]\ntoken = 'not-allowed'",
+            "[github]\noauth_client_id = 123",
+            "[github]\noauth_client_id = ''",
+            "[github]\noauth_client_id = ' bad-id'",
+            "[github]\noauth_client_id = 'bad/id'",
+            "[github]\noauth_client_id = '\u{e9}'",
         ] {
             assert!(Config::parse(text).is_err(), "accepted {text:?}");
         }
         assert!(Config::parse("[tabs]\nsize = 8\n[ui]\nsize = 48").is_ok());
+    }
+
+    #[test]
+    fn github_public_client_id_and_explicit_environment_precedence() -> Result<(), String> {
+        assert!(!Config::default().github.allow_plaintext_credentials);
+        assert!(
+            Config::parse("[github]\nallow_plaintext_credentials = true")?
+                .github
+                .allow_plaintext_credentials
+        );
+        assert!(Config::parse("[github]\nallow_plaintext_credentials = 'true'").is_err());
+        let config = Config::parse("[github]\noauth_client_id = 'Iv1.fixture'")?;
+        assert_eq!(
+            config.github.client_id_with_override(None)?.as_deref(),
+            Some("Iv1.fixture")
+        );
+        assert_eq!(
+            config
+                .github
+                .client_id_with_override(Some("override-fixture".as_ref()))?
+                .as_deref(),
+            Some("override-fixture")
+        );
+        assert_eq!(
+            config.github.oauth_client_id.as_deref(),
+            Some("Iv1.fixture")
+        );
+        assert_eq!(
+            Config::default()
+                .github
+                .client_id_with_override(None)?
+                .as_deref(),
+            Some("Iv23liurUcwxPjrdIFYT")
+        );
+        for id in [
+            "",
+            " ",
+            "bad\nvalue",
+            "bad/value",
+            "\u{e9}",
+            &"a".repeat(257),
+        ] {
+            assert!(
+                matches!(config.github.client_id_with_override(Some(id.as_ref())), Err(error) if error.starts_with("HERDR_GITHUB_OAUTH_CLIENT_ID must be"))
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            assert!(
+                config
+                    .github
+                    .client_id_with_override(Some(std::ffi::OsStr::from_bytes(b"\xff")))
+                    .is_err()
+            );
+        }
+        Ok(())
     }
 
     #[test]

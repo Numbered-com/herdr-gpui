@@ -49,12 +49,6 @@ impl Target {
         }
     }
 
-    pub(crate) fn make_key(&self) {
-        unsafe {
-            let _: () = msg_send![self.window, makeKeyWindow];
-        }
-    }
-
     pub(crate) fn is_key(&self) -> bool {
         unsafe { msg_send![self.window, isKeyWindow] }
     }

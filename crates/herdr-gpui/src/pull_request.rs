@@ -1,4 +1,4 @@
-//! Read-only, on-demand PR lookup. One worker, one outstanding request, no UI I/O.
+//! Read-only PR prefetch. One worker, bounded memory, and no UI-thread I/O.
 use serde::Deserialize;
 use std::{
     io::Read,
@@ -33,9 +33,9 @@ const QUERY: &str = r#"query($owner: String!, $repo: String!, $branch: String!) 
   }
 }"#;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Input {
-    pub checkout: String,
+    pub checkout: Option<String>,
     pub repo_key: String,
     pub branch: String,
 }
@@ -82,8 +82,8 @@ impl PullRequest {
         match self.state.as_str() {
             "MERGED" => "Merged",
             "CLOSED" => "Closed",
-            _ if self.is_draft => "Open / Draft",
-            _ => "Open / Ready for review",
+            _ if self.is_draft => "Draft",
+            _ => "Open",
         }
     }
 
@@ -110,10 +110,26 @@ impl PullRequest {
         if counts == [0; 4] {
             return "No checks reported".into();
         }
-        format!(
-            "Checks: {} passed / {} failed / {} pending / {} skipped",
-            counts[0], counts[1], counts[2], counts[3]
-        )
+        counts
+            .into_iter()
+            .zip(["passed", "failed", "pending", "skipped"])
+            .filter(|(count, _)| *count > 0)
+            .map(|(count, label)| format!("{count} {label}"))
+            .collect::<Vec<_>>()
+            .join(" / ")
+    }
+
+    pub fn merge_status(&self) -> &'static str {
+        match self.merge_state_status.as_str() {
+            "CLEAN" => "No merge conflicts",
+            "DIRTY" => "Merge conflicts",
+            "BEHIND" => "Branch behind base",
+            "BLOCKED" => "Merge blocked",
+            "UNSTABLE" => "Checks need attention",
+            "DRAFT" => "Not ready for review",
+            "HAS_HOOKS" => "Merge hooks required",
+            _ => "Merge status unavailable",
+        }
     }
 
     pub fn review(&self) -> &'static str {
@@ -141,9 +157,199 @@ pub(super) fn clean(text: &str) -> String {
 
 type Result = std::result::Result<Option<PullRequest>, String>;
 
+const CACHE_LIMIT: usize = 128;
+const REFRESH: Duration = Duration::from_secs(90);
+const ERROR_BACKOFF: Duration = Duration::from_secs(300);
+
+struct Entry {
+    input: Input,
+    value: Option<PullRequest>,
+    message: Option<String>,
+    checked: Instant,
+    due: Instant,
+    used: Instant,
+}
+
+/// The scope includes selection epoch, connection generation and daemon boot.
+/// Token allocation identity is an additional auth generation, never token text.
+#[derive(Default)]
+pub(super) struct Cache {
+    lookup: Lookup,
+    entries: Vec<Entry>,
+    queue: std::collections::VecDeque<Input>,
+    active: Option<Input>,
+    scope: Option<(u64, u64, String)>,
+    token: Option<Arc<secrecy::SecretString>>,
+    next_scan: Option<Instant>,
+    paused_until: Option<Instant>,
+    pub cursor: usize,
+}
+
+impl Cache {
+    #[cfg(any(test, feature = "integration-test"))]
+    pub fn seed(&mut self, input: Input, value: PullRequest, now: Instant) {
+        self.entries.retain(|entry| entry.input != input);
+        if self.entries.len() == CACHE_LIMIT {
+            self.entries.remove(0);
+        }
+        self.entries.push(Entry {
+            input,
+            value: Some(value),
+            message: None,
+            checked: now,
+            due: now + REFRESH,
+            used: now,
+        });
+    }
+
+    pub fn clear(&mut self) {
+        self.lookup.clear();
+        self.entries.clear();
+        self.queue.clear();
+        self.active = None;
+        self.scope = None;
+        self.token = None;
+        self.next_scan = None;
+        self.paused_until = None;
+        self.cursor = 0;
+    }
+
+    pub fn scope(&mut self, scope: (u64, u64, String), token: Arc<secrecy::SecretString>) {
+        if self.scope.as_ref() != Some(&scope)
+            || self
+                .token
+                .as_ref()
+                .is_none_or(|old| !Arc::ptr_eq(old, &token))
+        {
+            self.clear();
+            self.scope = Some(scope);
+            self.token = Some(token);
+        }
+    }
+
+    pub fn retain(&mut self, current: impl Fn(&Input) -> bool) {
+        self.entries.retain(|entry| current(&entry.input));
+        self.queue.retain(&current);
+        if self.active.as_ref().is_some_and(|input| !current(input)) {
+            self.lookup.clear();
+            self.active = None;
+        }
+    }
+
+    pub fn scan_due(&self, now: Instant) -> bool {
+        self.next_scan.is_none_or(|next| now >= next)
+    }
+
+    pub fn schedule(&mut self, inputs: impl IntoIterator<Item = Input>, now: Instant) {
+        self.next_scan = Some(now + Duration::from_secs(1));
+        // Replace queued metadata, not an unbounded history of snapshot changes.
+        self.queue.clear();
+        for input in inputs {
+            if self.queue.len() == CACHE_LIMIT {
+                break;
+            }
+            if self.active.as_ref() != Some(&input)
+                && !self.queue.contains(&input)
+                && self
+                    .entries
+                    .iter()
+                    .find(|entry| entry.input == input)
+                    .is_none_or(|entry| now >= entry.due)
+            {
+                self.queue.push_back(input);
+            }
+        }
+    }
+
+    pub fn poll(&mut self, now: Instant) -> bool {
+        let mut changed = self.lookup.poll();
+        if !self.lookup.loading
+            && let Some(input) = self.active.take()
+        {
+            let failed = self.lookup.message.is_some();
+            // Rate/auth failures pause the account; a bad local repo must not
+            // prevent the remaining workspaces from being prefetched.
+            if let Some(cooldown) = self.lookup.cooldown.take() {
+                self.paused_until = Some(now + cooldown);
+            }
+            if let Some(entry) = self.entries.iter_mut().find(|entry| entry.input == input) {
+                if !failed {
+                    entry.value = self.lookup.value.take();
+                }
+                entry.message = self.lookup.message.take();
+                entry.checked = now;
+                entry.due = now + if failed { ERROR_BACKOFF } else { REFRESH };
+            } else {
+                if self.entries.len() == CACHE_LIMIT
+                    && let Some((index, _)) = self
+                        .entries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, e)| now >= e.due)
+                        .min_by_key(|(_, e)| e.used)
+                {
+                    self.entries.remove(index);
+                }
+                self.entries.push(Entry {
+                    input,
+                    value: self.lookup.value.take(),
+                    message: self.lookup.message.take(),
+                    checked: now,
+                    due: now + if failed { ERROR_BACKOFF } else { REFRESH },
+                    used: now,
+                });
+            }
+            changed = true;
+        }
+        if self.active.is_none()
+            && self.paused_until.is_none_or(|until| now >= until)
+            && let Some(token) = &self.token
+        {
+            while let Some(input) = self.queue.pop_front() {
+                let existing = self.entries.iter().find(|entry| entry.input == input);
+                if existing.is_some_and(|entry| now < entry.due)
+                    || (existing.is_none()
+                        && self.entries.len() == CACHE_LIMIT
+                        && self.entries.iter().all(|entry| now < entry.due))
+                {
+                    continue;
+                }
+                self.lookup.clear();
+                self.lookup.request(input.clone(), token.clone());
+                self.active = Some(input);
+                self.cursor = self.cursor.wrapping_add(1);
+                self.lookup.poll();
+                changed = true;
+                break;
+            }
+        }
+        changed
+    }
+
+    /// Pure cache read: opening a menu cannot launch Git, HTTPS or daemon requests.
+    pub fn present(&mut self, input: &Input, view: &mut Lookup, now: Instant) {
+        view.clear();
+        if let Some(entry) = self.entries.iter_mut().find(|entry| &entry.input == input) {
+            entry.used = now;
+            view.value = entry.value.clone();
+            view.message = entry.message.clone();
+            view.checked = Some(entry.checked);
+        } else {
+            if self.paused_until.is_some_and(|until| now < until) {
+                view.message = Some("GitHub requests paused after an authentication or rate-limit error; retrying automatically.".into());
+            } else {
+                view.loading = true;
+            }
+        }
+        if view.value.is_some() && view.message.is_some() {
+            view.message = Some("Refresh unavailable; retrying automatically.".into());
+        }
+    }
+}
+
 struct Worker {
-    requests: mpsc::SyncSender<(u64, Input)>,
-    results: mpsc::Receiver<(u64, Result)>,
+    requests: mpsc::SyncSender<(u64, Input, Arc<secrecy::SecretString>)>,
+    results: mpsc::Receiver<(u64, Result, Option<Duration>)>,
 }
 
 #[derive(Default)]
@@ -151,11 +357,12 @@ pub(super) struct Lookup {
     worker: Option<Worker>,
     generation: Arc<AtomicU64>,
     busy: bool,
-    waiting: Option<Input>,
+    waiting: Option<(Input, Arc<secrecy::SecretString>)>,
     pub loading: bool,
     pub value: Option<PullRequest>,
     pub message: Option<String>,
     pub checked: Option<Instant>,
+    cooldown: Option<Duration>,
 }
 
 impl Drop for Lookup {
@@ -167,16 +374,24 @@ impl Drop for Lookup {
 impl Lookup {
     pub fn clear(&mut self) {
         self.generation.fetch_add(1, Ordering::Relaxed);
+        // Sign-out also drains already-queued private results without scheduling
+        // more work. A still-running cancelled request is drained on a later tick.
+        if let Some(worker) = &self.worker
+            && worker.results.try_recv().is_ok()
+        {
+            self.busy = false;
+        }
         self.waiting = None;
         self.loading = false;
         self.value = None;
         self.message = None;
         self.checked = None;
+        self.cooldown = None;
     }
 
-    pub fn request(&mut self, input: Input) {
+    pub fn request(&mut self, input: Input, token: Arc<secrecy::SecretString>) {
         self.generation.fetch_add(1, Ordering::Relaxed);
-        self.waiting = Some(input);
+        self.waiting = Some((input, token));
         self.loading = true;
         self.message = None;
     }
@@ -185,11 +400,12 @@ impl Lookup {
         let mut changed = false;
         if let Some(worker) = &self.worker {
             match worker.results.try_recv() {
-                Ok((generation, result)) => {
+                Ok((generation, result, cooldown)) => {
                     self.busy = false;
                     if generation == self.generation.load(Ordering::Relaxed) {
                         self.loading = false;
                         self.checked = Some(Instant::now());
+                        self.cooldown = cooldown;
                         match result {
                             Ok(value) => {
                                 self.value = value;
@@ -204,7 +420,7 @@ impl Lookup {
                     self.busy = false;
                     self.loading = false;
                     self.waiting = None;
-                    self.message = Some("PR worker stopped. Reopen the menu to retry.".into());
+                    self.message = Some("PR worker stopped; retrying automatically.".into());
                     self.worker = None;
                     return true;
                 }
@@ -212,19 +428,25 @@ impl Lookup {
             }
         }
         if !self.busy
-            && let Some(input) = self.waiting.take()
+            && let Some((input, token)) = self.waiting.take()
         {
             if self.worker.is_none() {
-                let (requests, incoming) = mpsc::sync_channel::<(u64, Input)>(1);
+                let (requests, incoming) =
+                    mpsc::sync_channel::<(u64, Input, Arc<secrecy::SecretString>)>(1);
                 let (outgoing, results) = mpsc::sync_channel(1);
                 let current = self.generation.clone();
                 match thread::Builder::new()
                     .name("herdr-pr".into())
                     .spawn(move || {
-                        for (generation, input) in incoming {
-                            let result =
-                                fetch(&input, || current.load(Ordering::Relaxed) != generation);
-                            if outgoing.send((generation, result)).is_err() {
+                        for (generation, input, token) in incoming {
+                            let mut cooldown = None;
+                            let result = fetch_with_backoff(
+                                &input,
+                                &token,
+                                || current.load(Ordering::Relaxed) != generation,
+                                &mut cooldown,
+                            );
+                            if outgoing.send((generation, result, cooldown)).is_err() {
                                 break;
                             }
                         }
@@ -240,7 +462,7 @@ impl Lookup {
             if let Some(worker) = &self.worker {
                 self.busy = worker
                     .requests
-                    .try_send((self.generation.load(Ordering::Relaxed), input))
+                    .try_send((self.generation.load(Ordering::Relaxed), input, token))
                     .is_ok();
             }
         }
@@ -248,17 +470,81 @@ impl Lookup {
     }
 }
 
-fn fetch(input: &Input, cancelled: impl Fn() -> bool) -> Result {
+#[cfg(test)]
+fn fetch(input: &Input, token: &secrecy::SecretString, cancelled: impl Fn() -> bool) -> Result {
+    fetch_with_backoff(input, token, cancelled, &mut None)
+}
+
+fn fetch_with_backoff(
+    input: &Input,
+    token: &secrecy::SecretString,
+    cancelled: impl Fn() -> bool,
+    cooldown: &mut Option<Duration>,
+) -> Result {
     let deadline = Instant::now() + TIMEOUT;
-    if !Path::new(&input.checkout).is_absolute() || !Path::new(&input.repo_key).is_absolute() {
+    let (owner, repo) = local_repository(input, deadline, &cancelled)?;
+    let timeout = deadline
+        .checked_duration_since(Instant::now())
+        .ok_or("PR lookup timed out (15 seconds).")?;
+    let response = crate::github::graphql(
+        token,
+        QUERY,
+        serde_json::json!({"owner":owner,"repo":repo,"branch":input.branch}),
+        timeout,
+        cancelled,
+        cooldown,
+    )?;
+    parse_graphql(response, &owner, &repo, &input.branch)
+}
+
+pub(super) fn local_repository(
+    input: &Input,
+    deadline: Instant,
+    cancelled: &impl Fn() -> bool,
+) -> std::result::Result<(String, String), String> {
+    if input
+        .checkout
+        .as_ref()
+        .is_some_and(|path| !Path::new(path).is_absolute())
+        || !Path::new(&input.repo_key).is_absolute()
+    {
         return Err("Daemon did not provide an absolute checkout and repository key.".into());
     }
+    if input.branch.is_empty()
+        || input.branch.len() > 1024
+        || input.branch.chars().any(char::is_control)
+    {
+        return Err("No supported branch available.".into());
+    }
+    let checkout = match &input.checkout {
+        Some(path) => path.clone(),
+        None => {
+            // Older daemons lack workspace.get. Use Git's own worktree registry,
+            // never pane cwd or the daemon's new-workspace directory policy.
+            let mut command = Command::new("git");
+            command.args([
+                "-c",
+                "core.fsmonitor=false",
+                "--git-dir",
+                &input.repo_key,
+                "worktree",
+                "list",
+                "--porcelain",
+                "-z",
+            ]);
+            let (ok, output) = run(&mut command, deadline, cancelled)?;
+            if !ok {
+                return Err("Local repository unavailable for worktree lookup.".into());
+            }
+            worktree_checkout(&output, &input.branch)?
+        }
+    };
     let git = |args: &[&str]| {
         let mut command = Command::new("git");
         command
-            .args(["-c", "core.fsmonitor=false", "-C", &input.checkout])
+            .args(["-c", "core.fsmonitor=false", "-C", &checkout])
             .args(args);
-        run(&mut command, deadline, &cancelled).and_then(|(ok, output)| {
+        run(&mut command, deadline, cancelled).and_then(|(ok, output)| {
             if ok {
                 Ok(output.trim_end_matches(['\r', '\n']).to_owned())
             } else {
@@ -266,7 +552,7 @@ fn fetch(input: &Input, cancelled: impl Fn() -> bool) -> Result {
             }
         })
     };
-    // Never infer a checkout from a creation-policy cwd, group label, or branch name.
+    // A Git registry candidate still must match both repository and live HEAD.
     let common = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
     if Path::new(&common)
         .canonicalize()
@@ -277,21 +563,27 @@ fn fetch(input: &Input, cancelled: impl Fn() -> bool) -> Result {
         return Err("Local repository does not match daemon metadata.".into());
     }
     if git(&["symbolic-ref", "--quiet", "--short", "HEAD"])? != input.branch {
-        return Err("Checkout branch changed. Reopen the menu after the daemon updates.".into());
+        return Err("Checkout branch changed. Waiting for daemon metadata.".into());
     }
     let remote = git(&["config", "--get", "remote.origin.url"])?;
-    let (owner, repo) = crate::avatars::github_repo(&remote)
-        .ok_or("PR lookup supports GitHub.com origins only.")?;
-    let timeout = deadline
-        .checked_duration_since(Instant::now())
-        .ok_or("PR lookup timed out (15 seconds).")?;
-    let response = crate::github::graphql(
-        QUERY,
-        serde_json::json!({"owner":owner,"repo":repo,"branch":input.branch}),
-        timeout,
-        cancelled,
-    )?;
-    parse_graphql(response, &owner, &repo, &input.branch)
+    crate::avatars::github_repo(&remote)
+        .ok_or_else(|| "PR lookup supports GitHub.com origins only.".into())
+}
+
+fn worktree_checkout(output: &str, branch: &str) -> std::result::Result<String, String> {
+    let branch = format!("branch refs/heads/{branch}");
+    let mut paths = output.split("\0\0").filter_map(|record| {
+        let mut fields = record.split('\0');
+        let path = fields.next()?.strip_prefix("worktree ")?;
+        (Path::new(path).is_absolute() && fields.any(|field| field == branch)).then_some(path)
+    });
+    let path = paths
+        .next()
+        .ok_or("No local worktree matches the daemon branch.")?;
+    if paths.next().is_some() {
+        return Err("Multiple local worktrees match the daemon branch.".into());
+    }
+    Ok(path.into())
 }
 
 fn parse_graphql(response: serde_json::Value, owner: &str, repo: &str, branch: &str) -> Result {
@@ -462,17 +754,232 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
+    struct Peer {
+        cache: Cache,
+        incoming: mpsc::Receiver<(u64, Input, Arc<secrecy::SecretString>)>,
+        outgoing: mpsc::SyncSender<(u64, Result, Option<Duration>)>,
+    }
+
+    impl Peer {
+        fn new() -> Self {
+            let (requests, incoming) = mpsc::sync_channel(1);
+            let (outgoing, results) = mpsc::sync_channel(1);
+            let mut cache = Cache::default();
+            cache.lookup.worker = Some(Worker { requests, results });
+            cache.scope((0, 1, "boot".into()), Arc::new("fixture".into()));
+            Self {
+                cache,
+                incoming,
+                outgoing,
+            }
+        }
+
+        fn complete(&mut self, now: Instant, result: Result, cooldown: Option<Duration>) -> Input {
+            let (generation, input, _) = self.incoming.try_recv().unwrap();
+            self.outgoing.send((generation, result, cooldown)).unwrap();
+            self.cache.poll(now);
+            input
+        }
+    }
+
+    fn input(branch: &str) -> Input {
+        Input {
+            checkout: None,
+            repo_key: "/repo/.git".into(),
+            branch: branch.into(),
+        }
+    }
+
+    #[test]
+    fn cache_prefetches_without_menu_and_refreshes_at_ttl_with_stale_data() {
+        let mut peer = Peer::new();
+        let now = Instant::now();
+        let input = input("feature");
+        peer.cache.schedule([input.clone(), input.clone()], now);
+        assert_eq!(peer.cache.queue.len(), 1);
+        peer.cache.poll(now);
+        assert_eq!(
+            peer.complete(now, Ok(Some(fixture().unwrap())), None),
+            input
+        );
+        let mut view = Lookup::default();
+        peer.cache.present(&input, &mut view, now);
+        assert_eq!(view.value.as_ref().unwrap().number, 8);
+        assert!(!view.loading);
+        assert!(peer.incoming.try_recv().is_err(), "menu read is I/O free");
+        peer.cache
+            .schedule([input.clone()], now + REFRESH - Duration::from_secs(1));
+        peer.cache.poll(now + REFRESH - Duration::from_secs(1));
+        assert!(peer.incoming.try_recv().is_err());
+        let due = now + REFRESH;
+        peer.cache.schedule([input.clone()], due);
+        peer.cache.poll(due);
+        peer.cache.present(&input, &mut view, due);
+        assert!(
+            view.value.is_some(),
+            "refresh does not replace cached data with loading"
+        );
+        peer.complete(due, Err("network unavailable".into()), None);
+        peer.cache.present(&input, &mut view, due);
+        assert!(view.value.is_some());
+        assert!(view.message.is_some());
+        peer.cache.schedule(
+            [input.clone()],
+            due + ERROR_BACKOFF - Duration::from_secs(1),
+        );
+        assert!(peer.cache.queue.is_empty());
+        peer.cache.schedule([input.clone()], due + ERROR_BACKOFF);
+        peer.cache.poll(due + ERROR_BACKOFF);
+        peer.complete(due + ERROR_BACKOFF, Ok(None), None);
+        peer.cache.present(&input, &mut view, due + ERROR_BACKOFF);
+        assert!(view.value.is_none() && view.message.is_none() && !view.loading);
+        peer.cache.schedule([input], due + ERROR_BACKOFF);
+        assert!(
+            peer.cache.queue.is_empty(),
+            "negative results also have a TTL"
+        );
+    }
+
+    #[test]
+    fn cache_fences_auth_scope_removed_branch_and_late_results() {
+        let now = Instant::now();
+        for change in 0..6 {
+            let mut peer = Peer::new();
+            peer.cache.seed(input("cached"), fixture().unwrap(), now);
+            peer.cache.schedule([input("old")], now);
+            peer.cache.poll(now);
+            let (generation, _, _) = peer.incoming.try_recv().unwrap();
+            let token = peer.cache.token.as_ref().unwrap().clone();
+            match change {
+                0 => peer.cache.clear(), // sign-out/disconnect
+                1 => peer
+                    .cache
+                    .scope((0, 1, "boot".into()), Arc::new("other-account".into())),
+                2 => peer.cache.scope((1, 1, "boot".into()), token),
+                3 => peer.cache.scope((0, 2, "boot".into()), token),
+                4 => peer.cache.scope((0, 1, "new-boot".into()), token),
+                _ => peer.cache.retain(|input| input.branch == "new"),
+            }
+            assert!(peer.cache.entries.is_empty());
+            assert!(peer.cache.queue.is_empty());
+            peer.outgoing
+                .send((generation, Ok(Some(fixture().unwrap())), None))
+                .unwrap();
+            peer.cache.poll(now);
+            assert!(
+                peer.cache.entries.is_empty(),
+                "late result restored sensitive data: {change}"
+            );
+            assert!(peer.incoming.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn signout_drains_private_results_without_starting_queued_work() {
+        let mut peer = Peer::new();
+        let now = Instant::now();
+        peer.cache.schedule([input("active"), input("queued")], now);
+        peer.cache.poll(now);
+        let (generation, _, _) = peer.incoming.try_recv().unwrap();
+        peer.outgoing
+            .send((generation, Ok(Some(fixture().unwrap())), None))
+            .unwrap();
+        peer.cache.clear();
+        assert!(!peer.cache.lookup.busy);
+        assert!(
+            peer.cache
+                .lookup
+                .worker
+                .as_ref()
+                .unwrap()
+                .results
+                .try_recv()
+                .is_err()
+        );
+        assert!(peer.incoming.try_recv().is_err());
+        assert!(peer.cache.token.is_none());
+    }
+
+    #[test]
+    fn cache_is_bounded_lru_and_does_not_refetch_fresh_entries_under_pressure() {
+        let mut peer = Peer::new();
+        let now = Instant::now();
+        peer.cache
+            .schedule((0..CACHE_LIMIT * 2).map(|i| input(&i.to_string())), now);
+        assert_eq!(peer.cache.queue.len(), CACHE_LIMIT);
+        peer.cache.poll(now);
+        for _ in 0..CACHE_LIMIT {
+            peer.complete(now, Ok(None), None);
+        }
+        assert_eq!(peer.cache.entries.len(), CACHE_LIMIT);
+        assert!(peer.incoming.try_recv().is_err());
+        peer.cache.schedule([input("overflow")], now);
+        peer.cache.poll(now);
+        assert!(
+            peer.incoming.try_recv().is_err(),
+            "do not evict fresh data to hammer GitHub"
+        );
+        let mut view = Lookup::default();
+        peer.cache
+            .present(&input("0"), &mut view, now + Duration::from_secs(1));
+        peer.cache.schedule([input("overflow")], now + REFRESH);
+        peer.cache.poll(now + REFRESH);
+        peer.complete(now + REFRESH, Ok(None), None);
+        assert_eq!(peer.cache.entries.len(), CACHE_LIMIT);
+        assert!(peer.cache.entries.iter().any(|e| e.input.branch == "0"));
+        assert!(!peer.cache.entries.iter().any(|e| e.input.branch == "1"));
+        assert!(
+            peer.cache
+                .entries
+                .iter()
+                .any(|e| e.input.branch == "overflow")
+        );
+    }
+
+    #[test]
+    fn local_failures_do_not_starve_other_repos_but_rate_limits_pause_account() {
+        let mut peer = Peer::new();
+        let now = Instant::now();
+        peer.cache.schedule(
+            [input("local-error"), input("limited"), input("waiting")],
+            now,
+        );
+        peer.cache.poll(now);
+        assert_eq!(
+            peer.complete(now, Err("unsupported origin".into()), None)
+                .branch,
+            "local-error"
+        );
+        assert_eq!(
+            peer.complete(
+                now,
+                Err("rate limit".into()),
+                Some(Duration::from_secs(3600))
+            )
+            .branch,
+            "limited"
+        );
+        peer.cache.poll(now + Duration::from_secs(3599));
+        assert!(peer.incoming.try_recv().is_err());
+        let mut view = Lookup::default();
+        peer.cache.present(&input("waiting"), &mut view, now);
+        assert!(view.message.as_deref().unwrap().contains("paused"));
+        peer.cache.poll(now + Duration::from_secs(3600));
+        assert_eq!(
+            peer.complete(now + Duration::from_secs(3600), Ok(None), None)
+                .branch,
+            "waiting"
+        );
+    }
+
     #[test]
     fn parses_identity_lifecycle_and_check_categories() {
         let mut pr = fixture().unwrap();
-        assert_eq!(
-            pr.checks(),
-            "Checks: 1 passed / 1 failed / 1 pending / 0 skipped"
-        );
-        assert_eq!(pr.lifecycle(), "Open / Ready for review");
+        assert_eq!(pr.checks(), "1 passed / 1 failed / 1 pending");
+        assert_eq!(pr.lifecycle(), "Open");
         assert_eq!(pr.review(), "Review required");
         pr.is_draft = true;
-        assert_eq!(pr.lifecycle(), "Open / Draft");
+        assert_eq!(pr.lifecycle(), "Draft");
         pr.state = "MERGED".into();
         assert_eq!(pr.lifecycle(), "Merged");
         pr.state = "CLOSED".into();
@@ -486,10 +993,21 @@ mod tests {
             {"__typename":"CheckRun", "status":"COMPLETED", "conclusion":null}
         ]))
         .unwrap();
-        assert_eq!(
-            pr.checks(),
-            "Checks: 0 passed / 1 failed / 1 pending / 2 skipped"
-        );
+        assert_eq!(pr.checks(), "1 failed / 1 pending / 2 skipped");
+        for (state, label) in [
+            ("CLEAN", "No merge conflicts"),
+            ("DIRTY", "Merge conflicts"),
+            ("BEHIND", "Branch behind base"),
+            ("BLOCKED", "Merge blocked"),
+            ("UNSTABLE", "Checks need attention"),
+            ("DRAFT", "Not ready for review"),
+            ("HAS_HOOKS", "Merge hooks required"),
+            ("UNKNOWN", "Merge status unavailable"),
+            ("FUTURE_VALUE", "Merge status unavailable"),
+        ] {
+            pr.merge_state_status = state.into();
+            assert_eq!(pr.merge_status(), label);
+        }
     }
 
     fn response() -> serde_json::Value {
@@ -598,30 +1116,32 @@ mod tests {
     }
 
     #[test]
-    fn worker_discards_stale_results_and_caches_only_current_menu() {
+    fn worker_discards_stale_results_and_runs_only_requested_jobs() {
         let (requests, incoming) = mpsc::sync_channel(1);
         let (outgoing, results) = mpsc::sync_channel(1);
         let mut lookup = Lookup::default();
         lookup.worker = Some(Worker { requests, results });
         let input = Input {
-            checkout: "/fixture".into(),
+            checkout: Some("/fixture".into()),
             repo_key: "/fixture/.git".into(),
             branch: "feature".into(),
         };
-        lookup.request(input.clone());
+        lookup.request(input.clone(), Arc::new("fixture".into()));
         lookup.poll();
-        let (old, _) = incoming.try_recv().unwrap();
+        let (old, _, _) = incoming.try_recv().unwrap();
         lookup.clear();
-        lookup.request(input);
+        lookup.request(input, Arc::new("fixture".into()));
         lookup.poll();
         assert!(incoming.try_recv().is_err(), "single in-flight request");
-        outgoing.send((old, Ok(Some(fixture().unwrap())))).unwrap();
+        outgoing
+            .send((old, Ok(Some(fixture().unwrap())), None))
+            .unwrap();
         lookup.poll();
         assert!(lookup.value.is_none());
         assert!(lookup.loading);
-        let (current, _) = incoming.try_recv().unwrap();
+        let (current, _, _) = incoming.try_recv().unwrap();
         outgoing
-            .send((current, Ok(Some(fixture().unwrap()))))
+            .send((current, Ok(Some(fixture().unwrap())), None))
             .unwrap();
         assert!(lookup.poll());
         assert!(!lookup.loading);
@@ -630,6 +1150,29 @@ mod tests {
         assert!(incoming.try_recv().is_err(), "no automatic polling");
         lookup.clear();
         assert!(lookup.value.is_none());
+    }
+
+    #[test]
+    fn worktree_registry_requires_unique_exact_branch_and_absolute_checkout() {
+        let entry = "worktree /repo with spaces\nline\0HEAD abc\0branch refs/heads/feature\0\0";
+        assert_eq!(
+            worktree_checkout(entry, "feature").unwrap(),
+            "/repo with spaces\nline"
+        );
+        assert!(worktree_checkout(entry, "feat").is_err());
+        assert!(
+            worktree_checkout(&entry.repeat(2), "feature")
+                .unwrap_err()
+                .contains("Multiple")
+        );
+        for invalid in [
+            "worktree relative\0branch refs/heads/feature\0\0",
+            "worktree /repo\0HEAD abc\0detached\0\0",
+            "worktree /repo\0branch refs/remotes/feature\0\0",
+            "worktree /repo\0bare\0\0",
+        ] {
+            assert!(worktree_checkout(invalid, "feature").is_err());
+        }
     }
 
     #[test]
@@ -649,6 +1192,12 @@ mod tests {
         assert_eq!(
             run(&mut command, deadline(), &|| false).unwrap(),
             (false, "failure".into())
+        );
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf '\\377'"]);
+        assert!(
+            run(&mut command, deadline(), &|| false).is_err(),
+            "non-UTF8 Git paths must fail closed, not be lossily mapped"
         );
         assert!(
             run(&mut Command::new("/usr/bin/yes"), deadline(), &|| false)
@@ -722,30 +1271,53 @@ mod tests {
             "https://unsupported.invalid/example/project.git",
         ]);
         let mut input = Input {
-            checkout: directory.0.to_str().unwrap().into(),
+            checkout: Some(directory.0.to_str().unwrap().into()),
             repo_key: directory.0.join(".git").to_str().unwrap().into(),
             branch: "feature".into(),
         };
         assert!(
-            fetch(&input, || false)
+            fetch(&input, &"fixture".into(), || false)
                 .unwrap_err()
                 .contains("GitHub.com origins only")
         );
+        let mut registry_input = input.clone();
+        registry_input.checkout = None;
+        assert!(
+            fetch(&registry_input, &"fixture".into(), || false)
+                .unwrap_err()
+                .contains("GitHub.com origins only")
+        );
+        git(&[
+            "config",
+            "--local",
+            "remote.origin.url",
+            "https://github.com/example/project.git",
+        ]);
+        assert_eq!(
+            local_repository(&registry_input, Instant::now() + TIMEOUT, &|| false).unwrap(),
+            ("example".into(), "project".into())
+        );
+        registry_input.branch = "missing".into();
+        assert!(
+            local_repository(&registry_input, Instant::now() + TIMEOUT, &|| false)
+                .unwrap_err()
+                .contains("No local worktree")
+        );
         input.branch = "other".into();
         assert!(
-            fetch(&input, || false)
+            fetch(&input, &"fixture".into(), || false)
                 .unwrap_err()
                 .contains("branch changed")
         );
         input.repo_key = directory.0.to_str().unwrap().into();
         assert!(
-            fetch(&input, || false)
+            fetch(&input, &"fixture".into(), || false)
                 .unwrap_err()
                 .contains("does not match daemon metadata")
         );
-        input.checkout = "relative".into();
+        input.checkout = Some("relative".into());
         assert!(
-            fetch(&input, || false)
+            fetch(&input, &"fixture".into(), || false)
                 .unwrap_err()
                 .contains("absolute checkout")
         );

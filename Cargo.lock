@@ -994,6 +994,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "config"
+version = "0.15.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b85f248a4de22d204ceabc6299d89d2c70fbd7f09fea53c06c852369652d8139"
+dependencies = [
+ "pathdiff",
+ "serde_core",
+ "toml 1.1.6+spec-1.1.0",
+ "winnow 1.0.4",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2479,20 +2491,24 @@ name = "herdr-gpui"
 version = "0.1.0"
 dependencies = [
  "cocoa 0.26.0",
+ "config",
  "core-graphics 0.24.0",
  "foreign-types",
  "gpui",
  "herdr-client",
- "libc",
+ "image",
+ "nix 0.31.3",
  "objc",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "raw-window-handle",
+ "rustix 1.1.5",
  "secrecy",
  "security-framework",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "toml 0.8.23",
  "toml_edit 0.22.27",
  "unicode-segmentation",
@@ -3414,6 +3430,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset",
 ]
 
 [[package]]
@@ -3829,6 +3846,12 @@ name = "pastey"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
+
+[[package]]
+name = "pathdiff"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 
 [[package]]
 name = "pathfinder_geometry"

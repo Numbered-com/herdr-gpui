@@ -22,3 +22,14 @@ size = 14
 [ui]
 family = ".SystemUIFont"
 size = 12
+
+# Native GitHub sign-in uses the public Herdr GPUI GitHub App by default.
+# Optionally override with your own Device Flow-enabled app's public client ID.
+# Never put an App ID, client secret, private key, or token here.
+# HERDR_GITHUB_OAUTH_CLIENT_ID overrides this field when set.
+# [github]
+# oauth_client_id = "YOUR_REGISTERED_PUBLIC_CLIENT_ID"
+# Linux only: explicit opt-in when an OS credential store is not available.
+# WARNING: saves an UNENCRYPTED token in the separate 0600 github-credentials file.
+# Other software running as you and backups can read it. Default is false.
+# allow_plaintext_credentials = false

@@ -16,10 +16,14 @@ serde.workspace = true
 serde_json.workspace = true
 unicode-segmentation.workspace = true
 toml.workspace = true
+config_loader.workspace = true
 toml_edit.workspace = true
 ureq.workspace = true
 secrecy.workspace = true
 zeroize.workspace = true
+rustix.workspace = true
+sha2.workspace = true
+image.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
@@ -28,8 +32,8 @@ gpui = { workspace = true, features = ["test-support"] }
 integration-test = ["dep:cocoa", "dep:objc", "dep:core-graphics", "dep:foreign-types", "dep:raw-window-handle"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
+nix.workspace = true
 security-framework.workspace = true
-libc.workspace = true
 objc2.workspace = true
 objc2-app-kit.workspace = true
 objc2-foundation.workspace = true

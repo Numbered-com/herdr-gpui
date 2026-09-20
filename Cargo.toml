@@ -26,14 +26,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 unicode-segmentation = "1"
 toml = "0.8"
+config_loader = { package = "config", version = "0.15.25", default-features = false, features = ["toml"] }
 toml_edit = "0.22"
 ureq = "3"
 security-framework = "=3.7.0"
 secrecy = { version = "=0.10.3", features = ["serde"] }
 zeroize = "=1.9.0"
+sha2 = "0.10.9"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 bincode = { version = "2", default-features = false, features = ["std", "serde"] }
 crossbeam-channel = "0.5"
-libc = "0.2"
+rustix = { version = "=1.1.5", features = ["fs", "process"] }
+nix = { version = "=0.31.3", default-features = false, features = ["socket", "user"] }
 cocoa = "0.26"
 objc = "0.2"
 core-graphics = "0.24"

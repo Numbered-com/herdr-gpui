@@ -71,14 +71,14 @@ impl ConnectionBridge {
                     {
                         state.daemon_starting();
                     }
-                });
-                if let Ok(stream) = &result {
-                    let local = crate::daemon::is_local_peer(stream);
+                })
+                .map(|(stream, local)| {
                     if let Ok(mut state) = startup_inbox.lock() {
                         state.local_daemon_peer = local;
                         state.dirty = true;
                     }
-                }
+                    stream
+                });
                 if result
                     .as_ref()
                     .is_err_and(crate::daemon::is_missing_installation)

@@ -45,6 +45,27 @@ impl ConnectTarget {
         self.socket_path_with(|name| env::var_os(name))
     }
 
+    /// Standard session endpoint, ignoring socket overrides (including `Socket`).
+    /// This identifies a user-configured local location, not a daemon executable.
+    pub fn local_session_socket_path(&self) -> io::Result<PathBuf> {
+        self.local_session_socket_path_with(|name| env::var_os(name))
+    }
+
+    fn local_session_socket_path_with(
+        &self,
+        var: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> io::Result<PathBuf> {
+        let target = if matches!(self, Self::Socket(_)) {
+            &Self::Local
+        } else {
+            self
+        };
+        target.socket_path_with(|name| match name {
+            "HERDR_SOCKET_PATH" | "HERDR_CLIENT_SOCKET_PATH" => None,
+            _ => var(name),
+        })
+    }
+
     fn socket_path_with(
         &self,
         var: impl Fn(&str) -> Option<std::ffi::OsString>,
@@ -97,6 +118,46 @@ impl ConnectTarget {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_origin_ignores_overrides_but_preserves_session_and_os_paths() {
+        use std::os::unix::ffi::OsStringExt;
+        let root = std::ffi::OsString::from_vec(b"/config-\xff".to_vec());
+        let var = |name: &str| match name {
+            "XDG_CONFIG_HOME" => Some(root.clone()),
+            "HERDR_SESSION" => Some("work".into()),
+            "HERDR_SOCKET_PATH" => Some("/forwarded/herdr.sock".into()),
+            "HERDR_CLIENT_SOCKET_PATH" => Some("/forwarded-client.sock".into()),
+            _ => None,
+        };
+        let expected = PathBuf::from(&root).join("herdr/sessions/work/herdr-client.sock");
+        for target in [
+            ConnectTarget::Local,
+            ConnectTarget::Socket(expected.clone()),
+            ConnectTarget::Socket("/forwarded.sock".into()),
+        ] {
+            assert_eq!(
+                target.local_session_socket_path_with(var).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            ConnectTarget::Session {
+                name: "default".into(),
+                development: true
+            }
+            .local_session_socket_path_with(var)
+            .unwrap(),
+            PathBuf::from(&root).join("herdr-dev/herdr-client.sock")
+        );
+        assert!(
+            ConnectTarget::Ssh {
+                target: "host".into(),
+                session: "work".into()
+            }
+            .local_session_socket_path_with(var)
+            .is_err()
+        );
+    }
     #[test]
     fn inherited_socket_precedence_and_environment_changes() {
         let resolve = |target: &ConnectTarget, api: Option<&str>, client: Option<&str>| {

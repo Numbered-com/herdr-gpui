@@ -322,6 +322,7 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
     HerdrWindow {
         config: Default::default(),
         theme: Default::default(),
+        config_load: None,
         sidebar_visible: true,
         endpoints: vec![crate::endpoint::Endpoint::new(
             crate::endpoint::LOCAL.into(),
@@ -734,12 +735,13 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     crate::menu::workspace_tests::check_pr_fences(&view, cx);
     for width in [320., 800.] {
         cx.simulate_resize(size(px(width), px(600.)));
-        for state in 0..4 {
+        for state in 0..5 {
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
                     view.menu.pr.clear();
                     view.menu.pr.loading = state == 0;
                     if state >= 2 {
+                        view.menu.github = crate::github::Auth::connected_fixture();
                         view.menu.pr.value = Some(crate::pull_request::fixture().unwrap());
                     }
                     if state == 3 {
@@ -752,6 +754,10 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
             let panel = cx.debug_bounds("menu-panel").unwrap();
             assert!(panel.left() >= px(0.) && panel.right() <= px(width));
             assert!(panel.bottom() <= px(600.));
+            assert!(
+                panel.size.height < px(320.),
+                "PR menu should size to its content: {panel:?}"
+            );
             assert!(cx.debug_bounds("workspace-pr").is_some());
             if state >= 2 {
                 let title = cx.debug_bounds("workspace-pr-title").unwrap();
@@ -963,24 +969,73 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     let close = cx.debug_bounds("preferences-close").unwrap();
     cx.simulate_click(close.center(), Default::default());
     cx.update(|window, cx| assert!(view.read(cx).focus.is_focused(window)));
-    for width in [320., 800.] {
-        cx.simulate_resize(size(px(width), px(600.)));
-        for waiting in [false, true] {
+    for width in [320., 640., 1200.] {
+        cx.simulate_resize(size(px(width), px(400.)));
+        for state in 0..4 {
             cx.update(|window, cx| {
-                view.update(cx, |view, cx| view.github_fixture(waiting, window, cx));
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string("unchanged".into()));
+                cx.default_global::<PaintedProbes>().0.clear();
+                view.update(cx, |view, cx| {
+                    view.github_fixture(state == 1, window, cx);
+                    if state == 2 {
+                        view.menu.github.failed = true;
+                        view.menu.github.message =
+                            Some("GitHub code expired. Sign in again. ".repeat(40));
+                    } else if state == 3 {
+                        view.menu.github = crate::github::Auth::connected_fixture();
+                    } else if state == 4 {
+                        view.menu.github = crate::github::Auth::requesting_fixture();
+                    }
+                });
                 window.draw(cx).clear();
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().as_deref(),
+                    Some("unchanged")
+                );
+                assert_eq!(
+                    cx.global::<PaintedProbes>().0.contains_key("Sign out (D)"),
+                    state == 3
+                );
             });
             let panel = cx.debug_bounds("menu-panel").unwrap();
             assert!(panel.left() >= px(0.) && panel.right() <= px(width));
-            assert!(panel.bottom() <= px(600.));
-            if waiting {
+            assert!(panel.bottom() <= px(400.));
+            let footer = cx.debug_bounds("github-footer").unwrap();
+            let body = cx.debug_bounds("github-body").unwrap();
+            assert!(body.size.height > px(0.));
+            assert!(body.bottom() <= footer.top());
+            assert!(footer.bottom() <= panel.bottom());
+            if state == 1 {
                 let code = cx.debug_bounds("github-device-code").unwrap();
                 assert!(code.left() >= panel.left() && code.right() <= panel.right());
+                let copy = cx.debug_bounds("github-copy").unwrap();
+                cx.simulate_click(copy.center(), Default::default());
+                cx.update(|_, cx| {
+                    assert_eq!(
+                        cx.read_from_clipboard().unwrap().text().as_deref(),
+                        Some("ABCD-1234")
+                    );
+                    assert!(view.read(cx).menu.github.copied());
+                });
+                cx.simulate_keystrokes("tab enter");
+                cx.update(|_, cx| assert!(view.read(cx).menu.github.copied()));
+                cx.simulate_keystrokes("cmd-c");
+                let open = cx.debug_bounds("github-open").unwrap();
+                cx.simulate_click(open.center(), Default::default());
+                assert_eq!(cx.opened_url().as_deref(), Some(crate::github::VERIFY_URL));
+            } else if state == 2 {
+                let status = cx.debug_bounds("github-status").unwrap();
+                cx.simulate_keystrokes("pagedown");
+                cx.update(|window, cx| window.draw(cx).clear());
+                assert!(cx.debug_bounds("github-status").unwrap().top() < status.top());
+                assert_eq!(cx.debug_bounds("github-footer").unwrap(), footer);
             }
             cx.simulate_keystrokes("c escape");
             cx.update(|window, cx| {
                 assert!(view.read(cx).menu.page.is_none());
                 assert!(view.read(cx).focus.is_focused(window));
+                assert!(view.read(cx).menu.github.code().is_none());
+                assert!(!view.read(cx).menu.github.copied());
             });
         }
     }

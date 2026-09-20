@@ -82,6 +82,8 @@ impl HerdrWindow {
             Ok(theme)
         }) {
             Ok(theme) => {
+                // A pending reload must not replace this newer explicit choice.
+                self.config_load = None;
                 self.config.theme = name.into();
                 self.theme = theme;
                 self.dismiss_menu(window, cx);

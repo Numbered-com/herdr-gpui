@@ -41,7 +41,9 @@ pub struct LiveState {
     pub status: ConnectionStatus,
     pub error: Option<String>,
     pub missing_installation: bool,
+    /// Same-user peer at the owned standard socket, not executable attestation.
     pub(crate) local_daemon_peer: bool,
+    pub(crate) supports_workspace_get: bool,
     pub dirty: bool,
     pub(crate) dialog_response: Option<(String, Option<Result<serde_json::Value, String>>)>,
     agent_presentation: AgentPresentation,
@@ -69,6 +71,7 @@ impl Default for LiveState {
             error: None,
             missing_installation: false,
             local_daemon_peer: false,
+            supports_workspace_get: false,
             dirty: true,
             dialog_response: None,
             agent_presentation: AgentPresentation::default(),
@@ -171,6 +174,10 @@ impl LiveState {
     pub fn apply(&mut self, event: ClientEvent) {
         match event {
             ClientEvent::Connected(welcome) => {
+                self.supports_workspace_get = welcome
+                    .methods
+                    .iter()
+                    .any(|method| method == "workspace.get");
                 self.supports_surface = welcome
                     .methods
                     .iter()

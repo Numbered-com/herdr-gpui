@@ -7,7 +7,9 @@ daemons, spawn a local PTY, or emulate a terminal. Herdr's remote bridge may sta
 the named remote session. SSH requires an installed POSIX Herdr, noninteractive authentication,
 and an already trusted host key.
 Runtime dependencies include GPUI, `herdr-client`, `serde_json` for API parameters,
-`ureq` for background GitHub owner avatar downloads, and `serde`/`toml` for GUI configuration.
+`ureq` for background GitHub owner avatar downloads, and `serde`/`config` (aliased
+as `config_loader`, TOML-only) for GUI configuration. `toml` preserves strict
+field types during deserialization; `toml_edit` preserves comments on theme saves.
 
 ```sh
 cargo run -p herdr-gpui
@@ -76,7 +78,10 @@ built-ins or Ghostty files into a `Theme` with packed 24-bit RGB colors and all
 256 palette entries. Theme resolution is a separate fallible step from loading
 and validating TOML. Font sections can override either family or size without
 repeating the other field. `FontConfig::line_height()` returns `size * 20 / 14`.
-Config and theme I/O is synchronous; GUI callers should schedule it accordingly.
+Config and theme I/O is synchronous; startup and reload schedule it on the GPUI
+background executor and apply the validated pair together. Failed reloads retain
+current settings. Theme selection cancels pending reload application so a delayed
+load cannot overwrite the newer selection.
 
 ## Supported
 
@@ -86,6 +91,10 @@ Config and theme I/O is synchronous; GUI callers should schedule it accordingly.
 - Resizable sidebar with width persisted per local daemon socket, shared across
   host groups. Local workspace titles show repository owner avatars; remote
   workspaces use the GitHub fallback mark without resolving remote paths locally.
+  Profile and owner avatars share a bounded public-image disk cache with 24-hour
+  stale-while-refresh behavior; see [avatar caching](../../README.md#native-github-sign-in)
+  for limits, location, and the startup authentication requirement. Neither cache
+  reads nor downloads block rendering; sign-out discards profile refresh results.
 - In-app sidebar menu for settings information, keybinds, config reload, update
   information, and detach/reconnect. Styled Preferences include Appearance,
   Fonts, Configuration, and Connection sections, with theme selection and GUI
@@ -101,21 +110,49 @@ Config and theme I/O is synchronous; GUI callers should schedule it accordingly.
   cancels; dialog input never reaches terminals or native creation actions.
   Context menus and dialogs anchor to the pointer and clamp to the viewport.
   Rename trims surrounding whitespace and rejects blank labels inline.
-- Workspace menus include a divided, read-only PR summary with Open PR and
-  Refresh (also O/R). A bounded background Git/native HTTPS GraphQL lookup uses an authoritative
-  daemon checkout, validated local identity, and explicit GitHub repository/head.
+- Signed-in workspace menus include a compact, divided PR summary. The number/title
+  is the last selectable menu action: click it or use arrows and Enter to open the
+   validated URL. Cache-only menu opening shows prefetched results immediately,
+   or loading for an initial miss; no separate Open/Refresh controls or O/R shortcuts.
+   One background Git/native HTTPS GraphQL worker refreshes eligible Local workspace
+   metadata every 90 seconds, with a 128-entry LRU cache, 128 queued jobs, and
+   alternating open/focused priority and round-robin scheduling. Failed refreshes
+   retain successful data. Ordinary failures back off five minutes; auth/rate-limit
+   errors pause the account for an hour by default, honoring numeric retry/reset
+   hints within five minutes to 24 hours. Auth/endpoint generations fence late results.
+   Discovery uses the daemon repository key and exact branch to resolve a unique
+   Git worktree, followed by common-directory/current-branch checks and an explicit
+   GitHub repository/head query. It never occupies the deletion dialog response slot.
   On macOS, all socket modes (including explicit/inherited sockets) require a
-  same-user kernel peer whose executable matches the installed Herdr. Forwarders
-  and unverifiable peers remain unsupported; reconnect rechecks identity. See
+  same-user kernel peer at the standard configured session socket, with owned,
+  non-group/world-writable socket and parent. Executable upgrades/removal do not
+  invalidate this local endpoint trust. SSH and sockets elsewhere remain blocked;
+  a same-user proxy deliberately replacing the trusted socket is not detectable.
+  Reconnect rechecks the endpoint. See
   [PR lookup scope and limits](../../README.md) for authentication and remote limits.
-- Native GitHub device sign-in is available in the sidebar menu and PR section,
-  using `HERDR_GITHUB_OAUTH_CLIENT_ID` (your own Device Flow-enabled OAuth app).
+   The same worktree-registry path supports both current and older daemons without
+   `workspace.get`. No Git or HTTP requests run from menu-open or render paths.
+- The top-right titlebar profile control starts native GitHub device sign-in on
+  a signed-out click, shows the authenticated user's avatar, and offers Sign out
+  on right-click. Signed-out workspace menus have no GitHub section or requests.
+  It uses Herdr GPUI's public client ID `Iv23liurUcwxPjrdIFYT`, overridden by
+  `[github].oauth_client_id`, then `HERDR_GITHUB_OAUTH_CLIENT_ID`. No client secret
+  or private key is needed or shipped. The compact native macOS titlebar design
+  is integrated from main commit `3909f21`, without unrelated tab changes.
   Tokens use this app's macOS Keychain entry; `GH_TOKEN` / `GITHUB_TOKEN` override
   it. Access tokens and retained device/user codes use redacted, zeroizing
   `secrecy` types; HTTP headers are sensitive and application-owned raw OAuth
   buffers are wiped. The user code is intentionally exposed for rendering.
-  Library/OS/rendering copies are not guaranteed to be erased. No CLI
-  authentication or plaintext credential files are used. See
+  Library/OS/rendering copies are not guaranteed to be erased. Linux supports an
+  explicit `allow_plaintext_credentials = true` opt-in with a prominent warning,
+  separate private credential file and atomic no-follow Unix writes. macOS still
+  uses Keychain. Sign-out suppresses environment tokens for this app session and
+  fences late profile/avatar/PR results. Plaintext policy reloads re-evaluate the
+  active credential, without reactivating an explicitly signed-out session.
+  Disabling plaintext stops its session use but keeps the file; explicit sign-out
+  still removes the saved file regardless of opt-in, or reports a safe error.
+  Token refresh is not implemented; an
+  expired GitHub App token requires reauthentication. No CLI authentication is used. See
   [setup, cancellation, scopes, and sign-out](../../README.md#native-github-sign-in).
 - Workspace actions retain the clicked ID and boot, revalidate before queueing,
   and reject changed close-group membership. Reconnect clears dialogs. Queue

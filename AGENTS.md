@@ -47,7 +47,8 @@ Closing or detaching the GUI must leave the daemon and its terminals running.
 - Prefer typed request/result structures when shapes are known. Preserve genuinely open-ended protocol envelopes rather than forcing a speculative schema.
 - Derive standard traits such as `Default`, `PartialEq`, and `Eq` where their semantics are valid. Compare complete values when deduplicating operations.
 - Propagate errors with `?`; retain actionable categories and source/context until the display boundary. Implement meaningful `Display` and `Error`, not debug-only user messages. Do not add error-framework dependencies for trivial wrapping.
-- No `unwrap()` or `expect()` in production. Test-only allowances must be scoped to test code. Keep unsafe exceptions narrow and document their safety conditions.
+- No `unwrap()` or `expect()` in production. Test-only allowances must be scoped to test code.
+- Prefer safe Rust. Do not introduce `unsafe` unless there is no practical safe alternative; investigate standard-library APIs and maintained safe wrappers first. Any unavoidable exception must be tightly scoped and document both why safe alternatives are insufficient and the safety invariants.
 - Prefer guard clauses and readable iterators. Avoid clones, allocations, helper layers, and generic parameters that provide no benefit.
 - Comments should explain invariants, ownership, or non-obvious decisions, not narrate assignments.
 

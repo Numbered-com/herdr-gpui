@@ -215,7 +215,8 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
             ] {
                 let point = handle.update(cx, |view, window, cx| {
                     view.live.status = ConnectionStatus::Connected;
-                    view.sidebar_scroll[0].set_offset(point(px(0.), px(if action == menu::WorkspaceAction::DeleteWorktree { -100. } else { 0. })));
+                    // Keep the clicked row inside the scroll viewport below the native titlebar.
+                    view.sidebar_scroll[0].set_offset(point(px(0.), px(if action == menu::WorkspaceAction::DeleteWorktree { -140. } else { -80. })));
                     cx.default_global::<sidebar::layout_tests::PaintedProbes>().0.clear();
                     cx.notify();
                     window.refresh();
@@ -243,9 +244,9 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     let view = root.downcast::<HerdrWindow>().map_err(|_| "unexpected root")?;
                     if view.read(cx).menu.page != Some(menu::Page::Workspace) { return Err("right click did not open workspace menu".into()); }
                     view.update(cx, |view, _| -> Result<(), String> {
-                        view.menu.pr.clear();
-                        view.menu.pr.value = Some(pull_request::fixture()?);
-                        Ok(())
+                        let mut pr = pull_request::fixture()?;
+                        pr.head_ref_name = "feature/a-deliberately-long-branch-name-for-the-compact-popover".repeat(3);
+                        view.workspace_pr_fixture(pr)
                     })?;
                     cx.default_global::<sidebar::layout_tests::PaintedProbes>().0.clear();
                     window.draw(cx).clear();
@@ -260,6 +261,14 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     }
                     if !probes.contains_key("+1730") || !probes.contains_key("-31") || !probes.keys().any(|text| text.starts_with("#8 ")) {
                         return Err("native PR summary was not painted".into());
+                    }
+                    let title = probes.iter().find(|(text, _)| text.starts_with("#8 ")).map(|(_, probe)| probe).ok_or("missing PR title")?;
+                    let additions = probes.get("+1730").ok_or("missing PR additions")?;
+                    if additions.bounds.bottom() - title.bounds.top() > px(160.)
+                        || additions.bounds.bottom() > window.viewport_size().height
+                        || title.bounds.right() > window.viewport_size().width
+                    {
+                        return Err("native PR summary is oversized or outside the viewport".into());
                     }
                     let before = view.read(cx).input_probe;
                     for key in keys.split(' ') {
@@ -299,16 +308,29 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
         for (width, height) in [(640., 400.), (1200., 780.)] {
             let _ = handle.update(cx, |_, window, _| window.resize(size(px(width), px(height))));
             timer.timer(Duration::from_millis(100)).await;
-            for waiting in [false, true] {
+            for state in 0..5 {
                 let result = AnyWindowHandle::from(handle).update(cx, |root, window, cx| -> Result<(), String> {
                     let view = root.downcast::<HerdrWindow>().map_err(|_| "unexpected root")?;
-                    view.update(cx, |view, cx| view.github_fixture(waiting, window, cx));
+                    view.update(cx, |view, cx| {
+                        view.github_fixture(state == 1, window, cx);
+                        if state == 2 {
+                            view.menu.github.failed = true;
+                            view.menu.github.message = Some("GitHub code expired. Sign in again. ".repeat(40));
+                        } else if state == 3 {
+                            view.menu.github = github::Auth::connected_fixture();
+                        } else if state == 4 {
+                            view.menu.github = github::Auth::requesting_fixture();
+                        }
+                    });
                     cx.default_global::<sidebar::layout_tests::PaintedProbes>().0.clear();
                     window.draw(cx).clear();
-                    if waiting {
-                        let probe = cx.global::<sidebar::layout_tests::PaintedProbes>().0.get("Code: ABCD-1234").ok_or("GitHub device code not painted")?;
-                        if probe.clipped || probe.glyph_text != "Code: ABCD-1234" { return Err("GitHub device code clipped".into()); }
+                    if state == 1 {
+                        let probe = cx.global::<sidebar::layout_tests::PaintedProbes>().0.get("ABCD-1234").ok_or("GitHub device code not painted")?;
+                        if probe.clipped || probe.glyph_text != "ABCD-1234" { return Err("GitHub device code clipped".into()); }
                     }
+                    let label = if state == 1 || state == 4 { "Cancel (Esc)" } else { "Close (Esc)" };
+                    let footer = cx.global::<sidebar::layout_tests::PaintedProbes>().0.get(label).ok_or("missing GitHub footer")?;
+                    if footer.clipped || footer.glyph_text != label || footer.bounds.bottom() > window.viewport_size().height { return Err("GitHub footer clipped".into()); }
                     let before = view.read(cx).input_probe;
                     window.dispatch_keystroke(Keystroke::parse("c").map_err(|e| e.to_string())?, cx);
                     window.dispatch_keystroke(Keystroke::parse("escape").map_err(|e| e.to_string())?, cx);
@@ -394,14 +416,44 @@ async fn sidebar_hosts(handle: WindowHandle<HerdrWindow>, cx: &mut AsyncApp) -> 
         .map_err(|e| e.to_string())?;
     cx.update(|cx| cx.activate(true))
         .map_err(|e| e.to_string())?;
-    cx.background_executor()
-        .timer(Duration::from_millis(100))
-        .await;
+    decoy
+        .update(cx, |_, window, _| window.activate_window())
+        .map_err(|e| e.to_string())?;
+    // GPUI schedules AppKit activation. Wait for its result, not a guessed delay
+    // followed by a synchronous makeKeyWindow call on a possibly unordered window.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let target = decoy
+            .update(cx, |_, window, _| Target::acquire(window))
+            .map_err(|e| e.to_string())??;
+        let key = target.is_key();
+        drop(target);
+        let resized = handle
+            .update(cx, |_, window, _| {
+                window.viewport_size() == size(px(480.), px(780.))
+            })
+            .map_err(|e| e.to_string())?;
+        if key && resized {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let mtm =
+                objc2::MainThreadMarker::new().ok_or("fixture activation requires main thread")?;
+            let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+            return Err(format!(
+                "decoy activation/resize deadline: key={key}, resized={resized}, app_active={}, app_hidden={}",
+                app.isActive(),
+                app.isHidden()
+            ));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(10))
+            .await;
+    }
     // The decoy is deliberately key. Neither acquisition nor delivery may use it.
     let target = decoy
         .update(cx, |_, window, _| Target::acquire(window))
         .map_err(|e| e.to_string())??;
-    target.make_key();
     if !target.is_key() {
         return Err("decoy did not become key".into());
     }

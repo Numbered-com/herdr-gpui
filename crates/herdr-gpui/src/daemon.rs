@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use herdr_client::ConnectTarget;
 use std::{
     env, io,
@@ -38,9 +40,9 @@ pub fn connect(
     target: &ConnectTarget,
     stop: &AtomicBool,
     on_start: impl FnOnce(),
-) -> io::Result<UnixStream> {
+) -> io::Result<(UnixStream, bool)> {
     let socket = target.socket_path()?;
-    connect_or_start(
+    let stream = connect_or_start(
         &socket,
         stop,
         Duration::from_secs(20),
@@ -61,7 +63,9 @@ pub fn connect(
                     ..
                 }
         ),
-    )
+    )?;
+    let local = is_local_peer(&stream, target, &socket);
+    Ok((stream, local))
 }
 
 fn executable() -> PathBuf {
@@ -83,66 +87,51 @@ fn executable() -> PathBuf {
         .unwrap_or_else(|| "herdr".into())
 }
 
-/// Inspect the connected peer, not its socket pathname (which may be a tunnel).
-pub(super) fn is_local_peer(stream: &UnixStream) -> bool {
+/// Trust the user's standard local endpoint, not an upgrade-sensitive executable.
+/// A same-user proxy deliberately installed at that endpoint is within this trust
+/// boundary; this is not remote-origin attestation.
+fn is_local_peer(stream: &UnixStream, target: &ConnectTarget, socket: &Path) -> bool {
     #[cfg(target_os = "macos")]
     {
-        peer_matches_executable(stream, &executable())
+        target
+            .local_session_socket_path()
+            .is_ok_and(|expected| peer_matches_local_endpoint(stream, socket, &expected))
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = stream;
+        let _ = (stream, target, socket);
         false
     }
 }
 
 #[cfg(target_os = "macos")]
-fn peer_matches_executable(stream: &UnixStream, executable: &Path) -> bool {
-    use std::os::{
-        fd::AsRawFd,
-        unix::{ffi::OsStrExt, fs::MetadataExt},
-    };
-
-    let mut pid: libc::pid_t = 0;
-    let mut size = size_of_val(&pid) as libc::socklen_t;
-    let mut uid = 0;
-    let mut gid = 0;
-    let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
-    // SAFETY: all output pointers reference initialized, writable storage of the
-    // supplied size; the borrowed stream remains open throughout these calls.
-    #[allow(unsafe_code)]
-    let length = unsafe {
-        if libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) != 0
-            || uid != libc::geteuid()
-            || libc::getsockopt(
-                stream.as_raw_fd(),
-                libc::SOL_LOCAL,
-                libc::LOCAL_PEERPID,
-                (&mut pid as *mut libc::pid_t).cast(),
-                &mut size,
-            ) != 0
-            || size as usize != size_of_val(&pid)
-            || pid <= 0
-        {
-            return false;
-        }
-        libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32)
-    };
-    if length <= 0 {
+fn peer_matches_local_endpoint(stream: &UnixStream, socket: &Path, expected: &Path) -> bool {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let uid = nix::unistd::geteuid();
+    if !nix::unistd::getpeereid(stream).is_ok_and(|(peer, _)| peer == uid) {
         return false;
     }
-    let Some(end) = path.iter().position(|byte| *byte == 0) else {
+    // Do not allow the standard socket itself to redirect to another location.
+    if !std::fs::symlink_metadata(expected).is_ok_and(|metadata| metadata.file_type().is_socket()) {
+        return false;
+    }
+    let Ok(expected) = expected.canonicalize() else {
         return false;
     };
-    let peer = Path::new(std::ffi::OsStr::from_bytes(&path[..end]));
-    std::fs::metadata(peer)
-        .ok()
-        .zip(std::fs::metadata(executable).ok())
-        .is_some_and(|(peer, expected)| {
-            peer.is_file()
-                && expected.is_file()
-                && (peer.dev(), peer.ino()) == (expected.dev(), expected.ino())
-        })
+    // Use the path actually dialed, not peer_addr(): BSD sockaddr lengths from
+    // some listeners omit the NUL and std can truncate the reported pathname.
+    if !socket.canonicalize().is_ok_and(|socket| socket == expected) {
+        return false;
+    }
+    let Some(parent) = expected.parent() else {
+        return false;
+    };
+    let owned = |metadata: &std::fs::Metadata| {
+        metadata.uid() == uid.as_raw() && metadata.mode() & 0o022 == 0
+    };
+    std::fs::symlink_metadata(&expected)
+        .is_ok_and(|metadata| metadata.file_type().is_socket() && owned(&metadata))
+        && std::fs::metadata(parent).is_ok_and(|metadata| metadata.is_dir() && owned(&metadata))
 }
 
 fn connect_or_start(
@@ -264,25 +253,71 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn peer_identity_not_socket_path_determines_locality() {
-        // A proxy's listener has a perfectly valid local socket path too.
-        let path = socket();
+    fn local_endpoint_survives_executable_removal_and_replacement() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = socket();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let dir = root.join("session");
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("herdr-client.sock");
         let listener = UnixListener::bind(&path).unwrap();
-        let target = ConnectTarget::Socket(path.clone());
-        let stream = UnixStream::connect(target.socket_path().unwrap()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let stream = UnixStream::connect(&path).unwrap();
         let (_accepted, _) = listener.accept().unwrap();
-        assert!(peer_matches_executable(
+        // No executable argument or process-path probe participates in trust.
+        let installed = dir.join("herdr");
+        std::fs::write(&installed, "old installation").unwrap();
+        assert!(peer_matches_local_endpoint(&stream, &path, &path));
+        std::fs::remove_file(&installed).unwrap();
+        assert!(peer_matches_local_endpoint(&stream, &path, &path));
+        std::fs::write(&installed, "replacement installation").unwrap();
+        assert!(peer_matches_local_endpoint(&stream, &path, &path));
+        assert!(!peer_matches_local_endpoint(
             &stream,
-            &env::current_exe().unwrap()
+            &path,
+            &dir.join("forwarded.sock")
         ));
-        assert!(!peer_matches_executable(&stream, Path::new("/usr/bin/ssh")));
-        assert!(!peer_matches_executable(
+        assert!(!is_local_peer(
             &stream,
-            Path::new("/nonexistent/herdr")
+            &ConnectTarget::Ssh {
+                target: "remote".into(),
+                session: "default".into(),
+            },
+            &path,
         ));
-        assert!(!is_local_peer(&stream));
+        let forwarded = dir.join("forwarded.sock");
+        let proxy = UnixListener::bind(&forwarded).unwrap();
+        let proxy_stream = UnixStream::connect(&forwarded).unwrap();
+        assert!(!peer_matches_local_endpoint(
+            &proxy_stream,
+            &forwarded,
+            &path
+        ));
+        let redirected = dir.join("redirected.sock");
+        std::os::unix::fs::symlink(&forwarded, &redirected).unwrap();
+        assert!(!peer_matches_local_endpoint(
+            &proxy_stream,
+            &redirected,
+            &redirected
+        ));
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&dir, &alias).unwrap();
+        let alias_socket = alias.join("herdr-client.sock");
+        let alias_stream = UnixStream::connect(&alias_socket).unwrap();
+        assert!(peer_matches_local_endpoint(
+            &alias_stream,
+            &alias_socket,
+            &path
+        ));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o622)).unwrap();
+        assert!(!peer_matches_local_endpoint(&stream, &path, &path));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!peer_matches_local_endpoint(&stream, &path, &path));
+        drop(proxy);
         drop(listener);
-        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

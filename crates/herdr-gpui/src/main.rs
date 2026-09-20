@@ -26,6 +26,7 @@ mod state;
 mod terminal;
 mod terminal_painter;
 mod theme_picker;
+mod titlebar;
 
 use connection::ConnectionBridge;
 use controls::Command;
@@ -93,6 +94,7 @@ impl<T: AsRef<str>> NavigationTarget<T> {
 struct HerdrWindow {
     config: config::Config,
     theme: config::Theme,
+    config_load: Option<Task<()>>,
     endpoints: Vec<endpoint::Endpoint>,
     selected_endpoint: usize,
     selection_epoch: u64,
@@ -193,26 +195,10 @@ impl HerdrWindow {
                 }
             }
         });
-        let fixture = false;
-        #[cfg(feature = "integration-test")]
-        let fixture = fixture || sidebar_test;
-        let loaded = if fixture {
-            Ok(config::Config::default())
-        } else {
-            config::Config::load()
-        };
-        let (config, theme, config_error) =
-            match loaded.and_then(|config| config.theme().map(|theme| (config, theme))) {
-                Ok((config, theme)) => (config, theme, None),
-                Err(error) => (
-                    config::Config::default(),
-                    config::Theme::default(),
-                    Some(error),
-                ),
-            };
         let mut this = Self {
-            config,
-            theme,
+            config: config::Config::default(),
+            theme: config::Theme::default(),
+            config_load: None,
             catalog: endpoint::Catalog::new(&target),
             endpoints: vec![endpoint::Endpoint::new(
                 endpoint::LOCAL.into(),
@@ -276,9 +262,7 @@ impl HerdrWindow {
             .map(|path| preferences::Preferences::new(&path));
         this.avatars = Some(avatars::Avatars::new());
         this.reconnect();
-        if config_error.is_some() {
-            this.local_error = config_error;
-        }
+        this.load_gui_config(cx);
         this
     }
 
@@ -784,8 +768,10 @@ impl Render for HerdrWindow {
             .text_color(rgb(self.theme.foreground))
             .font_family(self.config.ui.family.clone())
             .text_size(px(self.config.ui.size))
+            .child(self.render_titlebar(cx))
             .child(
                 div()
+                    .debug_selector(|| "window-body".into())
                     .flex()
                     .flex_1()
                     .min_h_0()
@@ -995,7 +981,8 @@ fn run() -> std::process::ExitCode {
     }
     let startup_failed = std::rc::Rc::new(std::cell::Cell::new(false));
     let failed = startup_failed.clone();
-    Application::new().run(move |cx| {
+    let application = Application::new().with_assets(titlebar::Icons);
+    application.run(move |cx| {
         app_icon::install();
         cx.on_action(|_: &Quit, cx| cx.quit());
         bind_keys(cx);
@@ -1134,7 +1121,9 @@ fn run() -> std::process::ExitCode {
                 window_min_size: Some(size(px(640.), px(400.))),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Herdr".into()),
-                    ..Default::default()
+                    appears_transparent: cfg!(target_os = "macos"),
+                    traffic_light_position: cfg!(target_os = "macos")
+                        .then(|| point(px(9.), px(9.))),
                 }),
                 app_id: Some("so.pen.herdr-gpui".into()),
                 ..Default::default()
