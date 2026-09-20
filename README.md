@@ -61,7 +61,12 @@ Failed connections retry automatically; Terminal > Reconnect retries the selecte
 host immediately. Closing the app leaves daemon sessions running.
 
 Use **Report issue** on the right of the status bar to open this repository's
-GitHub issue forms. Redact secrets and private terminal content before submitting.
+GitHub bug report form with the running GUI version prefilled. Redact secrets and
+private terminal content before submitting.
+The adjacent version label shows the running GUI's embedded release tag
+(`YYYYMMDD.NN`), or Cargo package version for local builds. Release CI sets
+`HERDR_RELEASE_VERSION` at compile time for both the app bundle and standalone
+executables; non-tag workflow builds use `00000000.00`, matching their packaging.
 
 ### Saved Hosts
 

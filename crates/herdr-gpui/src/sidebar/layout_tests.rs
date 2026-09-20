@@ -1001,6 +1001,12 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
         assert!(report.right() <= status.right());
         assert!(report.top() >= status.top());
         assert!(report.bottom() <= status.bottom());
+        let version = cx.debug_bounds("status-version").unwrap();
+        assert!(version.size.width > px(0.));
+        assert!(version.left() >= report.right());
+        assert!(version.right() <= status.right());
+        assert!(version.top() >= status.top());
+        assert!(version.bottom() <= status.bottom());
         let theme = cx.debug_bounds("status-theme").unwrap();
         let keybinds = cx.debug_bounds("status-keybinds").unwrap();
         assert!(theme.left() >= status.left());
@@ -1014,7 +1020,13 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
         cx.simulate_click(report.center(), Default::default());
         assert_eq!(
             cx.opened_url().as_deref(),
-            Some("https://github.com/penso/herdr-gpui/issues/new/choose")
+            Some(
+                format!(
+                    "https://github.com/penso/herdr-gpui/issues/new?template=bug_report.yml&version={}",
+                    crate::APP_VERSION.replace('+', "%2B"),
+                )
+                .as_str()
+            )
         );
     }
 }

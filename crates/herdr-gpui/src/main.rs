@@ -34,6 +34,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use terminal::*;
 
+// Release builds embed the same tag used for the bundle and downloadable artifacts.
+const APP_VERSION: &str = match option_env!("HERDR_RELEASE_VERSION") {
+    Some(version) => version,
+    None => concat!("v", env!("CARGO_PKG_VERSION")),
+};
+
 actions!(herdr, [Quit, ShowHerdrNotDetected]);
 
 #[derive(Clone, PartialEq, serde::Deserialize, Action)]
@@ -917,10 +923,20 @@ impl Render for HerdrWindow {
                             )
                             .child("Report issue")
                             .on_click(|_, _, cx| {
-                                cx.open_url(
-                                    "https://github.com/penso/herdr-gpui/issues/new/choose",
-                                );
+                                cx.open_url(&format!(
+                                    "https://github.com/penso/herdr-gpui/issues/new?template=bug_report.yml&version={}",
+                                    APP_VERSION.replace('+', "%2B"),
+                                ));
                             }),
+                    )
+                    .child(
+                        div()
+                            .id("status-version")
+                            .debug_selector(|| "status-version".into())
+                            .flex_none()
+                            .whitespace_nowrap()
+                            .text_color(rgb(self.theme.muted))
+                            .child(APP_VERSION),
                     ),
             )
             .when(self.menu.page.is_some(), |root| {

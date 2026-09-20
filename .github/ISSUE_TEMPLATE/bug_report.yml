@@ -39,8 +39,9 @@ body:
   - type: input
     id: version
     attributes:
-      label: Herdr GPUI version or commit
-      description: For a source build, run git rev-parse --short HEAD in the GUI checkout.
+      label: Running Herdr GPUI version
+      description: Copy the version shown at the right of the GUI status bar. The Report issue button prefills this field. For source builds, also include the commit if known.
+      placeholder: "20260920.01 (release) or v0.1.0 (local build)"
     validations:
       required: true
   - type: input

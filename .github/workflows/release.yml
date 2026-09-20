@@ -91,9 +91,13 @@ jobs:
       # from source every time: a poisoned cache entry restored into a release
       # build would be signed and notarized along with everything else.
       - name: Build optimized native executable
+        env:
+          HERDR_RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '00000000.00' }}
         run: cargo build --locked --release -p herdr-gpui
 
       - name: Exercise release executable without opening a window
+        env:
+          HERDR_RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '00000000.00' }}
         run: cargo test --locked --release -p herdr-gpui --test cli
 
       - name: Stage executable
