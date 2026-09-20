@@ -1,5 +1,6 @@
 //! Native opt-in smoke driver. No test platform or blocking waits on the UI thread.
 use super::*;
+use herdr_client::connect;
 use std::{
     sync::atomic::{AtomicU8, Ordering},
     time::Instant,
