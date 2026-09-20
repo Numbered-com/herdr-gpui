@@ -25,6 +25,7 @@ gpui = { workspace = true, features = ["test-support"] }
 integration-test = ["dep:cocoa", "dep:objc", "dep:core-graphics", "dep:foreign-types", "dep:raw-window-handle"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2.workspace = true
 objc2.workspace = true
 objc2-app-kit.workspace = true
 objc2-foundation.workspace = true

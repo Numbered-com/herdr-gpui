@@ -25,6 +25,12 @@ without input replay. Detach pauses retries for that endpoint until Reconnect.
 The status dot pulses amber during local daemon startup, is green when connected,
 and red otherwise.
 
+Signed macOS app bundles load the bundled Sparkle framework through `objc2` for
+background update offers, verified installation, and relaunch. **Herdr > Check for
+Updates...** checks manually; **QA > Show app update available** shows a non-installing
+native preview. Standalone/local builds and native test modes never initialize the
+updater. Sparkle does not support Linux. See [update setup and QA](../../docs/updating.md).
+
 Spaces lists Local first, then saved hosts in the upstream catalog's order.
 Enabled hosts connect in the background with inactive terminal surfaces; disabled
 hosts remain visible. Host and repository collapse state is endpoint-scoped, and

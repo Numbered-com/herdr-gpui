@@ -62,9 +62,48 @@ jobs:
             exit 1
           fi
 
+  validate-sparkle:
+    name: Validate Sparkle Configuration
+    needs: [zizmor]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require release keys and validate public key
+        env:
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+          SPARKLE_PRIVATE_KEY: ${{ env.RELEASE_DRY_RUN != 'true' && secrets.SPARKLE_PRIVATE_KEY || '' }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import binascii
+          import os
+          import sys
+
+          def fail(message):
+              sys.exit(f"::error::{message} See docs/updating.md.")
+
+          public = os.environ["SPARKLE_PUBLIC_ED_KEY"]
+          release = os.environ["RELEASE_DRY_RUN"] != "true"
+          if not public:
+              if release:
+                  fail("Set repository variable SPARKLE_PUBLIC_ED_KEY before releasing.")
+              print("Dry run: no public key; bundle will omit updater configuration.")
+          else:
+              try:
+                  decoded = base64.b64decode(public, validate=True)
+              except (ValueError, binascii.Error):
+                  fail("SPARKLE_PUBLIC_ED_KEY must be a base64-encoded Ed25519 public key.")
+              if len(decoded) != 32 or base64.b64encode(decoded).decode() != public:
+                  fail("SPARKLE_PUBLIC_ED_KEY must be canonical base64 encoding of 32 bytes.")
+          if release and not os.environ["SPARKLE_PRIVATE_KEY"].strip():
+              fail("Set secret SPARKLE_PRIVATE_KEY to generate_keys -x exported contents before releasing.")
+          PY
+
   build:
     name: Build (${{ matrix.arch }})
-    needs: [zizmor]
+    needs: [zizmor, validate-sparkle]
     strategy:
       fail-fast: false
       matrix:
@@ -153,9 +192,13 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Packaging version $VERSION"
 
+      - name: Fetch verified Sparkle framework and tools
+        run: bash scripts/fetch-sparkle.sh "$RUNNER_TEMP/sparkle"
+
       - name: Build universal executable and app bundle
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
         run: |
           set -euo pipefail
           ARM="artifacts/herdr-gpui-aarch64-apple-darwin"
@@ -166,7 +209,8 @@ jobs:
           done
 
           APP="dist/Herdr.app"
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
+          ditto "$RUNNER_TEMP/sparkle/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 
           # One bundle that runs natively on both architectures.
           lipo -create -output "$APP/Contents/MacOS/Herdr" "$ARM" "$X86"
@@ -175,11 +219,25 @@ jobs:
 
           cp assets/macos/Info.plist "$APP/Contents/Info.plist"
           cp assets/icons/Herdr.icns "$APP/Contents/Resources/Herdr.icns"
+          cp "$RUNNER_TEMP/sparkle/LICENSE" "$APP/Contents/Resources/Sparkle-LICENSE"
 
           # The checked-in plist carries the Cargo version; stamp the release tag
           # so a downloaded build reports what it actually is.
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
+          # Rust loads Sparkle from the main bundle; local checked-in plists stay updater-free.
+          if [[ -n "$SPARKLE_PUBLIC_ED_KEY" ]]; then
+            /usr/libexec/PlistBuddy -c 'Add :SUFeedURL string https://github.com/penso/herdr-gpui/releases/latest/download/appcast.xml' "$APP/Contents/Info.plist"
+            /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $SPARKLE_PUBLIC_ED_KEY" "$APP/Contents/Info.plist"
+            /usr/libexec/PlistBuddy -c 'Add :SUEnableAutomaticChecks bool YES' "$APP/Contents/Info.plist"
+            /usr/libexec/PlistBuddy -c 'Add :SUAutomaticallyUpdate bool NO' "$APP/Contents/Info.plist"
+            /usr/libexec/PlistBuddy -c 'Set :SUAllowsAutomaticUpdates NO' "$APP/Contents/Info.plist"
+            /usr/libexec/PlistBuddy -c 'Add :SUVerifyUpdateBeforeExtraction bool YES' "$APP/Contents/Info.plist"
+            /usr/libexec/PlistBuddy -c 'Add :SURequireSignedFeed bool YES' "$APP/Contents/Info.plist"
+          elif [[ "$RELEASE_DRY_RUN" != 'true' ]]; then
+            echo '::error::SPARKLE_PUBLIC_ED_KEY is required for release packaging'
+            exit 1
+          fi
           plutil -lint "$APP/Contents/Info.plist"
 
           # Per-architecture tarballs for people who only want the executable.
@@ -224,13 +282,27 @@ jobs:
           # Identity is matched by prefix against the freshly created keychain,
           # which holds exactly the one certificate imported above.
           #
-          # Hardened runtime with no entitlements: the client opens a Unix socket
+          # Sign inside out, never with --deep. Preserve the distribution's
+          # Downloader entitlements rather than stripping or guessing them.
+          FRAMEWORK="dist/Herdr.app/Contents/Frameworks/Sparkle.framework"
+          /usr/bin/codesign --force --timestamp --options runtime \
+            --preserve-metadata=entitlements --sign "Developer ID Application" \
+            "$FRAMEWORK/Versions/B/XPCServices/Downloader.xpc"
+          for component in \
+            "$FRAMEWORK/Versions/B/XPCServices/Installer.xpc" \
+            "$FRAMEWORK/Versions/B/Autoupdate" \
+            "$FRAMEWORK/Versions/B/Updater.app" \
+            "$FRAMEWORK"; do
+            /usr/bin/codesign --force --timestamp --options runtime \
+              --sign "Developer ID Application" "$component"
+          done
+          # Hardened runtime with no entitlements for Herdr: the client opens a Unix socket
           # and draws with Metal, and needs no relaxed-security exception.
           /usr/bin/codesign --force --timestamp --options runtime \
             --sign "Developer ID Application" \
             dist/Herdr.app
 
-          /usr/bin/codesign --verify --strict --verbose=2 dist/Herdr.app
+          /usr/bin/codesign --verify --deep --strict --verbose=2 dist/Herdr.app
 
       - name: Package app bundle
         env:
@@ -285,6 +357,55 @@ jobs:
           # Prove Gatekeeper actually accepts what we are about to publish.
           spctl --assess --type execute --verbose=4 dist/Herdr.app
 
+      - name: Generate and verify signed Sparkle appcast
+        if: ${{ env.RELEASE_DRY_RUN != 'true' }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          set +x
+          # Only the final notarized/stapled ZIP goes into this fresh directory.
+          # Never ingest an old feed, executable tarballs, or cached delta files.
+          FEED_DIR="$(mktemp -d "$RUNNER_TEMP/sparkle-feed.XXXXXX")"
+          trap 'rm -rf "$FEED_DIR"' EXIT
+          cp "dist/herdr-gpui-${VERSION}-macos-universal.app.zip" "$FEED_DIR/"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" | "$RUNNER_TEMP/sparkle/bin/generate_appcast" \
+            --ed-key-file - --maximum-versions 1 --maximum-deltas 0 \
+            --download-url-prefix "https://github.com/penso/herdr-gpui/releases/download/${VERSION}/" \
+            "$FEED_DIR"
+          # Verification does not rewrite the signed feed bytes.
+          printf '%s' "$SPARKLE_PRIVATE_KEY" | "$RUNNER_TEMP/sparkle/bin/sign_update" \
+            --ed-key-file - --verify "$FEED_DIR/appcast.xml"
+          # generate_appcast only warns on a public/private key mismatch and
+          # omits the enclosure signature. Reject that output before publishing.
+          python3 - "$FEED_DIR" <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+          import sys
+          import xml.etree.ElementTree as ET
+
+          directory = Path(sys.argv[1])
+          version = os.environ["VERSION"]
+          archive = directory / f"herdr-gpui-{version}-macos-universal.app.zip"
+          ns = {"sparkle": "http://www.andymatuschak.org/xml-namespaces/sparkle"}
+          items = ET.parse(directory / "appcast.xml").findall("./channel/item")
+          if len(items) != 1 or items[0].findtext("sparkle:version", namespaces=ns) != version:
+              sys.exit("::error::Appcast must contain exactly the current release version")
+          item = items[0]
+          enclosure = item.find("enclosure")
+          if enclosure is None or item.find("sparkle:deltas", ns) is not None:
+              sys.exit("::error::Appcast must contain a full archive and no deltas")
+          signature = enclosure.get(f"{{{ns['sparkle']}}}edSignature", "")
+          if not signature or len(base64.b64decode(signature, validate=True)) != 64:
+              sys.exit("::error::Missing archive signature; check SPARKLE_PRIVATE_KEY matches SPARKLE_PUBLIC_ED_KEY")
+          expected_url = f"https://github.com/penso/herdr-gpui/releases/download/{version}/{archive.name}"
+          if enclosure.get("url") != expected_url or enclosure.get("length") != str(archive.stat().st_size):
+              sys.exit("::error::Appcast does not reference the final version-specific ZIP")
+          PY
+          cp "$FEED_DIR/appcast.xml" dist/appcast.xml
+
       - name: Generate SBOM
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -307,7 +428,7 @@ jobs:
         uses: ./.github/actions/sign-artifacts
         with:
           working-directory: dist
-          files: "*.app.zip *.tar.gz *.cdx.json"
+          files: "*.app.zip *.tar.gz *.cdx.json appcast.xml"
 
       - name: Attest build provenance
         if: ${{ env.RELEASE_DRY_RUN != 'true' }}
@@ -324,6 +445,7 @@ jobs:
             dist/*.app.zip
             dist/*.tar.gz
             dist/*.cdx.json
+            dist/appcast.xml
             dist/*.sha256
             dist/*.sha512
             dist/*.sig
@@ -366,6 +488,7 @@ jobs:
             ls -la dist
             exit 0
           fi
+          test -s dist/appcast.xml || { echo '::error::Signed appcast.xml is missing; refusing to publish'; exit 1; }
 
           {
             echo "Native macOS client for Herdr. Requires a running Herdr daemon."
@@ -396,5 +519,6 @@ jobs:
           gh release create "$VERSION" \
             --repo "$REPO" \
             --title "$VERSION" \
+            --latest \
             --notes-file notes.md \
             dist/*

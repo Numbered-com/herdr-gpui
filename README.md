@@ -68,6 +68,27 @@ The adjacent version label shows the running GUI's embedded release tag
 `HERDR_RELEASE_VERSION` at compile time for both the app bundle and standalone
 executables; non-tag workflow builds use `00000000.00`, matching their packaging.
 
+### App Updates
+
+Signed macOS release bundles use Sparkle to check for new releases in the background
+and offer a native update window. Choose **Install Update** to download the verified
+update and relaunch Herdr; installation is never silent. **Herdr > Check for Updates...**
+checks on demand. Updating the GUI leaves the daemon and its terminal sessions running.
+The first updater-enabled release must be installed manually.
+
+Local builds and standalone executables do not initialize the updater. Sparkle is
+macOS-only; Linux would need a separate updater appropriate to its package format.
+There is no Linux auto-update implementation in this repository.
+
+**QA > Show app update available** previews Sparkle's actual update window without
+checking, downloading, or installing anything. All preview choices just close it.
+For a keyless local preview, run `just bundle-updater-preview`, then
+`open target/release/Herdr.app` and choose that QA entry. Bare `cargo run` builds
+explain that the preview requires the bundled framework.
+
+Release maintainers must configure the update signing keys before publishing;
+see [App Updates](docs/updating.md) for setup and required native update testing.
+
 ### Saved Hosts
 
 Normal launches read Herdr's existing saved-host catalog at

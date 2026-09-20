@@ -320,6 +320,9 @@ fn multi_host_rows_scope_duplicate_ids_and_keep_agents_when_host_collapses(
 #[cfg(test)]
 pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>) -> HerdrWindow {
     HerdrWindow {
+        updater: None,
+        updater_error: None,
+        update_preview: None,
         config: Default::default(),
         theme: Default::default(),
         sidebar_visible: true,
@@ -985,6 +988,25 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     cx.simulate_keystrokes("escape");
     cx.update(|_, cx| assert!(view.read(cx).menu.page.is_none()));
 
+    // Unavailable updaters report their own errors without changing connection state.
+    cx.update(|window, cx| window.dispatch_action(Box::new(crate::CheckForUpdates), cx));
+    assert_eq!(
+        cx.pending_prompt().map(|(message, _)| message),
+        Some("In-app updates unavailable".into())
+    );
+    cx.simulate_prompt_answer("Ok");
+    view.update(cx, |view, _| {
+        view.updater_error = Some("Missing bundled Sparkle framework".into());
+    });
+    cx.update(|window, cx| window.dispatch_action(Box::new(crate::CheckForUpdates), cx));
+    assert_eq!(
+        cx.pending_prompt(),
+        Some((
+            "In-app updates unavailable".into(),
+            "Missing bundled Sparkle framework".into(),
+        ))
+    );
+    cx.simulate_prompt_answer("Ok");
     // Exercise the real status bar without starting a daemon connection.
     view.update(cx, |view, cx| {
         view.marked = "composition ".repeat(100);

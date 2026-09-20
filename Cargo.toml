@@ -35,5 +35,6 @@ core-graphics = "0.24"
 foreign-types = "0.5"
 raw-window-handle = "0.6"
 objc2 = "0.6.4"
+block2 = "0.6.2"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSImage"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSBundle", "NSProcessInfo", "NSString"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSBundle", "NSDictionary", "NSError", "NSObject", "NSProcessInfo", "NSString", "NSValue"] }

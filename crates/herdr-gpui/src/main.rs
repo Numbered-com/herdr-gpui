@@ -23,6 +23,7 @@ mod state;
 mod terminal;
 mod terminal_painter;
 mod theme_picker;
+mod updater;
 
 use connection::ConnectionBridge;
 use controls::Command;
@@ -40,7 +41,15 @@ const APP_VERSION: &str = match option_env!("HERDR_RELEASE_VERSION") {
     None => concat!("v", env!("CARGO_PKG_VERSION")),
 };
 
-actions!(herdr, [Quit, ShowHerdrNotDetected]);
+actions!(
+    herdr,
+    [
+        Quit,
+        ShowHerdrNotDetected,
+        CheckForUpdates,
+        ShowUpdatePreview
+    ]
+);
 
 #[derive(Clone, PartialEq, serde::Deserialize, Action)]
 #[action(no_json)]
@@ -94,6 +103,9 @@ impl<T: AsRef<str>> NavigationTarget<T> {
 }
 
 struct HerdrWindow {
+    updater: Option<updater::Updater>,
+    updater_error: Option<String>,
+    update_preview: Option<updater::UpdatePreview>,
     config: config::Config,
     theme: config::Theme,
     endpoints: Vec<endpoint::Endpoint>,
@@ -210,6 +222,9 @@ impl HerdrWindow {
                 ),
             };
         let mut this = Self {
+            updater: None,
+            updater_error: None,
+            update_preview: None,
             config,
             theme,
             catalog: endpoint::Catalog::new(&target),
@@ -762,6 +777,25 @@ impl Render for HerdrWindow {
             .on_action(cx.listener(|this, _: &ShowHerdrNotDetected, window, cx| {
                 this.show_install_modal(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &CheckForUpdates, window, cx| {
+                if let Some(updater) = &this.updater {
+                    updater.check_for_updates();
+                } else {
+                    let detail = this.updater_error.as_deref().unwrap_or(
+                        "In-app updates require the signed macOS Herdr.app release. Local builds, standalone executables, and Linux installations must be updated manually.",
+                    );
+                    drop(window.prompt(PromptLevel::Info, "In-app updates unavailable", Some(detail), &["OK"], cx));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ShowUpdatePreview, window, cx| {
+                this.update_preview = None;
+                match updater::UpdatePreview::show() {
+                    Ok(preview) => this.update_preview = Some(preview),
+                    Err(error) => {
+                        drop(window.prompt(PromptLevel::Info, "Update preview unavailable", Some(&error), &["OK"], cx));
+                    }
+                }
+            }))
             .size_full()
             .relative()
             .flex()
@@ -1017,6 +1051,7 @@ fn run() -> std::process::ExitCode {
                             command: Command::Keybinds,
                         },
                     ),
+                    MenuItem::action("Check for Updates...", CheckForUpdates),
                     MenuItem::action("Quit Herdr", Quit),
                 ],
             },
@@ -1107,10 +1142,10 @@ fn run() -> std::process::ExitCode {
             },
             Menu {
                 name: "QA".into(),
-                items: vec![MenuItem::action(
-                    "Show herdr non-detected modal",
-                    ShowHerdrNotDetected,
-                )],
+                items: vec![
+                    MenuItem::action("Show herdr non-detected modal", ShowHerdrNotDetected),
+                    MenuItem::action("Show app update available", ShowUpdatePreview),
+                ],
             },
         ]);
         cx.on_window_closed(move |cx| {
@@ -1137,7 +1172,7 @@ fn run() -> std::process::ExitCode {
             },
             |window, cx| {
                 cx.new(|cx| {
-                    HerdrWindow::new(
+                    let mut view = HerdrWindow::new(
                         target,
                         window,
                         cx,
@@ -1145,7 +1180,18 @@ fn run() -> std::process::ExitCode {
                         {
                             sidebar_test || performance_test
                         },
-                    )
+                    );
+                    // Native test modes and CLI invocations never initialize Sparkle.
+                    if mode == LaunchMode::Normal {
+                        match updater::Updater::start() {
+                            Ok(updater) => view.updater = updater,
+                            Err(error) => {
+                                eprintln!("App updater unavailable: {error}");
+                                view.updater_error = Some(error);
+                            }
+                        }
+                    }
+                    view
                 })
             },
         );
