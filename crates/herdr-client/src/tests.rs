@@ -554,7 +554,8 @@ fn cancellation_interrupts_full_event_queue_and_idle_read() {
 #[test]
 fn public_connect_delivers_shutdown_and_socket_failure() {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let path = std::env::current_dir().unwrap().join(format!(
+    // Deep worktree paths can exceed the Unix socket address limit on macOS.
+    let path = std::env::temp_dir().join(format!(
         "test-{}-{}.sock",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)

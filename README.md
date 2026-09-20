@@ -10,12 +10,21 @@ panes, without running another terminal emulator or wrapping the TUI.
 The compact sidebar uses single-line labels, muted branches, status dots, and
 independently scrolling spaces and agents sections, following Herdr's TUI.
 Linked workspaces are nested beneath the main checkout using Herdr's repository
-group metadata, not branch-name guesses. Groups are expanded; a child without an
-open parent stays visible at the top level. Tabs show titles without added numbers.
+group metadata, not branch-name guesses. Parent arrows collapse/expand children
+locally without closing sessions or changing the selected pane; a child without
+an open parent stays visible at the top level. Tabs show titles without added numbers.
 
-Space and agent indicators use Herdr's reported activity: filled blue for working,
-blocked, or done, hollow blue for idle, and muted for unknown, matching the TUI's
-filled/empty distinction. This is daemon-reported state, not guessed from output.
+Space and agent indicators follow Herdr's activity semantics: filled yellow for
+working, red for blocked, teal for an unseen completion, hollow green for idle,
+and muted for unknown. Like the TUI, the GUI tracks completion acknowledgement
+per client using state-change sequences and coherent surfaces. A new connection
+starts with a seen baseline, so its dots can differ from a long-running TUI's
+unread history. Activity is never guessed from terminal output.
+
+The sidebar's `menu` opens an in-app popover with read-only settings information,
+keybind help, daemon config reload, available-update information, and safe
+detach/reconnect. Escape or clicking outside dismisses it; menu typing never
+reaches the terminal. Update commands are displayed, not executed automatically.
 
 This is an initial working macOS client, not complete TUI feature parity.
 Herdr owns terminal processes and session state; closing this app only detaches.
@@ -183,11 +192,20 @@ The live protocol and desktop GUI tests are deliberately ignored in hosted CI:
 they require an explicitly selected Herdr binary, and the GUI test also needs an
 active desktop. Run `just test-live` and `just test-gui` locally as shown above.
 
+## Sidebar Width
+
+Drag the sidebar's right edge to resize it; double-click the divider to restore
+the default width. The terminal resizes automatically. Width is remembered per
+daemon socket in `$XDG_STATE_HOME/herdr/gpui/local-<socket-hash>.json`, defaulting
+to `~/.local/state/herdr/gpui/`. These logical-pixel preferences are separate
+from the TUI's column-based settings. Narrow windows temporarily limit the
+displayed width without replacing your saved preference.
+
 ## Next Milestones
 
 - Selection/copy, hyperlink interaction, richer mouse support, and inline IME.
 - Rename/close dialogs and full worktree/agent management.
-- Collapsible repository grouping, resizable sidebar, settings and bundled fonts.
+- Editable settings and bundled fonts.
 - Automatic reconnect, optimized terminal painting and graphics support.
 - Signed macOS app packaging, then SSH endpoints.
 

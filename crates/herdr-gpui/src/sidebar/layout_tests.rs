@@ -159,7 +159,7 @@ impl Element for ProbeText {
             assert_eq!(bounds.left(), parent.left() + px(super::CHILD_INDENT));
             assert_eq!(
                 bounds.size.width,
-                px(super::LABEL_WIDTH - super::CHILD_INDENT)
+                px(super::LABEL_WIDTH - super::CHILD_INDENT - super::ARROW_RESERVE)
             );
             assert_eq!(mask.size.width, bounds.size.width);
             assert_eq!(glyph_text, state.wrapped_text());
@@ -192,11 +192,17 @@ struct SidebarFixture(Entity<HerdrWindow>);
 
 #[cfg(test)]
 impl Render for SidebarFixture {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .flex()
-            .child(self.0.update(cx, |view, cx| view.render_sidebar(cx)))
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.0.update(cx, |view, cx| {
+            div()
+                .size_full()
+                .relative()
+                .flex()
+                .child(view.render_sidebar(window, cx))
+                .when(view.menu.page.is_some(), |root| {
+                    root.child(view.render_menu(window, cx))
+                })
+        })
     }
 }
 
@@ -229,15 +235,17 @@ pub(crate) fn snapshot(workspace_count: usize) -> ClientShellSnapshot {
 
 #[gpui::test]
 fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
-    let (_, cx) = cx.add_window_view(|window, cx| {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, point};
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
         // Deliberately do not call HerdrWindow::new: it connects and starts polling.
-        SidebarFixture(cx.new(|cx| HerdrWindow {
+        let view = cx.new(|cx| HerdrWindow {
             target: ConnectTarget::Socket("/unused-layout-test.sock".into()),
             handle: None,
             inbox: Arc::new(Mutex::new(LiveState::default())),
-            live: LiveState {
-                snapshot: Some(Arc::new(snapshot(40))),
-                ..LiveState::default()
+            live: {
+                let mut live = LiveState::default();
+                live.snapshot = Some(Arc::new(snapshot(40)));
+                live
             },
             focus: cx.focus_handle(),
             options: ConnectOptions::default(),
@@ -249,14 +257,22 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
             painter: Default::default(),
             marked: String::new(),
             local_error: None,
+            menu: crate::menu::MenuState::new(cx),
+            collapsed_repos: Default::default(),
             wheel: WheelAccumulator::default(),
+            sidebar_width: None,
+            sidebar_drag: None,
+            sidebar_preferences: None,
+            sidebar_modified: false,
             #[cfg(feature = "integration-test")]
             input_probe: crate::smoke::InputProbe::default(),
             #[cfg(feature = "integration-test")]
             sidebar_scroll: Default::default(),
             _poll: Task::ready(()),
             _activation: cx.observe_window_activation(window, |_, _, _| {}),
-        }))
+        });
+        cx.observe(&view, |_, _, cx| cx.notify()).detach();
+        SidebarFixture(view)
     });
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.run_until_parked();
@@ -321,7 +337,7 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
         assert_eq!(name.left(), parent.left() + px(super::CHILD_INDENT));
         assert_eq!(
             name.size.width,
-            px(super::LABEL_WIDTH - super::CHILD_INDENT)
+            px(super::LABEL_WIDTH - super::CHILD_INDENT - super::ARROW_RESERVE)
         );
         assert_eq!(name.right(), parent.right());
         assert_eq!(detail.size.width, name.size.width);
@@ -371,4 +387,125 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
             "visible initial rows"
         );
     }
+
+    // Drag beyond the divider, then back to a narrower allocation. Text must
+    // be remeasured in both directions rather than retaining truncated runs.
+    for target in [400., 160., 480.] {
+        let divider = cx.debug_bounds("sidebar-resize").unwrap();
+        let start = divider.center();
+        let old_width = cx.debug_bounds("sidebar").unwrap().size.width;
+        let end = point(start.x + px(target) - old_width, start.y);
+        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        cx.update(|window, cx| {
+            fixture.update(cx, |_, cx| cx.notify());
+            let _ = window.draw(cx);
+        });
+        assert_eq!(cx.debug_bounds("sidebar").unwrap().size.width, px(target));
+        let label = cx.debug_bounds("name-herdr").unwrap();
+        assert_eq!(label.size.width, px(super::LABEL_WIDTH + target - 232.));
+        let parent = cx.debug_bounds("name-agent-launcher").unwrap();
+        let child = cx.debug_bounds("name-sidebar-child").unwrap();
+        assert_eq!(
+            parent.size.width,
+            label.size.width - px(super::ARROW_RESERVE)
+        );
+        assert_eq!(
+            child.size.width,
+            parent.size.width - px(super::CHILD_INDENT)
+        );
+        assert_eq!(child.right(), parent.right());
+        cx.update(|_, cx| {
+            for (text, (bounds, rendered, glyph_width)) in &cx.global::<TextProbes>().0 {
+                // GPUI rounds available text width to physical pixels.
+                assert!(*glyph_width <= bounds.size.width + px(1.), "width={target}, text={text:?}, rendered={rendered:?}, bounds={bounds:?}, glyphs={glyph_width:?}");
+            }
+        });
+        cx.simulate_mouse_move(point(px(600.), start.y), None, Modifiers::default());
+        cx.update(|window, cx| {
+            fixture.update(cx, |_, cx| cx.notify());
+            let _ = window.draw(cx);
+        });
+        assert_eq!(cx.debug_bounds("sidebar").unwrap().size.width, px(target));
+    }
+    cx.simulate_resize(size(px(640.), px(600.)));
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    assert_eq!(cx.debug_bounds("sidebar").unwrap().size.width, px(400.));
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    assert_eq!(cx.debug_bounds("sidebar").unwrap().size.width, px(480.));
+
+    let position = cx.debug_bounds("sidebar-resize").unwrap().center();
+    cx.simulate_event(MouseDownEvent {
+        position,
+        button: MouseButton::Left,
+        click_count: 2,
+        ..Default::default()
+    });
+    cx.update(|window, cx| {
+        fixture.update(cx, |_, cx| cx.notify());
+        let _ = window.draw(cx);
+    });
+    assert_eq!(cx.debug_bounds("sidebar").unwrap().size.width, px(232.));
+
+    let view = cx.update(|_, cx| fixture.read(cx).0.clone());
+    let before = cx.update(|_, cx| {
+        view.update(cx, |view, _| {
+            let snapshot = Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+            snapshot.focused_workspace_id = Some("w4".into());
+            for workspace in &mut snapshot.workspaces {
+                workspace.focused = workspace.workspace_id == "w4";
+            }
+            view.marked = "selection must survive toggle".into();
+            snapshot.clone()
+        })
+    });
+    for collapsed in [true, false] {
+        let arrow = cx.debug_bounds("collapse-3").unwrap();
+        cx.simulate_click(arrow.center(), Default::default());
+        cx.update(|window, cx| {
+            cx.default_global::<TextProbes>().0.clear();
+            window.refresh();
+            window.draw(cx).clear();
+            let view = view.read(cx);
+            assert_eq!(view.live.snapshot.as_deref(), Some(&before));
+            assert_eq!(view.marked, "selection must survive toggle");
+            assert_eq!(
+                view.collapsed_repos
+                    .contains("/fixture/agent-launcher/.git"),
+                collapsed
+            );
+            assert_eq!(
+                !cx.global::<TextProbes>().0.contains_key("sidebar-child"),
+                collapsed
+            );
+        });
+    }
+    let menu = cx.debug_bounds("sidebar-menu").unwrap();
+    cx.simulate_click(menu.center(), Default::default());
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+    });
+    assert!(cx.debug_bounds("menu-panel").is_some());
+    cx.simulate_keystrokes("down enter");
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        assert!(view.read(cx).menu.page == Some(crate::menu::Page::Keybinds));
+    });
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        assert!(view.read(cx).menu.page.is_none());
+    });
+    cx.simulate_click(menu.center(), Default::default());
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+    });
+    cx.simulate_click(point(px(700.), px(500.)), Default::default());
+    cx.update(|_, cx| assert!(view.read(cx).menu.page.is_none()));
 }

@@ -12,12 +12,16 @@ use std::{
     os::unix::fs::DirBuilderExt,
     path::PathBuf,
     process::{Child, Command, Stdio},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const TIMEOUT: Duration = Duration::from_secs(20);
+static NEXT_DAEMON: AtomicU64 = AtomicU64::new(0);
 
 struct Daemon {
     dir: PathBuf,
@@ -52,12 +56,13 @@ impl Daemon {
             .unwrap_or_else(std::env::temp_dir);
         assert!(parent.is_dir(), "temporary parent must already exist");
         let dir = parent.join(format!(
-            "h{:x}-{:x}",
+            "h{:x}-{:x}-{:x}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .subsec_nanos()
+                .subsec_nanos(),
+            NEXT_DAEMON.fetch_add(1, Ordering::Relaxed)
         ));
         DirBuilder::new().mode(0o700).create(&dir).unwrap();
         let mut daemon = Self { dir, child: None };
@@ -373,4 +378,90 @@ fn stable_endpoint_live() {
     eprintln!(
         "detach verified: daemon alive; reconnected to same boot {boot} with 2 workspaces / 3 tabs"
     );
+}
+
+#[test]
+#[ignore = "requires explicit HERDR_TEST_BINARY; spawns an isolated live daemon"]
+fn client_local_completion_status_live() {
+    use herdr_client::{presentation::AgentPresentation, protocol::AgentStatus};
+    use std::{
+        io::{BufRead, BufReader, Write},
+        os::unix::net::UnixStream,
+    };
+    let daemon = Daemon::start();
+    let mut session = Session::open(&daemon);
+    let initial = session.snapshot.as_ref().unwrap();
+    let boot = initial.boot_id.clone();
+    let pane = initial.focused_pane_id.clone().unwrap();
+    let mut presentation = AgentPresentation::default();
+    let mut previous_sequence = None;
+    for (seq, wire_status, expected) in [
+        (1, "working", AgentStatus::Working),
+        (2, "blocked", AgentStatus::Blocked),
+        (3, "idle", AgentStatus::Done),
+    ] {
+        // Agent hooks use the JSON API, not the shell's UI-only command allowlist.
+        let mut api = UnixStream::connect(daemon.dir.join("a.sock")).unwrap();
+        api.set_read_timeout(Some(TIMEOUT)).unwrap();
+        writeln!(
+            api,
+            "{}",
+            json!({
+                "id": format!("state-{seq}"), "method": "pane.report_agent",
+                "params": {"pane_id": pane, "source": "claude-hook", "agent": "claude",
+                    "state": wire_status, "seq": seq}
+            })
+        )
+        .unwrap();
+        let mut response = String::new();
+        BufReader::new(api).read_line(&mut response).unwrap();
+        let response: Value = serde_json::from_str(&response).unwrap();
+        assert!(response.get("error").is_none(), "{response}");
+        let matches = |snapshot: &ClientShellSnapshot| {
+            snapshot.agents.iter().any(|agent| {
+                agent.pane_id == pane
+                    && previous_sequence.is_none_or(|previous| agent.state_change_seq > previous)
+                    && match wire_status {
+                        "working" => agent.agent_status == AgentStatus::Working,
+                        "blocked" => agent.agent_status == AgentStatus::Blocked,
+                        _ => matches!(agent.agent_status, AgentStatus::Idle | AgentStatus::Done),
+                    }
+            })
+        };
+        if !matches(session.snapshot.as_ref().unwrap()) {
+            session.until("agent status snapshot", |event| {
+                matches!(event,
+                ClientEvent::Snapshot(snapshot) if matches(snapshot))
+            });
+        }
+        let raw = session.snapshot.as_ref().unwrap();
+        assert_eq!(raw.boot_id, boot);
+        let mut projected = (**raw).clone();
+        presentation.project_snapshot(&mut projected);
+        let agent = projected
+            .agents
+            .iter()
+            .find(|agent| agent.pane_id == pane)
+            .unwrap();
+        previous_sequence = Some(agent.state_change_seq);
+        assert_eq!(agent.agent_status, expected);
+        assert_eq!(projected.workspaces[0].agent_status, expected);
+        eprintln!(
+            "live status: raw={:?} seq={} effective={:?}",
+            raw.agents[0].agent_status, agent.state_change_seq, expected
+        );
+        if expected == AgentStatus::Done {
+            session.until("completion surface", |event| {
+                if let ClientEvent::Surface(surface) = event
+                    && presentation.acknowledge_surface(&mut projected, surface, true)
+                {
+                    assert_eq!(projected.agents[0].agent_status, AgentStatus::Idle);
+                    assert_eq!(projected.workspaces[0].agent_status, AgentStatus::Idle);
+                    return true;
+                }
+                false
+            });
+        }
+    }
+    session.detach();
 }
