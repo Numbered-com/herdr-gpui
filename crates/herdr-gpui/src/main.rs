@@ -5,6 +5,7 @@ mod avatars;
 mod cli;
 mod connection;
 mod controls;
+mod daemon;
 mod endpoint;
 mod input;
 mod menu;
@@ -22,7 +23,7 @@ use connection::ConnectionBridge;
 use controls::Command;
 use gpui::{prelude::*, *};
 use herdr_client::{ConnectOptions, ConnectTarget, protocol::*};
-use state::LiveState;
+use state::{ConnectionStatus, LiveState};
 #[cfg(feature = "integration-test")]
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,6 +34,7 @@ actions!(
     [
         Quit,
         Reconnect,
+        ShowHerdrNotDetected,
         NewWorkspace,
         NewTab,
         SplitRight,
@@ -90,6 +92,7 @@ struct HerdrWindow {
     marked: String,
     local_error: Option<String>,
     menu: menu::MenuState,
+    install_warning_shown: bool,
     collapsed_repos: std::collections::HashSet<String>,
     wheel: WheelAccumulator,
     sidebar_width: Option<f32>,
@@ -121,11 +124,11 @@ impl HerdrWindow {
         let focus = cx.focus_handle();
         window.focus(&focus);
         let timer = cx.background_executor().clone();
-        let poll = cx.spawn(async move |this, cx| {
+        let poll = cx.spawn_in(window, async move |this, cx| {
             loop {
                 timer.timer(Duration::from_millis(16)).await;
                 if this
-                    .update(cx, |this, cx| {
+                    .update_in(cx, |this, window, cx| {
                         if this.avatars.as_mut().is_some_and(|avatars| avatars.poll()) {
                             cx.notify();
                         }
@@ -150,6 +153,10 @@ impl HerdrWindow {
                                 .and_then(|s| s.focused_pane_id.clone())
                         {
                             this.marked.clear();
+                        }
+                        if this.live.missing_installation && !this.install_warning_shown {
+                            this.install_warning_shown = true;
+                            this.show_install_modal(window, cx);
                         }
                         this.resize();
                         this.report_focus();
@@ -186,6 +193,7 @@ impl HerdrWindow {
             marked: String::new(),
             local_error: None,
             menu: menu::MenuState::new(cx),
+            install_warning_shown: false,
             collapsed_repos: Default::default(),
             wheel: WheelAccumulator::default(),
             sidebar_width: None,
@@ -654,6 +662,9 @@ impl Render for HerdrWindow {
             );
         let status = self.live.status_text(self.local_error.as_deref());
         div()
+            .on_action(cx.listener(|this, _: &ShowHerdrNotDetected, window, cx| {
+                this.show_install_modal(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &Reconnect, window, cx| {
                 if this.menu.page.is_some() {
                     return;
@@ -732,13 +743,36 @@ impl Render for HerdrWindow {
                     .px_3()
                     .bg(rgb(sidebar::BACKGROUND))
                     .text_color(rgb(sidebar::FOREGROUND))
-                    .child(div().size(px(6.)).flex_none().rounded_full().bg(rgb(
-                        if self.live.status.is_connected() {
-                            0x78c998
+                    .child(
+                        if matches!(self.live.status, ConnectionStatus::StartingDaemon) {
+                            div()
+                                .size(px(8.))
+                                .flex_none()
+                                .rounded_full()
+                                .bg(rgb(0xe5bd73))
+                                .with_animation(
+                                    "daemon-starting-loader",
+                                    Animation::new(Duration::from_secs(1)).repeat(),
+                                    |dot, delta| {
+                                        dot.opacity(
+                                            0.3 + 0.7 * (delta * std::f32::consts::PI).sin(),
+                                        )
+                                    },
+                                )
+                                .into_any_element()
                         } else {
-                            0xe27c7c
+                            div()
+                                .size(px(6.))
+                                .flex_none()
+                                .rounded_full()
+                                .bg(rgb(if self.live.status.is_connected() {
+                                    0x78c998
+                                } else {
+                                    0xe27c7c
+                                }))
+                                .into_any_element()
                         },
-                    )))
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -748,8 +782,50 @@ impl Render for HerdrWindow {
                             .child(status),
                     )
                     .when(!self.marked.is_empty(), |d| {
-                        d.child(format!("Composing: {}", self.marked))
-                    }),
+                        d.child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .child(format!("Composing: {}", self.marked)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id("report-issue")
+                            .debug_selector(|| "report-issue".into())
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.))
+                            .px_2()
+                            .text_xs()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgb(sidebar::ACTIVE)))
+                            .child(
+                                div()
+                                    .size(px(12.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(rgb(sidebar::FOREGROUND))
+                                    .child(
+                                        div()
+                                            .size(px(3.))
+                                            .rounded_full()
+                                            .bg(rgb(sidebar::FOREGROUND)),
+                                    ),
+                            )
+                            .child("Report issue")
+                            .on_click(|_, _, cx| {
+                                cx.open_url(
+                                    "https://github.com/penso/herdr-gpui/issues/new/choose",
+                                );
+                            }),
+                    ),
             )
             .when(self.menu.page.is_some(), |root| {
                 root.child(self.render_menu(window, cx))
@@ -783,7 +859,7 @@ fn run() -> std::process::ExitCode {
     };
     if mode == LaunchMode::Help {
         println!(
-            "herdr-gpui [--socket CLIENT_SOCKET | --session NAME [--dev]]\nConnects to Local and saved SSH hosts; never installs remote software.\n--socket isolates the GUI to one existing daemon."
+            "herdr-gpui [--socket CLIENT_SOCKET | --session NAME [--dev]]\nConnects to Local and saved SSH hosts; never installs remote software.\nStarts the local Herdr daemon if needed; never stops it.\nExplicit --socket and --dev targets are attach-only; --socket isolates the GUI to one existing daemon."
         );
         #[cfg(feature = "integration-test")]
         println!(
@@ -838,6 +914,13 @@ fn run() -> std::process::ExitCode {
                     MenuItem::separator(),
                     MenuItem::action("Reconnect", Reconnect),
                 ],
+            },
+            Menu {
+                name: "QA".into(),
+                items: vec![MenuItem::action(
+                    "Show herdr non-detected modal",
+                    ShowHerdrNotDetected,
+                )],
             },
         ]);
         cx.on_window_closed(move |cx| {

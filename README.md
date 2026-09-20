@@ -33,7 +33,7 @@ The Herdr checkout does not need to be modified or linked into this build.
 ## Run
 
 Install Rust/rustup and the macOS Xcode command-line tools. The repository pins
-Rust 1.96.1 and GPUI 0.2.2. Start Herdr normally, then:
+Rust 1.96.1 and GPUI 0.2.2. Install Herdr, then:
 
 ```sh
 cargo run --locked --release -p herdr-gpui
@@ -48,9 +48,20 @@ just run --socket /absolute/path/to/herdr-client.sock
 slower with a dense terminal on screen.
 
 The explicit socket must be the binary **client** socket, not `herdr.sock`.
-The app never starts the local daemon, installs or upgrades Herdr, or stops your
-daemons. Failed connections retry automatically; Terminal > Reconnect retries
-the selected host immediately.
+The app starts `herdr server` if the default or named-session local daemon is
+absent, then waits up to 20 seconds without blocking the UI. A pulsing status
+indicator and "Starting Herdr server..." message remain visible during startup.
+Herdr must already be installed; discovery checks PATH and standard Homebrew,
+Cargo, and `~/.local/bin` locations. If missing, an installation modal's **Install**
+button opens [herdr.dev](https://herdr.dev/) without downloading or running an
+installer. **QA > Show herdr non-detected modal** previews the warning without
+disconnecting or changing detection. Explicit `--socket` and `--dev` targets
+remain attach-only. The app never installs, stops, or upgrades your daemons.
+Failed connections retry automatically; Terminal > Reconnect retries the selected
+host immediately. Closing the app leaves daemon sessions running.
+
+Use **Report issue** on the right of the status bar to open this repository's
+GitHub issue forms. Redact secrets and private terminal content before submitting.
 
 ### Saved Hosts
 
@@ -95,9 +106,8 @@ open target/release/Herdr.app
 ```
 
 The bundle is named **Herdr** and contains only the release GUI executable,
-`Info.plist`, and its native `.icns` icon. It connects to your existing daemon;
-it does not bundle or install Herdr. Local daemon startup remains external;
-remote startup follows the bridge behavior above. This is a local unsigned,
+`Info.plist`, and its native `.icns` icon. It starts an installed daemon if needed;
+it does not bundle, install, or stop a daemon. This is a local unsigned,
 unnotarized bundle, not a distribution/signing pipeline. Its version metadata lives
 in `assets/macos/Info.plist` and should be updated for releases.
 

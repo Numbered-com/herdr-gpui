@@ -126,6 +126,20 @@ pub fn connect_with_surface_active(
     options: ConnectOptions,
     surface_active: bool,
 ) -> io::Result<Client> {
+    connect_with_connector(target, options, surface_active, |target, _| {
+        target.socket_path().and_then(UnixStream::connect)
+    })
+}
+
+/// Connect using application-specific local socket setup on the I/O worker.
+/// SSH targets always use the remote bridge, never the local connector.
+/// The connector should observe `stop` during waits so detach cancels setup.
+pub fn connect_with_connector(
+    target: ConnectTarget,
+    options: ConnectOptions,
+    surface_active: bool,
+    connector: impl FnOnce(&ConnectTarget, &AtomicBool) -> io::Result<UnixStream> + Send + 'static,
+) -> io::Result<Client> {
     validate_options(options)?;
     if let ConnectTarget::Ssh { target, session } = &target {
         catalog::validate_target(target)?;
@@ -144,7 +158,7 @@ pub fn connect_with_surface_active(
                         let (stream, child) = ssh::connect(target, session, &worker_stop)?;
                         (stream, Some(child))
                     }
-                    _ => (UnixStream::connect(target.socket_path()?)?, None),
+                    _ => (connector(&target, &worker_stop)?, None),
                 };
                 run_connection(
                     stream,

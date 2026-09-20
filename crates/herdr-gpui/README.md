@@ -1,9 +1,10 @@
 # Herdr Native Shell
 
-A macOS GPUI 0.2.2 client for an already running Local daemon and saved SSH hosts.
-It does not link or install Herdr, start the local daemon, stop daemons, spawn a
-local PTY, or emulate a terminal. Herdr's remote bridge may start the named remote
-session. SSH requires an installed POSIX Herdr, noninteractive authentication,
+A macOS GPUI 0.2.2 client for a Local daemon and saved SSH hosts.
+It starts an installed local `herdr server` when absent; explicit socket and
+development targets remain attach-only. It does not link or install Herdr, stop
+daemons, spawn a local PTY, or emulate a terminal. Herdr's remote bridge may start
+the named remote session. SSH requires an installed POSIX Herdr, noninteractive authentication,
 and an already trusted host key.
 Runtime dependencies include GPUI, `herdr-client`, `serde_json` for API parameters,
 and `ureq` for background GitHub owner avatar downloads.
@@ -21,7 +22,8 @@ rules. `--socket` must name the binary **client** socket, not the JSON API socke
 in the single-row status bar and host rows. Endpoints reconnect independently with
 bounded backoff; Terminal > Reconnect retries the selected endpoint immediately,
 without input replay. Detach pauses retries for that endpoint until Reconnect.
-The status dot is green when connected and red otherwise.
+The status dot pulses amber during local daemon startup, is green when connected,
+and red otherwise.
 
 Spaces lists Local first, then saved hosts in the upstream catalog's order.
 Enabled hosts connect in the background with inactive terminal surfaces; disabled
@@ -128,7 +130,7 @@ GPUI native action/menu/keybinding patterns.
   hyperlink activation, image rendering, or animated blinking.
 - No pane/tab/workspace close or delete actions (deferred until confirmation UI),
   horizontal wheel handling, command palette, server-owned keybindings,
-  session picker, saved-host editing, or daemon lifecycle management.
+  session picker, saved-host editing, or daemon stop/upgrade management.
 - IME uses a minimal transient buffer, not a local editable terminal document;
   composition appears in the status bar rather than inline. Key releases and
   physical-key/extended keyboard protocol metadata are not reported.

@@ -306,6 +306,7 @@ impl HerdrWindow {
         if !self.endpoints[index].enabled {
             return;
         }
+        self.install_warning_shown = false;
         self.endpoints[index].attempts = 0;
         self.endpoints[index].connect(self.options, index == 0);
         self.reset_selected();

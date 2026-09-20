@@ -8,6 +8,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectionStatus {
     Connecting,
+    StartingDaemon,
     AwaitingSnapshot,
     Connected,
     Disconnected,
@@ -24,6 +25,7 @@ impl std::fmt::Display for ConnectionStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Connecting => "Connecting...",
+            Self::StartingDaemon => "Starting Herdr server...",
             Self::AwaitingSnapshot => "Connected; waiting for snapshot",
             Self::Connected => "Connected",
             Self::Disconnected => "Disconnected",
@@ -38,6 +40,7 @@ pub struct LiveState {
     pub surface: Option<Arc<PaneSurfaceFrame>>,
     pub status: ConnectionStatus,
     pub error: Option<String>,
+    pub missing_installation: bool,
     pub dirty: bool,
     agent_presentation: AgentPresentation,
     outer_focused: Option<bool>,
@@ -62,6 +65,7 @@ impl Default for LiveState {
             surface: None,
             status: ConnectionStatus::Connecting,
             error: None,
+            missing_installation: false,
             dirty: true,
             agent_presentation: AgentPresentation::default(),
             outer_focused: None,
@@ -96,6 +100,11 @@ impl LiveState {
                         }
                     })
             })
+    }
+
+    pub fn daemon_starting(&mut self) {
+        self.status = ConnectionStatus::StartingDaemon;
+        self.dirty = true;
     }
 
     pub fn status_text(&self, local_error: Option<&str>) -> String {
@@ -167,6 +176,7 @@ impl LiveState {
                         .all(|capability| {
                             welcome.capabilities.iter().any(|value| value == capability)
                         });
+                self.missing_installation = false;
                 self.status = ConnectionStatus::AwaitingSnapshot;
                 self.error = None;
             }
@@ -176,6 +186,7 @@ impl LiveState {
                 {
                     activation.failed = true;
                 }
+                self.missing_installation = false;
                 if self
                     .surface
                     .as_ref()
@@ -263,6 +274,45 @@ mod tests {
     use super::*;
     use herdr_client::protocol::AgentStatus;
     use herdr_client::protocol::FrameData;
+
+    #[test]
+    fn missing_installation_survives_disconnect_but_clears_on_success() {
+        let mut state = LiveState::default();
+        assert!(!state.missing_installation);
+        state.missing_installation = true;
+        state.apply(ClientEvent::Disconnected {
+            reason: "Herdr not found".into(),
+        });
+        assert!(state.missing_installation);
+        state.set_outer_focus(true);
+        assert!(state.missing_installation);
+        state.apply(ClientEvent::Snapshot(snapshot()));
+        assert!(!state.missing_installation);
+    }
+
+    #[test]
+    fn daemon_loader_stops_on_success_or_failure() {
+        let mut state = LiveState::default();
+        assert_eq!(state.status, ConnectionStatus::Connecting);
+        state.dirty = false;
+        state.daemon_starting();
+        assert!(state.dirty);
+        assert_eq!(state.status, ConnectionStatus::StartingDaemon);
+        assert!(!state.status.is_connected());
+        assert_eq!(
+            state.status_text(Some("old input error")),
+            "Starting Herdr server..."
+        );
+        state.apply(ClientEvent::Snapshot(snapshot()));
+        assert_eq!(state.status, ConnectionStatus::Connected);
+
+        state.daemon_starting();
+        state.apply(ClientEvent::Disconnected {
+            reason: "startup failed".into(),
+        });
+        assert_eq!(state.status, ConnectionStatus::Disconnected);
+        assert_eq!(state.error.as_deref(), Some("startup failed"));
+    }
 
     #[test]
     fn connection_status_and_error_priority_follow_lifecycle() {

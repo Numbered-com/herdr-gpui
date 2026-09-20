@@ -7,6 +7,7 @@ pub(super) enum Page {
     Preferences,
     Keybinds,
     Update,
+    Install,
 }
 
 pub(super) struct MenuState {
@@ -28,6 +29,11 @@ impl MenuState {
 }
 
 impl HerdrWindow {
+    pub(super) fn show_install_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_menu(window, cx);
+        self.menu.page = Some(Page::Install);
+    }
+
     pub(super) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu.page = Some(Page::Menu);
         self.menu.selected = 0;
@@ -108,11 +114,23 @@ impl HerdrWindow {
         let mut panel = div()
             .id("menu-panel")
             .debug_selector(|| "menu-panel".into())
-            .absolute()
-            .left(px(56.))
-            .bottom((window.viewport_size().height - self.menu.anchor.y + px(12.)).max(px(30.)))
-            .w(px(if page == Page::Menu { 180. } else { 420. }))
-            .max_h(window.viewport_size().height / 2. - px(12.))
+            .when(page != Page::Install, |panel| {
+                panel
+                    .absolute()
+                    .left(px(56.))
+                    .bottom(
+                        (window.viewport_size().height - self.menu.anchor.y + px(12.)).max(px(30.)),
+                    )
+                    .w(px(if page == Page::Menu { 180. } else { 420. }))
+                    .max_h(window.viewport_size().height / 2. - px(12.))
+            })
+            .when(page == Page::Install, |panel| {
+                panel
+                    .w((window.viewport_size().width - px(24.))
+                        .max(px(0.))
+                        .min(px(420.)))
+                    .max_h((window.viewport_size().height - px(24.)).max(px(0.)))
+            })
             .overflow_y_scroll()
             .p(px(6.))
             .rounded(px(5.))
@@ -147,6 +165,47 @@ impl HerdrWindow {
                         })),
                 );
             }
+        } else if page == Page::Install {
+            panel = panel
+                .child(div().p(px(8.)).child("Herdr must be installed"))
+                .child(div().p(px(8.)).child(
+                    "Install Herdr first, then choose Terminal > Reconnect. The Install button opens the Herdr website; nothing is installed automatically.",
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(8.))
+                        .p(px(8.))
+                        .child(
+                            div()
+                                .id("menu-install")
+                                .debug_selector(|| "menu-install".into())
+                                .p(px(8.))
+                                .rounded(px(3.))
+                                .bg(rgb(sidebar::ACTIVE))
+                                .cursor_pointer()
+                                .child("Install")
+                                .on_click(|_, _, cx| {
+                                    cx.stop_propagation();
+                                    cx.open_url("https://herdr.dev/");
+                                }),
+                        )
+                        .child(
+                            div()
+                                .id("menu-dismiss")
+                                .debug_selector(|| "menu-dismiss".into())
+                                .p(px(8.))
+                                .rounded(px(3.))
+                                .hover(|button| button.bg(rgb(sidebar::ACTIVE)))
+                                .cursor_pointer()
+                                .child("Dismiss")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.dismiss_menu(window, cx);
+                                })),
+                        ),
+                );
         } else {
             let (title, rows) = match page {
                 Page::Preferences => ("Preferences (read-only)", vec![
@@ -195,6 +254,9 @@ impl HerdrWindow {
             .id("menu-overlay")
             .absolute()
             .inset_0()
+            .when(page == Page::Install, |overlay| {
+                overlay.flex().items_center().justify_center()
+            })
             .occlude()
             .track_focus(&self.menu.focus)
             .on_mouse_down(
@@ -210,6 +272,9 @@ impl HerdrWindow {
                 window.prevent_default();
                 match event.keystroke.key.as_str() {
                     "escape" => this.dismiss_menu(window, cx),
+                    "enter" if this.menu.page == Some(Page::Install) => {
+                        cx.open_url("https://herdr.dev/");
+                    }
                     "up" | "down" if this.menu.page == Some(Page::Menu) => {
                         let count = this.menu_items().len();
                         this.menu.selected = (this.menu.selected
