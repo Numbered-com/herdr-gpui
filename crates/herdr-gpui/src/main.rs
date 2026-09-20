@@ -3,6 +3,7 @@
 mod app_icon;
 mod controls;
 mod input;
+mod menu;
 #[cfg(feature = "integration-test")]
 mod performance;
 mod sidebar;
@@ -51,6 +52,8 @@ struct HerdrWindow {
     painter: std::rc::Rc<std::cell::RefCell<terminal_painter::TerminalPainter>>,
     marked: String,
     local_error: Option<String>,
+    menu: menu::MenuState,
+    collapsed_repos: std::collections::HashSet<String>,
     wheel: WheelAccumulator,
     #[cfg(feature = "integration-test")]
     input_probe: smoke::InputProbe,
@@ -115,15 +118,18 @@ impl HerdrWindow {
             painter: Default::default(),
             marked: String::new(),
             local_error: None,
+            menu: menu::MenuState::new(cx),
+            collapsed_repos: Default::default(),
             wheel: WheelAccumulator::default(),
             #[cfg(feature = "integration-test")]
             input_probe: smoke::InputProbe::default(),
             #[cfg(feature = "integration-test")]
             sidebar_scroll: Default::default(),
             _poll: poll,
-            _activation: cx.observe_window_activation(window, |this, window, _| {
+            _activation: cx.observe_window_activation(window, |this, window, cx| {
                 this.active = window.is_window_active();
                 this.report_focus();
+                cx.notify();
             }),
         };
         #[cfg(feature = "integration-test")]
@@ -146,7 +152,9 @@ impl HerdrWindow {
         self.sent_size = None;
         self.wheel = WheelAccumulator::default();
         self.sent_focus = None;
-        self.inbox = Arc::new(Mutex::new(LiveState::default()));
+        let mut state = LiveState::default();
+        state.set_outer_focus(self.active);
+        self.inbox = Arc::new(Mutex::new(state));
         match connect(self.target.clone(), self.options) {
             Ok(client) => {
                 self.handle = Some(client.handle);
@@ -191,6 +199,10 @@ impl HerdrWindow {
     }
 
     fn report_focus(&mut self) {
+        // Update the authoritative event inbox, not just the rendered clone.
+        if let Ok(mut state) = self.inbox.try_lock() {
+            state.set_outer_focus(self.active);
+        }
         if self.sent_focus == Some(self.active) {
             return;
         }
@@ -202,6 +214,9 @@ impl HerdrWindow {
     }
 
     fn send(&mut self, event: ClientPaneInputEvent, cx: &mut Context<Self>) {
+        if self.menu.page.is_some() {
+            return;
+        }
         if let (Some(handle), Some(snapshot), Some(surface)) =
             (&self.handle, &self.live.snapshot, &self.live.surface)
         {
@@ -235,6 +250,9 @@ impl HerdrWindow {
     }
 
     fn command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.page.is_some() {
+            return;
+        }
         #[cfg(feature = "integration-test")]
         {
             self.input_probe.actions += 1;
@@ -253,6 +271,9 @@ impl HerdrWindow {
     }
 
     fn scroll_wheel(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.page.is_some() {
+            return;
+        }
         let (Some(handle), Some(snapshot), Some(surface)) =
             (&self.handle, &self.live.snapshot, &self.live.surface)
         else {
@@ -353,6 +374,8 @@ impl Render for HerdrWindow {
             }
         }
         let surface = self.live.surface.clone();
+        let snapshot = self.live.snapshot.clone();
+        let inbox = self.inbox.clone();
         let entity = cx.entity();
         let paint_entity = entity.clone();
         let focus = self.focus.clone();
@@ -451,6 +474,25 @@ impl Render for HerdrWindow {
                                     cx,
                                 );
                             }
+                            if window.is_window_active()
+                                && let Some(snapshot) = &snapshot
+                            {
+                                let snapshot = snapshot.clone();
+                                let surface = surface.clone();
+                                // Defer projection/COW work until after paint. On contention,
+                                // retry via another draw, never by acknowledging inbox cells.
+                                cx.defer(move |cx| match inbox.try_lock() {
+                                    Ok(mut state) => {
+                                        state.acknowledge_presented_surface(
+                                            &snapshot, &surface, true,
+                                        );
+                                    }
+                                    Err(std::sync::TryLockError::WouldBlock) => {
+                                        paint_entity.update(cx, |_, cx| cx.notify());
+                                    }
+                                    Err(std::sync::TryLockError::Poisoned(_)) => {}
+                                });
+                            }
                         }
                     },
                 )
@@ -464,6 +506,9 @@ impl Render for HerdrWindow {
             .unwrap_or_else(|| self.live.status.clone());
         div()
             .on_action(cx.listener(|this, _: &Reconnect, window, cx| {
+                if this.menu.page.is_some() {
+                    return;
+                }
                 this.reconnect();
                 window.focus(&this.focus);
                 cx.notify();
@@ -487,6 +532,7 @@ impl Render for HerdrWindow {
                 this.command(Command::PreviousTab, window, cx)
             }))
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .bg(rgb(BACKGROUND))
@@ -556,6 +602,9 @@ impl Render for HerdrWindow {
                         d.child(format!("Composing: {}", self.marked))
                     }),
             )
+            .when(self.menu.page.is_some(), |root| {
+                root.child(self.render_menu(window, cx))
+            })
     }
 }
 

@@ -60,6 +60,9 @@ impl EntityInputHandler for HerdrWindow {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.menu.page.is_some() {
+            return;
+        }
         self.marked = text.into();
         cx.notify();
     }

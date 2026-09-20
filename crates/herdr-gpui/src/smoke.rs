@@ -90,7 +90,109 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                 return;
             }
         }
-        eprintln!("SIDEBAR native PASS: 12 full-hierarchy Menlo draws, 4 native sizes");
+        #[cfg(target_os = "macos")]
+        for step in 0..4 {
+            let point = AnyWindowHandle::from(handle).update(cx, |root, window, cx| {
+                let view = root
+                    .downcast::<HerdrWindow>()
+                    .map_err(|_| "unexpected root")?;
+                view.update(cx, |view, _| {
+                    if step == 0 {
+                        if let Some(snapshot) = view.live.snapshot.as_mut() {
+                            let snapshot = Arc::make_mut(snapshot);
+                            snapshot.focused_workspace_id = Some("w4".into());
+                            for workspace in &mut snapshot.workspaces {
+                                workspace.focused = workspace.workspace_id == "w4";
+                            }
+                        }
+                        view.marked = "preserve active child".into();
+                    }
+                });
+                window.refresh();
+                cx.default_global::<sidebar::layout_tests::PaintedProbes>()
+                    .0
+                    .clear();
+                window.draw(cx).clear();
+                let label = match step {
+                    0 => "v",
+                    1 => ">",
+                    _ => "menu",
+                };
+                cx.global::<sidebar::layout_tests::PaintedProbes>()
+                    .0
+                    .get(label)
+                    .map(|probe| probe.bounds.center())
+                    .ok_or("missing native click target")
+            });
+            let result = match point {
+                Ok(Ok(point)) => sidebar::native_tests::click(point.x.to_f64(), point.y.to_f64()),
+                error => Err(format!("native target: {error:?}")),
+            };
+            timer.timer(Duration::from_millis(50)).await;
+            let result = if step == 3 {
+                result.and_then(|()| sidebar::native_tests::click(700., 500.))
+            } else {
+                result
+            };
+            let verified = AnyWindowHandle::from(handle).update(
+                cx,
+                |root, window, cx| -> Result<(), String> {
+                    result?;
+                    let view = root
+                        .downcast::<HerdrWindow>()
+                        .map_err(|_| "unexpected root")?;
+                    let state = view.read(cx);
+                    if step < 2 {
+                        if state
+                            .collapsed_repos
+                            .contains("/fixture/agent-launcher/.git")
+                            != (step == 0)
+                            || state.marked != "preserve active child"
+                            || state.live.snapshot.as_ref().is_none_or(|s| {
+                                s.workspaces.len() != 40
+                                    || s.focused_workspace_id.as_deref() != Some("w4")
+                            })
+                        {
+                            return Err(
+                                "collapse navigated, removed rows, or lost selection".into()
+                            );
+                        }
+                    } else if step == 2 {
+                        if state.menu.page != Some(menu::Page::Menu) {
+                            return Err("native footer click did not open menu".into());
+                        }
+                        let before = state.input_probe;
+                        window.dispatch_action(Box::new(NewTab), cx);
+                        for key in ["down", "enter", "x", "escape"] {
+                            window.dispatch_keystroke(
+                                Keystroke {
+                                    key: key.into(),
+                                    ..Default::default()
+                                },
+                                cx,
+                            );
+                        }
+                        let state = view.read(cx);
+                        if state.menu.page.is_some()
+                            || state.input_probe.text != before.text
+                            || state.input_probe.keys != before.keys
+                            || state.input_probe.actions != before.actions
+                        {
+                            return Err("menu keyboard handling leaked terminal input".into());
+                        }
+                    } else if state.menu.page.is_some() {
+                        return Err("outside click did not dismiss native menu".into());
+                    }
+                    Ok(())
+                },
+            );
+            if !matches!(verified, Ok(Ok(()))) {
+                eprintln!("SIDEBAR native interaction FAIL: {verified:?}");
+                let _ = cx.update(|cx| cx.quit());
+                return;
+            }
+        }
+        eprintln!("SIDEBAR native PASS: 12 Menlo draws, 4 sizes, collapse/expand, menu keyboard isolation and outside dismissal");
         EXIT_CODE.store(0, Ordering::SeqCst);
         let _ = cx.update(|cx| cx.quit());
     })

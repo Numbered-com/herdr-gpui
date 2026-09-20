@@ -20,7 +20,10 @@ no input replay. The status dot is green when connected and red otherwise.
 ## Supported
 
 - Workspace/worktree sidebar with main-checkout parents, indented linked
-  workspaces, branch details, and daemon-driven filled/hollow activity indicators.
+  workspaces, local collapse arrows, branch details, and daemon-driven
+  filled/hollow activity indicators with client-local unseen-completion tracking.
+- In-app sidebar menu for settings information, keybinds, config reload, update
+  information, and detach/reconnect. Settings are read-only for now.
 - Title-only tabs, without an added tab number. Externally created workspaces
   arrive through pushed snapshots without manual refresh.
 - Click workspace, tab, agent, or a visible split pane to focus through the API.

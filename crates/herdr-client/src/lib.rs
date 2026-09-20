@@ -3,6 +3,7 @@
 //! Drain `Client::events` on a GUI background task, never block the UI thread.
 #![doc = include_str!("../README.md")]
 mod discovery;
+pub mod presentation;
 pub use crossbeam_channel::Receiver;
 use crossbeam_channel::{SendTimeoutError, Sender, TrySendError, bounded};
 pub use discovery::{ConnectTarget, session_socket};

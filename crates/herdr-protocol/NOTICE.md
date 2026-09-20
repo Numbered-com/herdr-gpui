@@ -22,3 +22,8 @@ payload consumption. Surface validation and patch application are client code.
 The client discovery rules also adapt `src/server/socket_paths.rs`,
 `src/session.rs`, and `src/config/io.rs` from the same source/license.
 The native client's build mode does not implicitly select Herdr's dev session.
+
+Client-local activity presentation adapts the seen/completion rules from
+`src/client/shell/endpoint_agent_state.rs` and status priority from
+`src/client/shell.rs`, under the same license. The GUI adds asynchronous
+presentation fences so coalesced socket updates do not acknowledge unseen output.

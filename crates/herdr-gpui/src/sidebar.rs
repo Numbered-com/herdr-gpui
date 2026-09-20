@@ -12,6 +12,7 @@ const ROW_PADDING: f32 = 12.;
 const STATUS_WIDTH: f32 = 5.;
 const LABEL_GAP: f32 = 8.;
 const CHILD_INDENT: f32 = 16.;
+const ARROW_RESERVE: f32 = 18.;
 pub(super) const LABEL_WIDTH: f32 =
     SIDEBAR_WIDTH - 1. - 2. * ROW_PADDING - STATUS_WIDTH - LABEL_GAP;
 
@@ -39,7 +40,9 @@ impl HerdrWindow {
                 spaces = spaces.track_scroll(&self.sidebar_scroll[0]);
                 agents = agents.track_scroll(&self.sidebar_scroll[1]);
             }
-            for (index, indented) in workspace_entries(&snapshot.workspaces) {
+            for (index, indented, group) in
+                visible_workspace_entries(&snapshot.workspaces, &self.collapsed_repos)
+            {
                 let workspace = &snapshot.workspaces[index];
                 let id = workspace.workspace_id.clone();
                 spaces = spaces.child(
@@ -49,7 +52,27 @@ impl HerdrWindow {
                         workspace.agent_status,
                         workspace.focused,
                         indented,
+                        group.is_some() || indented,
                     )
+                    .when_some(group, |row, key| {
+                        let collapsed = self.collapsed_repos.contains(&key);
+                        row.child(
+                            div()
+                                .id(SharedString::from(format!("collapse-{id}")))
+                                .debug_selector(move || format!("collapse-{index}"))
+                                .w(px(ARROW_RESERVE - LABEL_GAP))
+                                .h(px(32.))
+                                .flex_none()
+                                .child(label_text(if collapsed { ">" } else { "v" }))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    if !this.collapsed_repos.remove(&key) {
+                                        this.collapsed_repos.insert(key.clone());
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                    })
                     .id(SharedString::from(format!("workspace-{id}")))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.navigate("workspace", &id, cx);
@@ -61,7 +84,7 @@ impl HerdrWindow {
                 let id = agent.pane_id.clone();
                 let (name, kind) = agent_labels(agent);
                 agents = agents.child(
-                    row(name, kind, agent.agent_status, agent.focused, false)
+                    row(name, kind, agent.agent_status, agent.focused, false, false)
                         .id(SharedString::from(format!("agent-{id}")))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.navigate("pane", &id, cx);
@@ -113,19 +136,37 @@ impl HerdrWindow {
                     .child(spaces)
                     .child(
                         div()
-                            .id("new-workspace")
                             .flex_none()
                             .h(px(26.))
                             .px(px(12.))
                             .flex()
                             .items_center()
                             .text_color(rgb(MUTED))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(rgb(ACTIVE)).text_color(rgb(FOREGROUND)))
-                            .child("new")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.command(Command::Workspace, window, cx)
-                            })),
+                            .gap(px(20.))
+                            .child(
+                                div()
+                                    .id("new-workspace")
+                                    .cursor_pointer()
+                                    .hover(|s| s.text_color(rgb(FOREGROUND)))
+                                    .child("new")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.command(Command::Workspace, window, cx)
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("sidebar-menu")
+                                    .debug_selector(|| "sidebar-menu".into())
+                                    .cursor_pointer()
+                                    .hover(|s| s.text_color(rgb(FOREGROUND)))
+                                    .child(label_text("menu"))
+                                    .on_click(cx.listener(
+                                        |this, event: &ClickEvent, window, cx| {
+                                            this.menu.anchor = event.position();
+                                            this.open_menu(window, cx);
+                                        },
+                                    )),
+                            ),
                     ),
             )
             .child(div().h(px(1.)).flex_none().bg(rgb(ACTIVE)))
@@ -154,9 +195,16 @@ fn header(label: &'static str) -> Div {
         .child(label)
 }
 
-fn row(name: &str, detail: &str, status: AgentStatus, focused: bool, indented: bool) -> Div {
+fn row(
+    name: &str,
+    detail: &str,
+    status: AgentStatus,
+    focused: bool,
+    indented: bool,
+    reserve_arrow: bool,
+) -> Div {
     let indent = if indented { CHILD_INDENT } else { 0. };
-    let label_width = LABEL_WIDTH - indent;
+    let label_width = LABEL_WIDTH - indent - if reserve_arrow { ARROW_RESERVE } else { 0. };
     div()
         .debug_selector(|| format!("row-{name}"))
         .h(px(40.))
@@ -203,6 +251,9 @@ fn row(name: &str, detail: &str, status: AgentStatus, focused: bool, indented: b
 
 #[cfg(any(test, feature = "integration-test"))]
 pub(crate) mod layout_tests;
+
+#[cfg(all(feature = "integration-test", target_os = "macos"))]
+pub(crate) mod native_tests;
 
 #[cfg(not(any(test, feature = "integration-test")))]
 fn label_text(text: &str) -> SharedString {
@@ -270,6 +321,27 @@ fn workspace_entries(workspaces: &[ClientShellWorkspace]) -> Vec<(usize, bool)> 
     entries
 }
 
+fn visible_workspace_entries(
+    workspaces: &[ClientShellWorkspace],
+    collapsed: &HashSet<String>,
+) -> Vec<(usize, bool, Option<String>)> {
+    let entries = workspace_entries(workspaces);
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(position, &(index, child))| {
+            let key = workspaces[index].worktree.as_ref().map(|tree| &tree.key);
+            if child && key.is_some_and(|key| collapsed.contains(key)) {
+                return None;
+            }
+            let group = (!child && entries.get(position + 1).is_some_and(|entry| entry.1))
+                .then(|| key.cloned())
+                .flatten();
+            Some((index, child, group))
+        })
+        .collect()
+}
+
 fn workspace_label(workspace: &ClientShellWorkspace, indented: bool) -> &str {
     let branch = (indented && !workspace.custom_label)
         .then_some(workspace.branch.as_deref())
@@ -300,10 +372,10 @@ fn status_indicator(status: AgentStatus) -> Div {
 
 fn status_style(status: AgentStatus) -> (f32, bool, u32) {
     match status {
-        AgentStatus::Working | AgentStatus::Blocked | AgentStatus::Done => {
-            (STATUS_WIDTH, true, 0x78a9ff)
-        }
-        AgentStatus::Idle => (STATUS_WIDTH, false, 0x78a9ff),
+        AgentStatus::Working => (STATUS_WIDTH, true, 0xf9e2af),
+        AgentStatus::Blocked => (STATUS_WIDTH, true, 0xf38ba8),
+        AgentStatus::Done => (STATUS_WIDTH, true, 0x94e2d5),
+        AgentStatus::Idle => (STATUS_WIDTH, false, 0xa6e3a1),
         AgentStatus::Unknown => (2., true, MUTED),
     }
 }
@@ -357,6 +429,38 @@ mod tests {
             (0..7).map(|i| (i, false)).collect::<Vec<_>>()
         );
         assert!(workspace_entries(&[]).is_empty());
+    }
+
+    #[test]
+    fn collapse_uses_repository_identity_without_mutating_selection() {
+        let mut workspaces = layout_tests::snapshot(7).workspaces;
+        workspaces[4].focused = true;
+        let before = workspaces.clone();
+        let collapsed = std::collections::HashSet::from(["/fixture/agent-launcher/.git".into()]);
+        let entries = super::visible_workspace_entries(&workspaces, &collapsed);
+        assert_eq!(
+            entries.iter().map(|entry| entry.0).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 6]
+        );
+        assert_eq!(entries.iter().filter(|entry| entry.2.is_some()).count(), 1);
+        assert_eq!(workspaces, before);
+        workspaces[3].label = "renamed".into();
+        assert_eq!(
+            super::visible_workspace_entries(&workspaces, &collapsed).len(),
+            5
+        );
+        workspaces.remove(5);
+        workspaces.remove(4);
+        assert!(
+            super::visible_workspace_entries(&workspaces, &collapsed)
+                .iter()
+                .all(|entry| entry.2.is_none())
+        );
+        workspaces.remove(3);
+        assert_eq!(
+            super::visible_workspace_entries(&workspaces, &collapsed).len(),
+            4
+        );
     }
 
     #[test]
@@ -431,10 +535,12 @@ mod tests {
             let (diameter, filled, color) = status_style(status);
             assert_eq!(
                 color,
-                if status == AgentStatus::Unknown {
-                    super::MUTED
-                } else {
-                    0x78a9ff
+                match status {
+                    AgentStatus::Working => 0xf9e2af,
+                    AgentStatus::Blocked => 0xf38ba8,
+                    AgentStatus::Done => 0x94e2d5,
+                    AgentStatus::Idle => 0xa6e3a1,
+                    AgentStatus::Unknown => super::MUTED,
                 }
             );
             assert_eq!(filled, status != AgentStatus::Idle);
