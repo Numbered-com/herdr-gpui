@@ -41,6 +41,9 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         .update(cx, |_, cx| cx.notify());
                     window.refresh();
                     window.draw(cx).clear();
+                    if frame > 0 && sidebar::GITHUB_ICON.clone().use_render_image(window, cx).is_none() {
+                        return Err("embedded GitHub SVG did not render".into());
+                    }
                     let probes = &cx.global::<PaintedProbes>().0;
                     let mut failed = false;
                     for input in [
@@ -61,13 +64,15 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                             eprintln!("SIDEBAR frame={frame} input={input:?} {p:?}");
                         }
                         let expected_short = input.len() < 20;
+                        let title_icon = matches!(input, "herdr" | "herdr-gpui-sidebar-rendering-regression-investigation");
+                        let expected_width = px(sidebar::LABEL_WIDTH - if title_icon { sidebar::ICON_RESERVE } else { 0. });
                         if p.glyph_text != p.cached
                             || (expected_short && p.glyph_text != input)
                             || (!expected_short
                                 && (p.width < px(150.) || !p.glyph_text.ends_with('\u{2026}')))
                             || p.clipped
-                            || p.bounds.size.width != px(sidebar::LABEL_WIDTH)
-                            || p.mask.size.width != px(sidebar::LABEL_WIDTH)
+                            || p.bounds.size.width != expected_width
+                            || p.mask.size.width != expected_width
                             || p.width > p.bounds.size.width
                             || p.bounds.size.height != px(16.)
                         {
@@ -115,8 +120,8 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     .clear();
                 window.draw(cx).clear();
                 let label = match step {
-                    0 => "v",
-                    1 => ">",
+                    0 => "\u{25be}",
+                    1 => "\u{25b8}",
                     _ => "menu",
                 };
                 cx.global::<sidebar::layout_tests::PaintedProbes>()
