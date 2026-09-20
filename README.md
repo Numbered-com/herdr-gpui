@@ -26,14 +26,17 @@ keybind help, GUI and daemon config reload, available-update information, and sa
 detach/reconnect. Escape or clicking outside dismisses it; menu typing never
 reaches the terminal. Update commands are displayed, not executed automatically.
 
-This is an initial working macOS client, not complete TUI feature parity.
+This is an initial working macOS client with experimental Linux builds, not
+complete TUI feature parity. Linux compilation and headless tests have been
+verified on Ubuntu 24.04 ARM64; native Linux desktop behavior is not yet verified.
 Herdr owns terminal processes and session state; closing this app only detaches.
 The Herdr checkout does not need to be modified or linked into this build.
 
 ## Run
 
-Install Rust/rustup and the macOS Xcode command-line tools. The repository pins
-Rust 1.96.1 and GPUI 0.2.2. Install Herdr, then:
+Install Rust/rustup and, on macOS, the Xcode command-line tools. For Linux,
+see the dependencies below. The repository pins Rust 1.96.1 and GPUI 0.2.2.
+Install Herdr, then:
 
 ```sh
 cargo run --locked --release -p herdr-gpui
@@ -95,6 +98,46 @@ manual refresh. The native integration test checks creation by a separate client
 including preservation of the GUI's current selection and connection. Observed
 latency is tens of milliseconds locally, not an instant-delivery guarantee.
 
+### Linux Builds
+
+CI and releases target `x86_64-unknown-linux-gnu` and
+`aarch64-unknown-linux-gnu` on native Ubuntu 24.04 runners. These are dynamically
+linked GNU/Linux builds, not portable static binaries or AppImages; older glibc
+distributions are not supported by this build baseline. Windows builds do not
+currently exist.
+
+On Ubuntu 24.04, install build dependencies with:
+
+```sh
+bash scripts/install-linux-deps.sh
+just ci
+just test-build
+```
+
+The script uses sudo/apt to install a C/C++ compiler, pkg-config, XKB/XCB,
+FreeType/Fontconfig development libraries, and DejaVu fonts. Pinned registry
+GPUI's default features enable both X11 and Wayland; no alternate GPUI fork,
+nightly toolchain, or cross-compilation SDK is used.
+
+Running the GUI requires an active X11 or Wayland desktop and working Vulkan
+loader/driver, plus XKB/XCB, Fontconfig/FreeType, and DejaVu fonts. On Ubuntu,
+runtime packages include `libxkbcommon0`, `libxkbcommon-x11-0`, `libxcb1`,
+`libfontconfig1`, `libfreetype6`, `libwayland-client0`, `libvulkan1`, and
+`fonts-dejavu-core`; install a Vulkan driver appropriate for your GPU
+(`mesa-vulkan-drivers` for supported Mesa hardware). These libraries, drivers,
+fonts, and Herdr itself are not bundled in release archives.
+
+Extract the matching versioned Linux `.tar.gz` and run `bin/herdr-gpui` inside
+the extracted directory. Linux defaults use DejaVu Sans Mono for terminal/sidebar
+and DejaVu Sans for other UI text. Explicit font configuration is preserved.
+The shortcuts documented as Cmd use **Super** on Linux, not Control, and may
+conflict with desktop shortcuts. macOS global menus and Dock integration do not
+exist on Linux; use the in-app controls and command palette.
+
+Native Linux X11/Wayland launch, Vulkan rendering, clipboard, keyboard/IME,
+scaling, and desktop shortcut behavior still need manual verification. Headless
+tests and successful linking do not establish native desktop support.
+
 ### macOS App Bundle
 
 `cargo run` and `just run` use an embedded original Herdr Dock icon, with no runtime
@@ -151,12 +194,12 @@ family = "Menlo"
 size = 14
 ```
 
-| Section | Default Font Family | Default Size |
-| --- | --- | --- |
-| `sidebar` | `Menlo` | 12 |
-| `tabs` | `.SystemUIFont` | 14 |
-| `terminal` | `Menlo` | 14 |
-| `ui` | `.SystemUIFont` | 12 |
+| Section | macOS Font Family | Linux Font Family | Default Size |
+| --- | --- | --- | --- |
+| `sidebar` | `Menlo` | `DejaVu Sans Mono` | 12 |
+| `tabs` | `.SystemUIFont` | `DejaVu Sans` | 14 |
+| `terminal` | `Menlo` | `DejaVu Sans Mono` | 14 |
+| `ui` | `.SystemUIFont` | `DejaVu Sans` | 12 |
 
 Sizes are **logical pixels**, not points or physical display pixels. Fractional
 sizes are supported; values must be finite and between 8 and 48 inclusive. Line
@@ -281,7 +324,8 @@ comparison or OS-level keyboard/IME delivery testing.
 ### Continuous Integration
 
 GitHub Actions checks formatting, denies Clippy warnings, and runs the tests with
-both default and all features. The tests include real executable CLI checks for
+both default and all features on macOS and native Ubuntu 24.04 x86_64/ARM64.
+The tests include real executable CLI checks for
 help, malformed arguments, conflicting options, and test-mode gating, with a
 timeout to catch startup hangs. These checks do not open windows.
 
@@ -332,10 +376,10 @@ remain opt-in rather than imposing machine-dependent timings on hosted CI.
 See [PERFORMANCE.md](crates/herdr-gpui/PERFORMANCE.md) for the before/after results,
 reference mode, workload, deterministic checks, and remaining limitations.
 
-Separate Apple Silicon and Intel macOS jobs build optimized executables and run
-the CLI tests against those release binaries. CI validates builds but does not
-publish distributable binaries; packaging, dependency notices, signing, and
-notarization are a separate release milestone.
+Separate Apple Silicon/Intel macOS and x86_64/ARM64 Linux jobs build optimized
+executables and run the CLI tests against those release binaries. CI validates
+builds and packaging smoke tests but does not publish binaries; tagged builds
+use the separate release workflow described below.
 GPUI compiles its Metal shaders at runtime, so CI does not need the separate
 build-time Metal compiler download.
 
@@ -370,9 +414,10 @@ status text to leave room for labels.
 - Rename dialogs, workspace deletion, and full worktree/agent management.
 - Editable settings and bundled fonts.
 - Optimized terminal painting and graphics support.
-- Signed macOS app packaging and broader remote-platform support.
+- Native Linux desktop verification and broader remote-platform support.
 
-Current rendering defaults to Menlo with configurable fonts and themes. Images and terminal
+Current rendering defaults to Menlo on macOS and DejaVu Sans Mono on Linux,
+with configurable fonts and themes. Images and terminal
 notifications/clipboard writes are deliberately not executed. See
 [`crates/herdr-gpui/README.md`](crates/herdr-gpui/README.md) for the detailed scope.
 
@@ -380,7 +425,10 @@ notifications/clipboard writes are deliberately not executed. See
 
 Tagged builds (`YYYYMMDD.NN`) publish a universal `Herdr.app` bundle, signed
 with a Developer ID certificate and notarized by Apple, alongside per-architecture
-executables and a CycloneDX SBOM. Every asset ships SHA256/SHA512 checksums, a
+executables, Linux x86_64/ARM64 `.tar.gz` archives, and CycloneDX SBOMs (Linux
+graphs are target-qualified; the unqualified SBOM describes macOS ARM64).
+Apple signing and notarization apply only to the macOS app bundle. Every asset
+ships SHA256/SHA512 checksums, a
 Sigstore keyless signature, and GitHub build provenance; detached GPG
 signatures from the maintainer's key are added shortly after publication.
 

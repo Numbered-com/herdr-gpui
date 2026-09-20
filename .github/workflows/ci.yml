@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   # Audits the workflows themselves for injection, over-broad permissions,
-  # unpinned actions, and credential persistence. Gates the expensive macOS
+  # unpinned actions, and credential persistence. Gates the application
   # jobs so a compromised workflow change is caught before anything builds.
   zizmor:
     name: Workflow Security
@@ -33,16 +33,23 @@ jobs:
           online-audits: false
 
   checks:
-    name: Format, lint, and test
+    name: Format, lint, and test (${{ matrix.runner }})
     needs: zizmor
-    runs-on: macos-15
-    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: bash scripts/install-linux-deps.sh
       - name: Install pinned Rust toolchain
         run: rustup show
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -51,6 +58,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Test Linux archive packaging
+        run: bash scripts/test-package-linux.sh
       - name: Lint every target and feature
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - name: Test default features and executable CLI
@@ -58,8 +67,22 @@ jobs:
       - name: Test integration-feature build and executable CLI
         run: cargo test --locked --workspace --all-features
 
+  # Keep the branch-protection context stable while requiring every platform.
+  checks-passed:
+    name: Format, lint, and test
+    needs: checks
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require all platform checks
+        env:
+          RESULT: ${{ needs.checks.result }}
+        run: test "$RESULT" = success
+
   build:
-    name: Release (${{ matrix.arch }})
+    name: Release (${{ matrix.runner }}, ${{ matrix.arch }})
     needs: zizmor
     strategy:
       fail-fast: false
@@ -69,14 +92,21 @@ jobs:
             arch: arm64
           - runner: macos-15-intel
             arch: x86_64
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: bash scripts/install-linux-deps.sh
       - name: Install pinned Rust toolchain
         run: rustup show
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2

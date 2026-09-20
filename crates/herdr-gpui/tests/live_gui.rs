@@ -5,8 +5,10 @@ mod sandbox;
 
 use sandbox::{Sandbox, daemon_binary, stop_children};
 use std::{
+    ffi::OsString,
     fs,
-    process::Child,
+    path::Path,
+    process::{Child, Command},
     thread,
     time::{Duration, Instant},
 };
@@ -17,6 +19,26 @@ struct Isolated {
     gui: Option<Child>,
 }
 
+fn gui_command(sandbox: &Sandbox, mut env: impl FnMut(&str) -> Option<OsString>) -> Command {
+    let mut command = sandbox.command(env!("CARGO_BIN_EXE_herdr-gpui"), "gui.log");
+    // Only the GUI needs desktop transport; keep HOME, XDG and daemon paths private.
+    for name in ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"] {
+        if let Some(mut value) = env(name) {
+            if name == "WAYLAND_DISPLAY"
+                && !value.is_empty()
+                && Path::new(&value).is_relative()
+                && let Some(runtime) =
+                    env("XDG_RUNTIME_DIR").filter(|dir| Path::new(dir).is_absolute())
+            {
+                // Relative Wayland sockets belong to the parent desktop, not our runtime dir.
+                value = Path::new(&runtime).join(value).into_os_string();
+            }
+            command.env(name, value);
+        }
+    }
+    command
+}
+
 #[test]
 #[ignore = "requires active native desktop; GUI-only fixtures, no daemon"]
 fn native_sidebar() {
@@ -25,14 +47,7 @@ fn native_sidebar() {
         daemon: None,
         gui: None,
     };
-    let mut command = isolated
-        .sandbox
-        .command(env!("CARGO_BIN_EXE_herdr-gpui"), "gui.log");
-    for name in ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"] {
-        if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
-        }
-    }
+    let mut command = gui_command(&isolated.sandbox, |name| std::env::var_os(name));
     isolated.gui = Some(command.arg("--sidebar-test").spawn().unwrap());
     let gui = isolated.gui.as_mut().unwrap();
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -87,15 +102,7 @@ fn native_gui_live() {
     isolated
         .sandbox
         .wait_for_daemon(isolated.daemon.as_mut().unwrap(), Duration::from_secs(20));
-    let mut gui_command = isolated
-        .sandbox
-        .command(env!("CARGO_BIN_EXE_herdr-gpui"), "gui.log");
-    // Only the GUI needs desktop transport; never inherit user config or discovery variables.
-    for name in ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"] {
-        if let Some(value) = std::env::var_os(name) {
-            gui_command.env(name, value);
-        }
-    }
+    let mut gui_command = gui_command(&isolated.sandbox, |name| std::env::var_os(name));
     isolated.gui = Some(
         gui_command
             .arg("--socket")
@@ -153,5 +160,78 @@ fn native_gui_live() {
     );
     eprintln!(
         "GUI exited successfully; isolated daemon is still alive; cleaning up only owned children"
+    );
+}
+
+#[test]
+fn gui_desktop_environment_preserves_sandbox_isolation() {
+    use std::{collections::BTreeMap, ffi::OsStr, os::unix::ffi::OsStrExt};
+
+    let sandbox = Sandbox::new();
+    let daemon = sandbox.command("/usr/bin/env", "daemon.log");
+    let base = daemon.get_envs().collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        base[OsStr::new("XDG_RUNTIME_DIR")],
+        Some(sandbox.dir.as_os_str())
+    );
+    for name in ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"] {
+        assert!(!base.contains_key(OsStr::new(name)));
+    }
+    assert_eq!(
+        gui_command(&sandbox, |_| None)
+            .get_envs()
+            .collect::<BTreeMap<_, _>>(),
+        base
+    );
+
+    for (display, runtime, expected) in [
+        (
+            Some("wayland-1"),
+            Some("/run/user/1000"),
+            Some("/run/user/1000/wayland-1"),
+        ),
+        (
+            Some("nested/wayland-1"),
+            Some("/run/user/1000"),
+            Some("/run/user/1000/nested/wayland-1"),
+        ),
+        (
+            Some("/desktop/wayland-1"),
+            Some("/run/user/1000"),
+            Some("/desktop/wayland-1"),
+        ),
+        (Some("/desktop/wayland-1"), None, Some("/desktop/wayland-1")),
+        (Some("wayland-1"), None, Some("wayland-1")),
+        (Some("wayland-1"), Some("relative"), Some("wayland-1")),
+        (Some("wayland-1"), Some(""), Some("wayland-1")),
+        (Some(""), Some("/run/user/1000"), Some("")),
+        (None, Some("/run/user/1000"), None),
+    ] {
+        let command = gui_command(&sandbox, |name| match name {
+            "DISPLAY" => Some(":42".into()),
+            "XAUTHORITY" => Some("/desktop/auth".into()),
+            "WAYLAND_DISPLAY" => display.map(Into::into),
+            "XDG_RUNTIME_DIR" => runtime.map(Into::into),
+            _ => panic!("must not inherit {name}"),
+        });
+        let mut expected_env = base.clone();
+        expected_env.insert(OsStr::new("DISPLAY"), Some(OsStr::new(":42")));
+        expected_env.insert(OsStr::new("XAUTHORITY"), Some(OsStr::new("/desktop/auth")));
+        if let Some(expected) = expected {
+            expected_env.insert(OsStr::new("WAYLAND_DISPLAY"), Some(OsStr::new(expected)));
+        }
+        assert_eq!(command.get_envs().collect::<BTreeMap<_, _>>(), expected_env);
+        assert_eq!(command.get_current_dir(), daemon.get_current_dir());
+    }
+
+    let command = gui_command(&sandbox, |name| match name {
+        "WAYLAND_DISPLAY" => Some(OsStr::from_bytes(b"wayland-\xff").to_owned()),
+        "XDG_RUNTIME_DIR" => Some(OsStr::from_bytes(b"/run/user/\xfe").to_owned()),
+        _ => None,
+    });
+    let env = command.get_envs().collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        env[OsStr::new("WAYLAND_DISPLAY")],
+        Some(OsStr::from_bytes(b"/run/user/\xfe/wayland-\xff"))
     );
 }

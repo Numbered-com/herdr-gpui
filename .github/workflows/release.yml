@@ -63,7 +63,7 @@ jobs:
           fi
 
   build:
-    name: Build (${{ matrix.arch }})
+    name: Build (${{ matrix.target }})
     needs: [zizmor]
     strategy:
       fail-fast: false
@@ -75,14 +75,24 @@ jobs:
           - runner: macos-15-intel
             arch: x86_64
             target: x86_64-apple-darwin
+          - runner: ubuntu-24.04
+            arch: x86_64
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: bash scripts/install-linux-deps.sh
 
       - name: Install pinned Rust toolchain
         run: rustup show
@@ -103,18 +113,19 @@ jobs:
           set -euo pipefail
           mkdir -p staging
           cp target/release/herdr-gpui "staging/herdr-gpui-${TARGET}"
-          # Fail loudly if the runner produced the wrong architecture.
+          # Native runners must match the artifact's declared target.
+          test "$(rustc -vV | sed -n 's/^host: //p')" = "$TARGET"
           file "staging/herdr-gpui-${TARGET}"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: executable-${{ matrix.arch }}
+          name: executable-${{ matrix.target }}
           path: staging/herdr-gpui-${{ matrix.target }}
           if-no-files-found: error
           retention-days: 7
 
   package:
-    name: Package, Sign, and Notarize
+    name: Package All Platforms, Sign, and Notarize macOS
     needs: [build, validate-tag]
     # validate-tag is skipped on workflow_dispatch; don't let that skip packaging.
     if: ${{ always() && needs.build.result == 'success' && needs.validate-tag.result != 'failure' }}
@@ -185,6 +196,17 @@ jobs:
           ( cd dist && tar -czf "herdr-gpui-${VERSION}-aarch64-apple-darwin.tar.gz" "herdr-gpui-${VERSION}-aarch64-apple-darwin" )
           ( cd dist && tar -czf "herdr-gpui-${VERSION}-x86_64-apple-darwin.tar.gz" "herdr-gpui-${VERSION}-x86_64-apple-darwin" )
           rm -f "dist/herdr-gpui-${VERSION}-aarch64-apple-darwin" "dist/herdr-gpui-${VERSION}-x86_64-apple-darwin"
+
+      # Assemble Linux archives here too: one signing/publication job owns all
+      # checksum files and assets. Apple tools only operate on Herdr.app.
+      - name: Package Linux executables
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            bash scripts/package-linux.sh "$VERSION" "$target" "artifacts/herdr-gpui-${target}" dist
+          done
 
       - name: Import Apple Developer ID certificate
         if: ${{ env.RELEASE_DRY_RUN != 'true' }}
@@ -295,6 +317,13 @@ jobs:
           cp crates/herdr-gpui/sbom.json "dist/herdr-gpui-${VERSION}.cdx.json"
           python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d['components']), 'components')" \
             "dist/herdr-gpui-${VERSION}.cdx.json"
+          # Linux has a different dependency graph; never label the macOS SBOM
+          # as describing Linux or overwrite the shared macOS asset.
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            cargo cyclonedx --format json --spec-version 1.5 --all \
+              --target "$target" --override-filename sbom
+            cp crates/herdr-gpui/sbom.json "dist/herdr-gpui-${VERSION}-${target}.cdx.json"
+          done
 
       - name: Install cosign
         uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
@@ -312,6 +341,7 @@ jobs:
           subject-path: |
             dist/*.app.zip
             dist/*.tar.gz
+            dist/*.cdx.json
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -364,13 +394,17 @@ jobs:
           fi
 
           {
-            echo "Native macOS client for Herdr. Requires a running Herdr daemon."
+            echo "Native macOS and experimental Linux client for Herdr. Requires Herdr installed."
             echo
             echo "## Install"
             echo
             echo "Download \`herdr-gpui-${VERSION}-macos-universal.app.zip\`, unzip, and move"
             echo "\`Herdr.app\` to /Applications. The bundle is a universal binary, signed with a"
             echo "Developer ID certificate and notarized by Apple, so Gatekeeper opens it directly."
+            echo
+            echo "Linux: download the matching x86_64-unknown-linux-gnu or aarch64-unknown-linux-gnu"
+            echo "tar.gz and extract it. Run bin/herdr-gpui inside the extracted directory."
+            echo "Built on Ubuntu 24.04; see the included README for runtime libraries and desktop limitations."
             echo
             echo "## Verify"
             echo
