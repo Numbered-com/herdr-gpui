@@ -513,4 +513,87 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     );
     cx.simulate_keystrokes("escape");
     cx.update(|window, cx| assert!(view.read(cx).focus.is_focused(window)));
+
+    let search = cx.update(|window, cx| {
+        view.update(cx, |view, cx| view.open_theme_picker(window, cx));
+        window.draw(cx).clear();
+        let search = view.read(cx).menu.themes.as_ref().unwrap().search.clone();
+        assert!(search.read(cx).focus.is_focused(window));
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("catppuccin mocha".into()));
+        search
+    });
+    cx.simulate_keystrokes("cmd-v");
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        assert_eq!(search.read(cx).text(), "catppuccin mocha");
+        assert!(view.read(cx).marked.is_empty());
+    });
+    assert!(cx.debug_bounds("theme-name-Catppuccin Mocha").is_some());
+    cx.update(|_, cx| {
+        assert_eq!(
+            view.read(cx).menu.themes.as_ref().unwrap().filtered,
+            ["Catppuccin Mocha"]
+        );
+    });
+    cx.simulate_keystrokes("cmd-a n o r d");
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        assert_eq!(search.read(cx).text(), "nord");
+        assert!(
+            view.read(cx)
+                .menu
+                .themes
+                .as_ref()
+                .unwrap()
+                .filtered
+                .iter()
+                .all(|name| name.to_lowercase().contains("nord"))
+        );
+    });
+    cx.simulate_keystrokes("cmd-a");
+    cx.update(|_, cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("no-such-theme-xyz".into()))
+    });
+    cx.simulate_keystrokes("cmd-v");
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear());
+    assert!(cx.debug_bounds("theme-empty").is_some());
+    // Enter with no results must neither write a config nor dismiss the picker.
+    cx.simulate_keystrokes("down enter");
+    cx.update(|_, cx| assert!(view.read(cx).menu.page == Some(crate::menu::Page::Themes)));
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| {
+        assert!(view.read(cx).focus.is_focused(window));
+        view.update(cx, |view, cx| view.open_theme_picker(window, cx));
+        window.draw(cx).clear();
+        assert!(search.read(cx).text().is_empty());
+    });
+    cx.update(|window, cx| {
+        search.update(cx, |search, cx| {
+            gpui::EntityInputHandler::replace_and_mark_text_in_range(
+                search,
+                None,
+                "Nord",
+                Some(4..4),
+                window,
+                cx,
+            );
+        });
+        window.draw(cx).clear();
+    });
+    cx.simulate_keystrokes("enter");
+    cx.update(|_, cx| {
+        assert!(
+            view.read(cx).menu.page == Some(crate::menu::Page::Themes),
+            "IME confirmation must not apply a theme"
+        );
+    });
+    cx.update(|window, cx| {
+        search.update(cx, |search, cx| {
+            gpui::EntityInputHandler::unmark_text(search, window, cx)
+        });
+    });
+    cx.simulate_keystrokes("escape");
 }

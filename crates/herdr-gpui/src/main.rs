@@ -7,12 +7,14 @@ mod input;
 mod menu;
 #[cfg(feature = "integration-test")]
 mod performance;
+mod search_input;
 mod sidebar;
 #[cfg(feature = "integration-test")]
 mod smoke;
 mod state;
 mod terminal;
 mod terminal_painter;
+mod theme_picker;
 
 use controls::Command;
 use gpui::{prelude::*, *};
@@ -635,6 +637,19 @@ impl Render for HerdrWindow {
                     .when(!self.marked.is_empty(), |d| {
                         d.child(format!("Composing: {}", self.marked))
                     })
+                    .child(
+                        div()
+                            .id("status-theme")
+                            .debug_selector(|| "status-theme".into())
+                            .flex_none()
+                            .px_2()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgb(self.theme.active)))
+                            .child("Theme")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_theme_picker(window, cx);
+                            })),
+                    )
                     .child(
                         div()
                             .id("status-keybinds")

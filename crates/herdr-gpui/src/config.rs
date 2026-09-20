@@ -4,6 +4,7 @@ use std::{
     env, fs,
     io::{ErrorKind, Write},
     path::{Component, Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 const DEFAULT_CONFIG: &str = include_str!("../config-gpui.example.toml");
@@ -82,6 +83,28 @@ fn config_root() -> Result<PathBuf, String> {
     }
 }
 
+fn theme_directories() -> Result<Vec<PathBuf>, String> {
+    let root = config_root()?;
+    let mut directories = vec![root.join("herdr/themes"), root.join("ghostty/themes")];
+    if let Some(resources) = env::var_os("GHOSTTY_RESOURCES_DIR").filter(|value| !value.is_empty())
+    {
+        directories.push(PathBuf::from(resources).join("themes"));
+    }
+    directories.push(PathBuf::from(
+        "/Applications/Ghostty.app/Contents/Resources/ghostty/themes",
+    ));
+    if let Some(data) = env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
+        directories.push(PathBuf::from(data).join("ghostty/themes"));
+    } else if let Ok(home) = home() {
+        directories.push(home.join(".local/share/ghostty/themes"));
+    }
+    let data_dirs = env::var_os("XDG_DATA_DIRS")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    directories.extend(env::split_paths(&data_dirs).map(|dir| dir.join("ghostty/themes")));
+    Ok(directories)
+}
+
 impl Config {
     pub fn path() -> Result<PathBuf, String> {
         Ok(config_root()?.join("herdr/config-gpui.toml"))
@@ -150,7 +173,117 @@ impl Config {
         Ok(config)
     }
 
+    /// Discover names without parsing every theme. On failure, callers can use
+    /// `Theme::BUILTIN_NAMES`, which remain loadable without any directories.
+    pub fn available_themes(&self) -> Result<Vec<String>, String> {
+        self.available_themes_in(&theme_directories()?)
+    }
+
+    fn available_themes_in(&self, directories: &[PathBuf]) -> Result<Vec<String>, String> {
+        let mut names: Vec<String> = Theme::BUILTIN_NAMES
+            .iter()
+            .map(|name| (*name).into())
+            .collect();
+        for directory in directories {
+            let entries = match fs::read_dir(directory) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => return Err(format!("{}: {error}", directory.display())),
+            };
+            for entry in entries {
+                let entry = entry.map_err(|error| format!("{}: {error}", directory.display()))?;
+                // Follow symlinks just as the named theme loader does.
+                let metadata = match fs::metadata(entry.path()) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                    Err(error) => return Err(format!("{}: {error}", entry.path().display())),
+                };
+                if metadata.is_file()
+                    && let Some(name) = entry.file_name().to_str()
+                {
+                    names.push(name.to_owned());
+                }
+            }
+        }
+        let selected = self.theme.trim();
+        if Path::new(selected).is_absolute() || selected.starts_with("~/") {
+            names.push(self.theme.clone());
+        }
+        names.sort_by_cached_key(|name| (name.to_lowercase(), name.clone()));
+        names.dedup();
+        Ok(names)
+    }
+
+    /// Persist only the theme selection, retaining the latest on-disk settings.
+    pub fn save_theme(&self, name: &str) -> Result<(), String> {
+        self.save_theme_path(name, &Self::path()?)
+    }
+
+    fn save_theme_path(&self, name: &str, path: &Path) -> Result<(), String> {
+        let selected = Self {
+            theme: name.into(),
+            ..self.clone()
+        };
+        selected.theme()?;
+        let result = (|| -> Result<(), String> {
+            let text = match fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(error) if error.kind() == ErrorKind::NotFound => DEFAULT_CONFIG.into(),
+                Err(error) => return Err(error.to_string()),
+            };
+            let mut document = text
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(|error| error.to_string())?;
+            let mut value = toml_edit::Value::from(name);
+            if let Some(previous) = document.get("theme").and_then(toml_edit::Item::as_value) {
+                *value.decor_mut() = previous.decor().clone();
+            }
+            document["theme"] = toml_edit::Item::Value(value);
+            let parent = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+            let (temporary, mut file) = loop {
+                let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+                let temporary =
+                    parent.join(format!(".config-gpui-{}-{id}.tmp", std::process::id()));
+                match fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&temporary)
+                {
+                    Ok(file) => break (temporary, file),
+                    Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(error.to_string()),
+                }
+            };
+            let write_result = (|| {
+                file.write_all(document.to_string().as_bytes())?;
+                file.sync_all()?;
+                drop(file);
+                fs::rename(&temporary, path)
+            })();
+            if let Err(error) = write_result {
+                fs::remove_file(&temporary).map_err(|cleanup| {
+                    format!("{error}; removing {}: {cleanup}", temporary.display())
+                })?;
+                return Err(error.to_string());
+            }
+            Ok(())
+        })();
+        result.map_err(|error| format!("{}: {error}", path.display()))
+    }
+
     pub fn theme(&self) -> Result<Theme, String> {
+        self.theme_with_directories(theme_directories)
+    }
+
+    fn theme_with_directories(
+        &self,
+        directories: impl FnOnce() -> Result<Vec<PathBuf>, String>,
+    ) -> Result<Theme, String> {
         let name = self.theme.trim();
         if let Some(theme) = Theme::builtin(name) {
             return Ok(theme);
@@ -169,25 +302,7 @@ impl Config {
             {
                 return Err("theme must be a name, absolute path, or ~/ path".into());
             }
-            let root = config_root()?;
-            let mut directories = vec![root.join("herdr/themes"), root.join("ghostty/themes")];
-            if let Some(resources) =
-                env::var_os("GHOSTTY_RESOURCES_DIR").filter(|value| !value.is_empty())
-            {
-                directories.push(PathBuf::from(resources).join("themes"));
-            }
-            directories.push(PathBuf::from(
-                "/Applications/Ghostty.app/Contents/Resources/ghostty/themes",
-            ));
-            if let Some(data) = env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
-                directories.push(PathBuf::from(data).join("ghostty/themes"));
-            } else if let Ok(home) = home() {
-                directories.push(home.join(".local/share/ghostty/themes"));
-            }
-            let data_dirs = env::var_os("XDG_DATA_DIRS")
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
-            directories.extend(env::split_paths(&data_dirs).map(|dir| dir.join("ghostty/themes")));
+            let directories = directories()?;
             let mut found = None;
             for directory in &directories {
                 let candidate = directory.join(name);
@@ -251,6 +366,14 @@ impl Default for Theme {
 }
 
 impl Theme {
+    pub const BUILTIN_NAMES: &'static [&'static str] = &[
+        "Default",
+        "Nord",
+        "Dracula",
+        "Catppuccin Mocha",
+        "Catppuccin Latte",
+    ];
+
     fn derive_chrome(&mut self) {
         let blend = |percent: u32| {
             let channel = |shift: u32| {
@@ -368,6 +491,173 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TempDirectory(PathBuf);
+
+    impl TempDirectory {
+        fn new() -> std::io::Result<Self> {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            loop {
+                let path = env::temp_dir().join(format!(
+                    "herdr-theme-test-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                match fs::create_dir(&path) {
+                    Ok(()) => return Ok(Self(path)),
+                    Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+
+    impl Drop for TempDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn discovers_sorted_names_and_loads_in_precedence_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TempDirectory::new()?;
+        let first = temp.0.join("first");
+        let second = temp.0.join("second");
+        fs::create_dir(&first)?;
+        fs::create_dir(&second)?;
+        fs::create_dir(first.join("not-a-theme"))?;
+        for name in ["zebra", "alpha", "Nord"] {
+            fs::write(first.join(name), "background=112233")?;
+        }
+        fs::write(second.join("Alpha"), "background=445566")?;
+        fs::write(second.join("zebra"), "background=445566")?;
+        let directories = vec![temp.0.join("missing"), first, second];
+        let config = Config {
+            theme: "alpha".into(),
+            ..Config::default()
+        };
+        assert_eq!(
+            config.available_themes_in(&directories)?,
+            vec![
+                "Alpha",
+                "alpha",
+                "Catppuccin Latte",
+                "Catppuccin Mocha",
+                "Default",
+                "Dracula",
+                "Nord",
+                "zebra",
+            ]
+        );
+        assert_eq!(
+            config
+                .theme_with_directories(|| Ok(directories.clone()))?
+                .background,
+            0x112233
+        );
+        let builtin = Config {
+            theme: "Nord".into(),
+            ..Config::default()
+        };
+        assert_eq!(
+            builtin.theme_with_directories(|| Ok(directories))?,
+            Theme::builtin("Nord").ok_or("missing builtin")?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_includes_explicit_selection_and_reports_errors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TempDirectory::new()?;
+        for name in [
+            temp.0.join("custom").to_string_lossy().into_owned(),
+            "~/custom".into(),
+        ] {
+            let config = Config {
+                theme: name.clone(),
+                ..Config::default()
+            };
+            assert!(config.available_themes_in(&[])?.contains(&name));
+        }
+        let not_directory = temp.0.join("file");
+        fs::write(&not_directory, "")?;
+        assert!(
+            Config::default()
+                .available_themes_in(&[not_directory])
+                .is_err()
+        );
+        for name in Theme::BUILTIN_NAMES {
+            let config = Config {
+                theme: (*name).into(),
+                ..Config::default()
+            };
+            assert!(
+                config
+                    .theme_with_directories(|| Err("unavailable directories".into()))
+                    .is_ok()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn saves_only_theme_and_preserves_latest_settings_and_comments()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TempDirectory::new()?;
+        let path = temp.0.join("config.toml");
+        let config = Config::default();
+        // These on-disk settings differ from the in-memory snapshot, including
+        // a setting this version does not understand.
+        let original = "# heading\ntheme = 'Default' # selection\nfuture = true\n\n[tabs] # fonts\nsize = 19 # keep\n";
+        fs::write(&path, original)?;
+        config.save_theme_path("Nord", &path)?;
+        assert_eq!(
+            fs::read_to_string(&path)?,
+            original.replace("'Default'", "\"Nord\"")
+        );
+        assert_eq!(config.theme, "Default");
+        assert_eq!(fs::read_dir(&temp.0)?.count(), 1);
+
+        fs::write(&path, "# no theme\n[tabs]\nsize = 19\n")?;
+        config.save_theme_path("Dracula", &path)?;
+        let saved = fs::read_to_string(&path)?;
+        let parsed = Config::parse(&saved)?;
+        assert_eq!(parsed.theme, "Dracula");
+        assert_eq!(parsed.tabs.size, 19.0);
+        assert!(saved.contains("# no theme"));
+        Ok(())
+    }
+
+    #[test]
+    fn save_validates_theme_and_toml_before_writing() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TempDirectory::new()?;
+        let path = temp.0.join("config.toml");
+        let config = Config::default();
+        let custom = temp.0.join("custom");
+        fs::write(&custom, "background=invalid")?;
+        let custom_name = custom.to_str().ok_or("non-UTF8 temporary path")?;
+        for name in ["", "../invalid", custom_name] {
+            assert!(config.save_theme_path(name, &path).is_err());
+            assert!(!path.exists());
+        }
+        for text in ["theme = [", "theme = 'Nord'\ntheme = 'Dracula'\n"] {
+            fs::write(&path, text)?;
+            assert!(config.save_theme_path("Nord", &path).is_err());
+            assert_eq!(fs::read_to_string(&path)?, text);
+            assert_eq!(fs::read_dir(&temp.0)?.count(), 2);
+        }
+        fs::write(&custom, "background=112233")?;
+        let new_path = temp.0.join("nested/config.toml");
+        config.save_theme_path(custom_name, &new_path)?;
+        assert_eq!(Config::load_path(&new_path)?.theme()?.background, 0x112233);
+        assert_eq!(
+            fs::read_dir(new_path.parent().ok_or("missing parent")?)?.count(),
+            1
+        );
+        Ok(())
+    }
 
     #[test]
     fn defaults_and_partial_settings() -> Result<(), String> {

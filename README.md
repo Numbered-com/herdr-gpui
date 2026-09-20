@@ -86,6 +86,13 @@ to open the native shortcut reference. Press Escape, click outside the modal,
 or use its close button to return to the terminal. Terminal input is blocked
 while the modal is open.
 
+Click **Theme** beside Keybinds to browse built-in themes and theme files discovered
+in the Herdr and Ghostty theme folders. Type to filter names (case-insensitive),
+use Up/Down to navigate, then press Enter or click a result to apply and save it.
+The current theme is marked in the list. Escape or clicking outside cancels without
+changing the theme. Saving updates only `theme` in the GUI config, preserving its
+comments and other settings; load/save errors leave the current appearance intact.
+
 GUI settings live in `$XDG_CONFIG_HOME/herdr/config-gpui.toml`, falling back to
 `~/.config/herdr/config-gpui.toml`. The GUI creates a commented default file if it
 is absent, without overwriting an existing file. These settings are independent

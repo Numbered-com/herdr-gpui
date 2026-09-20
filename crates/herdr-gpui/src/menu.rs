@@ -8,6 +8,7 @@ pub(super) enum Page {
     Menu,
     Preferences,
     Keybinds,
+    Themes,
     Update,
 }
 
@@ -17,6 +18,7 @@ pub(super) struct MenuState {
     focus: FocusHandle,
     selected: usize,
     keybinds_scroll: ScrollHandle,
+    pub(super) themes: Option<crate::theme_picker::ThemePicker>,
 }
 
 impl MenuState {
@@ -27,6 +29,7 @@ impl MenuState {
             focus: cx.focus_handle(),
             selected: 0,
             keybinds_scroll: ScrollHandle::new(),
+            themes: None,
         }
     }
 }
@@ -46,14 +49,14 @@ impl HerdrWindow {
         cx.notify();
     }
 
-    fn dismiss_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn dismiss_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu.page = None;
         window.focus(&self.focus);
         cx.notify();
     }
 
     fn menu_items(&self) -> Vec<&'static str> {
-        let mut items = vec!["settings", "keybinds", "reload GUI config"];
+        let mut items = vec!["settings", "keybinds", "themes", "reload GUI config"];
         if self.live.connected {
             items.push("reload daemon config");
         }
@@ -77,6 +80,7 @@ impl HerdrWindow {
         match item {
             "settings" => self.menu.page = Some(Page::Preferences),
             "keybinds" => self.open_keybinds(window, cx),
+            "themes" => self.open_theme_picker(window, cx),
             "update ready" => self.menu.page = Some(Page::Update),
             "reload GUI config" => {
                 // Load both before replacing either, so invalid themes preserve the UI.
@@ -151,10 +155,10 @@ impl HerdrWindow {
                     .w((viewport.width - px(32.)).max(px(0.)).min(px(480.)))
                     .max_h((viewport.height - px(32.)).max(px(0.)))
             })
-            .when(page != Page::Keybinds, |panel| {
+            .when(!matches!(page, Page::Keybinds | Page::Themes), |panel| {
                 panel.overflow_y_scroll().p(px(6.))
             })
-            .when(page == Page::Keybinds, |panel| {
+            .when(matches!(page, Page::Keybinds | Page::Themes), |panel| {
                 panel
                     .flex()
                     .flex_col()
@@ -195,6 +199,8 @@ impl HerdrWindow {
             }
         } else if page == Page::Keybinds {
             panel = panel.child(self.render_keybinds(cx));
+        } else if page == Page::Themes {
+            panel = panel.child(self.render_theme_picker(cx));
         } else {
             let (title, rows) = match page {
                 Page::Preferences => ("Preferences (read-only)", vec![
@@ -257,6 +263,10 @@ impl HerdrWindow {
             )
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.menu.page == Some(Page::Themes) {
+                    this.theme_picker_key(event, window, cx);
+                    return;
+                }
                 cx.stop_propagation();
                 window.prevent_default();
                 match event.keystroke.key.as_str() {
