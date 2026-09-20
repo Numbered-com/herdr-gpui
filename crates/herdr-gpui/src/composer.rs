@@ -1,11 +1,10 @@
 //! Local multiline editor. Lines do not soft-wrap; both axes scroll independently.
-use crate::{input_guard::GuardedInputHandler, sidebar};
+use crate::{config, input_guard::GuardedInputHandler};
 use gpui::{prelude::*, *};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 const MAX_BYTES: usize = 16 * 1024;
-const ROW_HEIGHT: f32 = 19.;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Draft {
@@ -132,6 +131,9 @@ struct Row {
 }
 
 pub(super) struct Composer {
+    appearance: config::FontConfig,
+    font: Font,
+    theme: config::Theme,
     focus: FocusHandle,
     draft: Draft,
     revision: u64,
@@ -152,7 +154,11 @@ impl EventEmitter<Submit> for Composer {}
 
 impl Composer {
     pub(super) fn new(cx: &mut Context<Self>) -> Self {
+        let appearance = config::Config::default().ui;
         Self {
+            font: font(appearance.family.clone()),
+            appearance,
+            theme: config::Theme::default(),
             focus: cx.focus_handle(),
             draft: Draft::default(),
             revision: 0,
@@ -168,6 +174,26 @@ impl Composer {
             scroll: point(px(0.), px(0.)),
             reveal_caret: true,
         }
+    }
+
+    pub(super) fn set_appearance(
+        &mut self,
+        appearance: &config::FontConfig,
+        theme: &config::Theme,
+        cx: &mut Context<Self>,
+    ) {
+        if self.appearance.family == appearance.family
+            && self.appearance.size == appearance.size
+            && self.theme == *theme
+        {
+            return;
+        }
+        self.appearance = appearance.clone();
+        self.font = font(appearance.family.clone());
+        self.theme = theme.clone();
+        self.rows.clear();
+        self.reveal_caret = true;
+        cx.notify();
     }
 
     /// Snapshot committed content and selection, rolling back any visible preedit.
@@ -385,7 +411,7 @@ impl Composer {
         let y = (position.y - bounds.top() + self.scroll.y).to_f64().max(0.);
         let row = self
             .rows
-            .get((y / f64::from(ROW_HEIGHT)) as usize)
+            .get((y / f64::from(self.appearance.line_height())) as usize)
             .or_else(|| self.rows.last())?;
         Some(
             self.draft.snap(
@@ -405,16 +431,18 @@ impl Composer {
             for text in self.draft.text.split('\n') {
                 let run = TextRun {
                     len: text.len(),
-                    font: font("Menlo"),
-                    color: rgb(sidebar::FOREGROUND).into(),
+                    font: self.font.clone(),
+                    color: rgb(self.theme.foreground).into(),
                     background_color: None,
                     underline: None,
                     strikethrough: None,
                 };
-                let line =
-                    window
-                        .text_system()
-                        .shape_line(text.to_owned().into(), px(13.), &[run], None);
+                let line = window.text_system().shape_line(
+                    text.to_owned().into(),
+                    px(self.appearance.size),
+                    &[run],
+                    None,
+                );
                 self.rows.push(Row { start, line });
                 start += text.len() + 1;
             }
@@ -426,13 +454,13 @@ impl Composer {
                 .saturating_sub(1);
             if let Some(row) = self.rows.get(index) {
                 let x = row.line.x_for_index(self.draft.cursor - row.start);
-                let y = px(index as f32 * ROW_HEIGHT);
+                let y = px(index as f32 * self.appearance.line_height());
                 self.scroll.x = self.scroll.x.min(x).max(x + px(2.) - bounds.size.width);
                 self.scroll.y = self
                     .scroll
                     .y
                     .min(y)
-                    .max(y + px(ROW_HEIGHT) - bounds.size.height);
+                    .max(y + px(self.appearance.line_height()) - bounds.size.height);
             }
             self.reveal_caret = false;
         }
@@ -446,40 +474,40 @@ impl Composer {
             .x
             .max(px(0.))
             .min((width + px(2.) - bounds.size.width).max(px(0.)));
-        self.scroll.y = self
-            .scroll
-            .y
-            .max(px(0.))
-            .min((px(self.rows.len() as f32 * ROW_HEIGHT) - bounds.size.height).max(px(0.)));
+        self.scroll.y = self.scroll.y.max(px(0.)).min(
+            (px(self.rows.len() as f32 * self.appearance.line_height()) - bounds.size.height)
+                .max(px(0.)),
+        );
     }
 
     fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+        let row_height = self.appearance.line_height();
         let selected = self.draft.selection();
         let focused = self.enabled && self.focus.is_focused(window);
         if self.text().is_empty() {
             let placeholder = "Write a prompt...";
             let line = window.text_system().shape_line(
                 placeholder.into(),
-                px(13.),
+                px(self.appearance.size),
                 &[TextRun {
                     len: placeholder.len(),
-                    font: font("Menlo"),
-                    color: rgb(sidebar::MUTED).into(),
+                    font: self.font.clone(),
+                    color: rgb(self.theme.muted).into(),
                     background_color: None,
                     underline: None,
                     strikethrough: None,
                 }],
                 None,
             );
-            let _ = line.paint(bounds.origin, px(ROW_HEIGHT), window, cx);
+            let _ = line.paint(bounds.origin, px(row_height), window, cx);
         }
         for (index, row) in self.rows.iter().enumerate() {
             let origin = bounds.origin
                 + point(
                     -self.scroll.x,
-                    px(index as f32 * ROW_HEIGHT) - self.scroll.y,
+                    px(index as f32 * row_height) - self.scroll.y,
                 );
-            if origin.y + px(ROW_HEIGHT) <= bounds.top() || origin.y >= bounds.bottom() {
+            if origin.y + px(row_height) <= bounds.top() || origin.y >= bounds.bottom() {
                 continue;
             }
             let end = row.start + row.line.text.len();
@@ -498,12 +526,12 @@ impl Composer {
                 window.paint_quad(fill(
                     Bounds::new(
                         origin + point(start_x, px(0.)),
-                        size(end_x - start_x, px(ROW_HEIGHT)),
+                        size(end_x - start_x, px(row_height)),
                     ),
-                    rgb(sidebar::ACTIVE),
+                    rgb(self.theme.active),
                 ));
             }
-            let _ = row.line.paint(origin, px(ROW_HEIGHT), window, cx);
+            let _ = row.line.paint(origin, px(row_height), window, cx);
             if let Some(marked) = &self.marked {
                 let start = marked.start.max(row.start);
                 let stop = marked.end.min(end);
@@ -511,16 +539,16 @@ impl Composer {
                     let x = row.line.x_for_index(start - row.start);
                     let width = row.line.x_for_index(stop - row.start) - x;
                     window.paint_quad(fill(
-                        Bounds::new(origin + point(x, px(ROW_HEIGHT - 2.)), size(width, px(1.))),
-                        rgb(sidebar::FOREGROUND),
+                        Bounds::new(origin + point(x, px(row_height - 2.)), size(width, px(1.))),
+                        rgb(self.theme.foreground),
                     ));
                 }
             }
             if focused && self.draft.cursor >= row.start && self.draft.cursor <= end {
                 let x = row.line.x_for_index(self.draft.cursor - row.start);
                 window.paint_quad(fill(
-                    Bounds::new(origin + point(x, px(0.)), size(px(1.), px(ROW_HEIGHT))),
-                    rgb(sidebar::FOREGROUND),
+                    Bounds::new(origin + point(x, px(0.)), size(px(1.), px(row_height))),
+                    rgb(self.theme.cursor),
                 ));
             }
         }
@@ -650,9 +678,9 @@ impl EntityInputHandler for Composer {
             bounds.origin
                 + point(
                     x - self.scroll.x,
-                    px(index as f32 * ROW_HEIGHT) - self.scroll.y,
+                    px(index as f32 * self.appearance.line_height()) - self.scroll.y,
                 ),
-            size((end - x).max(px(1.)), px(ROW_HEIGHT)),
+            size((end - x).max(px(1.)), px(self.appearance.line_height())),
         ))
     }
 
@@ -682,9 +710,10 @@ impl Render for Composer {
             .flex_col()
             .w_full()
             .min_w_0()
-            .bg(rgb(sidebar::BACKGROUND))
-            .text_color(rgb(sidebar::FOREGROUND))
-            .text_size(px(11.))
+            .bg(rgb(self.theme.surface))
+            .text_color(rgb(self.theme.foreground))
+            .font_family(self.appearance.family.clone())
+            .text_size(px(self.appearance.size))
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(
                 MouseButton::Left,
@@ -743,7 +772,7 @@ impl Render for Composer {
                 if !this.enabled {
                     return;
                 }
-                let delta = event.delta.pixel_delta(px(ROW_HEIGHT));
+                let delta = event.delta.pixel_delta(px(this.appearance.line_height()));
                 this.scroll.x -= delta.x;
                 this.scroll.y -= delta.y;
                 this.reveal_caret = false;
@@ -758,8 +787,8 @@ impl Render for Composer {
                     .p(px(4.))
                     .border_1()
                     .rounded_sm()
-                    .border_color(rgb(sidebar::ACTIVE))
-                    .bg(rgb(crate::terminal::BACKGROUND))
+                    .border_color(rgb(self.theme.active))
+                    .bg(rgb(self.theme.background))
                     .overflow_hidden()
                     .cursor(CursorStyle::IBeam)
                     .child(
@@ -818,6 +847,58 @@ mod tests {
                 editor.enabled && editor.input_epoch == epoch && editor.focus.is_focused(window)
             },
         )
+    }
+
+    #[gpui::test]
+    fn appearance_updates_preserve_draft_selection_preedit_and_native_registration(
+        cx: &mut TestAppContext,
+    ) {
+        let (editor, cx) = cx.add_window_view(|window, cx| {
+            let editor = Composer::new(cx);
+            window.focus(&editor.focus);
+            editor
+        });
+        cx.update(|window, cx| {
+            let mut handler = native_handler(&editor, cx);
+            handler.replace_text_in_range(None, "draft", window, cx);
+            handler.replace_and_mark_text_in_range(None, "preedit", Some(1..3), window, cx);
+            editor.update(cx, |editor, cx| {
+                let draft = editor.draft();
+                let visible = editor.text().to_owned();
+                let marked = editor.marked.clone();
+                let selection = editor.draft.selection();
+                let revision = editor.revision;
+                let epoch = editor.input_epoch;
+                let appearance = config::FontConfig {
+                    family: "Menlo".into(),
+                    size: 20.,
+                };
+                let theme = config::Theme {
+                    foreground: 0x123456,
+                    ..Default::default()
+                };
+                editor.set_appearance(&appearance, &theme, cx);
+                assert_eq!(editor.draft(), draft);
+                assert_eq!(editor.text(), visible);
+                assert_eq!(editor.marked, marked);
+                assert_eq!(editor.draft.selection(), selection);
+                assert_eq!(editor.revision, revision);
+                assert_eq!(editor.input_epoch, epoch);
+                assert!(editor.rows.is_empty());
+                assert_eq!(editor.theme, theme);
+                let bounds = Bounds::new(point(px(0.), px(0.)), size(px(200.), px(76.)));
+                editor.prepare(bounds, window);
+                assert_eq!(
+                    editor
+                        .bounds_for_range(0..1, bounds, window, cx)
+                        .map(|bounds| bounds.size.height),
+                    Some(px(appearance.line_height()))
+                );
+            });
+            assert!(handler.marked_text_range(window, cx).is_some());
+            handler.replace_text_in_range(None, "committed", window, cx);
+            assert_eq!(editor.read(cx).text(), "draftcommitted");
+        });
     }
 
     #[gpui::test]
@@ -1116,7 +1197,7 @@ mod tests {
             editor.prepare(bounds, window);
             assert_eq!(editor.index_at(bounds.origin), Some(0));
             assert_eq!(
-                editor.index_at(bounds.origin + point(px(0.), px(ROW_HEIGHT))),
+                editor.index_at(bounds.origin + point(px(0.), px(editor.appearance.line_height()))),
                 Some(4)
             );
             editor.set_draft(Draft::default(), cx);

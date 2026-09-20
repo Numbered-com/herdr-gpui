@@ -82,28 +82,31 @@ fn snapshot() -> ClientShellSnapshot {
     snapshot
 }
 
-fn surface(snapshot: &ClientShellSnapshot) -> PaneSurfaceFrame {
+fn surface(snapshot: &ClientShellSnapshot, width: u16, height: u16) -> PaneSurfaceFrame {
     let rect = SurfaceRect {
         x: 0,
         y: 0,
-        width: 1,
-        height: 1,
+        width,
+        height,
     };
     PaneSurfaceFrame {
         boot_id: snapshot.boot_id.clone(),
         projection_revision: snapshot.revision,
         surface_revision: 1,
         frame: FrameData {
-            width: 1,
-            height: 1,
-            cells: vec![CellData {
-                symbol: " ".into(),
-                fg: 0,
-                bg: 0,
-                modifier: 0,
-                skip: false,
-                hyperlink: None,
-            }],
+            width,
+            height,
+            cells: vec![
+                CellData {
+                    symbol: " ".into(),
+                    fg: 0,
+                    bg: 0,
+                    modifier: 0,
+                    skip: false,
+                    hyperlink: None,
+                };
+                usize::from(width) * usize::from(height)
+            ],
             cursor: None,
             hyperlinks: vec![],
             graphics: vec![],
@@ -129,16 +132,53 @@ fn surface(snapshot: &ClientShellSnapshot) -> PaneSurfaceFrame {
 }
 
 fn install(view: &mut HerdrWindow, snapshot: ClientShellSnapshot, cx: &mut Context<HerdrWindow>) {
-    view.set_surface(Some(Arc::new(surface(&snapshot))), cx);
+    view.options.surface_size.cols = view.options.surface_size.cols.max(1);
+    view.options.surface_size.rows = view.options.surface_size.rows.max(1);
+    view.set_surface(
+        Some(Arc::new(surface(
+            &snapshot,
+            view.options.surface_size.cols,
+            view.options.surface_size.rows,
+        ))),
+        cx,
+    );
     view.live.snapshot = Some(Arc::new(snapshot));
     view.live.status = ConnectionStatus::Connected;
-    *view.connection.inbox.lock().unwrap() = view.live.clone();
+    view.live.activation = None;
+    let endpoint = &mut view.endpoints[view.selected_endpoint];
+    endpoint.set_fixture_surface_active();
+    endpoint.live = view.live.clone();
+    *endpoint.connection.inbox.lock().unwrap() = view.live.clone();
     view.sync_composer(cx);
     cx.notify();
 }
 
+// Layout may resize the terminal after toggling the composer. Model the next
+// daemon surface before exercising input, rather than weakening input_ready().
+fn refresh_fixture_surface(view: &mut HerdrWindow, cx: &mut Context<HerdrWindow>) {
+    let snapshot = view.live.snapshot.as_deref().unwrap().clone();
+    install(view, snapshot, cx);
+}
+
+fn settle_fixture_surface(view: &Entity<HerdrWindow>, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        for _ in 0..4 {
+            window.refresh();
+            window.draw(cx).clear();
+            view.update(cx, refresh_fixture_surface);
+            window.refresh();
+            window.draw(cx).clear();
+            if view.read(cx).input_ready() {
+                return;
+            }
+        }
+        panic!("fixture surface did not match the settled terminal viewport");
+    });
+}
+
 fn tab(id: &str) -> TabTarget {
     TabTarget {
+        endpoint_id: crate::endpoint::LOCAL.into(),
         boot_id: "boot-v1".into(),
         tab_id: id.into(),
     }
@@ -155,7 +195,7 @@ fn new_view(
         cx,
         true,
     );
-    view.connection.handle = Some(handle);
+    view.endpoints[view.selected_endpoint].connection.handle = Some(handle);
     install(&mut view, snapshot(), cx);
     view
 }
@@ -213,9 +253,14 @@ fn inactive_tab_context_menu_and_keyboard_modes_do_not_navigate(cx: &mut TestApp
     cx.simulate_keystrokes("down enter");
     view.update_in(cx, |view, window, cx| {
         assert!(view.menu.page.is_none());
-        assert_eq!(view.agent_modes.mode("boot-v1", "w1:t2"), ViewMode::Agent);
         assert_eq!(
-            view.agent_modes.mode("boot-v1", "w1:t1"),
+            view.agent_modes
+                .mode(crate::endpoint::LOCAL, "boot-v1", "w1:t2"),
+            ViewMode::Agent
+        );
+        assert_eq!(
+            view.agent_modes
+                .mode(crate::endpoint::LOCAL, "boot-v1", "w1:t1"),
             ViewMode::Terminal
         );
         assert!(view.focus.is_focused(window));
@@ -233,7 +278,8 @@ fn inactive_tab_context_menu_and_keyboard_modes_do_not_navigate(cx: &mut TestApp
     cx.simulate_keystrokes("up enter");
     view.update_in(cx, |view, window, cx| {
         assert_eq!(
-            view.agent_modes.mode("boot-v1", "w1:t2"),
+            view.agent_modes
+                .mode(crate::endpoint::LOCAL, "boot-v1", "w1:t2"),
             ViewMode::Terminal
         );
         assert!(view.composer.focus_handle(cx).is_focused(window));
@@ -243,7 +289,8 @@ fn inactive_tab_context_menu_and_keyboard_modes_do_not_navigate(cx: &mut TestApp
     cx.simulate_keystrokes("up enter");
     view.update_in(cx, |view, window, _| {
         assert_eq!(
-            view.agent_modes.mode("boot-v1", "w1:t1"),
+            view.agent_modes
+                .mode(crate::endpoint::LOCAL, "boot-v1", "w1:t1"),
             ViewMode::Terminal
         );
         assert!(view.focus.is_focused(window));
@@ -257,7 +304,7 @@ fn real_window_composer_isolates_keys_paste_and_ime(cx: &mut TestAppContext) {
     let handle = cancelled_handle();
     let (view, cx) = cx.add_window_view(|window, cx| new_view(handle, window, cx));
     view.update_in(cx, |view, window, cx| {
-        cx.bind_keys([KeyBinding::new("cmd-t", crate::NewTab, None)]);
+        crate::bind_keys(cx);
         view.set_tab_mode(&tab("w1:t1"), ViewMode::Agent, window, cx)
     });
     cx.simulate_input("a\u{1f600}");
@@ -286,6 +333,7 @@ fn real_window_composer_isolates_keys_paste_and_ime(cx: &mut TestAppContext) {
         editor.replace_text_in_range(None, "\u{1f680}", window, cx);
         assert!(!editor.is_composing());
     });
+    settle_fixture_surface(&view, cx);
     cx.simulate_keystrokes("cmd-enter");
     view.update(cx, |view, cx| {
         assert_eq!(view.composer.read(cx).text(), "a\u{1f600}\n\nlast\u{1f680}");
@@ -339,12 +387,156 @@ fn drafts_and_selections_survive_pane_tab_and_mode_switches(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn identical_cross_host_targets_preserve_independent_drafts_and_reject_old_native_input(
+    cx: &mut TestAppContext,
+) {
+    let handle = cancelled_handle();
+    let (view, cx) = cx.add_window_view(|window, cx| new_view(handle, window, cx));
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            let mut remote = crate::endpoint::Endpoint::new(
+                "remote".into(),
+                "Remote".into(),
+                ConnectTarget::Socket("/unused-remote-agent-test.sock".into()),
+                false,
+            );
+            remote.connection.handle = view.endpoints[0].connection.handle.clone();
+            view.endpoints.push(remote);
+            install(view, snapshot(), cx);
+            window.focus(&view.focus);
+        });
+        let mut old = captured_terminal_handler(&view, cx);
+        old.replace_and_mark_text_in_range(None, "local preedit", None, window, cx);
+        assert_eq!(view.read(cx).marked, "local preedit");
+        view.update(cx, |view, cx| {
+            view.selected_endpoint = 1;
+            view.selection_epoch += 1;
+            install(view, snapshot(), cx);
+            view.marked = "remote preedit".into();
+        });
+        old.replace_text_in_range(None, "wrong host", window, cx);
+        old.unmark_text(window, cx);
+        assert_eq!(view.read(cx).marked, "remote preedit");
+        assert_eq!(view.read(cx).input_probe.text, 0);
+        view.update(cx, |view, cx| {
+            view.selected_endpoint = 0;
+            view.selection_epoch += 1;
+            install(view, snapshot(), cx);
+            view.marked = "returned local preedit".into();
+        });
+        old.unmark_text(window, cx);
+        assert_eq!(view.read(cx).marked, "returned local preedit");
+        let mut previous_generation = captured_terminal_handler(&view, cx);
+        view.update(cx, |view, _| view.endpoints[0].generation += 1);
+        previous_generation.unmark_text(window, cx);
+        assert_eq!(view.read(cx).marked, "returned local preedit");
+        view.update(cx, |view, cx| {
+            view.selected_endpoint = 1;
+            view.selection_epoch += 1;
+            install(view, snapshot(), cx);
+            let remote = TabTarget {
+                endpoint_id: "remote".into(),
+                ..tab("w1:t1")
+            };
+            // A stale local mode callback must not change the same tab on remote.
+            view.set_tab_mode(&tab("w1:t1"), ViewMode::Agent, window, cx);
+            assert!(!view.agent_tab_active());
+            view.set_tab_mode(&remote, ViewMode::Agent, window, cx);
+            edit(view, "remote draft", window, cx);
+            let remote_draft = view.composer.read(cx).draft();
+            view.composer.update(cx, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "uncommitted", None, window, cx);
+            });
+            view.selected_endpoint = 0;
+            view.selection_epoch += 1;
+            install(view, snapshot(), cx);
+            view.set_tab_mode(&tab("w1:t1"), ViewMode::Agent, window, cx);
+            assert!(view.composer.read(cx).text().is_empty());
+            edit(view, "local draft", window, cx);
+            let local_draft = view.composer.read(cx).draft();
+            view.selected_endpoint = 1;
+            view.selection_epoch += 1;
+            install(view, snapshot(), cx);
+            assert_eq!(view.composer.read(cx).draft(), remote_draft);
+            assert!(!view.composer.read(cx).is_composing());
+            let mut rebooted = snapshot();
+            rebooted.boot_id = "remote-reboot".into();
+            install(view, rebooted, cx);
+            assert!(view.composer_target.is_none());
+            assert_eq!(view.drafts.len(), 1);
+            view.selected_endpoint = 0;
+            view.selection_epoch += 1;
+            install(view, snapshot(), cx);
+            assert_eq!(view.composer.read(cx).draft(), local_draft);
+            view.selected_endpoint = 1;
+            view.selection_epoch += 1;
+            install(view, snapshot(), cx);
+            view.set_tab_mode(&remote, ViewMode::Agent, window, cx);
+            edit(view, "removed endpoint draft", window, cx);
+            view.selected_endpoint = 0;
+            view.selection_epoch += 1;
+            install(view, snapshot(), cx);
+            view.endpoints.pop();
+            view.sync_composer(cx);
+            assert!(view.drafts.is_empty());
+            assert_eq!(view.composer.read(cx).draft(), local_draft);
+            assert_eq!(
+                view.agent_modes.mode("remote", "boot-v1", "w1:t1"),
+                ViewMode::Terminal
+            );
+        });
+    });
+}
+
+#[gpui::test]
+fn send_requires_active_current_viewport_but_local_editing_does_not(cx: &mut TestAppContext) {
+    let handle = cancelled_handle();
+    let (view, cx) = cx.add_window_view(|window, cx| new_view(handle, window, cx));
+    view.update_in(cx, |view, window, cx| {
+        refresh_fixture_surface(view, cx);
+        view.set_tab_mode(&tab("w1:t1"), ViewMode::Agent, window, cx);
+        edit(view, "local draft", window, cx);
+        assert!(view.input_ready());
+        view.options.surface_size.cols += 1;
+        view.sync_composer(cx);
+        assert!(view.composer_editable());
+        edit(view, " still editable", window, cx);
+        let draft = view.composer.read(cx).draft();
+        view.submit_composer(cx);
+        assert_eq!(view.composer.read(cx).draft(), draft);
+        assert_eq!(
+            view.composer_notice.as_deref(),
+            Some("Waiting for the selected pane's current surface.")
+        );
+        refresh_fixture_surface(view, cx);
+        view.live.activation = Some(crate::state::SurfaceActivation {
+            request: "pending-activation".into(),
+            boot: "boot-v1".into(),
+            revision: None,
+            failed: false,
+            focus: None,
+            active: true,
+        });
+        view.sync_composer(cx);
+        assert!(!view.input_ready());
+        assert!(view.composer_editable());
+        view.submit_composer(cx);
+        assert_eq!(view.composer.read(cx).draft(), draft);
+        assert_eq!(
+            view.composer_notice.as_deref(),
+            Some("Waiting for the selected pane's current surface.")
+        );
+    });
+}
+
+#[gpui::test]
 fn popup_and_authoritative_inbox_changes_preserve_unsent_draft(cx: &mut TestAppContext) {
     let handle = cancelled_handle();
     let (view, cx) = cx.add_window_view(|window, cx| new_view(handle, window, cx));
     view.update_in(cx, |view, window, cx| {
         view.set_tab_mode(&tab("w1:t1"), ViewMode::Agent, window, cx);
         edit(view, "keep me", window, cx);
+        refresh_fixture_surface(view, cx);
         let draft = view.composer.read(cx).draft();
         let baseline = view.live.clone();
         let mut popup = baseline.surface.as_deref().unwrap().clone();
@@ -375,7 +567,7 @@ fn popup_and_authoritative_inbox_changes_preserve_unsent_draft(cx: &mut TestAppC
         assert!(view.composer_block_reason().is_none());
 
         // The rendered clone is valid throughout; only the authoritative inbox moves.
-        for change in 0..4 {
+        for change in 0..5 {
             let mut changed = baseline.clone();
             match change {
                 0 => changed.surface = Some(Arc::new(popup.clone())),
@@ -384,9 +576,23 @@ fn popup_and_authoritative_inbox_changes_preserve_unsent_draft(cx: &mut TestAppC
                         Some("w1:p2".into())
                 }
                 2 => Arc::make_mut(changed.snapshot.as_mut().unwrap()).boot_id = "next-boot".into(),
-                _ => changed.status = ConnectionStatus::Disconnected,
+                3 => changed.status = ConnectionStatus::Disconnected,
+                _ => {
+                    changed.activation = Some(crate::state::SurfaceActivation {
+                        request: "pending-activation".into(),
+                        boot: "boot-v1".into(),
+                        revision: None,
+                        failed: false,
+                        focus: None,
+                        active: true,
+                    })
+                }
             }
-            *view.connection.inbox.lock().unwrap() = changed;
+            *view.endpoints[view.selected_endpoint]
+                .connection
+                .inbox
+                .lock()
+                .unwrap() = changed;
             view.submit_composer(cx);
             assert_eq!(view.composer.read(cx).draft(), draft);
             assert!(
@@ -396,8 +602,15 @@ fn popup_and_authoritative_inbox_changes_preserve_unsent_draft(cx: &mut TestAppC
                     .contains("recipient or popup changed")
             );
         }
-        *view.connection.inbox.lock().unwrap() = baseline;
-        let inbox = view.connection.inbox.clone();
+        *view.endpoints[view.selected_endpoint]
+            .connection
+            .inbox
+            .lock()
+            .unwrap() = baseline;
+        let inbox = view.endpoints[view.selected_endpoint]
+            .connection
+            .inbox
+            .clone();
         let guard = inbox.lock().unwrap();
         view.submit_composer(cx);
         assert!(
@@ -432,19 +645,29 @@ fn reconnect_preserves_same_boot_drafts_but_deletions_and_new_boot_prune(cx: &mu
         focus_pane(view, "w1:p3", cx);
         edit(view, "deleted tab", window, cx);
         let saved = view.live.snapshot.as_deref().unwrap().clone();
-        let old_inbox = view.connection.inbox.clone();
+        let old_inbox = view.endpoints[view.selected_endpoint]
+            .connection
+            .inbox
+            .clone();
         // Invalid geometry fails synchronously before creating a socket worker.
         // Exercise the actual reconnect/reset path without discovering a daemon.
         view.options.surface_size.cols = 0;
         view.reconnect(cx);
-        assert!(!Arc::ptr_eq(&old_inbox, &view.connection.inbox));
+        assert!(!Arc::ptr_eq(
+            &old_inbox,
+            &view.endpoints[view.selected_endpoint].connection.inbox
+        ));
         assert!(view.composer_target.is_none());
         assert_eq!(view.drafts.len(), 3);
         *old_inbox.lock().unwrap() = crate::LiveState::default();
         assert_eq!(view.drafts.len(), 3);
         install(view, saved, cx);
         assert_eq!(view.composer.read(cx).text(), "deleted tab");
-        assert_eq!(view.agent_modes.mode("boot-v1", "w1:t2"), ViewMode::Agent);
+        assert_eq!(
+            view.agent_modes
+                .mode(crate::endpoint::LOCAL, "boot-v1", "w1:t2"),
+            ViewMode::Agent
+        );
         focus_pane(view, "w1:p1", cx);
         assert_eq!(view.composer.read(cx).text(), "first");
         let mut reduced = view.live.snapshot.as_deref().unwrap().clone();
@@ -455,7 +678,8 @@ fn reconnect_preserves_same_boot_drafts_but_deletions_and_new_boot_prune(cx: &mu
         assert!(view.drafts.is_empty());
         assert_eq!(view.composer.read(cx).text(), "first");
         assert_eq!(
-            view.agent_modes.mode("boot-v1", "w1:t2"),
+            view.agent_modes
+                .mode(crate::endpoint::LOCAL, "boot-v1", "w1:t2"),
             ViewMode::Terminal
         );
         reduced.boot_id = "new-boot".into();
@@ -464,7 +688,8 @@ fn reconnect_preserves_same_boot_drafts_but_deletions_and_new_boot_prune(cx: &mu
         assert!(view.composer.read(cx).text().is_empty());
         assert!(view.drafts.is_empty());
         assert_eq!(
-            view.agent_modes.mode("new-boot", "w1:t1"),
+            view.agent_modes
+                .mode(crate::endpoint::LOCAL, "new-boot", "w1:t1"),
             ViewMode::Terminal
         );
     });
@@ -491,6 +716,7 @@ fn stale_submit_cannot_send_an_identical_draft_after_pane_switch(cx: &mut TestAp
         assert_ne!(view.composer.read(cx).revision(), revision);
     });
     cx.run_until_parked();
+    settle_fixture_surface(&view, cx);
     view.update(cx, |view, cx| {
         assert_eq!(view.composer_target.as_ref().unwrap().pane_id, "w1:p2");
         assert_eq!(view.composer.read(cx).text(), "identical prompt");
@@ -499,6 +725,7 @@ fn stale_submit_cannot_send_an_identical_draft_after_pane_switch(cx: &mut TestAp
             "stale event reached submission"
         );
         assert_only_resize_error(view);
+        refresh_fixture_surface(view, cx);
         let revision = view.composer.read(cx).revision();
         view.composer
             .update(cx, |_, cx| cx.emit(composer::Submit { revision }));
@@ -595,12 +822,16 @@ fn surface_gap_preserves_composer_focus_ime_and_local_native_input(cx: &mut Test
     view.update(cx, |view, cx| {
         let mut next = view.live.snapshot.as_deref().unwrap().clone();
         next.revision += 1;
-        view.connection
+        view.endpoints[view.selected_endpoint]
+            .connection
             .inbox
             .lock()
             .unwrap()
             .apply(herdr_client::ClientEvent::Snapshot(Arc::new(next)));
-        let next = view.connection.take_update().unwrap();
+        let next = view.endpoints[view.selected_endpoint]
+            .connection
+            .take_update()
+            .unwrap();
         assert!(next.surface.is_none());
         view.set_surface(next.surface.clone(), cx);
         view.live = next;
@@ -659,10 +890,13 @@ fn captured_terminal_handler(view: &Entity<HerdrWindow>, cx: &App) -> impl Input
         state.bounds,
         view.clone(),
         crate::input::TerminalBinding::new(
+            &state.endpoints[state.selected_endpoint].id,
             state.live.snapshot.as_deref(),
             state.live.surface.as_deref(),
         ),
         state.terminal_input_epoch,
+        state.selection_epoch,
+        state.endpoints[state.selected_endpoint].generation,
     )
 }
 
@@ -673,6 +907,7 @@ fn stale_terminal_registration_cannot_mutate_after_mode_round_trip_or_pane_chang
     let handle = cancelled_handle();
     let (view, cx) = cx.add_window_view(|window, cx| new_view(handle, window, cx));
     cx.update(|window, cx| {
+        view.update(cx, refresh_fixture_surface);
         for change_pane in [false, true] {
             let mut old = captured_terminal_handler(&view, cx);
             old.replace_and_mark_text_in_range(None, "old preedit", None, window, cx);
@@ -780,11 +1015,13 @@ fn only_correlated_navigation_failure_releases_latest_fence(cx: &mut TestAppCont
     let handle = cancelled_handle();
     let (view, cx) = cx.add_window_view(|window, cx| new_view(handle, window, cx));
     view.update_in(cx, |view, window, cx| {
+        refresh_fixture_surface(view, cx);
         view.set_tab_mode(&tab("w1:t1"), ViewMode::Agent, window, cx);
         edit(view, "unsent draft", window, cx);
         let draft = view.composer.read(cx).draft();
         for request_id in ["older", "latest"] {
-            view.connection
+            view.endpoints[view.selected_endpoint]
+                .connection
                 .inbox
                 .lock()
                 .unwrap()
@@ -797,7 +1034,8 @@ fn only_correlated_navigation_failure_releases_latest_fence(cx: &mut TestAppCont
         }
         view.sync_composer(cx);
         for request_id in ["older", "unrelated", "latest"] {
-            view.connection
+            view.endpoints[view.selected_endpoint]
+                .connection
                 .inbox
                 .lock()
                 .unwrap()
@@ -807,7 +1045,10 @@ fn only_correlated_navigation_failure_releases_latest_fence(cx: &mut TestAppCont
                 });
             // Repeated unrelated failures need not dirty the mailbox when the
             // displayed error and tracked request status are both unchanged.
-            if let Some(next) = view.connection.take_update() {
+            if let Some(next) = view.endpoints[view.selected_endpoint]
+                .connection
+                .take_update()
+            {
                 view.live = next;
             }
             view.sync_composer(cx);
@@ -846,12 +1087,13 @@ fn explicit_new_tab_button_is_allowed_but_composer_keyboard_shortcut_is_not(
     let handle = cancelled_handle();
     let (view, cx) = cx.add_window_view(|window, cx| new_view(handle, window, cx));
     let draft = view.update_in(cx, |view, window, cx| {
-        cx.bind_keys([KeyBinding::new("cmd-t", crate::NewTab, None)]);
+        crate::bind_keys(cx);
         view.set_tab_mode(&tab("w1:t1"), ViewMode::Agent, window, cx);
         edit(view, "keep while creating tab", window, cx);
         view.composer.read(cx).draft()
     });
     cx.simulate_keystrokes("cmd-t");
+    settle_fixture_surface(&view, cx);
     view.update_in(cx, |view, window, cx| {
         assert!(view.composer.focus_handle(cx).is_focused(window));
         assert_eq!(view.input_probe.actions, 0);
@@ -988,6 +1230,7 @@ fn successful_submit_queues_one_paste_enter_batch_and_only_then_clears(cx: &mut 
     ));
     let (view, cx) = cx.add_window_view(|window, cx| new_view(client.handle.clone(), window, cx));
     view.update_in(cx, |view, window, cx| {
+        refresh_fixture_surface(view, cx);
         view.set_tab_mode(&tab("w1:t1"), ViewMode::Agent, window, cx);
         edit(view, "first\nsecond\n", window, cx);
         assert_eq!(view.composer.read(cx).text(), "first\nsecond\n");
@@ -1057,6 +1300,7 @@ fn direct_terminal_keys_and_paste_respect_navigation_and_latest_recipient(cx: &m
     let handle = cancelled_handle();
     let (view, cx) = cx.add_window_view(|window, cx| new_view(handle, window, cx));
     view.update_in(cx, |view, window, cx| {
+        refresh_fixture_surface(view, cx);
         window.focus(&view.focus);
         let snapshot = view.live.snapshot.clone().unwrap();
         view.navigation_fence = Some(NavigationFence::new(
@@ -1074,7 +1318,11 @@ fn direct_terminal_keys_and_paste_respect_navigation_and_latest_recipient(cx: &m
             Some("Navigation pending; input was not sent.")
         );
         view.navigation_fence = None;
-        let mut inbox = view.connection.inbox.lock().unwrap();
+        let mut inbox = view.endpoints[view.selected_endpoint]
+            .connection
+            .inbox
+            .lock()
+            .unwrap();
         Arc::make_mut(inbox.snapshot.as_mut().unwrap()).focused_pane_id = Some("w1:p2".into());
         drop(inbox);
         for key in ["enter", "ctrl-c", "cmd-v"] {

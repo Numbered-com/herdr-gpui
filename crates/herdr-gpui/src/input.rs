@@ -5,12 +5,14 @@ use std::ops::Range;
 
 #[derive(PartialEq, Eq)]
 pub(super) struct TerminalBinding {
+    endpoint_id: String,
     boot_id: String,
     target: crate::terminal::InputTarget,
 }
 
 impl TerminalBinding {
     pub fn new(
+        endpoint_id: &str,
         snapshot: Option<&ClientShellSnapshot>,
         surface: Option<&PaneSurfaceFrame>,
     ) -> Option<Self> {
@@ -24,6 +26,7 @@ impl TerminalBinding {
             crate::terminal::InputTarget::Pane(snapshot.focused_pane_id.clone()?)
         };
         Some(Self {
+            endpoint_id: endpoint_id.to_owned(),
             boot_id: snapshot.boot_id.clone(),
             target,
         })
@@ -35,21 +38,37 @@ pub(super) fn terminal_handler(
     view: Entity<HerdrWindow>,
     binding: Option<TerminalBinding>,
     epoch: u64,
+    selection_epoch: u64,
+    generation: u64,
 ) -> impl InputHandler {
     crate::input_guard::GuardedInputHandler::new(
         bounds,
         view,
         move |view: &HerdrWindow, window: &Window, _: &App| {
             view.terminal_input_enabled(window)
+                && view.selection_epoch == selection_epoch
+                && view.endpoints[view.selected_endpoint].generation == generation
                 && view.terminal_input_epoch == epoch
                 && binding.is_some()
-                && TerminalBinding::new(view.live.snapshot.as_deref(), view.live.surface.as_deref())
-                    == binding
-                && view.connection.inbox.try_lock().ok().is_some_and(|state| {
-                    state.status.is_connected()
-                        && TerminalBinding::new(state.snapshot.as_deref(), state.surface.as_deref())
-                            == binding
-                })
+                && TerminalBinding::new(
+                    &view.endpoints[view.selected_endpoint].id,
+                    view.live.snapshot.as_deref(),
+                    view.live.surface.as_deref(),
+                ) == binding
+                && view.endpoints[view.selected_endpoint]
+                    .connection
+                    .inbox
+                    .try_lock()
+                    .ok()
+                    .is_some_and(|state| {
+                        state.status.is_connected()
+                            && state.surface_ready()
+                            && TerminalBinding::new(
+                                &view.endpoints[view.selected_endpoint].id,
+                                state.snapshot.as_deref(),
+                                state.surface.as_deref(),
+                            ) == binding
+                    })
         },
     )
 }
@@ -61,7 +80,10 @@ impl HerdrWindow {
     }
 
     fn terminal_input_enabled(&self, window: &Window) -> bool {
-        self.focus.is_focused(window) && self.menu.page.is_none() && self.navigation_fence.is_none()
+        self.focus.is_focused(window)
+            && !self.menu.is_open()
+            && self.navigation_fence.is_none()
+            && self.input_ready()
     }
 }
 
@@ -159,6 +181,7 @@ impl EntityInputHandler for HerdrWindow {
             self.live.surface.as_deref(),
             self.bounds.origin,
             self.cell_width,
+            self.config.terminal.line_height(),
         ))
     }
     fn character_index_for_point(

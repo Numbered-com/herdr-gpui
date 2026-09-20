@@ -44,6 +44,7 @@ fn prepare() -> Result<(ClientHandle, PathBuf), String> {
 
 fn tab(id: &str) -> TabTarget {
     TabTarget {
+        endpoint_id: endpoint::LOCAL.into(),
         boot_id: "boot-v1".into(),
         tab_id: id.into(),
     }
@@ -72,9 +73,7 @@ fn snapshot() -> Result<ClientShellSnapshot, String> {
     Ok(snapshot)
 }
 
-fn surface(snapshot: &ClientShellSnapshot) -> PaneSurfaceFrame {
-    let width = 40;
-    let height = 18;
+fn surface(snapshot: &ClientShellSnapshot, width: u16, height: u16) -> PaneSurfaceFrame {
     let blank = CellData {
         symbol: " ".into(),
         fg: 7,
@@ -124,8 +123,12 @@ fn surface(snapshot: &ClientShellSnapshot) -> PaneSurfaceFrame {
         .map(|(index, pane)| {
             let rect = if split {
                 SurfaceRect {
-                    y: if index == 0 { 0 } else { 9 },
-                    height: 8,
+                    y: if index == 0 { 0 } else { height / 2 + 1 },
+                    height: if index == 0 {
+                        height / 2
+                    } else {
+                        height.saturating_sub(height / 2 + 1)
+                    },
                     ..area
                 }
             } else {
@@ -163,10 +166,10 @@ fn surface(snapshot: &ClientShellSnapshot) -> PaneSurfaceFrame {
         splits: if split {
             vec![PaneSurfaceSplit {
                 direction: PaneSurfaceSplitDirection::Horizontal,
-                pos: 8,
+                pos: height / 2,
                 area,
                 hit_rect: SurfaceRect {
-                    y: 8,
+                    y: height / 2,
                     height: 1,
                     ..area
                 },
@@ -185,10 +188,21 @@ fn install(
     snapshot: ClientShellSnapshot,
     cx: &mut Context<HerdrWindow>,
 ) -> Result<(), String> {
-    view.set_surface(Some(Arc::new(surface(&snapshot))), cx);
+    view.set_surface(
+        Some(Arc::new(surface(
+            &snapshot,
+            view.options.surface_size.cols,
+            view.options.surface_size.rows,
+        ))),
+        cx,
+    );
     view.live.snapshot = Some(Arc::new(snapshot));
-    view.live.status = state::ConnectionStatus::Connected;
-    *view
+    view.live.status = ConnectionStatus::Connected;
+    view.live.activation = None;
+    let endpoint = &mut view.endpoints[view.selected_endpoint];
+    endpoint.set_fixture_surface_active();
+    endpoint.live = view.live.clone();
+    *endpoint
         .connection
         .inbox
         .try_lock()
@@ -333,11 +347,15 @@ async fn run(
                 .map_err(|_| "unexpected root")?
                 .update(cx, |view, cx| {
                     check(
-                        view.connection.handle.is_none(),
+                        view.endpoints[view.selected_endpoint]
+                            .connection
+                            .handle
+                            .is_none(),
                         "main must construct agent window with fixture=true",
                     )?;
-                    view.connection.target = ConnectTarget::Socket(socket);
-                    view.connection.handle = Some(client);
+                    view.endpoints[view.selected_endpoint].connection.target =
+                        ConnectTarget::Socket(socket);
+                    view.endpoints[view.selected_endpoint].connection.handle = Some(client);
                     install(view, snapshot()?, cx)
                 })
         })
@@ -350,6 +368,8 @@ async fn run(
             // Yield to AppKit/layout and subscription effects; never sleep the UI thread.
             timer.timer(Duration::from_millis(100)).await;
             let mut click = None;
+            #[cfg(target_os = "macos")]
+            let mut click_target = None;
             AnyWindowHandle::from(handle).update(cx, |root, window, cx| -> Result<(), String> {
                 let view = root.downcast::<HerdrWindow>().map_err(|_| "unexpected root")?;
                 window.refresh();
@@ -368,6 +388,10 @@ async fn run(
                         menu_snapshot = view.read(cx).live.snapshot.clone();
                         check(baseline.size.height > px(0.), "terminal has no painted bounds")?;
                         click = Some((baseline.origin.x.to_f64() + 40., 20.));
+                        #[cfg(target_os = "macos")]
+                        {
+                            click_target = Some(sidebar::native_tests::Target::acquire(window)?);
+                        }
                     }
                     2 => {
                         check(matches!(&view.read(cx).menu.page, Some(menu::Page::TabMode(target)) if *target == tab("w1:t1")), "native right click missed first tab menu")?;
@@ -401,6 +425,18 @@ async fn run(
                         keys("cmd-enter", window, cx)?;
                     }
                     5 => {
+                        for _ in 0..4 {
+                            view.update(cx, |view, cx| {
+                                let snapshot = view.live.snapshot.as_deref().ok_or("missing fixture snapshot")?.clone();
+                                install(view, snapshot, cx)
+                            })?;
+                            window.refresh();
+                            window.draw(cx).clear();
+                            if view.read(cx).input_ready() {
+                                break;
+                            }
+                        }
+                        check(view.read(cx).input_ready(), "fixture surface did not match the settled terminal viewport")?;
                         let state = view.read(cx);
                         check(state.composer.read(cx).is_composing() && state.composer_notice.is_none(), "preedit triggered submission")?;
                         check(state.marked.is_empty() && state.composer.read(cx).draft().text() == PROMPT, "IME touched root or committed draft")?;
@@ -431,7 +467,7 @@ async fn run(
                     }
                     8 => {
                         view.update(cx, |view, cx| -> Result<(), String> {
-                            check(view.agent_modes.mode("boot-v1", "w1:t2") == ViewMode::Agent && view.live.snapshot.as_ref().and_then(|s| s.focused_tab_id.as_deref()) == Some("w1:t1"), "inactive menu navigated or missed mode")?;
+                            check(view.agent_modes.mode(endpoint::LOCAL, "boot-v1", "w1:t2") == ViewMode::Agent && view.live.snapshot.as_ref().and_then(|s| s.focused_tab_id.as_deref()) == Some("w1:t1"), "inactive menu navigated or missed mode")?;
                             check(view.navigation_fence.is_none(), "mode change queued navigation")?;
                             check(view.live.snapshot == menu_snapshot, "inactive tab menu changed daemon snapshot")?;
                             focus_pane(view, "w1:p2", cx)?;
@@ -473,7 +509,9 @@ async fn run(
             }).map_err(|e| e.to_string())??;
             if let Some((x, y)) = click {
                 #[cfg(target_os = "macos")]
-                sidebar::native_tests::right_click(x, y)?;
+                click_target
+                    .ok_or("missing native fixture target")?
+                    .right_click(x, y)?;
                 #[cfg(not(target_os = "macos"))]
                 {
                     let _ = (x, y);

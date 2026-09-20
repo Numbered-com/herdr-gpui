@@ -1,8 +1,8 @@
 //! GUI-only agent presentation. Herdr remains the owner of every terminal.
 use super::{
-    HerdrWindow, NavigationTarget,
+    HerdrWindow, NavigationTarget, OwnedNavigationTarget,
     agent_mode::{self, TabTarget, ViewMode},
-    composer, sidebar,
+    composer,
 };
 use gpui::{prelude::*, *};
 use herdr_client::protocol::{
@@ -11,7 +11,7 @@ use herdr_client::protocol::{
 
 pub(super) struct NavigationFence {
     request_id: String,
-    goal: Option<NavigationTarget>,
+    goal: Option<OwnedNavigationTarget>,
     boot_id: String,
     workspace_id: Option<String>,
     tab_id: Option<String>,
@@ -22,7 +22,7 @@ impl NavigationFence {
     pub fn new(
         snapshot: &ClientShellSnapshot,
         request_id: String,
-        goal: Option<NavigationTarget>,
+        goal: Option<OwnedNavigationTarget>,
     ) -> Self {
         Self {
             request_id,
@@ -55,16 +55,22 @@ fn prompt_events(text: &str) -> [ClientPaneInputEvent; 2] {
 impl HerdrWindow {
     pub(super) fn agent_tab_active(&self) -> bool {
         self.live.snapshot.as_ref().is_some_and(|snapshot| {
-            snapshot
-                .focused_tab_id
-                .as_ref()
-                .is_some_and(|tab| self.agent_modes.mode(&snapshot.boot_id, tab) == ViewMode::Agent)
+            snapshot.focused_tab_id.as_ref().is_some_and(|tab| {
+                self.agent_modes.mode(
+                    &self.endpoints[self.selected_endpoint].id,
+                    &snapshot.boot_id,
+                    tab,
+                ) == ViewMode::Agent
+            })
         })
     }
 
     pub(super) fn sync_composer(&mut self, cx: &mut Context<Self>) {
+        let endpoint_id = &self.endpoints[self.selected_endpoint].id;
+        self.agent_modes
+            .retain_endpoints(|id| self.endpoints.iter().any(|endpoint| endpoint.id == id));
         if let Some(snapshot) = &self.live.snapshot {
-            self.agent_modes.reconcile(snapshot);
+            self.agent_modes.reconcile(endpoint_id, snapshot);
             if self.navigation_fence.as_ref().is_some_and(|fence| {
                 fence.boot_id != snapshot.boot_id
                     || self.live.request_status(&fence.request_id)
@@ -83,6 +89,9 @@ impl HerdrWindow {
                             fence.workspace_id != snapshot.focused_workspace_id
                                 || fence.tab_id != snapshot.focused_tab_id
                                 || fence.pane_id != snapshot.focused_pane_id
+                                || (self.live.request_status(&fence.request_id)
+                                    == Some(crate::state::RequestStatus::Succeeded)
+                                    && self.input_ready())
                         }
                     }
             }) {
@@ -93,7 +102,7 @@ impl HerdrWindow {
             .live
             .snapshot
             .as_ref()
-            .and_then(|snapshot| self.agent_modes.focused_target(snapshot));
+            .and_then(|snapshot| self.agent_modes.focused_target(endpoint_id, snapshot));
         if target != self.composer_target {
             self.composer
                 .update(cx, |editor, cx| editor.cancel_composition(cx));
@@ -115,15 +124,21 @@ impl HerdrWindow {
             self.composer_notice = None;
             self.marked.clear();
         }
-        // A disconnected inbox is not evidence of deletion. Prune only on snapshots.
+        self.drafts.retain(|target, _| {
+            self.endpoints
+                .iter()
+                .any(|endpoint| endpoint.id == target.endpoint_id)
+        });
+        // A disconnected inbox is not evidence of deletion. Other hosts' drafts
+        // must not be compared with the selected host's boot or pane membership.
         if let Some(snapshot) = &self.live.snapshot {
             self.drafts.retain(|target, _| {
-                target.boot_id == snapshot.boot_id
-                    && snapshot.tabs.iter().any(|tab| tab.tab_id == target.tab_id)
-                    && snapshot
-                        .panes
-                        .iter()
-                        .any(|pane| pane.pane_id == target.pane_id && pane.tab_id == target.tab_id)
+                target.endpoint_id != *endpoint_id
+                    || (target.boot_id == snapshot.boot_id
+                        && snapshot.tabs.iter().any(|tab| tab.tab_id == target.tab_id)
+                        && snapshot.panes.iter().any(|pane| {
+                            pane.pane_id == target.pane_id && pane.tab_id == target.tab_id
+                        }))
             });
         }
         let enabled = self.composer_editable();
@@ -135,7 +150,7 @@ impl HerdrWindow {
     // particular, a snapshot/surface gap must not hand typing to the terminal.
     pub(super) fn composer_editable(&self) -> bool {
         self.composer_target.is_some()
-            && self.menu.page.is_none()
+            && !self.menu.is_open()
             && self.navigation_fence.is_none()
             && self
                 .live
@@ -145,10 +160,15 @@ impl HerdrWindow {
     }
 
     pub(super) fn composer_block_reason(&self) -> Option<&'static str> {
-        if self.menu.page.is_some() {
+        if self.menu.is_open() {
             return Some("Close the menu to edit your draft.");
         }
-        if self.connection.handle.is_none() || !self.live.status.is_connected() {
+        if self.endpoints[self.selected_endpoint]
+            .connection
+            .handle
+            .is_none()
+            || !self.live.status.is_connected()
+        {
             return Some("Disconnected. Drafts stay local; nothing is replayed.");
         }
         if self.navigation_fence.is_some() {
@@ -164,7 +184,14 @@ impl HerdrWindow {
         if surface.popup.is_some() {
             return Some("Popup active. Interact with the terminal before sending.");
         }
-        if !agent_mode::valid_target(target, snapshot, surface) {
+        if !self.input_ready()
+            || !agent_mode::valid_target(
+                target,
+                &self.endpoints[self.selected_endpoint].id,
+                snapshot,
+                surface,
+            )
+        {
             return Some("Waiting for the selected pane's current surface.");
         }
         None
@@ -177,6 +204,9 @@ impl HerdrWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if target.endpoint_id != self.endpoints[self.selected_endpoint].id {
+            return;
+        }
         let Some(snapshot) = &self.live.snapshot else {
             return;
         };
@@ -231,7 +261,8 @@ impl HerdrWindow {
                 .ok_or("No composer recipient.")?;
             // Recheck the authoritative inbox, not only the last rendered clone.
             // try_lock and bounded enqueue cannot block the UI thread.
-            let state = self
+            let endpoint = &self.endpoints[self.selected_endpoint];
+            let state = endpoint
                 .connection
                 .inbox
                 .try_lock()
@@ -239,11 +270,16 @@ impl HerdrWindow {
             let (Some(snapshot), Some(surface)) = (&state.snapshot, &state.surface) else {
                 return Err("Herdr is not ready; draft was not sent.".into());
             };
-            if !state.status.is_connected() || !agent_mode::valid_target(target, snapshot, surface)
+            if !state.status.is_connected()
+                || !state.surface_ready()
+                || surface.frame.width != self.options.surface_size.cols
+                || surface.frame.height != self.options.surface_size.rows
+                || !agent_mode::valid_target(target, &endpoint.id, snapshot, surface)
             {
                 return Err("The recipient or popup changed; draft was not sent.".into());
             }
-            self.connection
+            endpoint
+                .connection
                 .handle
                 .as_ref()
                 .ok_or("Disconnected; draft was not sent.")?
@@ -288,6 +324,7 @@ impl HerdrWindow {
         let blocked = self.composer_block_reason();
         let mode_target = self.live.snapshot.as_ref().and_then(|snapshot| {
             snapshot.focused_tab_id.as_ref().map(|tab| TabTarget {
+                endpoint_id: self.endpoints[self.selected_endpoint].id.clone(),
                 boot_id: snapshot.boot_id.clone(),
                 tab_id: tab.clone(),
             })
@@ -295,16 +332,17 @@ impl HerdrWindow {
         let send_target = self.composer_target.clone();
         div().id("agent-composer").debug_selector(|| "agent-composer".into())
             .flex().flex_col().flex_none().min_w_0().border_t_1()
-            .border_color(rgb(sidebar::ACTIVE)).bg(rgb(sidebar::BACKGROUND))
-            .px_3().py_2().gap_1().text_color(rgb(sidebar::FOREGROUND))
+            .border_color(rgb(self.theme.active)).bg(rgb(self.theme.surface))
+            .font_family(self.config.ui.family.clone()).text_size(px(self.config.ui.size))
+            .px_3().py_2().gap_1().text_color(rgb(self.theme.foreground))
             .child(div().flex().items_center().gap_2().min_w_0()
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_xs().child(recipient))
-                .child(div().id("agent-terminal-mode").cursor_pointer().px_2().text_xs().child("Terminal mode")
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().child(recipient))
+                .child(div().id("agent-terminal-mode").cursor_pointer().px_2().child("Terminal mode")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if let Some(target) = &mode_target { this.set_tab_mode(target, ViewMode::Terminal, window, cx); }
                     })))
                 .child(div().id("agent-send").debug_selector(|| "agent-send".into()).px_3().py_1().rounded_sm()
-                    .bg(rgb(sidebar::ACTIVE)).text_xs().child("Send")
+                    .bg(rgb(self.theme.active)).child("Send")
                     .when(blocked.is_none(), |button| button.cursor_pointer())
                     .when(blocked.is_some(), |button| button.opacity(0.45))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -313,7 +351,7 @@ impl HerdrWindow {
                         }
                     }))))
             .child(self.composer.clone())
-            .child(div().text_xs().text_color(rgb(sidebar::MUTED)).child(
+            .child(div().text_color(rgb(self.theme.muted)).child(
                 blocked.map(str::to_owned).or_else(|| self.composer_notice.clone())
                     .unwrap_or_else(|| "Enter: newline | Cmd-Enter: send paste + Enter to the terminal. Use an empty agent prompt.".into())
             ))

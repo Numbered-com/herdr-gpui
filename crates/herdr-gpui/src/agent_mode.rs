@@ -1,5 +1,5 @@
 use herdr_client::protocol::{ClientShellPane, ClientShellSnapshot, PaneSurfaceFrame};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ViewMode {
@@ -10,12 +10,14 @@ pub(crate) enum ViewMode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TabTarget {
+    pub endpoint_id: String,
     pub boot_id: String,
     pub tab_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PaneTarget {
+    pub endpoint_id: String,
     pub boot_id: String,
     pub tab_id: String,
     pub pane_id: String,
@@ -23,22 +25,35 @@ pub(crate) struct PaneTarget {
 
 #[derive(Default)]
 pub(crate) struct AgentModes {
+    endpoints: HashMap<String, EndpointModes>,
+}
+
+#[derive(Default)]
+struct EndpointModes {
     boot_id: Option<String>,
     agent_tabs: HashSet<String>,
 }
 
 impl AgentModes {
-    pub(crate) fn reconcile(&mut self, snapshot: &ClientShellSnapshot) {
-        if self.boot_id.as_deref() != Some(snapshot.boot_id.as_str()) {
-            self.agent_tabs.clear();
-            self.boot_id = Some(snapshot.boot_id.clone());
+    pub(crate) fn reconcile(&mut self, endpoint_id: &str, snapshot: &ClientShellSnapshot) {
+        let modes = self.endpoints.entry(endpoint_id.to_owned()).or_default();
+        if modes.boot_id.as_deref() != Some(snapshot.boot_id.as_str()) {
+            modes.agent_tabs.clear();
+            modes.boot_id = Some(snapshot.boot_id.clone());
         }
-        self.agent_tabs
+        modes
+            .agent_tabs
             .retain(|id| snapshot.tabs.iter().any(|tab| tab.tab_id == *id));
     }
 
-    pub(crate) fn mode(&self, boot_id: &str, tab_id: &str) -> ViewMode {
-        if self.boot_id.as_deref() == Some(boot_id) && self.agent_tabs.contains(tab_id) {
+    pub(crate) fn retain_endpoints(&mut self, mut retain: impl FnMut(&str) -> bool) {
+        self.endpoints.retain(|id, _| retain(id));
+    }
+
+    pub(crate) fn mode(&self, endpoint_id: &str, boot_id: &str, tab_id: &str) -> ViewMode {
+        if self.endpoints.get(endpoint_id).is_some_and(|modes| {
+            modes.boot_id.as_deref() == Some(boot_id) && modes.agent_tabs.contains(tab_id)
+        }) {
             ViewMode::Agent
         } else {
             ViewMode::Terminal
@@ -52,29 +67,39 @@ impl AgentModes {
         mode: ViewMode,
         snapshot: &ClientShellSnapshot,
     ) -> bool {
-        self.reconcile(snapshot);
+        self.reconcile(&target.endpoint_id, snapshot);
         if target.boot_id != snapshot.boot_id
             || !snapshot.tabs.iter().any(|tab| tab.tab_id == target.tab_id)
         {
             return false;
         }
+        let Some(modes) = self.endpoints.get_mut(&target.endpoint_id) else {
+            return false;
+        };
         match mode {
             ViewMode::Terminal => {
-                self.agent_tabs.remove(&target.tab_id);
+                modes.agent_tabs.remove(&target.tab_id);
             }
             ViewMode::Agent => {
-                self.agent_tabs.insert(target.tab_id.clone());
+                modes.agent_tabs.insert(target.tab_id.clone());
             }
         }
         true
     }
 
-    pub(crate) fn focused_target(&self, snapshot: &ClientShellSnapshot) -> Option<PaneTarget> {
+    pub(crate) fn focused_target(
+        &self,
+        endpoint_id: &str,
+        snapshot: &ClientShellSnapshot,
+    ) -> Option<PaneTarget> {
         let pane = focused_pane(snapshot)?;
-        (self.mode(&snapshot.boot_id, &pane.tab_id) == ViewMode::Agent).then(|| PaneTarget {
-            boot_id: snapshot.boot_id.clone(),
-            tab_id: pane.tab_id.clone(),
-            pane_id: pane.pane_id.clone(),
+        (self.mode(endpoint_id, &snapshot.boot_id, &pane.tab_id) == ViewMode::Agent).then(|| {
+            PaneTarget {
+                endpoint_id: endpoint_id.to_owned(),
+                boot_id: snapshot.boot_id.clone(),
+                tab_id: pane.tab_id.clone(),
+                pane_id: pane.pane_id.clone(),
+            }
         })
     }
 }
@@ -98,10 +123,12 @@ fn focused_pane(snapshot: &ClientShellSnapshot) -> Option<&ClientShellPane> {
 /// Submission additionally requires a coherent rendered surface with no popup.
 pub(crate) fn valid_target(
     target: &PaneTarget,
+    endpoint_id: &str,
     snapshot: &ClientShellSnapshot,
     surface: &PaneSurfaceFrame,
 ) -> bool {
-    target.boot_id == snapshot.boot_id
+    target.endpoint_id == endpoint_id
+        && target.boot_id == snapshot.boot_id
         && surface.boot_id == snapshot.boot_id
         && surface.projection_revision == snapshot.revision
         && surface.popup.is_none()
@@ -130,6 +157,7 @@ mod tests {
 
     fn tab_target(snapshot: &ClientShellSnapshot) -> TabTarget {
         TabTarget {
+            endpoint_id: "local".into(),
             boot_id: snapshot.boot_id.clone(),
             tab_id: snapshot.focused_tab_id.clone().unwrap(),
         }
@@ -138,7 +166,7 @@ mod tests {
     fn agent_target(snapshot: &ClientShellSnapshot) -> PaneTarget {
         let mut modes = AgentModes::default();
         assert!(modes.set_mode(&tab_target(snapshot), ViewMode::Agent, snapshot));
-        modes.focused_target(snapshot).unwrap()
+        modes.focused_target("local", snapshot).unwrap()
     }
 
     fn surface(snapshot: &ClientShellSnapshot) -> PaneSurfaceFrame {
@@ -186,20 +214,26 @@ mod tests {
         let mut modes = AgentModes::default();
         let target = tab_target(&snapshot);
         assert_eq!(ViewMode::default(), ViewMode::Terminal);
-        modes.reconcile(&snapshot);
+        modes.reconcile("local", &snapshot);
         assert_eq!(
-            modes.mode(&target.boot_id, &target.tab_id),
+            modes.mode("local", &target.boot_id, &target.tab_id),
             ViewMode::Terminal
         );
-        assert_eq!(modes.focused_target(&snapshot), None);
+        assert_eq!(modes.focused_target("local", &snapshot), None);
         snapshot.agents.clear();
         assert!(modes.set_mode(&target, ViewMode::Agent, &snapshot));
         assert!(modes.set_mode(&target, ViewMode::Agent, &snapshot));
-        assert!(modes.focused_target(&snapshot).is_some());
-        assert_eq!(modes.mode("other-boot", &target.tab_id), ViewMode::Terminal);
-        assert_eq!(modes.mode(&target.boot_id, "missing"), ViewMode::Terminal);
+        assert!(modes.focused_target("local", &snapshot).is_some());
+        assert_eq!(
+            modes.mode("local", "other-boot", &target.tab_id),
+            ViewMode::Terminal
+        );
+        assert_eq!(
+            modes.mode("local", &target.boot_id, "missing"),
+            ViewMode::Terminal
+        );
         assert!(modes.set_mode(&target, ViewMode::Terminal, &snapshot));
-        assert_eq!(modes.focused_target(&snapshot), None);
+        assert_eq!(modes.focused_target("local", &snapshot), None);
     }
 
     #[test]
@@ -209,6 +243,7 @@ mod tests {
         tab.tab_id = "inactive-tab".into();
         tab.focused = false;
         let target = TabTarget {
+            endpoint_id: "local".into(),
             boot_id: snapshot.boot_id.clone(),
             tab_id: tab.tab_id.clone(),
         };
@@ -216,8 +251,11 @@ mod tests {
         let before = snapshot.clone();
         let mut modes = AgentModes::default();
         assert!(modes.set_mode(&target, ViewMode::Agent, &snapshot));
-        assert_eq!(modes.mode(&target.boot_id, &target.tab_id), ViewMode::Agent);
-        assert_eq!(modes.focused_target(&snapshot), None);
+        assert_eq!(
+            modes.mode("local", &target.boot_id, &target.tab_id),
+            ViewMode::Agent
+        );
+        assert_eq!(modes.focused_target("local", &snapshot), None);
         assert_eq!(snapshot, before);
     }
 
@@ -228,20 +266,23 @@ mod tests {
         let target = tab_target(&snapshot);
         assert!(modes.set_mode(&target, ViewMode::Agent, &snapshot));
         snapshot.revision += 1;
-        modes.reconcile(&snapshot.clone());
-        assert_eq!(modes.mode(&target.boot_id, &target.tab_id), ViewMode::Agent);
+        modes.reconcile("local", &snapshot.clone());
+        assert_eq!(
+            modes.mode("local", &target.boot_id, &target.tab_id),
+            ViewMode::Agent
+        );
         let tabs = snapshot.tabs.clone();
         snapshot.tabs.clear();
-        modes.reconcile(&snapshot);
+        modes.reconcile("local", &snapshot);
         assert_eq!(
-            modes.mode(&target.boot_id, &target.tab_id),
+            modes.mode("local", &target.boot_id, &target.tab_id),
             ViewMode::Terminal
         );
         assert!(!modes.set_mode(&target, ViewMode::Agent, &snapshot));
         snapshot.tabs = tabs;
-        modes.reconcile(&snapshot);
+        modes.reconcile("local", &snapshot);
         assert_eq!(
-            modes.mode(&target.boot_id, &target.tab_id),
+            modes.mode("local", &target.boot_id, &target.tab_id),
             ViewMode::Terminal
         );
     }
@@ -255,14 +296,14 @@ mod tests {
         snapshot.boot_id = "new-boot".into();
         assert!(!modes.set_mode(&target, ViewMode::Agent, &snapshot));
         assert_eq!(
-            modes.mode(&target.boot_id, &target.tab_id),
+            modes.mode("local", &target.boot_id, &target.tab_id),
             ViewMode::Terminal
         );
         assert_eq!(
-            modes.mode(&snapshot.boot_id, &target.tab_id),
+            modes.mode("local", &snapshot.boot_id, &target.tab_id),
             ViewMode::Terminal
         );
-        assert_eq!(modes.focused_target(&snapshot), None);
+        assert_eq!(modes.focused_target("local", &snapshot), None);
     }
 
     #[test]
@@ -290,8 +331,8 @@ mod tests {
         for mutate in mutations {
             let mut changed = snapshot.clone();
             mutate(&mut changed);
-            assert_eq!(modes.focused_target(&changed), None);
-            assert!(!valid_target(&target, &changed, &frame));
+            assert_eq!(modes.focused_target("local", &changed), None);
+            assert!(!valid_target(&target, "local", &changed, &frame));
         }
     }
 
@@ -300,7 +341,7 @@ mod tests {
         let snapshot = snapshot();
         let frame = surface(&snapshot);
         let target = agent_target(&snapshot);
-        assert!(valid_target(&target, &snapshot, &frame));
+        assert!(valid_target(&target, "local", &snapshot, &frame));
         for changed in [
             PaneTarget {
                 boot_id: "other".into(),
@@ -315,7 +356,7 @@ mod tests {
                 ..target.clone()
             },
         ] {
-            assert!(!valid_target(&changed, &snapshot, &frame));
+            assert!(!valid_target(&changed, "local", &snapshot, &frame));
         }
         let mutations: &[fn(&mut PaneSurfaceFrame)] = &[
             |s| s.boot_id = "other".into(),
@@ -327,7 +368,7 @@ mod tests {
         for mutate in mutations {
             let mut changed = frame.clone();
             mutate(&mut changed);
-            assert!(!valid_target(&target, &snapshot, &changed));
+            assert!(!valid_target(&target, "local", &snapshot, &changed));
         }
     }
 
@@ -342,8 +383,13 @@ mod tests {
         snapshot.panes.push(pane);
         snapshot.revision += 1;
         let frame = surface(&snapshot);
-        assert!(!valid_target(&captured, &snapshot, &frame));
-        assert!(valid_target(&agent_target(&snapshot), &snapshot, &frame));
+        assert!(!valid_target(&captured, "local", &snapshot, &frame));
+        assert!(valid_target(
+            &agent_target(&snapshot),
+            "local",
+            &snapshot,
+            &frame
+        ));
     }
 
     #[test]
@@ -362,9 +408,50 @@ mod tests {
             pixel_width: 0,
             pixel_height: 0,
         }));
-        assert!(!valid_target(&target, &snapshot, &frame));
+        assert!(!valid_target(&target, "local", &snapshot, &frame));
         assert_eq!(agent_target(&snapshot), target);
         frame.popup = None;
-        assert!(valid_target(&target, &snapshot, &frame));
+        assert!(valid_target(&target, "local", &snapshot, &frame));
+    }
+
+    #[test]
+    fn identical_host_identities_remain_isolated_and_prune_only_their_endpoint() {
+        let snapshot = snapshot();
+        let local = tab_target(&snapshot);
+        let remote = TabTarget {
+            endpoint_id: "remote".into(),
+            ..local.clone()
+        };
+        let mut modes = AgentModes::default();
+        modes.set_mode(&local, ViewMode::Agent, &snapshot);
+        assert_eq!(modes.focused_target("remote", &snapshot), None);
+        modes.set_mode(&remote, ViewMode::Agent, &snapshot);
+        let local_pane = modes.focused_target("local", &snapshot).unwrap();
+        let remote_pane = modes.focused_target("remote", &snapshot).unwrap();
+        assert_ne!(local_pane, remote_pane);
+        assert!(!valid_target(
+            &local_pane,
+            "remote",
+            &snapshot,
+            &surface(&snapshot)
+        ));
+        let mut drafts = HashMap::new();
+        drafts.insert(local_pane.clone(), "local draft");
+        drafts.insert(remote_pane.clone(), "remote draft");
+        assert_eq!(drafts.len(), 2);
+        let mut changed = snapshot.clone();
+        changed.tabs.clear();
+        modes.reconcile("remote", &changed);
+        assert_eq!(modes.focused_target("local", &snapshot), Some(local_pane));
+        assert_eq!(modes.focused_target("remote", &snapshot), None);
+        modes.set_mode(&remote, ViewMode::Agent, &snapshot);
+        changed.boot_id = "new-boot".into();
+        modes.reconcile("remote", &changed);
+        assert_eq!(
+            modes.mode("local", &local.boot_id, &local.tab_id),
+            ViewMode::Agent
+        );
+        modes.retain_endpoints(|id| id == "remote");
+        assert_eq!(modes.focused_target("local", &snapshot), None);
     }
 }
