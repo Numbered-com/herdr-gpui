@@ -40,6 +40,9 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         .update(cx, |_, cx| cx.notify());
                     window.refresh();
                     window.draw(cx).clear();
+                    if frame > 0 && sidebar::GITHUB_ICON.clone().use_render_image(window, cx).is_none() {
+                        return Err("embedded GitHub SVG did not render".into());
+                    }
                     let probes = &cx.global::<PaintedProbes>().0;
                     let mut failed = false;
                     for input in [
@@ -60,13 +63,15 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                             eprintln!("SIDEBAR frame={frame} input={input:?} {p:?}");
                         }
                         let expected_short = input.len() < 20;
+                        let title_icon = matches!(input, "herdr" | "herdr-gpui-sidebar-rendering-regression-investigation");
+                        let expected_width = px(sidebar::LABEL_WIDTH - if title_icon { sidebar::ICON_RESERVE } else { 0. });
                         if p.glyph_text != p.cached
                             || (expected_short && p.glyph_text != input)
                             || (!expected_short
                                 && (p.width < px(150.) || !p.glyph_text.ends_with('\u{2026}')))
                             || p.clipped
-                            || p.bounds.size.width != px(sidebar::LABEL_WIDTH)
-                            || p.mask.size.width != px(sidebar::LABEL_WIDTH)
+                            || p.bounds.size.width != expected_width
+                            || p.mask.size.width != expected_width
                             || p.width > p.bounds.size.width
                             || p.bounds.size.height != px(16.)
                         {
@@ -114,8 +119,8 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     .clear();
                 window.draw(cx).clear();
                 let label = match step {
-                    0 => "v",
-                    1 => ">",
+                    0 => "\u{25be}",
+                    1 => "\u{25b8}",
                     _ => "menu",
                 };
                 cx.global::<sidebar::layout_tests::PaintedProbes>()
@@ -204,7 +209,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
             let _ = cx.update(|cx| cx.quit());
             return;
         }
-        eprintln!("SIDEBAR native PASS: 12 Menlo draws, 4 sizes, collapse/expand, menu keyboard isolation and outside dismissal; host routing, disabled selection, scoped repositories, narrow labels, independent scroll and decoy key window");
+        eprintln!("SIDEBAR native PASS: 12 Menlo draws, 4 sizes, collapse/expand, menu keyboard isolation and outside dismissal; host routing, disabled selection, scoped repositories, resized host/agent glyphs, independent scroll and decoy key window");
         EXIT_CODE.store(0, Ordering::SeqCst);
         let _ = cx.update(|cx| cx.quit());
     })
@@ -332,10 +337,13 @@ async fn sidebar_hosts(handle: WindowHandle<HerdrWindow>, cx: &mut AsyncApp) -> 
                     .ok_or_else(|| format!("missing target {label}"))?;
                 let mut point = p.bounds.center();
                 if step < 2 {
-                    point.x = p.bounds.left() - px(12.);
+                    point.x =
+                        p.bounds.left() - px(sidebar::HOST_GAP + sidebar::HOST_ARROW_WIDTH / 2.);
                 }
                 if step == 9 {
-                    point.x = p.bounds.right() + px(12.);
+                    // The title ends at the label column's edge, even with an avatar.
+                    point.x =
+                        p.bounds.right() + px((sidebar::LABEL_GAP + sidebar::ARROW_RESERVE) / 2.);
                 }
                 Ok((Target::acquire(window)?, point))
             })
@@ -397,22 +405,56 @@ async fn sidebar_hosts(handle: WindowHandle<HerdrWindow>, cx: &mut AsyncApp) -> 
             .map_err(|e| e.to_string())??;
         eprintln!("SIDEBAR native host step={step} verified");
     }
-    handle
-        .update(cx, |_, window, _| window.resize(size(px(360.), px(780.))))
-        .map_err(|e| e.to_string())?;
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        let settled = AnyWindowHandle::from(handle)
+    // Exercise wider, narrower, then restored native allocations. This catches
+    // stale truncated font runs as well as host labels left at the old 116px.
+    for (window_width, preferred, host_width, agent_width, host_prefix, agent_prefix) in [
+        (
+            800.,
+            Some(400.),
+            284.,
+            362.,
+            "Synthetic host",
+            "agent-1-with-a",
+        ),
+        (360., None, 77., 82., "Synthetic", "agent-1"),
+        (
+            800.,
+            Some(160.),
+            117.,
+            122.,
+            "Synthetic host",
+            "agent-1-with-a",
+        ),
+        (
+            800.,
+            Some(480.),
+            364.,
+            442.,
+            REMOTE,
+            "agent-1-with-a-deliberately-long-label",
+        ),
+        (480., None, 116., 194., "Synthetic host", "agent-1-with-a"),
+    ] {
+        handle
+            .update(cx, |view, window, cx| {
+                view.sidebar_width = preferred;
+                window.resize(size(px(window_width), px(780.)));
+                cx.notify();
+            })
+            .map_err(|e| e.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let settled = AnyWindowHandle::from(handle)
             .update(cx, |_, window, cx| -> Result<bool, String> {
-                if window.viewport_size() != size(px(360.), px(780.)) {
+                if window.viewport_size() != size(px(window_width), px(780.)) {
                     return Ok(false);
                 }
                 cx.default_global::<PaintedProbes>().0.clear();
                 window.refresh();
                 window.draw(cx).clear();
-                for (name, prefix) in [
-                    (REMOTE, "Synthetic host"),
-                    ("agent-1-with-a-deliberately-long-label", "agent-1-with-a"),
+                for (name, prefix, expected_width) in [
+                    (REMOTE, host_prefix, host_width),
+                    ("agent-1-with-a-deliberately-long-label", agent_prefix, agent_width),
                 ] {
                     let p = cx
                         .global::<PaintedProbes>()
@@ -421,26 +463,31 @@ async fn sidebar_hosts(handle: WindowHandle<HerdrWindow>, cx: &mut AsyncApp) -> 
                         .ok_or("missing narrow label")?;
                     if p.clipped
                         || p.glyph_text != p.cached
-                        || !p.glyph_text.ends_with('\u{2026}')
+                        || (p.glyph_text != name && !p.glyph_text.ends_with('\u{2026}'))
                         || !p.glyph_text.starts_with(prefix)
-                        || p.bounds.size.width < px(110.)
+                        || p.bounds.size.width != px(expected_width)
+                        || p.mask.size.width != px(expected_width)
                         || p.width > p.bounds.size.width
                     {
-                        return Err(format!("360px native label: {p:?}"));
+                        return Err(format!("resized native label window={window_width} preferred={preferred:?}: {p:?}"));
                     }
                 }
                 Ok(true)
             })
             .map_err(|e| e.to_string())??;
-        if settled {
-            break;
+            if settled {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("{window_width}px resize timed out"));
+            }
+            cx.background_executor()
+                .timer(Duration::from_millis(16))
+                .await;
         }
-        if Instant::now() >= deadline {
-            return Err("360px resize timed out".into());
-        }
-        cx.background_executor()
-            .timer(Duration::from_millis(16))
-            .await;
+        eprintln!(
+            "SIDEBAR native resized labels verified: window={window_width} preferred={preferred:?} host={host_width} agent={agent_width}"
+        );
     }
     handle
         .update(cx, |view, _, cx| -> Result<(), String> {

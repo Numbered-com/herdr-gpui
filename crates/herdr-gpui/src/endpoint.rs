@@ -478,7 +478,18 @@ impl HerdrWindow {
         }
         let mut changed = false;
         for (index, endpoint) in self.endpoints.iter_mut().enumerate() {
-            changed |= endpoint.poll(Instant::now());
+            let updated = endpoint.poll(Instant::now());
+            changed |= updated;
+            // Remote cwd strings must never be resolved against this machine's Git repos.
+            if updated
+                && index == 0
+                && let (Some(avatars), Some(snapshot)) =
+                    (&mut self.avatars, &endpoint.live.snapshot)
+            {
+                for workspace in &snapshot.workspaces {
+                    avatars.request(&workspace.new_workspace_cwd);
+                }
+            }
             if endpoint.enabled
                 && !endpoint.detached
                 && endpoint.connection.handle.is_none()

@@ -156,7 +156,10 @@ impl Element for ProbeText {
             && bounds.bottom() <= mask.bottom()
         {
             let parent = &cx.global::<TextProbes>().0["agent-launcher"].0;
-            assert_eq!(bounds.left(), parent.left() + px(super::CHILD_INDENT));
+            assert_eq!(
+                bounds.left(),
+                parent.left() + px(super::CHILD_INDENT - super::ICON_RESERVE)
+            );
             assert_eq!(
                 bounds.size.width,
                 px(super::LABEL_WIDTH - super::CHILD_INDENT - super::ARROW_RESERVE)
@@ -198,7 +201,7 @@ impl Render for SidebarFixture {
                 .size_full()
                 .relative()
                 .flex()
-                .child(view.render_sidebar(cx))
+                .child(view.render_sidebar(window, cx))
                 .when(view.menu.page.is_some(), |root| {
                     root.child(view.render_menu(window, cx))
                 })
@@ -282,8 +285,23 @@ fn multi_host_rows_scope_duplicate_ids_and_keep_agents_when_host_collapses(
         "workspace-ssh:test-w0",
         "agent-local-p0",
         "agent-ssh:test-p0",
+        "github-herdr",
+        "github-remote workspace",
     ] {
         assert!(cx.debug_bounds(selector).is_some(), "missing {selector}");
+    }
+    for (icon, title) in [
+        ("github-herdr", "name-herdr"),
+        ("github-remote workspace", "name-remote workspace"),
+    ] {
+        let icon = cx.debug_bounds(icon).unwrap();
+        let title = cx.debug_bounds(title).unwrap();
+        assert_eq!(icon.size, size(px(12.), px(12.)));
+        assert_eq!(title.left(), icon.right() + px(6.));
+        assert_eq!(
+            title.size.width,
+            px(super::LABEL_WIDTH - super::ICON_RESERVE)
+        );
     }
     fixture.update(cx, |fixture, cx| {
         fixture.0.update(cx, |view, cx| {
@@ -343,6 +361,11 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         menu: crate::menu::MenuState::new(cx),
         collapsed_repos: Default::default(),
         wheel: WheelAccumulator::default(),
+        sidebar_width: None,
+        sidebar_drag: None,
+        sidebar_preferences: None,
+        sidebar_modified: false,
+        avatars: None,
         #[cfg(feature = "integration-test")]
         input_probe: crate::smoke::InputProbe::default(),
         #[cfg(feature = "integration-test")]
@@ -354,6 +377,7 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
 
 #[cfg(test)]
 fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestContext) {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, point};
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.run_until_parked();
     cx.update(|window, cx| {
@@ -401,6 +425,16 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     let spaces = cx.debug_bounds("spaces-scroll").unwrap();
     let agents = cx.debug_bounds("agents-scroll").unwrap();
     assert_eq!(sidebar.size.width, px(232.));
+    let icon = cx.debug_bounds("github-herdr").unwrap();
+    let title = cx.debug_bounds("name-herdr").unwrap();
+    let detail = cx.debug_bounds("detail-herdr").unwrap();
+    assert_eq!(icon.size, size(px(12.), px(12.)));
+    assert_eq!(title.left(), icon.right() + px(6.));
+    assert_eq!(icon.left(), detail.left());
+    assert_eq!(title.right(), detail.right());
+    assert!(cx.debug_bounds("github-agent-launcher").is_some());
+    assert!(cx.debug_bounds("github-sidebar-child").is_none());
+    assert!(cx.debug_bounds("github-review").is_none());
     assert!(spaces.size.height > px(200.));
     assert!(agents.size.height > px(200.));
     assert!(agents.bottom() <= sidebar.bottom());
@@ -414,7 +448,10 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     ] {
         let name = cx.debug_bounds(name).unwrap();
         let detail = cx.debug_bounds(detail).unwrap();
-        assert_eq!(name.left(), parent.left() + px(super::CHILD_INDENT));
+        assert_eq!(
+            name.left(),
+            parent.left() + px(super::CHILD_INDENT - super::ICON_RESERVE)
+        );
         assert_eq!(
             name.size.width,
             px(super::LABEL_WIDTH - super::CHILD_INDENT - super::ARROW_RESERVE)
@@ -468,6 +505,74 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
         );
     }
 
+    // Drag beyond the divider, then back to a narrower allocation. Text must
+    // be remeasured in both directions rather than retaining truncated runs.
+    for target in [400., 160., 480.] {
+        let divider = cx.debug_bounds("sidebar-resize").unwrap();
+        let start = divider.center();
+        let old_width = cx.debug_bounds("sidebar").unwrap().size.width;
+        let end = point(start.x + px(target) - old_width, start.y);
+        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        cx.update(|window, cx| {
+            fixture.update(cx, |_, cx| cx.notify());
+            let _ = window.draw(cx);
+        });
+        assert_eq!(cx.debug_bounds("sidebar").unwrap().size.width, px(target));
+        let label = cx.debug_bounds("name-herdr").unwrap();
+        assert_eq!(
+            label.size.width,
+            px(super::LABEL_WIDTH + target - 232. - super::ICON_RESERVE)
+        );
+        let parent = cx.debug_bounds("name-agent-launcher").unwrap();
+        let child = cx.debug_bounds("name-sidebar-child").unwrap();
+        assert_eq!(
+            parent.size.width,
+            label.size.width - px(super::ARROW_RESERVE)
+        );
+        assert_eq!(
+            child.size.width,
+            parent.size.width - px(super::CHILD_INDENT) + px(super::ICON_RESERVE)
+        );
+        assert_eq!(child.right(), parent.right());
+        cx.update(|_, cx| {
+            for (text, (bounds, rendered, glyph_width)) in &cx.global::<TextProbes>().0 {
+                // GPUI rounds available text width to physical pixels.
+                assert!(*glyph_width <= bounds.size.width + px(1.), "width={target}, text={text:?}, rendered={rendered:?}, bounds={bounds:?}, glyphs={glyph_width:?}");
+            }
+        });
+        cx.simulate_mouse_move(point(px(600.), start.y), None, Modifiers::default());
+        cx.update(|window, cx| {
+            fixture.update(cx, |_, cx| cx.notify());
+            let _ = window.draw(cx);
+        });
+        assert_eq!(cx.debug_bounds("sidebar").unwrap().size.width, px(target));
+    }
+    cx.simulate_resize(size(px(640.), px(600.)));
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    assert_eq!(cx.debug_bounds("sidebar").unwrap().size.width, px(400.));
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+    assert_eq!(cx.debug_bounds("sidebar").unwrap().size.width, px(480.));
+
+    let position = cx.debug_bounds("sidebar-resize").unwrap().center();
+    cx.simulate_event(MouseDownEvent {
+        position,
+        button: MouseButton::Left,
+        click_count: 2,
+        ..Default::default()
+    });
+    cx.update(|window, cx| {
+        fixture.update(cx, |_, cx| cx.notify());
+        let _ = window.draw(cx);
+    });
+    assert_eq!(cx.debug_bounds("sidebar").unwrap().size.width, px(232.));
+
     let view = cx.update(|_, cx| fixture.read(cx).0.clone());
     let before = cx.update(|_, cx| {
         view.update(cx, |view, _| {
@@ -490,6 +595,11 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
             let view = view.read(cx);
             assert_eq!(view.live.snapshot.as_deref(), Some(&before));
             assert_eq!(view.marked, "selection must survive toggle");
+            assert!(cx.global::<TextProbes>().0.contains_key(if collapsed {
+                "\u{25b8}"
+            } else {
+                "\u{25be}"
+            }));
             assert_eq!(
                 view.collapsed_repos
                     .contains("/fixture/agent-launcher/.git"),
@@ -521,6 +631,6 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     cx.update(|window, cx| {
         window.draw(cx).clear();
     });
-    cx.simulate_click(gpui::point(px(700.), px(500.)), Default::default());
+    cx.simulate_click(point(px(700.), px(500.)), Default::default());
     cx.update(|_, cx| assert!(view.read(cx).menu.page.is_none()));
 }

@@ -5,7 +5,8 @@ It does not link or install Herdr, start the local daemon, stop daemons, spawn a
 local PTY, or emulate a terminal. Herdr's remote bridge may start the named remote
 session. SSH requires an installed POSIX Herdr, noninteractive authentication,
 and an already trusted host key.
-Runtime dependencies are GPUI, `herdr-client`, and `serde_json` for API parameters.
+Runtime dependencies include GPUI, `herdr-client`, `serde_json` for API parameters,
+and `ureq` for background GitHub owner avatar downloads.
 
 ```sh
 cargo run -p herdr-gpui
@@ -55,6 +56,9 @@ Servers without surface-switching support remain usable as single targets.
 - Workspace/worktree sidebar with main-checkout parents, indented linked
   workspaces, local collapse arrows, branch details, and daemon-driven
   filled/hollow activity indicators with client-local unseen-completion tracking.
+- Resizable sidebar with width persisted per local daemon socket, shared across
+  host groups. Local workspace titles show repository owner avatars; remote
+  workspaces use the GitHub fallback mark without resolving remote paths locally.
 - In-app sidebar menu for settings information, keybinds, config reload, update
   information, and detach/reconnect. Settings are read-only for now.
 - Title-only tabs, without an added tab number. Externally created workspaces

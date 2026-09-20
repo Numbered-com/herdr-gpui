@@ -1,6 +1,7 @@
 // objc 0.2's selectors expand a legacy cargo-clippy cfg in the native test adapter.
 #![cfg_attr(feature = "integration-test", allow(unexpected_cfgs))]
 mod app_icon;
+mod avatars;
 mod cli;
 mod connection;
 mod controls;
@@ -9,6 +10,7 @@ mod input;
 mod menu;
 #[cfg(feature = "integration-test")]
 mod performance;
+mod preferences;
 mod sidebar;
 #[cfg(feature = "integration-test")]
 mod smoke;
@@ -90,6 +92,11 @@ struct HerdrWindow {
     menu: menu::MenuState,
     collapsed_repos: std::collections::HashSet<String>,
     wheel: WheelAccumulator,
+    sidebar_width: Option<f32>,
+    sidebar_drag: Option<(f32, f32)>,
+    sidebar_preferences: Option<preferences::Preferences>,
+    sidebar_modified: bool,
+    avatars: Option<avatars::Avatars>,
     #[cfg(feature = "integration-test")]
     input_probe: smoke::InputProbe,
     #[cfg(feature = "integration-test")]
@@ -119,6 +126,16 @@ impl HerdrWindow {
                 timer.timer(Duration::from_millis(16)).await;
                 if this
                     .update(cx, |this, cx| {
+                        if this.avatars.as_mut().is_some_and(|avatars| avatars.poll()) {
+                            cx.notify();
+                        }
+                        if let Some(width) =
+                            this.sidebar_preferences.as_mut().and_then(|p| p.loaded())
+                            && !this.sidebar_modified
+                        {
+                            this.sidebar_width = width;
+                            cx.notify();
+                        }
                         let old_pane = this
                             .live
                             .snapshot
@@ -171,6 +188,11 @@ impl HerdrWindow {
             menu: menu::MenuState::new(cx),
             collapsed_repos: Default::default(),
             wheel: WheelAccumulator::default(),
+            sidebar_width: None,
+            sidebar_drag: None,
+            sidebar_preferences: None,
+            sidebar_modified: false,
+            avatars: None,
             #[cfg(feature = "integration-test")]
             input_probe: smoke::InputProbe::default(),
             #[cfg(feature = "integration-test")]
@@ -192,6 +214,13 @@ impl HerdrWindow {
             }
             return this;
         }
+        this.sidebar_preferences = this.endpoints[0]
+            .connection
+            .target
+            .socket_path()
+            .ok()
+            .map(|path| preferences::Preferences::new(&path));
+        this.avatars = Some(avatars::Avatars::new());
         this.reconnect();
         this
     }
@@ -452,7 +481,7 @@ impl Render for HerdrWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let font = font("Menlo");
         self.cell_width = self.painter.borrow_mut().cell_width(&font, window, cx);
-        let sidebar = self.render_sidebar(cx);
+        let sidebar = self.render_sidebar(window, cx);
         let mut tabs = div()
             .id("tabs")
             .flex()

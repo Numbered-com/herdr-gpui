@@ -191,7 +191,8 @@ On macOS, exact-view AppKit clicks verify host selection and return, disabled
 selection, collapse without navigation or composition loss, agents remaining
 visible, duplicate workspace/pane ID routing, and endpoint-scoped repository
 collapse. A separate key window guards against accidentally targeting global
-focus. Native glyph probes check long host/agent labels at 480px and 360px widths.
+focus. Native glyph probes check long host/agent labels at 480px and 360px window
+widths, plus wider/narrower sidebar preferences and restoration after truncation.
 Independent list offsets are checked through GPUI scroll handles and native
 draws, not physical wheel/trackpad delivery. Routing checks stop at the queued
 navigation target; they do not claim daemon acknowledgement or SSH coverage.
@@ -229,11 +230,32 @@ The live protocol and desktop GUI tests are deliberately ignored in hosted CI:
 they require an explicitly selected Herdr binary, and the GUI test also needs an
 active desktop. Run `just test-live` and `just test-gui` locally as shown above.
 
+## Sidebar Width
+
+Workspace titles show the GitHub organization or owner avatar, resolved from
+the local repository's `origin` remote. Git lookups and avatar downloads run
+in the background, with results shared per owner for the app session. The
+GitHub mark is used while loading or when an avatar is unavailable. No GitHub
+token is needed; avatar requests go to `avatars.githubusercontent.com`.
+Saved-host workspaces use the GitHub fallback mark: their remote paths are never
+looked up on the local filesystem.
+
+Drag the sidebar's right edge to resize it; double-click the divider to restore
+the default width. The terminal resizes automatically. Width is remembered per
+local daemon socket in `$XDG_STATE_HOME/herdr/gpui/local-<socket-hash>.json`, defaulting
+to `~/.local/state/herdr/gpui/`. These logical-pixel preferences are separate
+from the TUI's column-based settings. Narrow windows temporarily limit the
+displayed width without replacing your saved preference.
+Saves run in the background and continue after window close while the app remains
+alive. App exit does not wait for pending writes, so the latest change may be lost.
+The width applies to all host groups in the window; narrow sidebars hide host
+status text to leave room for labels.
+
 ## Next Milestones
 
 - Selection/copy, hyperlink interaction, richer mouse support, and inline IME.
 - Rename/close dialogs and full worktree/agent management.
-- Resizable sidebar, editable settings and bundled fonts.
+- Editable settings and bundled fonts.
 - Optimized terminal painting and graphics support.
 - Signed macOS app packaging and broader remote-platform support.
 
