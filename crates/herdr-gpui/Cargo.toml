@@ -1,0 +1,21 @@
+[package]
+name = "herdr-gpui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+gpui = { workspace = true, features = ["runtime_shaders"] }
+herdr-client.workspace = true
+serde_json.workspace = true
+
+[features]
+integration-test = []
+
+[[test]]
+name = "live_gui"
+required-features = ["integration-test"]

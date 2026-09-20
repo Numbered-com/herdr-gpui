@@ -1,0 +1,111 @@
+# Herdr Native Shell
+
+A minimal macOS GPUI 0.2.2 client for an **already running** local Herdr daemon.
+It does not link, start, stop, or modify Herdr, spawn a PTY, or emulate a terminal.
+Runtime dependencies are GPUI, `herdr-client`, and `serde_json` for API parameters.
+
+```sh
+cargo run -p herdr-gpui
+cargo run -p herdr-gpui -- --session default
+cargo run -p herdr-gpui -- --session my-project --dev
+cargo run -p herdr-gpui -- --socket /absolute/path/to/herdr-client.sock
+```
+
+Without flags, discovery follows `herdr-client`'s environment and release-session
+rules. `--socket` must name the binary **client** socket, not the JSON API socket.
+`--dev` selects the `herdr-dev` config directory. Connection failure is displayed
+in the status bar; Reconnect makes a fresh connection with no input replay.
+
+## Supported
+
+- Workspace/worktree sidebar with branch/path details and live agent status.
+- Click workspace, tab, agent, or a visible split pane to focus through the API.
+- Native File/Terminal menus and creation buttons: **+ New Workspace** in the
+  sidebar and a persistent **+** beside the horizontally scrolling tab strip.
+- Cmd-N creates and focuses a workspace; Cmd-T creates and focuses a tab.
+  Cmd-D splits the focused pane vertically (new pane on the right);
+  Cmd-Shift-D splits horizontally (new pane below). Cmd-Shift-] / Cmd-Shift-[
+  cycles next/previous tab within the current workspace, wrapping at the ends.
+  These shortcuts are native actions, not bytes sent to a terminal.
+- Creation omits `cwd`, labels, environment overrides, and split ratio: the
+  daemon applies its existing defaults and directory policy. Workspace creation
+  supplies the currently focused source workspace when available; tabs and splits
+  target the current workspace/pane explicitly. An empty session can create a
+  workspace without guessing a local path. Nothing is created while disconnected.
+- Vertical mouse-wheel/trackpad scrolling targets the pane under the pointer
+  (inside its content, not borders). Fractional pixel motion accumulates into
+  terminal lines, with bounded per-event work. Popups capture wheel input only
+  within their displayed bounds; input never falls through to a covered pane.
+- Direct semantic cell canvas: named ANSI colors, indexed 256-color palette,
+  RGB, reset foreground/background, reverse, dim, hidden, bold, italic,
+  underline, strikeout, wide-cell skip handling, and cursor shapes.
+- Server popup text surfaces centered above the main surface, with popup input
+  routing while one is active.
+- Native committed text through `EntityInputHandler`, including Unicode and
+  composition. In-progress marked text is shown in the status bar.
+- Enter, Tab/BackTab, Escape, Backspace, arrows, navigation/editing keys,
+  F1-F24, Control characters and modifiers on special keys. Option-printable
+  input follows the macOS keyboard layout, including dead keys.
+- Cmd-V sends semantic Paste; Cmd-Q or window close detaches without killing
+  the daemon or its terminals. Window activation is reported to the daemon.
+- Resize uses the actual terminal canvas bounds and measured Menlo cell width,
+  excluding the native sidebar, tabs and status bar.
+
+Socket I/O belongs to `herdr-client`'s worker. A separate event thread drains all
+ordered events into a bounded latest-state cache. The UI samples changed state
+at most once per 16 ms without blocking. Snapshots invalidate surfaces with a
+different boot/projection revision; input waits for a coherent surface. Reconnect
+replaces the cache, so late events from an old connection cannot affect the UI.
+
+### Scrolling Semantics
+
+Upstream `PaneScrollParams` is exactly `{ "pane_id": string,
+"offset_from_bottom": u64 }`, an absolute scrollback position, not a wheel delta.
+Like the upstream TUI's normal wheel handling, this GUI instead sends semantic
+`ClientPaneInputEvent::Mouse` (`ScrollUp`/`ScrollDown`, pane-relative position,
+modifiers, and line count). The daemon's `apply_scroll` chooses host scrollback,
+alternate-screen behavior, or application mouse reporting using the current
+terminal mode. This avoids racing absolute `pane.scroll` offsets against incoming
+frames and avoids duplicating terminal-mode policy in the GUI. Scrolling does not
+change keyboard focus to the hovered pane. The existing client advertises no pixel
+mouse capability, so the daemon uses the supplied cell-coordinate fallback.
+
+Reference sources (read-only): Herdr's `src/api/schema/{workspaces,tabs,panes}.rs`,
+`src/app/api/workspaces.rs`, `src/client/shell/mouse.rs`, and
+`src/server/pane_input.rs`; Arbor's `crates/arbor-gui/src/app_bootstrap.rs` for
+GPUI native action/menu/keybinding patterns.
+
+## Deliberate Limitations
+
+- macOS first; uses system Menlo and system font fallback, no bundled Nerd Font.
+  Private-use icons may be missing. ANSI colors use a fixed conventional palette,
+  not a synchronized host-terminal theme.
+- No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
+  hyperlink activation, image rendering, or animated blinking.
+- No pane/tab/workspace close or delete actions (deferred until confirmation UI),
+  horizontal wheel handling, command palette, server-owned keybindings, SSH,
+  session picker, automatic reconnect, or daemon lifecycle management.
+- IME uses a minimal transient buffer, not a local editable terminal document;
+  composition appears in the status bar rather than inline. Key releases and
+  physical-key/extended keyboard protocol metadata are not reported.
+- Popups have a basic centered text presentation, without native title/border
+  chrome. Server notifications/clipboard writes are not executed.
+- Rendering is a simple two-pass cell painter, not an optimized damaged-row
+  renderer. Large/high-frequency surfaces can consume significant CPU.
+
+## Build And Test
+
+```sh
+cargo check -p herdr-gpui
+cargo test -p herdr-gpui
+cargo clippy -p herdr-gpui --all-targets -- -D warnings
+cargo fmt -p herdr-gpui -- --check
+```
+
+Requires the normal macOS Rust/Xcode development environment. GPUI's
+`runtime_shaders` feature compiles native Metal shaders at app launch, avoiding
+the separate downloadable build-time Metal compiler. Tests cover wire colors,
+cell modifiers, viewport bounds, semantic key selection, revision coherence,
+creation request parameters, workspace-local tab cycling, wheel accumulation,
+pane-relative hit testing, and popup routing.
+They do not replace an interactive smoke test against a live daemon.

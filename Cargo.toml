@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = ["crates/herdr-protocol", "crates/herdr-client", "crates/herdr-gpui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_qualifications = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[workspace.dependencies]
+herdr-protocol = { path = "crates/herdr-protocol" }
+herdr-client = { path = "crates/herdr-client" }
+gpui = "=0.2.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = { version = "2", default-features = false, features = ["std", "serde"] }
+crossbeam-channel = "0.5"
