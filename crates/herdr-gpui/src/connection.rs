@@ -63,6 +63,13 @@ impl ConnectionBridge {
                     state.daemon_starting();
                 }
             });
+            if let Ok(stream) = &result {
+                let local = crate::daemon::is_local_peer(stream);
+                if let Ok(mut state) = startup_inbox.lock() {
+                    state.local_daemon_peer = local;
+                    state.dirty = true;
+                }
+            }
             if result
                 .as_ref()
                 .is_err_and(crate::daemon::is_missing_installation)
@@ -208,6 +215,7 @@ mod tests {
     fn detach_and_reconnect_fence_old_inboxes() {
         let mut bridge = bridge();
         let old = bridge.inbox.clone();
+        old.lock().unwrap().local_daemon_peer = true;
         old.lock().unwrap().dialog_response = Some(("remove".into(), None));
         bridge.detach(true);
         old.lock().unwrap().apply(ClientEvent::Response {
@@ -221,10 +229,12 @@ mod tests {
         let detached = bridge.take_update().unwrap();
         assert_eq!(detached.status, ConnectionStatus::Detached);
         assert!(!detached.missing_installation);
+        assert!(!detached.local_daemon_peer);
         assert!(detached.error.is_none());
         assert!(detached.dialog_response.is_none());
         assert!(detached.snapshot.is_none() && detached.surface.is_none());
         let old = bridge.inbox.clone();
+        old.lock().unwrap().local_daemon_peer = true;
         let mut options = ConnectOptions::default();
         options.surface_size.cols = 0;
         bridge.reconnect(options, false);
@@ -233,6 +243,7 @@ mod tests {
         });
         let failed = bridge.take_update().unwrap();
         assert_eq!(failed.status, ConnectionStatus::Disconnected);
+        assert!(!failed.local_daemon_peer);
         assert_ne!(failed.error.as_deref(), Some("detached connection"));
         assert!(!Arc::ptr_eq(&old, &bridge.inbox));
     }

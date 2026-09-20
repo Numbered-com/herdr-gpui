@@ -169,7 +169,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         }
                         let before = state.input_probe;
                         window.dispatch_action(Box::new(RunCommand { command: Command::Tab }), cx);
-                        for key in ["down", "enter", "x", "escape"] {
+                        for key in ["down", "down", "enter", "x", "escape"] {
                             window.dispatch_keystroke(
                                 Keystroke {
                                     key: key.into(),
@@ -203,10 +203,10 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
             let _ = handle.update(cx, |_, window, _| window.resize(size(px(width), px(height))));
             timer.timer(Duration::from_millis(100)).await;
             for (keys, action) in [
-                ("enter", menu::WorkspaceAction::Rename),
-                ("down enter", menu::WorkspaceAction::Close),
-                ("down down enter", menu::WorkspaceAction::NewWorktree),
-                ("down down enter", menu::WorkspaceAction::DeleteWorktree),
+                ("down enter", menu::WorkspaceAction::Rename),
+                ("down down enter", menu::WorkspaceAction::Close),
+                ("down down down enter", menu::WorkspaceAction::NewWorktree),
+                ("down down down enter", menu::WorkspaceAction::DeleteWorktree),
             ] {
                 let point = handle.update(cx, |view, window, cx| {
                     view.live.status = ConnectionStatus::Connected;
@@ -236,6 +236,25 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     clicked?;
                     let view = root.downcast::<HerdrWindow>().map_err(|_| "unexpected root")?;
                     if view.read(cx).menu.page != Some(menu::Page::Workspace) { return Err("right click did not open workspace menu".into()); }
+                    view.update(cx, |view, _| -> Result<(), String> {
+                        view.menu.pr.clear();
+                        view.menu.pr.value = Some(pull_request::fixture()?);
+                        Ok(())
+                    })?;
+                    cx.default_global::<sidebar::layout_tests::PaintedProbes>().0.clear();
+                    window.draw(cx).clear();
+                    let probes = &cx.global::<sidebar::layout_tests::PaintedProbes>().0;
+                    for (text, probe) in probes.iter().filter(|(text, _)| text.starts_with("#8 ") || matches!(text.as_str(), "+1730" | "-31")) {
+                        if probe.glyph_text != probe.cached || probe.clipped || probe.glyph_text.is_empty() {
+                            return Err(format!("native PR glyphs clipped: {text} {probe:?}"));
+                        }
+                        if text.starts_with("#8 ") && (!probe.glyph_text.starts_with("#8 Improve") || !probe.glyph_text.ends_with('\u{2026}')) {
+                            return Err(format!("native PR title did not truncate correctly: {probe:?}"));
+                        }
+                    }
+                    if !probes.contains_key("+1730") || !probes.contains_key("-31") || !probes.keys().any(|text| text.starts_with("#8 ")) {
+                        return Err("native PR summary was not painted".into());
+                    }
                     let before = view.read(cx).input_probe;
                     for key in keys.split(' ') {
                         window.dispatch_keystroke(Keystroke::parse(key).map_err(|error| error.to_string())?, cx);
@@ -271,7 +290,34 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                 }
             }
         }
-        eprintln!("SIDEBAR native PASS: 12 Menlo draws, 4 sizes, collapse/expand, menu isolation, right-click dialogs and Unicode fields at 2 sizes");
+        for (width, height) in [(640., 400.), (1200., 780.)] {
+            let _ = handle.update(cx, |_, window, _| window.resize(size(px(width), px(height))));
+            timer.timer(Duration::from_millis(100)).await;
+            for waiting in [false, true] {
+                let result = AnyWindowHandle::from(handle).update(cx, |root, window, cx| -> Result<(), String> {
+                    let view = root.downcast::<HerdrWindow>().map_err(|_| "unexpected root")?;
+                    view.update(cx, |view, cx| view.github_fixture(waiting, window, cx));
+                    cx.default_global::<sidebar::layout_tests::PaintedProbes>().0.clear();
+                    window.draw(cx).clear();
+                    if waiting {
+                        let probe = cx.global::<sidebar::layout_tests::PaintedProbes>().0.get("Code: ABCD-1234").ok_or("GitHub device code not painted")?;
+                        if probe.clipped || probe.glyph_text != "Code: ABCD-1234" { return Err("GitHub device code clipped".into()); }
+                    }
+                    let before = view.read(cx).input_probe;
+                    window.dispatch_keystroke(Keystroke::parse("c").map_err(|e| e.to_string())?, cx);
+                    window.dispatch_keystroke(Keystroke::parse("escape").map_err(|e| e.to_string())?, cx);
+                    let state = view.read(cx);
+                    if state.menu.page.is_some() || state.input_probe.text != before.text || state.input_probe.keys != before.keys || !state.focus.is_focused(window) { return Err("GitHub sign-in leaked input or lost focus".into()); }
+                    Ok(())
+                });
+                if !matches!(result, Ok(Ok(()))) {
+                    eprintln!("SIDEBAR native GitHub auth FAIL: {result:?}");
+                    let _ = cx.update(|cx| cx.quit());
+                    return;
+                }
+            }
+        }
+        eprintln!("SIDEBAR native PASS: 12 Menlo draws, 4 sizes, collapse/expand, menu isolation, PR title/stats glyphs, GitHub auth fixtures, right-click dialogs and Unicode fields at 2 sizes");
         EXIT_CODE.store(0, Ordering::SeqCst);
         let _ = cx.update(|cx| cx.quit());
     })

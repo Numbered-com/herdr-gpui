@@ -9,12 +9,14 @@ mod connection;
 mod controls;
 mod daemon;
 mod dialog_input;
+mod github;
 mod input;
 mod menu;
 mod palette;
 #[cfg(feature = "integration-test")]
 mod performance;
 mod preferences;
+mod pull_request;
 mod search_input;
 mod sidebar;
 #[cfg(feature = "integration-test")]
@@ -143,6 +145,9 @@ impl HerdrWindow {
                                     avatars.request(&workspace.new_workspace_cwd);
                                 }
                             }
+                            cx.notify();
+                        }
+                        if this.update_workspace_pr() {
                             cx.notify();
                         }
                         if this.live.missing_installation && !this.install_warning_shown {

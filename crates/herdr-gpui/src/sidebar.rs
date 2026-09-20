@@ -440,12 +440,12 @@ pub(crate) mod layout_tests;
 pub(crate) mod native_tests;
 
 #[cfg(not(any(test, feature = "integration-test")))]
-fn label_text(text: &str) -> SharedString {
+pub(crate) fn label_text(text: &str) -> SharedString {
     text.to_owned().into()
 }
 
 #[cfg(any(test, feature = "integration-test"))]
-fn label_text(text: &str) -> layout_tests::ProbeText {
+pub(crate) fn label_text(text: &str) -> layout_tests::ProbeText {
     layout_tests::ProbeText(text.to_owned().into())
 }
 

@@ -39,7 +39,7 @@ pub(crate) struct PaintedText {
 
 // Delegate every phase to the production SharedString element. Native checks
 // inspect the glyph stream used by paint, not just the cached backing string.
-pub(super) struct ProbeText(pub SharedString);
+pub(crate) struct ProbeText(pub SharedString);
 
 impl IntoElement for ProbeText {
     type Element = Self;
@@ -514,7 +514,8 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     });
     assert!(cx.debug_bounds("menu-panel").is_some());
     assert!(cx.debug_bounds("menu-reload GUI config").is_some());
-    cx.simulate_keystrokes("down enter");
+    crate::menu::workspace_tests::check_menu_interactions(&view, cx);
+    cx.simulate_keystrokes("down down enter");
     cx.update(|window, cx| {
         window.draw(cx).clear();
         assert!(view.read(cx).menu.page == Some(crate::menu::Page::Keybinds));
@@ -597,9 +598,42 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     });
     assert!(cx.debug_bounds("workspace-menu-Close group").is_some());
     assert!(cx.debug_bounds("workspace-menu-New worktree").is_some());
+    crate::menu::workspace_tests::check_menu_interactions(&view, cx);
+    // PR data is fixture-only: no daemon, local Git, or GitHub calls in layout tests.
+    crate::menu::workspace_tests::check_pr_fences(&view, cx);
+    for width in [320., 800.] {
+        cx.simulate_resize(size(px(width), px(600.)));
+        for state in 0..4 {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.menu.pr.clear();
+                    view.menu.pr.loading = state == 0;
+                    if state >= 2 {
+                        view.menu.pr.value = Some(crate::pull_request::fixture().unwrap());
+                    }
+                    if state == 3 {
+                        view.menu.pr.message = Some("Authentication unavailable".into());
+                    }
+                    cx.notify();
+                });
+                window.draw(cx).clear();
+            });
+            let panel = cx.debug_bounds("menu-panel").unwrap();
+            assert!(panel.left() >= px(0.) && panel.right() <= px(width));
+            assert!(panel.bottom() <= px(600.));
+            assert!(cx.debug_bounds("workspace-pr").is_some());
+            if state >= 2 {
+                let title = cx.debug_bounds("workspace-pr-title").unwrap();
+                assert!(title.left() >= panel.left() && title.right() <= panel.right());
+            }
+        }
+    }
+    cx.update(|_, cx| {
+        view.update(cx, |view, _| view.menu.pr.clear());
+    });
     for dialog in [false, true] {
         if dialog {
-            cx.simulate_keystrokes("enter");
+            cx.simulate_keystrokes("down enter");
         }
         for anchor in [
             point(px(200.), px(400.)),
@@ -614,7 +648,7 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
                 window.draw(cx).clear();
             });
             let panel = cx.debug_bounds("menu-panel").unwrap();
-            assert_eq!(panel.size.width, px(if dialog { 420. } else { 250. }));
+            assert_eq!(panel.size.width, px(if dialog { 420. } else { 340. }));
             let expected = |position: Pixels, extent: Pixels, viewport: Pixels| {
                 if position + extent > viewport {
                     (viewport - extent - px(12.)).round()
@@ -798,6 +832,27 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     let close = cx.debug_bounds("preferences-close").unwrap();
     cx.simulate_click(close.center(), Default::default());
     cx.update(|window, cx| assert!(view.read(cx).focus.is_focused(window)));
+    for width in [320., 800.] {
+        cx.simulate_resize(size(px(width), px(600.)));
+        for waiting in [false, true] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| view.github_fixture(waiting, window, cx));
+                window.draw(cx).clear();
+            });
+            let panel = cx.debug_bounds("menu-panel").unwrap();
+            assert!(panel.left() >= px(0.) && panel.right() <= px(width));
+            assert!(panel.bottom() <= px(600.));
+            if waiting {
+                let code = cx.debug_bounds("github-device-code").unwrap();
+                assert!(code.left() >= panel.left() && code.right() <= panel.right());
+            }
+            cx.simulate_keystrokes("c escape");
+            cx.update(|window, cx| {
+                assert!(view.read(cx).menu.page.is_none());
+                assert!(view.read(cx).focus.is_focused(window));
+            });
+        }
+    }
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.simulate_keystrokes("cmd-,");
     cx.update(|window, cx| window.draw(cx).clear());

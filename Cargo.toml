@@ -26,8 +26,12 @@ unicode-segmentation = "1"
 toml = "0.8"
 toml_edit = "0.22"
 ureq = "3"
+security-framework = "=3.7.0"
+secrecy = { version = "=0.10.3", features = ["serde"] }
+zeroize = "=1.9.0"
 bincode = { version = "2", default-features = false, features = ["std", "serde"] }
 crossbeam-channel = "0.5"
+libc = "0.2"
 cocoa = "0.26"
 objc = "0.2"
 core-graphics = "0.24"

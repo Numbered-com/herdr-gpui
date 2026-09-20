@@ -66,6 +66,22 @@ Config and theme I/O is synchronous; GUI callers should schedule it accordingly.
   cancels; dialog input never reaches terminals or native creation actions.
   Context menus and dialogs anchor to the pointer and clamp to the viewport.
   Rename trims surrounding whitespace and rejects blank labels inline.
+- Workspace menus include a divided, read-only PR summary with Open PR and
+  Refresh (also O/R). A bounded background Git/native HTTPS GraphQL lookup uses an authoritative
+  daemon checkout, validated local identity, and explicit GitHub repository/head.
+  On macOS, all socket modes (including explicit/inherited sockets) require a
+  same-user kernel peer whose executable matches the installed Herdr. Forwarders
+  and unverifiable peers remain unsupported; reconnect rechecks identity. See
+  [PR lookup scope and limits](../../README.md) for authentication and remote limits.
+- Native GitHub device sign-in is available in the sidebar menu and PR section,
+  using `HERDR_GITHUB_OAUTH_CLIENT_ID` (your own Device Flow-enabled OAuth app).
+  Tokens use this app's macOS Keychain entry; `GH_TOKEN` / `GITHUB_TOKEN` override
+  it. Access tokens and retained device/user codes use redacted, zeroizing
+  `secrecy` types; HTTP headers are sensitive and application-owned raw OAuth
+  buffers are wiped. The user code is intentionally exposed for rendering.
+  Library/OS/rendering copies are not guaranteed to be erased. No CLI
+  authentication or plaintext credential files are used. See
+  [setup, cancellation, scopes, and sign-out](../../README.md#native-github-sign-in).
 - Workspace actions retain the clicked ID and boot, revalidate before queueing,
   and reject changed close-group membership. Reconnect clears dialogs. Queue
   errors remain in the dialog; daemon errors appear in the connection status bar.

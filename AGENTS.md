@@ -10,6 +10,9 @@ Engineering guidance for agents working in this repository. Read this alongside
 - Prefer existing standard traits and generics over unnecessarily concrete APIs.
 - Protect protocol compatibility, bounded resource use, and UI responsiveness.
 - Add regression tests for changed behavior and report what was actually verified.
+- Never modify or patch Herdr itself. It is owned by an unrelated external team;
+  sibling Herdr checkouts are read-only references. Propose an upstream PR only
+  when genuinely justified, never make incidental upstream edits for this client.
 
 ## Architecture
 

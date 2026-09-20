@@ -26,6 +26,10 @@ keybind help, GUI and daemon config reload, available-update information, and sa
 detach/reconnect. Escape or clicking outside dismisses it; menu typing never
 reaches the terminal. Update commands are displayed, not executed automatically.
 
+The sidebar menu and workspace context menus open without a highlighted action.
+Hover or use arrow keys to select one: Down starts at the first action, Up at the
+last. Enter only activates a selected action.
+
 Right-click a space to **Rename** it or **Close** it with confirmation. A main
 checkout with multiple spaces in its repository offers **Close group**, which
 terminates the group's terminals but does not delete checkout files or branches.
@@ -33,6 +37,120 @@ Non-linked Git parents also offer **New worktree**: enter a branch or leave it
 blank for the daemon default. Creation uses `HEAD` and focuses the new workspace;
 it does not grant repository trust. Actions target the clicked space, not the
 active one. Text dialogs support Unicode/IME, selection, and Cmd-A/C/X/V.
+
+Below a divider, workspace menus show read-only GitHub PR information: number,
+title, head/base branches, lifecycle, GitHub merge state, review decision, check
+counts, additions/deletions, file count, and update/check times. **Open PR (O)**
+opens the validated HTTPS PR URL; **Refresh (R)** repeats the lookup. Neither
+action sends terminal input. Loading, missing PRs, missing authentication,
+and lookup failures are displayed inline. Failed refreshes retain the previous
+result with an explicit stale warning. Check failures include optional checks;
+the menu does not infer permission or readiness to merge.
+
+This requires local `git` and native GitHub authentication, not `gh`.
+Herdr has no PR/origin
+API. On macOS, PR lookup first verifies the connected socket's kernel-reported
+peer UID and PID: it must run as the GUI user and its executable path must identify
+the same file (device/inode) as the installed Herdr discovered on PATH or the
+standard installation paths. This applies to all connection modes, including
+explicit `--socket` and inherited environment overrides. The GUI asks `workspace.get`
+for the checkout path, verifies its local Git common directory against the
+daemon repository key and its branch against the snapshot, then reads `origin`.
+It only accepts GitHub.com origins and queries GitHub's HTTPS GraphQL API with
+explicit owner, repository, and head branch variables, never an inferred current directory.
+Discovery uses `HERDR_SOCKET_PATH` (JSON socket, converted to its client socket),
+then `HERDR_CLIENT_SOCKET_PATH`; `HERDR_SOCKET` is not used. Peer verification runs
+off the UI thread on the actual connection, not on a second probe socket or a
+menu-time environment value. Reconnect discards the old verification and checks
+the new peer. SSH/socat forwarders, unknown executables, failed peer inspection,
+and non-macOS platforms cannot use local Git for PR lookup. Merely having a socket
+or matching checkout path locally is never sufficient.
+
+This is local process identification, not cryptographic daemon attestation: it
+trusts the user's installed Herdr and local executable/filesystem integrity.
+Custom installations must match the executable discovered by the GUI. A daemon
+still running an executable removed by an upgrade cannot be verified, even if
+its process name is `herdr`; reconnecting the GUI alone cannot fix that. Restart
+such a daemon yourself only when it is safe to interrupt its terminals. The GUI
+never restarts it for PR lookup. No remote checkout mapping is attempted.
+GitHub Enterprise and fork-to-upstream PR discovery are not
+supported; multiple matching PRs are reported as ambiguous rather than guessed.
+
+Lookups run on one background worker with bounded channels, a 15-second
+Git/HTTPS budget, and a 2 MiB output cap per process/HTTP response. HTTP redirects
+are disabled. At most 100 checks are fetched; larger results are explicitly marked
+partial rather than presented as complete. Only the open menu's result
+is cached, with no disk cache or automatic polling. Dismissal, changed workspace
+identity/branch, and reconnect invalidate pending results. An in-flight HTTP call
+may finish within its remaining timeout, but its cancelled result is discarded.
+No Herdr modifications are needed.
+
+### Native GitHub Sign-In
+
+Choose **menu > GitHub sign-in**, or **GitHub sign-in** in a workspace PR section.
+Authentication is available even when repository discovery is blocked. Token
+priority is `GH_TOKEN`, then `GITHUB_TOKEN`, then this app's dedicated macOS
+Keychain entry (service `dev.herdr.gpui.github`, account `github.com`). Empty
+environment values are ignored. A rejected environment token is not silently
+replaced with a saved token. GitHub CLI and Arbor credential files are never read.
+
+For browser sign-in, register your own GitHub **OAuth App**, enable **Device Flow**
+in its settings, and launch the GUI with its public client ID:
+
+```sh
+HERDR_GITHUB_OAUTH_CLIENT_ID=your_oauth_app_client_id just run
+```
+
+There is no bundled OAuth client ID, and Arbor's client ID is not reused. Without
+this setting, **Sign in (S)** explains the required setup; an environment token
+still works without an OAuth application. Finder-launched apps must inherit the
+configuration from their launch environment; a terminal export alone does not
+configure an already-running GUI. No client secret is required or stored.
+
+After choosing **Sign in**, the native panel displays a short code. Choose
+**Open GitHub (O)** explicitly to open `https://github.com/login/device` and enter
+the code. The browser never opens automatically. Background polling respects
+GitHub's interval and `slow_down` responses, expires within 15 minutes, and stops
+on **Cancel (C)**, dismissal, reconnect, denial, or expiry. Each HTTP request has
+a maximum 15-second timeout. Once the UI accepts authorization, the Keychain
+write finishes in the background even if the menu closes. Refresh the workspace
+PR afterward; authentication does not bypass repository/peer verification.
+
+OAuth requests the `repo` scope to include private repository PRs. This is broader
+than the app's read-only API usage; review GitHub's consent screen. For finer
+permissions, supply your own token with access to the target repository and its
+PR/check/status data. Organization SSO policies and API rate limits still apply.
+
+**Remove saved token (D)** deletes only this app's Keychain entry. It does not
+unset process environment tokens or revoke GitHub grants; unset the environment
+and relaunch for a full local sign-out, and revoke grants in GitHub settings if
+desired. Keychain access errors are shown without credential contents. Keychain
+I/O runs off the UI thread, but macOS may require unlocking/approving access and
+its prompt cannot be cancelled by the app's HTTP timeout. No plaintext fallback
+is used. On non-macOS platforms only environment-token authentication is supported.
+
+Application-owned access tokens and OAuth device/user codes use `secrecy` secret
+types: debug output is redacted, serialization is not enabled for secrets, and
+their allocations are zeroized on drop. OAuth responses deserialize directly into
+typed secrets, not generic JSON values. Bounded response buffers, environment and
+Keychain conversion buffers (including invalid UTF-8), and temporary authorization
+text are wiped on drop; HTTP Authorization headers are marked sensitive. Workers
+share ownership of device codes instead of cloning plaintext. Cancellation/expiry
+drop retained secrets, though an in-flight request can retain them until it ends.
+
+This reduces accidental disclosure, not all plaintext copies: the original process
+environment, OS Keychain, JSON parser scratch space, HTTP form serialization,
+HTTP/TLS library buffers, and GPUI text/layout copies of the intentionally displayed
+user code are outside these erasure guarantees. It does not protect against process
+memory inspection or erase secrets contained in terminal output. Public OAuth
+client IDs are not secrets; terminal protocol schemas are unchanged.
+
+Enterprise hosts and fork-to-upstream PR discovery remain unsupported. Native
+authentication cannot recover the repository identity of an unverified socket
+peer, including a daemon whose executable was deleted during a Homebrew upgrade.
+The GUI does not restart that daemon or weaken verification. The implementation
+uses Arbor's device-flow approach as a reference; see
+[`GitHub attribution`](crates/herdr-gpui/GITHUB-NOTICE.md).
 
 Linked spaces also offer **Delete worktree checkout**. The GUI obtains the checkout
 path from the daemon and requires typing `DELETE`. The daemon removes the checkout
@@ -298,6 +416,9 @@ comparison test.
 The native sidebar fixture also right-clicks Git parent/child spaces and opens all four
 workspace dialogs at 640x400 and 1200x780, checking Unicode editing, caret/IME
 bounds, focus restoration, and terminal/action isolation without a daemon.
+It also renders fixture PR summaries at both sizes, verifying native title
+ellipsis and additions/deletions glyphs without contacting GitHub. Headless
+coverage includes 320-pixel windows, loading/empty/stale states, and result fences.
 
 On macOS this also verifies that the running application's native Dock image is
 valid and 1024x1024; a normal unit test checks the embedded PNG header/dimensions.

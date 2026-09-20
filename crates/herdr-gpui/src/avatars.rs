@@ -87,6 +87,10 @@ fn repo_owner(cwd: &str) -> Option<String> {
 }
 
 fn github_owner(remote: &str) -> Option<String> {
+    github_repo(remote).map(|(owner, _)| owner)
+}
+
+pub(crate) fn github_repo(remote: &str) -> Option<(String, String)> {
     let path = [
         "https://github.com/",
         "http://github.com/",
@@ -118,7 +122,7 @@ fn github_owner(remote: &str) -> Option<String> {
     {
         return None;
     }
-    Some(owner.to_ascii_lowercase())
+    Some((owner.to_ascii_lowercase(), repo.to_owned()))
 }
 
 fn fetch_avatar(agent: &ureq::Agent, owner: &str) -> Option<Arc<Image>> {

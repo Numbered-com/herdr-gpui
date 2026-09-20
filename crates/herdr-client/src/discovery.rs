@@ -40,11 +40,18 @@ pub fn session_socket(config_dir: &Path, name: &str) -> io::Result<PathBuf> {
 
 impl ConnectTarget {
     pub fn socket_path(&self) -> io::Result<PathBuf> {
+        self.socket_path_with(|name| env::var_os(name))
+    }
+
+    fn socket_path_with(
+        &self,
+        var: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> io::Result<PathBuf> {
         if let Self::Socket(path) = self {
             return Ok(path.clone());
         }
         if matches!(self, Self::Local) {
-            if let Some(path) = env::var_os("HERDR_SOCKET_PATH") {
+            if let Some(path) = var("HERDR_SOCKET_PATH") {
                 let path = PathBuf::from(path);
                 let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("herdr");
                 return Ok(path
@@ -52,7 +59,7 @@ impl ConnectTarget {
                     .unwrap_or(Path::new(""))
                     .join(format!("{stem}-client.sock")));
             }
-            if let Some(path) = env::var_os("HERDR_CLIENT_SOCKET_PATH") {
+            if let Some(path) = var("HERDR_CLIENT_SOCKET_PATH") {
                 return Ok(path.into());
             }
         }
@@ -63,14 +70,16 @@ impl ConnectTarget {
                 ..
             }
         );
-        let base = env::var_os("XDG_CONFIG_HOME")
+        let base = var("XDG_CONFIG_HOME")
             .map(PathBuf::from)
-            .or_else(|| env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")))
+            .or_else(|| var("HOME").map(|p| PathBuf::from(p).join(".config")))
             .unwrap_or_else(env::temp_dir)
             .join(if development { "herdr-dev" } else { "herdr" });
         let name = match self {
             Self::Session { name, .. } => name.clone(),
-            _ => env::var("HERDR_SESSION").unwrap_or_else(|_| "default".into()),
+            _ => var("HERDR_SESSION")
+                .and_then(|name| name.into_string().ok())
+                .unwrap_or_else(|| "default".into()),
         };
         session_socket(&base, &name)
     }
@@ -80,6 +89,57 @@ impl ConnectTarget {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn inherited_socket_precedence_and_environment_changes() {
+        let resolve = |target: &ConnectTarget, api: Option<&str>, client: Option<&str>| {
+            target
+                .socket_path_with(|name| match name {
+                    "HERDR_SOCKET_PATH" => api.map(Into::into),
+                    "HERDR_CLIENT_SOCKET_PATH" => client.map(Into::into),
+                    "XDG_CONFIG_HOME" => Some("/config".into()),
+                    "HERDR_SESSION" => Some("work".into()),
+                    // HERDR_SOCKET is not a discovery variable.
+                    "HERDR_SOCKET" => Some("/ignored.sock".into()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(
+            resolve(
+                &ConnectTarget::Local,
+                Some("/local/herdr.sock"),
+                Some("/ignored.sock")
+            ),
+            Path::new("/local/herdr-client.sock")
+        );
+        assert_eq!(
+            resolve(&ConnectTarget::Local, None, Some("/forwarded.sock")),
+            Path::new("/forwarded.sock")
+        );
+        assert_eq!(
+            resolve(&ConnectTarget::Local, None, None),
+            Path::new("/config/herdr/sessions/work/herdr-client.sock")
+        );
+        assert_eq!(
+            resolve(
+                &ConnectTarget::Socket("/explicit.sock".into()),
+                Some("/ignored.sock"),
+                None
+            ),
+            Path::new("/explicit.sock")
+        );
+        assert_eq!(
+            resolve(
+                &ConnectTarget::Session {
+                    name: "default".into(),
+                    development: false
+                },
+                Some("/ignored.sock"),
+                None
+            ),
+            Path::new("/config/herdr/herdr-client.sock")
+        );
+    }
     #[test]
     fn sessions_are_contained_and_default_is_not_nested() {
         let root = Path::new("/config/herdr");

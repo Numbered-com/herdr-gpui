@@ -83,6 +83,68 @@ fn executable() -> PathBuf {
         .unwrap_or_else(|| "herdr".into())
 }
 
+/// Inspect the connected peer, not its socket pathname (which may be a tunnel).
+pub(super) fn is_local_peer(stream: &UnixStream) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        peer_matches_executable(stream, &executable())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = stream;
+        false
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn peer_matches_executable(stream: &UnixStream, executable: &Path) -> bool {
+    use std::os::{
+        fd::AsRawFd,
+        unix::{ffi::OsStrExt, fs::MetadataExt},
+    };
+
+    let mut pid: libc::pid_t = 0;
+    let mut size = size_of_val(&pid) as libc::socklen_t;
+    let mut uid = 0;
+    let mut gid = 0;
+    let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: all output pointers reference initialized, writable storage of the
+    // supplied size; the borrowed stream remains open throughout these calls.
+    #[allow(unsafe_code)]
+    let length = unsafe {
+        if libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) != 0
+            || uid != libc::geteuid()
+            || libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_LOCAL,
+                libc::LOCAL_PEERPID,
+                (&mut pid as *mut libc::pid_t).cast(),
+                &mut size,
+            ) != 0
+            || size as usize != size_of_val(&pid)
+            || pid <= 0
+        {
+            return false;
+        }
+        libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32)
+    };
+    if length <= 0 {
+        return false;
+    }
+    let Some(end) = path.iter().position(|byte| *byte == 0) else {
+        return false;
+    };
+    let peer = Path::new(std::ffi::OsStr::from_bytes(&path[..end]));
+    std::fs::metadata(peer)
+        .ok()
+        .zip(std::fs::metadata(executable).ok())
+        .is_some_and(|(peer, expected)| {
+            peer.is_file()
+                && expected.is_file()
+                && (peer.dev(), peer.ino()) == (expected.dev(), expected.ino())
+        })
+}
+
 fn connect_or_start(
     socket: &Path,
     stop: &AtomicBool,
@@ -196,6 +258,29 @@ mod tests {
             true,
         );
         assert!(result.is_ok());
+        drop(listener);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn peer_identity_not_socket_path_determines_locality() {
+        // A proxy's listener has a perfectly valid local socket path too.
+        let path = socket();
+        let listener = UnixListener::bind(&path).unwrap();
+        let target = ConnectTarget::Socket(path.clone());
+        let stream = UnixStream::connect(target.socket_path().unwrap()).unwrap();
+        let (_accepted, _) = listener.accept().unwrap();
+        assert!(peer_matches_executable(
+            &stream,
+            &env::current_exe().unwrap()
+        ));
+        assert!(!peer_matches_executable(&stream, Path::new("/usr/bin/ssh")));
+        assert!(!peer_matches_executable(
+            &stream,
+            Path::new("/nonexistent/herdr")
+        ));
+        assert!(!is_local_peer(&stream));
         drop(listener);
         std::fs::remove_file(path).unwrap();
     }
