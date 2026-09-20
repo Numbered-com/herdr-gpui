@@ -1,5 +1,6 @@
 //! Native event-dispatch + scene-construction benchmark; never connects to a daemon.
 use super::*;
+use anyhow::{Context as _, Result, anyhow, bail};
 use std::time::Instant;
 #[cfg(target_os = "macos")]
 #[path = "performance_native.rs"]
@@ -124,13 +125,13 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
             let prepared = AnyWindowHandle::from(handle).update(cx, |root, window, cx| {
                 if (1..=10).contains(&frame) {
                     root.downcast::<HerdrWindow>()
-                        .map_err(|_| "unexpected root")?
+                        .map_err(|_| anyhow!("unexpected root"))?
                         .update(cx, |view, _| {
                             view.painter.borrow_mut().reset_cache();
                         });
                 }
                 *cx.default_global::<Counts>() = Counts::default();
-                Ok::<_, &str>(
+                Ok::<_, anyhow::Error>(
                     if frame > 110 {
                         window.viewport_size().height.to_f64() / 2.
                     } else {
@@ -151,12 +152,11 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     (frame > 80).then_some(if frame % 20 < 10 { -32 } else { 32 }),
                 )
             {
-                eprintln!("PERF FAIL: {error}");
+                eprintln!("PERF FAIL: {error:#}");
                 std::process::exit(1);
             }
-            let result = AnyWindowHandle::from(handle).update(
-                cx,
-                |root, window, cx| -> Result<(), String> {
+            let result =
+                AnyWindowHandle::from(handle).update(cx, |root, window, cx| -> Result<()> {
                     if frame == 0 {
                         let mut snapshot = sidebar::layout_tests::snapshot(40);
                         let agent = snapshot.agents[0].clone();
@@ -170,7 +170,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                             .collect();
                         root.clone()
                             .downcast::<HerdrWindow>()
-                            .map_err(|_| "unexpected root")?
+                            .map_err(|_| anyhow!("unexpected root"))?
                             .update(cx, |view, cx| {
                                 view.live.snapshot = Some(Arc::new(snapshot));
                                 view.live.surface = Some(Arc::new(surface()));
@@ -187,29 +187,29 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         && (window.mouse_position().x != px(100.)
                             || (window.mouse_position().y.to_f64() - y).abs() > 1.)
                     {
-                        return Err(format!(
+                        bail!(
                             "native hover missed: {:?}, expected y={y}",
                             window.mouse_position()
-                        ));
+                        );
                     }
                     if frame == 89 || frame == 129 {
                         let view = root
                             .clone()
                             .downcast::<HerdrWindow>()
-                            .map_err(|_| "unexpected root")?;
+                            .map_err(|_| anyhow!("unexpected root"))?;
                         let list = usize::from(frame > 110);
                         let offset = view.read(cx).sidebar_scroll[list].offset();
                         eprintln!("PERF native scroll list={list} offset={offset:?}");
                         if offset.y >= px(0.) {
-                            return Err("native scroll did not move workspace list".into());
+                            bail!("native scroll did not move workspace list");
                         }
                     }
                     if counts.glyphs < 6000 || counts.paint_errors != 0 {
-                        return Err(format!("text was not painted: {counts:?}"));
+                        bail!("text was not painted: {counts:?}");
                     }
                     if !uncached {
                         if frame > 20 && (counts.shapes != 0 || counts.metric_shapes != 0) {
-                            return Err(format!("unchanged terminal reshaped: {counts:?}"));
+                            bail!("unchanged terminal reshaped: {counts:?}");
                         }
                         if counts.shapes > 400
                             || counts.paints == 0
@@ -217,7 +217,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                             || counts.decorations != 1677 * counts.paints
                             || counts.glyphs != 6981 * counts.paints
                         {
-                            return Err(format!("terminal deterministic budget: {counts:?}"));
+                            bail!("terminal deterministic budget: {counts:?}");
                         }
                     }
                     if frame == 0 {
@@ -238,21 +238,21 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     if frame == 140 && !uncached {
                         let view = root
                             .downcast::<HerdrWindow>()
-                            .map_err(|_| "unexpected root")?;
+                            .map_err(|_| anyhow!("unexpected root"))?;
                         let verified =
                             view.read(cx).painter.borrow().verify_native_cache(window)?;
                         if verified < 300 {
-                            return Err("insufficient native cache coverage".into());
+                            bail!("insufficient native cache coverage");
                         }
                         eprintln!("PERF native cached/fresh glyph layouts identical: {verified}");
                         // Outside timing: a changed cell and centered popup must use the
                         // same cache without freezing content or reusing absolute positions.
-                        view.update(cx, |view, _| -> Result<(), String> {
+                        view.update(cx, |view, _| -> Result<()> {
                             let surface = Arc::make_mut(
                                 view.live
                                     .surface
                                     .as_mut()
-                                    .ok_or("missing fixture surface")?,
+                                    .context("missing fixture surface")?,
                             );
                             surface.frame.cells[0].fg = 0x02ff55ee;
                             surface.popup = Some(Box::new(ClientShellPopupSurface {
@@ -291,7 +291,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                                 || c.paint_errors != 0
                                 || (redraw == 1 && c.shapes != 0)
                             {
-                                return Err(format!("popup redraw {redraw}: {c:?}"));
+                                bail!("popup redraw {redraw}: {c:?}");
                             }
                         }
                         view.read(cx).painter.borrow().verify_native_cache(window)?;
@@ -300,8 +300,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         );
                     }
                     Ok(())
-                },
-            );
+                });
             if !matches!(result, Ok(Ok(()))) {
                 eprintln!("PERF FAIL: {result:?}");
                 std::process::exit(1);

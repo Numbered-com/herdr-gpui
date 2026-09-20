@@ -231,12 +231,12 @@ mod tests {
                 assert!(view.menu.tab.as_ref().unwrap().pending.is_some());
                 view.live.apply(ClientEvent::CommandRejected {
                     request_id: Some("rename-1".into()),
-                    reason: "Rename rejected".into(),
+                    reason: herdr_client::Error::UnsupportedMethod,
                 });
                 view.poll_tab_rename(window, cx);
                 assert_eq!(
                     view.menu.tab.as_ref().unwrap().error.as_deref(),
-                    Some("Rename rejected")
+                    Some("method not advertised by endpoint")
                 );
                 assert!(view.menu.tab.as_ref().unwrap().pending.is_none());
                 view.menu.tab.as_mut().unwrap().pending = Some("rename-error".into());
@@ -292,7 +292,7 @@ impl Target {
         })
     }
 
-    fn validate(&self, snapshot: &ClientShellSnapshot) -> Result<(), String> {
+    fn validate(&self, snapshot: &ClientShellSnapshot) -> crate::Result<()> {
         if snapshot.boot_id != self.boot
             || !snapshot
                 .workspaces
@@ -303,17 +303,15 @@ impl Target {
                 .iter()
                 .any(|t| t.tab_id == self.tab && t.workspace_id == self.workspace)
         {
-            return Err(
-                "The original tab changed or no longer exists. Cancel and try again.".into(),
-            );
+            return Err(crate::Error::StaleTab);
         }
         Ok(())
     }
 
-    fn rename_params(&self, label: &str) -> Result<Value, String> {
+    fn rename_params(&self, label: &str) -> crate::Result<Value> {
         let label = label.trim();
         if label.is_empty() {
-            return Err("Enter a tab name.".into());
+            return Err(crate::Error::EmptyTabName);
         }
         Ok(json!({"tab_id": self.tab, "label": label}))
     }
@@ -362,25 +360,23 @@ impl HerdrWindow {
         });
     }
 
-    fn validate_tab_target(&self) -> Result<&Target, String> {
+    fn validate_tab_target(&self) -> crate::Result<&Target> {
         if !self.menu_target_current() {
-            return Err(
-                "The selected connection changed or is not ready. Cancel and try again.".into(),
-            );
+            return Err(crate::Error::StaleConnection);
         }
-        let target = &self.menu.tab.as_ref().ok_or("No tab selected.")?.target;
+        let target = &self.menu.tab.as_ref().ok_or(crate::Error::NoTab)?.target;
         target.validate(
             self.live
                 .snapshot
                 .as_ref()
-                .ok_or("Not connected to a daemon.")?,
+                .ok_or(crate::Error::NotConnected)?,
         )?;
         Ok(target)
     }
 
-    fn tab_error(&mut self, error: String, cx: &mut Context<Self>) {
+    fn tab_error(&mut self, error: impl std::fmt::Display, cx: &mut Context<Self>) {
         if let Some(tab) = &mut self.menu.tab {
-            tab.error = Some(error);
+            tab.error = Some(error.to_string());
         }
         cx.notify();
     }
@@ -422,28 +418,26 @@ impl HerdrWindow {
             let target = self.validate_tab_target()?;
             let params = target.rename_params(input.read(cx).text())?;
             if !self.input_ready() {
-                return Err("The connection is not ready. Try again.".into());
+                return Err(crate::Error::ConnectionNotReady);
             }
             let endpoint = &self.endpoints[self.selected_endpoint];
             let handle = endpoint
                 .connection
                 .handle
                 .as_ref()
-                .ok_or("Not connected to a daemon.")?;
+                .ok_or(crate::Error::NotConnected)?;
             let mut inbox = endpoint
                 .connection
                 .inbox
                 .try_lock()
-                .map_err(|_| "Connection is busy. Try again.")?;
+                .map_err(|_| crate::Error::ConnectionBusy)?;
             // Install correlation under the same lock used by the event reducer.
-            let request = handle
-                .request(&target.boot, "tab.rename", params)
-                .map_err(|e| e.to_string())?;
+            let request = handle.request(&target.boot, "tab.rename", params)?;
             inbox.tab_rename = Some(crate::state::TabRenameResult {
                 request: request.clone(),
                 result: None,
             });
-            Ok::<_, String>(request)
+            Ok::<_, crate::Error>(request)
         })();
         match result {
             Ok(request) => {
@@ -463,7 +457,7 @@ impl HerdrWindow {
             return;
         };
         let result = if let Err(error) = self.validate_tab_target() {
-            Some(Err(error))
+            Some(Err(std::sync::Arc::new(error)))
         } else {
             self.live
                 .tab_rename

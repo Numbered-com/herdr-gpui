@@ -257,16 +257,11 @@ impl Preferences {
             });
         Self::start(
             root.map(|root| endpoint_path(&root, socket))
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        "neither XDG_STATE_HOME nor HOME is set",
-                    )
-                }),
+                .ok_or(crate::Error::MissingStateRoot),
         )
     }
 
-    fn start(path: io::Result<PathBuf>) -> Self {
+    fn start(path: crate::Result<PathBuf>) -> Self {
         let (saves, requests) = mpsc::channel();
         let (loaded_tx, loaded) = mpsc::channel();
         let worker = thread::Builder::new()
@@ -349,44 +344,33 @@ fn endpoint_path(root: &Path, socket: &Path) -> PathBuf {
         .join(format!("local-{hash:016x}.json"))
 }
 
-fn read_width(path: &Path) -> io::Result<Option<f32>> {
+fn read_width(path: &Path) -> crate::Result<Option<f32>> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
+        Err(error) => return Err(error.into()),
     };
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-    let object = value.as_object().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "preferences must be an object")
-    })?;
+    let object = value
+        .as_object()
+        .ok_or(crate::Error::PreferencesNotObject)?;
     match object.get("sidebar_width_px") {
         None | Some(serde_json::Value::Null) => Ok(None),
         Some(value) => {
             let width = value.as_f64().map(|width| width as f32);
             match width {
                 Some(width) if width.is_finite() && width > 0.0 => Ok(Some(width)),
-                _ => Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "sidebar_width_px must be finite and positive, or null",
-                )),
+                _ => Err(crate::Error::InvalidStoredWidth),
             }
         }
     }
 }
 
-fn write_width(path: &Path, width: Option<f32>) -> io::Result<()> {
+fn write_width(path: &Path, width: Option<f32>) -> crate::Result<()> {
     if width.is_some_and(|width| !width.is_finite() || width <= 0.0) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "invalid sidebar width",
-        ));
+        return Err(crate::Error::InvalidSidebarWidth);
     }
-    let parent = path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "preferences path has no parent",
-        )
-    })?;
+    let parent = path.parent().ok_or(crate::Error::PreferencesPath)?;
     fs::create_dir_all(parent)?;
     let (temporary, mut file) = loop {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -401,16 +385,16 @@ fn write_width(path: &Path, width: Option<f32>) -> io::Result<()> {
         {
             Ok(file) => break (temporary, file),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         }
     };
-    let result = (|| {
+    let result = (|| -> crate::Result<()> {
         serde_json::to_writer(&mut file, &serde_json::json!({ "sidebar_width_px": width }))?;
         file.write_all(b"\n")?;
-        file.sync_all()
+        Ok(file.sync_all()?)
     })();
     drop(file);
-    let result = result.and_then(|()| fs::rename(&temporary, path));
+    let result = result.and_then(|()| fs::rename(&temporary, path).map_err(crate::Error::from));
     if result.is_err()
         && let Err(error) = fs::remove_file(&temporary)
     {
