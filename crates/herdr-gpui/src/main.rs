@@ -23,6 +23,7 @@ mod state;
 mod terminal;
 mod terminal_painter;
 mod theme_picker;
+mod update_panel;
 mod updater;
 
 use connection::ConnectionBridge;
@@ -103,9 +104,8 @@ impl<T: AsRef<str>> NavigationTarget<T> {
 }
 
 struct HerdrWindow {
-    updater: Option<updater::Updater>,
-    updater_error: Option<String>,
-    update_preview: Option<updater::UpdatePreview>,
+    updater: updater::Updater,
+    update_preview: Option<updater::State>,
     config: config::Config,
     theme: config::Theme,
     endpoints: Vec<endpoint::Endpoint>,
@@ -166,6 +166,17 @@ impl HerdrWindow {
                 timer.timer(Duration::from_millis(16)).await;
                 if this
                     .update_in(cx, |this, window, cx| {
+                        if this.updater.poll() {
+                            match this.updater.commit_restart() {
+                                Ok(true) => {
+                                    cx.quit();
+                                    return;
+                                }
+                                Ok(false) => {}
+                                Err(error) => eprintln!("App update restart failed: {error}"),
+                            }
+                            cx.notify();
+                        }
                         if this.avatars.as_mut().is_some_and(|avatars| avatars.poll()) {
                             cx.notify();
                         }
@@ -222,8 +233,7 @@ impl HerdrWindow {
                 ),
             };
         let mut this = Self {
-            updater: None,
-            updater_error: None,
+            updater: updater::Updater::default(),
             update_preview: None,
             config,
             theme,
@@ -778,23 +788,11 @@ impl Render for HerdrWindow {
                 this.show_install_modal(window, cx);
             }))
             .on_action(cx.listener(|this, _: &CheckForUpdates, window, cx| {
-                if let Some(updater) = &this.updater {
-                    updater.check_for_updates();
-                } else {
-                    let detail = this.updater_error.as_deref().unwrap_or(
-                        "In-app updates require the signed macOS Herdr.app release. Local builds, standalone executables, and Linux installations must be updated manually.",
-                    );
-                    drop(window.prompt(PromptLevel::Info, "In-app updates unavailable", Some(detail), &["OK"], cx));
-                }
+                this.open_app_update(false, window, cx);
+                this.updater.check();
             }))
             .on_action(cx.listener(|this, _: &ShowUpdatePreview, window, cx| {
-                this.update_preview = None;
-                match updater::UpdatePreview::show() {
-                    Ok(preview) => this.update_preview = Some(preview),
-                    Err(error) => {
-                        drop(window.prompt(PromptLevel::Info, "Update preview unavailable", Some(&error), &["OK"], cx));
-                    }
-                }
+                this.open_app_update(true, window, cx);
             }))
             .size_full()
             .relative()
@@ -970,7 +968,16 @@ impl Render for HerdrWindow {
                             .flex_none()
                             .whitespace_nowrap()
                             .text_color(rgb(self.theme.muted))
-                            .child(APP_VERSION),
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgb(self.theme.active)))
+                            .child(if matches!(self.updater.state(), updater::State::Available { .. } | updater::State::Ready { .. }) {
+                                "Update available"
+                            } else {
+                                APP_VERSION
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_app_update(false, window, cx);
+                            })),
                     ),
             )
             .when(self.menu.page.is_some(), |root| {
@@ -994,7 +1001,11 @@ fn main() -> std::process::ExitCode {
 
 fn run() -> std::process::ExitCode {
     use cli::{LaunchMode, LaunchOptions};
-    let LaunchOptions { target, mode } = match LaunchOptions::parse(std::env::args_os().skip(1)) {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if let Some(exit) = updater::run_helper(&args) {
+        return exit;
+    }
+    let LaunchOptions { target, mode } = match LaunchOptions::parse(args) {
         Ok(options) => options,
         Err(error) => {
             eprintln!(
@@ -1181,15 +1192,9 @@ fn run() -> std::process::ExitCode {
                             sidebar_test || performance_test
                         },
                     );
-                    // Native test modes and CLI invocations never initialize Sparkle.
+                    // Native test modes and CLI invocations never start an updater worker.
                     if mode == LaunchMode::Normal {
-                        match updater::Updater::start() {
-                            Ok(updater) => view.updater = updater,
-                            Err(error) => {
-                                eprintln!("App updater unavailable: {error}");
-                                view.updater_error = Some(error);
-                            }
-                        }
+                        view.updater = updater::Updater::start();
                     }
                     view
                 })

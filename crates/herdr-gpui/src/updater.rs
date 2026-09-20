@@ -1,463 +1,427 @@
-//! Optional native updates. Call explicitly from normal GPUI startup, never from
-//! CLI/test startup, and keep the returned controller alive for the app session.
+//! GUI-local update service. Workers own all transport, staging, and process waits.
+mod install;
+mod release;
 
-#[cfg(target_os = "macos")]
-use objc2::{
-    MainThreadOnly, extern_class, msg_send,
-    rc::{Allocated, Retained},
-    runtime::{AnyObject, NSObject},
-    sel,
+use std::{
+    ffi::OsString,
+    process::ExitCode,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, SyncSender},
+    },
+    thread,
+    time::{Duration, Instant},
 };
-#[cfg(target_os = "macos")]
-use objc2_foundation::{NSBundle, NSDictionary, NSError, NSNumber, NSString, ns_string};
 
-// SAFETY: These are NSObject subclasses in the pinned Sparkle 2.10.0 headers.
-// Both APIs require the main thread. Class lookup is fallible and happens only
-// after loading the bundled framework; we never use ClassType::class().
-#[cfg(target_os = "macos")]
-extern_class!(
-    #[allow(unsafe_code)]
-    #[unsafe(super(NSObject))]
-    #[thread_kind = MainThreadOnly]
-    struct SPUStandardUpdaterController;
-);
+const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
-#[cfg(target_os = "macos")]
-extern_class!(
-    #[allow(unsafe_code)]
-    #[unsafe(super(NSObject))]
-    #[thread_kind = MainThreadOnly]
-    struct SPUUpdater;
-);
-
-#[cfg(target_os = "macos")]
-extern_class!(
-    #[allow(unsafe_code)]
-    #[unsafe(super(NSObject))]
-    #[thread_kind = MainThreadOnly]
-    struct SPUStandardUserDriver;
-);
-
-#[cfg(target_os = "macos")]
-extern_class!(
-    #[allow(unsafe_code)]
-    #[unsafe(super(NSObject))]
-    #[thread_kind = MainThreadOnly]
-    struct SUAppcastItem;
-);
-
-#[cfg(target_os = "macos")]
-extern_class!(
-    #[allow(unsafe_code)]
-    #[unsafe(super(NSObject))]
-    #[thread_kind = MainThreadOnly]
-    struct SPUUserUpdateState;
-);
-
-#[cfg(target_os = "macos")]
-fn load_framework(app: &NSBundle) -> Result<Retained<NSBundle>, String> {
-    let directory = app
-        .privateFrameworksPath()
-        .ok_or("App has no private frameworks directory")?;
-    let path = NSString::from_str(&format!("{directory}/Sparkle.framework"));
-    let framework = NSBundle::bundleWithPath(&path)
-        .ok_or_else(|| format!("App is missing a valid framework at {path}"))?;
-    // SAFETY: Callers check the main thread and app identity first. Load only
-    // the fixed-name packaged framework, without search-path fallback or unload.
-    #[allow(unsafe_code)]
-    unsafe { framework.loadAndReturnError() }
-        .map_err(|error| format!("Could not load {path}: {}", error.localizedDescription()))?;
-    Ok(framework)
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum State {
+    Disabled(String),
+    Idle,
+    Checking,
+    Current,
+    Available { version: String },
+    Downloading { received: u64, total: u64 },
+    Ready { version: String },
+    Installing,
+    Cancelling,
+    Error(String),
 }
 
-/// Independent QA UI, with no updater, feed, download, or installation session.
-/// Drop the previous preview before calling `show` again from a menu action.
-pub(super) struct UpdatePreview {
-    #[cfg(target_os = "macos")]
-    driver: Retained<SPUStandardUserDriver>,
-    // Release native objects before the bundle; never unload framework code.
-    #[cfg(target_os = "macos")]
-    _framework: Retained<NSBundle>,
-}
-
-impl UpdatePreview {
-    #[cfg(target_os = "macos")]
-    #[allow(unsafe_code)]
-    pub(super) fn show() -> Result<Self, String> {
-        let _main_thread = objc2::MainThreadMarker::new()
-            .ok_or("Sparkle preview must be shown on the main thread")?;
-        let app = NSBundle::mainBundle();
-        if std::path::Path::new(&app.bundlePath().to_string())
-            .extension()
-            .is_none_or(|extension| extension != "app")
-            || app.bundleIdentifier().as_deref() != Some(ns_string!("so.pen.herdr-gpui"))
-        {
-            return Err("Sparkle preview requires the Herdr.app bundle (so.pen.herdr-gpui); build/run just bundle-updater-preview".into());
-        }
-        let automatic = app.objectForInfoDictionaryKey(ns_string!("SUAllowsAutomaticUpdates"));
-        if !preview_preferences_disabled(automatic.as_deref()) {
-            return Err("Sparkle preview requires SUAllowsAutomaticUpdates to be an NSNumber false in Info.plist so it cannot change updater preferences".into());
-        }
-        let framework = load_framework(&app)
-            .map_err(|error| format!("{error}; build/run just bundle-updater-preview"))?;
-        let version =
-            framework.objectForInfoDictionaryKey(ns_string!("CFBundleShortVersionString"));
-        if version
-            .as_deref()
-            .and_then(|value| value.downcast_ref::<NSString>())
-            != Some(ns_string!("2.10.0"))
-        {
-            return Err("Sparkle QA preview requires exactly Sparkle 2.10.0 for its private state initializer; build/run just bundle-updater-preview".into());
-        }
-        let driver_class = framework
-            .classNamed(ns_string!("SPUStandardUserDriver"))
-            .ok_or("Sparkle.framework is missing SPUStandardUserDriver")?;
-        let item_class = framework
-            .classNamed(ns_string!("SUAppcastItem"))
-            .ok_or("Sparkle.framework is missing SUAppcastItem")?;
-        let state_class = framework
-            .classNamed(ns_string!("SPUUserUpdateState"))
-            .ok_or("Sparkle.framework is missing SPUUserUpdateState")?;
-        for (class, selectors) in [
-            (
-                driver_class,
-                &[
-                    sel!(initWithHostBundle:delegate:),
-                    sel!(showUpdateFoundWithAppcastItem:state:reply:),
-                    sel!(dismissUpdateInstallation),
-                ][..],
-            ),
-            (item_class, &[sel!(initWithDictionary:failureReason:)][..]),
-            (state_class, &[sel!(initWithStage:userInitiated:)][..]),
-        ] {
-            for &selector in selectors {
-                if class.instance_method(selector).is_none() {
-                    return Err(format!(
-                        "Incompatible Sparkle.framework: {class} lacks {selector}"
-                    ));
-                }
-            }
-        }
-
-        let dictionary = preview_dictionary();
-        let mut failure: Option<Retained<NSString>> = None;
-        // SAFETY: Sparkle 2.10.0 SUAppcastItem.h declares this deprecated public
-        // initializer with an autoreleasing NSString**, NOT NSError**. objc2
-        // retains the out value and adopts the alloc/init +1 result.
-        let item: Option<Retained<SUAppcastItem>> = unsafe {
-            let allocated: Allocated<SUAppcastItem> = msg_send![item_class, alloc];
-            msg_send![allocated, initWithDictionary: &*dictionary, failureReason: &mut failure]
-        };
-        let item = item.ok_or_else(|| {
-            format!(
-                "Could not create QA appcast item: {}",
-                failure.map_or_else(
-                    || "no failure reason supplied".into(),
-                    |value| value.to_string()
-                )
-            )
-        })?;
-        // SAFETY: QA ONLY private API, pinned above to Sparkle 2.10.0:
-        // Sparkle/SPUUserUpdateState+Private.h, initWithStage:userInitiated:.
-        // SPUUserUpdateStage is NSInteger; 0 means NotDownloaded. Re-audit this
-        // path when upgrading Sparkle, including SUUpdateAlert/driver behavior.
-        let state: Option<Retained<SPUUserUpdateState>> = unsafe {
-            let allocated: Allocated<SPUUserUpdateState> = msg_send![state_class, alloc];
-            msg_send![allocated, initWithStage: 0_isize, userInitiated: true]
-        };
-        let state = state.ok_or("Sparkle preview state initialization returned nil")?;
-        // SAFETY: Public SPUStandardUserDriver.h initializer accepts nil delegate.
-        // All native objects remain main-thread-only; no SPUUpdater is created.
-        let driver: Option<Retained<SPUStandardUserDriver>> = unsafe {
-            let allocated: Allocated<SPUStandardUserDriver> = msg_send![driver_class, alloc];
-            msg_send![allocated, initWithHostBundle: &*app, delegate: None::<&AnyObject>]
-        };
-        let preview = Self {
-            driver: driver.ok_or("Sparkle preview driver initialization returned nil")?,
-            _framework: framework,
-        };
-        // SUUpdateAlert closes before replying for Install/Skip/Later and window
-        // close. The standard driver then releases its alert. No choice reaches
-        // an updater, persists skipped versions, or starts a download. Only the
-        // native window's normal placement autosave may write defaults.
-        let reply: block2::RcBlock<dyn Fn(isize)> = block2::RcBlock::new(|_| {});
-        // SAFETY: Public SPUUserDriver signature uses NSInteger choice and a
-        // copied block; the alert retains item/state and copies the reply.
-        unsafe {
-            let _: () = msg_send![&*preview.driver,
-                showUpdateFoundWithAppcastItem: &*item, state: &*state, reply: &*reply];
-        }
-        Ok(preview)
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    pub(super) fn show() -> Result<Self, String> {
-        Err("Native Sparkle update preview is available only on macOS".into())
+impl State {
+    fn busy(&self) -> bool {
+        matches!(
+            self,
+            Self::Checking | Self::Downloading { .. } | Self::Installing | Self::Cancelling
+        )
     }
 }
 
-impl Drop for UpdatePreview {
-    fn drop(&mut self) {
-        #[cfg(target_os = "macos")]
-        // SAFETY: Validated public selector on a live main-thread-only driver.
-        // Idempotent even after the user closed the alert; no updater is involved.
-        #[allow(unsafe_code)]
-        unsafe {
-            let _: () = msg_send![&*self.driver, dismissUpdateInstallation];
-        }
-    }
+#[derive(Clone, Copy)]
+enum Operation {
+    Check,
+    Download,
+    Install,
+    Cancel,
 }
 
-#[cfg(target_os = "macos")]
-fn preview_preferences_disabled(value: Option<&AnyObject>) -> bool {
-    value
-        .and_then(|value| value.downcast_ref::<NSNumber>())
-        .is_some_and(|value| !value.as_bool())
+struct Command {
+    generation: u64,
+    operation: Operation,
 }
 
-#[cfg(target_os = "macos")]
-fn preview_dictionary() -> Retained<NSDictionary<NSString, AnyObject>> {
-    let enclosure = NSDictionary::from_slices(
-        &[ns_string!("url"), ns_string!("length")],
-        &[
-            ns_string!("https://example.invalid/Herdr-QA-Preview.zip"),
-            ns_string!("1"),
-        ],
-    );
-    let description = NSDictionary::from_slices(
-        &[ns_string!("content"), ns_string!("format")],
-        &[
-            ns_string!(
-                "QA preview only. Install, Skip, and Later only dismiss this window. No update is checked, downloaded, installed, skipped, or scheduled. Updater preferences are unchanged."
-            ),
-            ns_string!("plain-text"),
-        ],
-    );
-    // Fixed, bounded input with no links or remote release notes. The invalid
-    // enclosure URL supplies the normal Install button, never a Learn More URL.
-    NSDictionary::from_slices(
-        &[
-            ns_string!("sparkle:version"),
-            ns_string!("sparkle:shortVersionString"),
-            ns_string!("enclosure"),
-            ns_string!("description"),
-        ],
-        &[
-            ns_string!("99991231.99").as_ref(),
-            ns_string!("99991231.99 (QA preview)").as_ref(),
-            enclosure.as_ref(),
-            description.as_ref(),
-        ],
-    )
+struct Mailbox {
+    generation: u64,
+    state: State,
+    restart: Option<install::RestartGuard>,
 }
 
 pub(super) struct Updater {
-    #[cfg(target_os = "macos")]
-    controller: Retained<SPUStandardUpdaterController>,
-    #[cfg(target_os = "macos")]
-    updater: Retained<SPUUpdater>,
-    // Drop objects before releasing the bundle. NSBundle release does not unload
-    // executable code, and we must never call unload (including on error paths).
-    #[cfg(target_os = "macos")]
-    _framework: Retained<NSBundle>,
+    state: State,
+    commands: Option<SyncSender<Command>>,
+    cancelled: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
+    mailbox: Arc<Mutex<Option<Mailbox>>>,
+    generation: u64,
+    restart: Option<install::RestartGuard>,
+    committed: bool,
+    next_check: Instant,
+}
+
+impl Default for Updater {
+    fn default() -> Self {
+        Self {
+            state: State::Disabled("In-app updates require a release build with an embedded update verification key. Local builds and test fixtures never check automatically.".into()),
+            commands: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            stopped: Arc::new(AtomicBool::new(false)),
+            mailbox: Arc::new(Mutex::new(None)),
+            generation: 0,
+            restart: None,
+            committed: false,
+            next_check: Instant::now() + CHECK_INTERVAL,
+        }
+    }
 }
 
 impl Updater {
-    /// Local executables and bundles without update configuration opt out.
-    #[cfg(target_os = "macos")]
-    #[allow(unsafe_code)]
-    pub(super) fn start() -> Result<Option<Self>, String> {
-        let _main_thread = objc2::MainThreadMarker::new()
-            .ok_or("Sparkle must be initialized on the main thread")?;
-        let app = NSBundle::mainBundle();
-        if std::path::Path::new(&app.bundlePath().to_string())
-            .extension()
-            .is_none_or(|extension| extension != "app")
-            || app
-                .bundleIdentifier()
-                .as_deref()
-                .map(NSString::to_string)
-                .as_deref()
-                != Some("so.pen.herdr-gpui")
-        {
-            return Ok(None);
+    pub(super) fn start() -> Self {
+        let mut updater = Self::default();
+        let Some(key) = option_env!("HERDR_UPDATE_PUBLIC_KEY") else {
+            return updater;
+        };
+        if release::parse_version(crate::APP_VERSION).is_none() || key.is_empty() {
+            return updater;
         }
-        for key in ["SUFeedURL", "SUPublicEDKey"] {
-            let Some(value) = app.objectForInfoDictionaryKey(&NSString::from_str(key)) else {
-                return Ok(None);
-            };
-            let value = value
-                .downcast_ref::<NSString>()
-                .ok_or_else(|| format!("Sparkle {key} must be a string in the app's Info.plist"))?;
-            if value.to_string().trim().is_empty() {
-                return Ok(None);
+        if release::target().is_none() {
+            updater.state = State::Disabled("No standalone updater is available for this platform. Use your package manager or download a supported release.".into());
+            return updater;
+        }
+        // At most one operation and its cancellation acknowledgement are queued.
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let mailbox = updater.mailbox.clone();
+        let cancelled = updater.cancelled.clone();
+        let stopped = updater.stopped.clone();
+        match thread::Builder::new()
+            .name("herdr-updates".into())
+            .spawn(move || worker(receiver, mailbox, cancelled, stopped, key))
+        {
+            Ok(_) => {
+                updater.commands = Some(sender);
+                updater.state = State::Idle;
+                updater.check();
+            }
+            Err(error) => {
+                updater.state = State::Disabled(format!("Could not start updater: {error}"))
             }
         }
+        updater
+    }
 
-        let framework = load_framework(&app)?;
-        let controller_class = framework
-            .classNamed(&NSString::from_str("SPUStandardUpdaterController"))
-            .ok_or("Sparkle.framework is missing SPUStandardUpdaterController")?;
-        let updater_class = framework
-            .classNamed(&NSString::from_str("SPUUpdater"))
-            .ok_or("Sparkle.framework is missing SPUUpdater")?;
-        for (class, selectors) in [
-            (
-                controller_class,
-                &[
-                    sel!(initWithStartingUpdater:updaterDelegate:userDriverDelegate:),
-                    sel!(updater),
-                    sel!(checkForUpdates:),
-                ][..],
-            ),
-            (
-                updater_class,
-                &[sel!(startUpdater:), sel!(canCheckForUpdates)][..],
-            ),
-        ] {
-            for &selector in selectors {
-                if class.instance_method(selector).is_none() {
-                    return Err(format!(
-                        "Incompatible Sparkle.framework: {class} lacks {selector}"
-                    ));
+    pub(super) fn state(&self) -> &State {
+        &self.state
+    }
+
+    fn send(&mut self, operation: Operation, state: State) {
+        let Some(sender) = &self.commands else { return };
+        if self.state.busy() || self.restart.is_some() {
+            return;
+        }
+        let generation = self.generation.wrapping_add(1);
+        self.cancelled.store(false, Ordering::Release);
+        match sender.try_send(Command {
+            generation,
+            operation,
+        }) {
+            Ok(()) => {
+                self.generation = generation;
+                self.state = state;
+                self.next_check = Instant::now() + CHECK_INTERVAL;
+            }
+            Err(mpsc::TrySendError::Full(_)) => (),
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                self.state = State::Error("Update worker stopped".into());
+            }
+        }
+    }
+
+    pub(super) fn check(&mut self) {
+        if !matches!(self.state, State::Ready { .. }) {
+            self.send(Operation::Check, State::Checking);
+        }
+    }
+
+    pub(super) fn download(&mut self) {
+        if matches!(self.state, State::Available { .. }) {
+            self.send(
+                Operation::Download,
+                State::Downloading {
+                    received: 0,
+                    total: 0,
+                },
+            );
+        }
+    }
+
+    pub(super) fn install(&mut self) {
+        if matches!(self.state, State::Ready { .. }) {
+            self.send(Operation::Install, State::Installing);
+        }
+    }
+
+    pub(super) fn cancel(&mut self) {
+        if self.state.busy() && !matches!(self.state, State::Cancelling) && !self.committed {
+            self.cancelled.store(true, Ordering::Release);
+            let Some(sender) = &self.commands else { return };
+            let generation = self.generation.wrapping_add(1);
+            match sender.try_send(Command {
+                generation,
+                operation: Operation::Cancel,
+            }) {
+                Ok(()) => {
+                    self.generation = generation;
+                    self.restart = None;
+                    self.state = State::Cancelling;
+                }
+                Err(_) => {
+                    self.state =
+                        State::Error("Update worker could not acknowledge cancellation".into())
                 }
             }
         }
+    }
 
-        // SAFETY: Signatures/ownership match Sparkle 2.10.0's public headers.
-        // alloc/init transfer +1 ownership into Retained; the updater getter is
-        // +0 and msg_send retains it. nil delegates are explicitly supported.
-        // MainThreadOnly keeps these objects (and their destruction) on this thread.
-        let (controller, updater) = unsafe {
-            let allocated: Allocated<SPUStandardUpdaterController> =
-                msg_send![controller_class, alloc];
-            let controller: Option<Retained<SPUStandardUpdaterController>> = msg_send![
-                allocated, initWithStartingUpdater: false,
-                updaterDelegate: None::<&AnyObject>, userDriverDelegate: None::<&AnyObject>
-            ];
-            let controller = controller.ok_or("Sparkle controller initialization returned nil")?;
-            let updater: Option<Retained<SPUUpdater>> = msg_send![&*controller, updater];
-            (
-                controller,
-                updater.ok_or("Sparkle controller returned no updater")?,
-            )
+    pub(super) fn poll(&mut self) -> bool {
+        // Scheduling shares the UI-side generation/cancellation path with manual checks.
+        let scheduled = if self.commands.is_some() && Instant::now() >= self.next_check {
+            let before = self.state.clone();
+            self.check();
+            before != self.state
+        } else {
+            false
         };
-        // SAFETY: startUpdater: takes an autoreleasing NSError** and returns BOOL.
-        // objc2 handles retaining the error written back through this argument.
-        // Start directly to return configuration errors rather than the standard
-        // controller's delayed modal alert. Sparkle schedules work asynchronously.
-        let mut error: Option<Retained<NSError>> = None;
-        let started: bool = unsafe { msg_send![&*updater, startUpdater: &mut error] };
-        if !started {
-            return Err(format!(
-                "Could not start Sparkle: {}",
-                error.map_or_else(
-                    || "no NSError was supplied".to_owned(),
-                    |error| error.localizedDescription().to_string(),
-                )
-            ));
+        let Ok(mut mailbox) = self.mailbox.try_lock() else {
+            return scheduled;
+        };
+        let Some(message) = mailbox.take() else {
+            return scheduled;
+        };
+        if message.generation != self.generation {
+            return scheduled;
         }
-        Ok(Some(Self {
-            controller,
-            updater,
-            _framework: framework,
-        }))
+        let changed = self.state != message.state || message.restart.is_some();
+        self.state = message.state;
+        self.restart = message.restart;
+        changed || scheduled
     }
 
-    #[cfg(not(target_os = "macos"))]
-    pub(super) fn start() -> Result<Option<Self>, String> {
-        Ok(None)
-    }
-
-    pub(super) fn can_check_for_updates(&self) -> bool {
-        #[cfg(target_os = "macos")]
-        {
-            // SAFETY: Validated Sparkle getter returning BOOL; MainThreadOnly
-            // and retained ownership ensure a live receiver on the main thread.
-            #[allow(unsafe_code)]
-            unsafe {
-                msg_send![&*self.updater, canCheckForUpdates]
-            }
+    pub(super) fn commit_restart(&mut self) -> Result<bool, String> {
+        if self.committed {
+            return Ok(false);
         }
-        #[cfg(not(target_os = "macos"))]
-        false
-    }
-
-    pub(super) fn check_for_updates(&self) {
-        #[cfg(target_os = "macos")]
-        if self.can_check_for_updates() {
-            // SAFETY: The standard controller accepts a nil sender. The retained
-            // MainThreadOnly receiver is live, and readiness was just checked.
-            #[allow(unsafe_code)]
-            unsafe {
-                let _: () = msg_send![&*self.controller, checkForUpdates: None::<&AnyObject>];
-            }
+        let Some(guard) = &mut self.restart else {
+            return Ok(false);
+        };
+        if self.cancelled.load(Ordering::Acquire) {
+            self.restart = None;
+            self.state = State::Idle;
+            return Ok(false);
         }
+        if let Err(error) = guard.commit() {
+            self.state = State::Error(error.clone());
+            self.restart = None;
+            return Err(error);
+        }
+        self.committed = true;
+        Ok(true)
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+impl Drop for Updater {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::Release);
+        self.cancelled.store(true, Ordering::Release);
+        // Disconnect, never join. Workers clean up only their own private staging.
+        self.commands = None;
+    }
+}
+
+fn publish(
+    mailbox: &Mutex<Option<Mailbox>>,
+    generation: u64,
+    state: State,
+    restart: Option<install::RestartGuard>,
+) {
+    if let Ok(mut slot) = mailbox.lock() {
+        *slot = Some(Mailbox {
+            generation,
+            state,
+            restart,
+        });
+    }
+}
+
+fn worker(
+    commands: Receiver<Command>,
+    mailbox: Arc<Mutex<Option<Mailbox>>>,
+    cancelled: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
+    key: &'static str,
+) {
+    let mut offer: Option<release::Offer> = None;
+    let mut prepared = None;
+    while let Ok(command) = commands.recv() {
+        if stopped.load(Ordering::Acquire) {
+            break;
+        }
+        let generation = command.generation;
+        let result: Result<State, String> = match command.operation {
+            Operation::Check => {
+                publish(&mailbox, generation, State::Checking, None);
+                release::check(crate::APP_VERSION, key, &cancelled).map(|found| {
+                    offer = found;
+                    match &offer {
+                        Some(offer) => State::Available {
+                            version: offer.manifest.version.clone(),
+                        },
+                        None => State::Current,
+                    }
+                })
+            }
+            Operation::Download => match &offer {
+                Some(offer) => install::prepare(offer, &cancelled, |received, total| {
+                    publish(
+                        &mailbox,
+                        generation,
+                        State::Downloading { received, total },
+                        None,
+                    );
+                })
+                .map(|candidate| {
+                    prepared = Some(candidate);
+                    State::Ready {
+                        version: offer.manifest.version.clone(),
+                    }
+                }),
+                None => Err("Check for a release before downloading".into()),
+            },
+            Operation::Install => match prepared.take() {
+                Some(candidate) => match install::install_and_restart(candidate, &cancelled) {
+                    Ok(guard) => {
+                        publish(&mailbox, generation, State::Installing, Some(guard));
+                        // Keep receiving commands: cancellation/commit failure may leave
+                        // this app alive even after the helper becomes ready.
+                        continue;
+                    }
+                    Err(error) => Err(error),
+                },
+                None => Err("Download and verify an update before installing".into()),
+            },
+            Operation::Cancel => {
+                prepared = None;
+                Ok(State::Idle)
+            }
+        };
+        if stopped.load(Ordering::Acquire) {
+            break;
+        }
+        let state = if cancelled.load(Ordering::Acquire) {
+            prepared = None;
+            State::Idle
+        } else {
+            result.unwrap_or_else(State::Error)
+        };
+        publish(&mailbox, generation, state, None);
+    }
+}
+
+pub(super) fn run_helper(args: &[OsString]) -> Option<ExitCode> {
+    install::run_helper(args)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
     #[test]
-    fn preview_requires_explicit_numeric_false() {
-        assert!(!preview_preferences_disabled(None));
-        assert!(!preview_preferences_disabled(Some(ns_string!("false"))));
-        assert!(!preview_preferences_disabled(Some(&NSNumber::new_bool(
-            true
-        ))));
-        assert!(preview_preferences_disabled(Some(&NSNumber::new_bool(
-            false
-        ))));
+    fn disabled_and_preview_services_never_queue_work() {
+        let mut updater = Updater::default();
+        let initial = updater.state.clone();
+        updater.check();
+        updater.download();
+        updater.install();
+        updater.cancel();
+        assert_eq!(updater.state, initial);
+        assert!(!updater.poll());
+        assert!(!updater.commit_restart().unwrap());
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
-    fn preview_dictionary_is_bounded_and_has_only_inline_plain_text() {
-        let dictionary = preview_dictionary();
-        assert_eq!(dictionary.count(), 4);
-        for (key, expected) in [
-            ("sparkle:version", "99991231.99"),
-            ("sparkle:shortVersionString", "99991231.99 (QA preview)"),
-        ] {
-            let value = dictionary.objectForKey(&NSString::from_str(key)).unwrap();
-            assert_eq!(
-                value.downcast_ref::<NSString>().unwrap().to_string(),
-                expected
-            );
-        }
-        let enclosure = dictionary.objectForKey(ns_string!("enclosure")).unwrap();
-        let enclosure = enclosure
-            .downcast_ref::<NSDictionary<AnyObject, AnyObject>>()
-            .unwrap();
-        assert_eq!(enclosure.count(), 2);
-        let url = enclosure.objectForKey(ns_string!("url")).unwrap();
-        assert_eq!(
-            url.downcast_ref::<NSString>().unwrap(),
-            ns_string!("https://example.invalid/Herdr-QA-Preview.zip")
+    fn single_operation_and_generation_fence_keep_old_progress_out() {
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let mut updater = Updater::default();
+        updater.commands = Some(sender);
+        updater.state = State::Idle;
+        updater.check();
+        updater.check();
+        let command = receiver.try_recv().unwrap();
+        assert!(receiver.try_recv().is_err());
+        publish(
+            &updater.mailbox,
+            command.generation.wrapping_sub(1),
+            State::Current,
+            None,
         );
-        let description = dictionary.objectForKey(ns_string!("description")).unwrap();
-        let description = description
-            .downcast_ref::<NSDictionary<AnyObject, AnyObject>>()
-            .unwrap();
-        assert_eq!(description.count(), 2);
-        let format = description.objectForKey(ns_string!("format")).unwrap();
-        assert_eq!(
-            format.downcast_ref::<NSString>().unwrap(),
-            ns_string!("plain-text")
+        assert!(!updater.poll());
+        assert_eq!(updater.state, State::Checking);
+        updater.cancel();
+        assert!(updater.cancelled.load(Ordering::Acquire));
+        publish(
+            &updater.mailbox,
+            command.generation,
+            State::Ready {
+                version: "20260920.01".into(),
+            },
+            None,
         );
-        let content = description.objectForKey(ns_string!("content")).unwrap();
-        let content = content.downcast_ref::<NSString>().unwrap().to_string();
-        assert!(content.contains("Install, Skip, and Later only dismiss"));
-        assert!(content.len() < 512);
-        assert!(!content.contains("https://"));
-        for key in [
-            "sparkle:releaseNotesLink",
-            "sparkle:fullReleaseNotesLink",
-            "link",
-        ] {
-            assert!(dictionary.objectForKey(&NSString::from_str(key)).is_none());
-        }
+        assert!(
+            !updater.poll(),
+            "cancel fences an already-published completion"
+        );
+        assert_eq!(updater.state, State::Cancelling);
+        let cancellation = receiver.try_recv().unwrap();
+        assert!(matches!(cancellation.operation, Operation::Cancel));
+        publish(&updater.mailbox, cancellation.generation, State::Idle, None);
+        assert!(updater.poll());
+        updater.check();
+        assert!(!updater.cancelled.load(Ordering::Acquire));
+        assert_ne!(receiver.try_recv().unwrap().generation, command.generation);
+    }
+
+    #[test]
+    fn periodic_checks_cannot_reset_active_cancellation() {
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let mut updater = Updater::default();
+        updater.commands = Some(sender);
+        updater.state = State::Idle;
+        updater.next_check = Instant::now();
+        assert!(updater.poll());
+        assert!(matches!(
+            receiver.try_recv().unwrap().operation,
+            Operation::Check
+        ));
+        updater.cancel();
+        updater.next_check = Instant::now();
+        assert!(!updater.poll());
+        assert!(updater.cancelled.load(Ordering::Acquire));
+        assert_eq!(updater.state, State::Cancelling);
+        assert!(matches!(
+            receiver.try_recv().unwrap().operation,
+            Operation::Cancel
+        ));
+        assert!(receiver.try_recv().is_err());
     }
 }

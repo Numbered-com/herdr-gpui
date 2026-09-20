@@ -54,17 +54,6 @@ bundle:
     cp assets/icons/Herdr.icns target/release/Herdr.app/Contents/Resources/Herdr.icns
     plutil -lint target/release/Herdr.app/Contents/Info.plist
 
-# Keyless native updater preview; no feed, real update checks, or installation.
-bundle-updater-preview: bundle
-    #!/usr/bin/env bash
-    set -euo pipefail
-    work="$(mktemp -d)"
-    trap 'rm -rf "$work"' EXIT
-    bash scripts/fetch-sparkle.sh "$work/sparkle"
-    mkdir -p target/release/Herdr.app/Contents/Frameworks
-    ditto "$work/sparkle/Sparkle.framework" target/release/Herdr.app/Contents/Frameworks/Sparkle.framework
-    cp "$work/sparkle/LICENSE" target/release/Herdr.app/Contents/Resources/Sparkle-LICENSE
-
 # Link the actual optimized application and exercise its CLI without a desktop.
 test-build: build-release
     cargo test --locked --release -p herdr-gpui --test cli

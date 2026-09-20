@@ -70,21 +70,26 @@ executables; non-tag workflow builds use `00000000.00`, matching their packaging
 
 ### App Updates
 
-Signed macOS release bundles use Sparkle to check for new releases in the background
-and offer a native update window. Choose **Install Update** to download the verified
-update and relaunch Herdr; installation is never silent. **Herdr > Check for Updates...**
-checks on demand. Updating the GUI leaves the daemon and its terminal sessions running.
+The Rust GitHub updater uses signed archive manifests and a shared in-app GPUI
+panel. Open **app updates** in the sidebar menu or choose **Herdr > Check for
+Updates...** to check on demand. Background offers do not steal focus: the version
+label becomes **Update available**. Choose **Download**, then explicitly approve
+**Install and Restart** after verification. Closing the panel does not cancel a
+download or an approved restart; use **Cancel** to request cancellation. Updating
+the GUI leaves the daemon and its terminal sessions running.
+
+The updater requires an embedded release version and public signing key. Local
+builds and test modes do not start an update worker. Supported update targets are
+macOS app bundles and user-owned Linux executables under `HOME` on x86_64/aarch64
+GNU systems. This Linux updater scope does not imply full Linux app support or
+package-manager integration. Disabled installations offer a manual releases link.
 The first updater-enabled release must be installed manually.
 
-Local builds and standalone executables do not initialize the updater. Sparkle is
-macOS-only; Linux would need a separate updater appropriate to its package format.
-There is no Linux auto-update implementation in this repository.
-
-**QA > Show app update available** previews Sparkle's actual update window without
-checking, downloading, or installing anything. All preview choices just close it.
-For a keyless local preview, run `just bundle-updater-preview`, then
-`open target/release/Herdr.app` and choose that QA entry. Bare `cargo run` builds
-explain that the preview requires the bundled framework.
+**QA > Show app update available**, or **preview app update** in the sidebar menu,
+opens the same panel with synthetic release `99991231.99`. **Download** simulates
+the verified/ready state; **Install and Restart** only dismisses the preview.
+Preview actions never check, download, install, quit, or change real updater state.
+No framework, signing key, or special bundle is needed: use `just run`.
 
 Release maintainers must configure the update signing keys before publishing;
 see [App Updates](docs/updating.md) for setup and required native update testing.

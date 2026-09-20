@@ -25,11 +25,22 @@ without input replay. Detach pauses retries for that endpoint until Reconnect.
 The status dot pulses amber during local daemon startup, is green when connected,
 and red otherwise.
 
-Signed macOS app bundles load the bundled Sparkle framework through `objc2` for
-background update offers, verified installation, and relaunch. **Herdr > Check for
-Updates...** checks manually; **QA > Show app update available** shows a non-installing
-native preview. Standalone/local builds and native test modes never initialize the
-updater. Sparkle does not support Linux. See [update setup and QA](../../docs/updating.md).
+The Rust GitHub updater verifies signed archive manifests and presents a shared
+GPUI panel through **app updates** in the sidebar menu or **Herdr > Check for
+Updates...**. Background offers change the status version label without taking
+focus. Download and **Install and Restart** are separate approvals; closing the
+panel does not cancel work. Explicit **Cancel** requests cancellation.
+The existing UI timer polls the updater mailbox; workers own blocking work, and
+the restart helper is dispatched before CLI parsing or GPUI startup.
+
+Only normal launches with a release version and embedded public signing key start
+the service. Test fixtures use a disabled, worker-free updater. Update targets are
+macOS app bundles and user-owned Linux executables under `HOME` on x86_64/aarch64
+GNU systems, not arbitrary packages or a claim of full Linux app support.
+**QA > Show app update available** and the sidebar's **preview app update** use
+independent synthetic state: Download becomes Ready and Install and Restart only
+dismisses the panel. No preview action reaches the updater service or quits.
+See [update setup and QA](../../docs/updating.md).
 
 Spaces lists Local first, then saved hosts in the upstream catalog's order.
 Enabled hosts connect in the background with inactive terminal surfaces; disabled

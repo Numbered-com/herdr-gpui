@@ -320,8 +320,7 @@ fn multi_host_rows_scope_duplicate_ids_and_keep_agents_when_host_collapses(
 #[cfg(test)]
 pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>) -> HerdrWindow {
     HerdrWindow {
-        updater: None,
-        updater_error: None,
+        updater: crate::updater::Updater::default(),
         update_preview: None,
         config: Default::default(),
         theme: Default::default(),
@@ -988,25 +987,83 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     cx.simulate_keystrokes("escape");
     cx.update(|_, cx| assert!(view.read(cx).menu.page.is_none()));
 
-    // Unavailable updaters report their own errors without changing connection state.
+    // Fixtures have no updater worker, and unavailable updates use the shared panel.
+    let updater_before = cx.update(|_, cx| view.read(cx).updater.state().clone());
+    assert!(matches!(updater_before, crate::updater::State::Disabled(_)));
     cx.update(|window, cx| window.dispatch_action(Box::new(crate::CheckForUpdates), cx));
-    assert_eq!(
-        cx.pending_prompt().map(|(message, _)| message),
-        Some("In-app updates unavailable".into())
-    );
-    cx.simulate_prompt_answer("Ok");
-    view.update(cx, |view, _| {
-        view.updater_error = Some("Missing bundled Sparkle framework".into());
+    assert!(cx.pending_prompt().is_none());
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        assert!(view.read(cx).menu.page == Some(crate::menu::Page::AppUpdate));
+        assert_eq!(view.read(cx).live.snapshot, before_install);
     });
-    cx.update(|window, cx| window.dispatch_action(Box::new(crate::CheckForUpdates), cx));
+    assert!(cx.debug_bounds("app-update-action").is_none());
+    let releases = cx.debug_bounds("app-update-releases").unwrap();
+    cx.simulate_click(releases.center(), Default::default());
     assert_eq!(
-        cx.pending_prompt(),
-        Some((
-            "In-app updates unavailable".into(),
-            "Missing bundled Sparkle framework".into(),
-        ))
+        cx.opened_url().as_deref(),
+        Some("https://github.com/penso/herdr-gpui/releases")
     );
-    cx.simulate_prompt_answer("Ok");
+    cx.simulate_keystrokes("escape");
+    for width in [320., 480., 800.] {
+        cx.simulate_resize(size(px(width), px(600.)));
+        cx.update(|window, cx| window.dispatch_action(Box::new(crate::ShowUpdatePreview), cx));
+        for ready in [false, true] {
+            cx.update(|window, cx| {
+                window.draw(cx).clear();
+                let view = view.read(cx);
+                assert_eq!(view.updater.state(), &updater_before);
+                assert_eq!(view.live.snapshot, before_install);
+                assert_eq!(
+                    view.update_preview,
+                    Some(if ready {
+                        crate::updater::State::Ready {
+                            version: "99991231.99".into(),
+                        }
+                    } else {
+                        crate::updater::State::Available {
+                            version: "99991231.99".into(),
+                        }
+                    })
+                );
+            });
+            let panel = cx.debug_bounds("app-update-panel").unwrap();
+            let action = cx.debug_bounds("app-update-action").unwrap();
+            assert!(panel.left() >= px(0.) && panel.right() <= px(width));
+            assert!(action.left() >= panel.left() && action.right() <= panel.right());
+            assert!(action.top() >= panel.top() && action.bottom() <= panel.bottom());
+            cx.simulate_click(action.center(), Default::default());
+        }
+        cx.update(|_, cx| {
+            let view = view.read(cx);
+            assert!(view.menu.page.is_none());
+            assert!(view.update_preview.is_none());
+            assert_eq!(view.updater.state(), &updater_before);
+        });
+        assert!(cx.pending_prompt().is_none());
+    }
+    // The same panel is reachable without native menus, including on Linux.
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| view.open_menu(window, cx));
+        window.draw(cx).clear();
+    });
+    let updates = cx.debug_bounds("menu-app updates").unwrap();
+    assert!(cx.debug_bounds("menu-preview app update").is_some());
+    cx.simulate_click(updates.center(), Default::default());
+    cx.update(|_, cx| {
+        assert!(view.read(cx).menu.page == Some(crate::menu::Page::AppUpdate));
+        assert!(view.read(cx).update_preview.is_none());
+    });
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.dispatch_action(Box::new(crate::ShowUpdatePreview), cx));
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| {
+        let view = view.read(cx);
+        assert!(view.menu.page.is_none());
+        assert!(view.update_preview.is_none());
+        assert!(view.focus.is_focused(window));
+        assert_eq!(view.updater.state(), &updater_before);
+    });
     // Exercise the real status bar without starting a daemon connection.
     view.update(cx, |view, cx| {
         view.marked = "composition ".repeat(100);

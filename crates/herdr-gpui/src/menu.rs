@@ -11,6 +11,7 @@ pub(super) enum Page {
     Palette,
     ConfirmClose,
     Update,
+    AppUpdate,
     Install,
 }
 
@@ -113,6 +114,7 @@ impl HerdrWindow {
 
     pub(super) fn dismiss_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu.page = None;
+        self.update_preview = None;
         self.menu.close = None;
         window.focus(&self.focus);
         cx.notify();
@@ -134,6 +136,8 @@ impl HerdrWindow {
             "commands",
             "workspaces",
             "reload GUI config",
+            "app updates",
+            "preview app update",
         ];
         if self.live.status.is_connected() {
             items.push("reload daemon config");
@@ -168,6 +172,8 @@ impl HerdrWindow {
             "commands" => self.open_palette(false, window, cx),
             "workspaces" => self.open_palette(true, window, cx),
             "update ready" => self.menu.page = Some(Page::Update),
+            "app updates" => self.open_app_update(false, window, cx),
+            "preview app update" => self.open_app_update(true, window, cx),
             "reload GUI config" => self.reload_gui_config(window, cx),
             "reload daemon config" => {
                 if let (Some(handle), Some(snapshot)) = (
@@ -287,6 +293,8 @@ impl HerdrWindow {
             panel = panel.child(self.render_close_confirmation(cx));
         } else if page == Page::Preferences {
             panel = panel.child(self.render_preferences(cx));
+        } else if page == Page::AppUpdate {
+            panel = panel.child(self.render_app_update(cx));
         } else if page == Page::Install {
             panel = panel
                 .child(div().p(px(8.)).child("Herdr must be installed"))
