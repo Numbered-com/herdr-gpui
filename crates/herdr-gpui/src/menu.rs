@@ -87,6 +87,7 @@ impl HerdrWindow {
                     handle.disconnect();
                 }
                 // Isolate any final events from the detached connection.
+                self.set_surface(None, cx);
                 self.live = LiveState::default();
                 self.live.status = "Detached (daemon still running)".into();
                 self.live.set_outer_focus(self.active);
@@ -96,7 +97,7 @@ impl HerdrWindow {
                 self.dismiss_menu(window, cx);
             }
             "reconnect" => {
-                self.reconnect();
+                self.reconnect(cx);
                 self.dismiss_menu(window, cx);
             }
             _ => {}
