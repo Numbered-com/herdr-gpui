@@ -9,6 +9,13 @@ panes, without running another terminal emulator or wrapping the TUI.
 
 The compact sidebar uses single-line labels, muted branches, status dots, and
 independently scrolling spaces and agents sections, following Herdr's TUI.
+Linked workspaces are nested beneath the main checkout using Herdr's repository
+group metadata, not branch-name guesses. Groups are expanded; a child without an
+open parent stays visible at the top level. Tabs show titles without added numbers.
+
+Space and agent indicators use Herdr's reported activity: filled blue for working,
+blocked, or done, hollow blue for idle, and muted for unknown, matching the TUI's
+filled/empty distinction. This is daemon-reported state, not guessed from output.
 
 This is an initial working macOS client, not complete TUI feature parity.
 Herdr owns terminal processes and session state; closing this app only detaches.
@@ -20,16 +27,48 @@ Install Rust/rustup and the macOS Xcode command-line tools. The repository pins
 Rust 1.96.1 and GPUI 0.2.2. Start Herdr normally, then:
 
 ```sh
-cargo run --locked -p herdr-gpui
+cargo run --locked --release -p herdr-gpui
 # Or, with just installed:
 just run
 just run --session my-project
 just run --socket /absolute/path/to/herdr-client.sock
 ```
 
+`just run` uses the optimized release build for interactive performance. Use
+`just run-debug` when debugging; unoptimized GPUI scene construction is notably
+slower with a dense terminal on screen.
+
 The explicit socket must be the binary **client** socket, not `herdr.sock`.
 The app never installs, starts, stops, or upgrades your personal daemon. A failed
-connection appears in the status bar; use Reconnect after starting the daemon.
+connection appears in the compact single-row status bar with a red dot (green
+when connected). Use Terminal > Reconnect after starting the daemon; there is no
+permanent reconnect button.
+
+New workspaces created through Herdr appear automatically while connected.
+Revisioned snapshots are pushed by the daemon and applied by the GUI without a
+manual refresh. The native integration test checks creation by a separate client,
+including preservation of the GUI's current selection and connection. Observed
+latency is tens of milliseconds locally, not an instant-delivery guarantee.
+
+### macOS App Bundle
+
+`cargo run` and `just run` use an embedded original Herdr Dock icon, with no runtime
+asset paths or image-generation processes. To create a local Finder-launchable app:
+
+```sh
+just bundle
+open target/release/Herdr.app
+```
+
+The bundle is named **Herdr** and contains only the release GUI executable,
+`Info.plist`, and its native `.icns` icon. It connects to your existing daemon;
+it does not bundle, install, start, or stop a daemon. This is a local unsigned,
+unnotarized bundle, not a distribution/signing pipeline. Its version metadata lives
+in `assets/macos/Info.plist` and should be updated for releases.
+
+The original charcoal/blue connected-H artwork and provenance are in
+[`assets/icons`](assets/icons/README.md). `just icons` regenerates the checked-in
+PNG and ICNS from the SVG with macOS Swift/CoreGraphics and `iconutil`.
 
 ## Controls
 
@@ -71,6 +110,10 @@ just test-build
 just test-live /opt/homebrew/bin/herdr
 # Native GUI integration; opens a temporary window on the active desktop:
 just test-gui /opt/homebrew/bin/herdr
+# Native sidebar text/glyph regression, no daemon required:
+just test-sidebar
+# Native hover/scroll benchmark with a 30 ms p95 CPU scene budget:
+just test-perf
 ```
 
 The live test creates a private temporary HOME/config/socket environment,
@@ -95,6 +138,39 @@ GitHub Actions checks formatting, denies Clippy warnings, and runs the tests wit
 both default and all features. The tests include real executable CLI checks for
 help, malformed arguments, conflicting options, and test-mode gating, with a
 timeout to catch startup hangs. These checks do not open windows.
+
+A headless GPUI layout regression also renders the actual sidebar with 40
+workspaces and short/long agent labels. It checks shaped text, not just container
+widths: short names must remain intact, long names must retain a readable prefix
+and ellipsis, and the agents section must stay visible. This catches premature
+text truncation that protocol and action-dispatch tests cannot detect.
+
+`just test-sidebar` complements that mock-platform test with the actual macOS
+font renderer and full application layout. It checks native glyphs and clipping
+over 12 draws at four window sizes. This catches truncated font runs that the
+mock text system does not model. It requires an active desktop, but uses only
+fixture data and never connects to your daemon. It is not a screenshot/pixel
+comparison test.
+
+On macOS this also verifies that the running application's native Dock image is
+valid and 1024x1024; a normal unit test checks the embedded PNG header/dimensions.
+
+### Performance
+
+`just test-perf` opens a daemon-free native fixture with a dense 160x50 terminal,
+40 workspaces, and 40 agents. It dispatches real window-local mouse/scroll events
+and measures cold frames, warm hover, and both sidebar lists' scrolling. It also
+asserts that unchanged terminal cells need zero new text-shaping calls, validates
+batched background counts, and compares cached glyphs with freshly shaped ones.
+
+On the development M4 Max, caching and background batching reduced release hover
+p95 from about 51 ms to 12 ms, and scrolling from 56 ms to 14 ms. The benchmark
+measures CPU event-to-scene construction, not GPU completion or pointer-to-screen
+latency. Use `just test-perf 50` to set a different calibrated budget; native tests
+remain opt-in rather than imposing machine-dependent timings on hosted CI.
+
+See [PERFORMANCE.md](crates/herdr-gpui/PERFORMANCE.md) for the before/after results,
+reference mode, workload, deterministic checks, and remaining limitations.
 
 Separate Apple Silicon and Intel macOS jobs build optimized executables and run
 the CLI tests against those release binaries. CI validates builds but does not

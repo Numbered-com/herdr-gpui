@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Herdr: connected workspaces</title>
+  <rect x="80" y="80" width="864" height="864" rx="192" fill="#10161e"/>
+  <rect x="88" y="88" width="848" height="848" rx="184" fill="#304055"/>
+  <rect x="92" y="92" width="840" height="840" rx="180" fill="#181e26"/>
+  <polyline points="332,304 332,720" fill="none" stroke="#8bbcff" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="692,304 692,720" fill="none" stroke="#8bbcff" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="332,584 424,584 600,440 692,440" fill="none" stroke="#8bbcff" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="332" cy="304" r="64" fill="#8bbcff"/>
+  <circle cx="692" cy="720" r="64" fill="#8bbcff"/>
+  <circle cx="332" cy="304" r="25" fill="#181e26"/>
+  <circle cx="692" cy="720" r="25" fill="#181e26"/>
+</svg>

@@ -2,6 +2,9 @@ default:
     @just --list
 
 run *args:
+    cargo run --locked --release -p herdr-gpui -- {{args}}
+
+run-debug *args:
     cargo run --locked -p herdr-gpui -- {{args}}
 
 format:
@@ -22,10 +25,33 @@ test-live binary:
 
 # Opens a real native window; requires an active desktop. Uses an isolated daemon.
 test-gui binary:
-    HERDR_TEST_BINARY="{{binary}}" cargo test --locked -p herdr-gpui --features integration-test --test live_gui -- --ignored --nocapture
+    HERDR_TEST_BINARY="{{binary}}" cargo test --locked -p herdr-gpui --features integration-test --test live_gui -- --ignored --nocapture --test-threads=1
+
+# Native font/glyph regression across repeated frames and sizes; no daemon needed.
+test-sidebar:
+    cargo test --locked -p herdr-gpui --features integration-test --test live_gui native_sidebar -- --ignored --nocapture
+
+# Native hover/scroll CPU scene budget in milliseconds, calibrated for this machine.
+test-perf budget="30":
+    cargo build --locked --release -p herdr-gpui --features integration-test
+    HERDR_PERF_P95_MS="{{budget}}" target/release/herdr-gpui --performance-test
 
 build-release:
     cargo build --locked --release -p herdr-gpui
+
+# Regenerate the checked-in artwork on macOS; no third-party image tools required.
+icons:
+    swift scripts/generate-icons.swift
+
+# Local, unsigned GUI-only bundle. Never installs or packages a daemon.
+bundle:
+    test "$(uname -s)" = Darwin
+    cargo build --locked --release --target-dir target -p herdr-gpui
+    mkdir -p target/release/Herdr.app/Contents/MacOS target/release/Herdr.app/Contents/Resources
+    cp target/release/herdr-gpui target/release/Herdr.app/Contents/MacOS/Herdr
+    cp assets/macos/Info.plist target/release/Herdr.app/Contents/Info.plist
+    cp assets/icons/Herdr.icns target/release/Herdr.app/Contents/Resources/Herdr.icns
+    plutil -lint target/release/Herdr.app/Contents/Info.plist
 
 # Link the actual optimized application and exercise its CLI without a desktop.
 test-build: build-release

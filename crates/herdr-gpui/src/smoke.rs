@@ -1,4 +1,4 @@
-//! Native opt-in smoke driver. No test platform, blocking waits, or direct client requests.
+//! Native opt-in smoke driver. No test platform or blocking waits on the UI thread.
 use super::*;
 use std::{
     sync::atomic::{AtomicU8, Ordering},
@@ -6,6 +6,96 @@ use std::{
 };
 
 pub static EXIT_CODE: AtomicU8 = AtomicU8::new(0);
+
+pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
+    EXIT_CODE.store(1, Ordering::SeqCst);
+    #[cfg(target_os = "macos")]
+    if let Err(error) = app_icon::verify_native() {
+        eprintln!("ICON native FAIL: {error}");
+        cx.quit();
+        return;
+    }
+    cx.set_global(sidebar::layout_tests::PaintedProbes::default());
+    let timer = cx.background_executor().clone();
+    cx.spawn(async move |cx| {
+        for frame in 0..12 {
+            timer.timer(Duration::from_millis(100)).await;
+            let result = AnyWindowHandle::from(handle).update(
+                cx,
+                |root, window, cx| -> Result<(), String> {
+                    use crate::sidebar::layout_tests::PaintedProbes;
+                    let (w, h) =
+                        [(1200., 780.), (640., 400.), (1000., 650.), (800., 600.)][frame / 3];
+                    if frame % 3 == 0 {
+                        window.resize(size(px(w), px(h)));
+                    } else if window.viewport_size() != size(px(w), px(h)) {
+                        return Err(format!(
+                            "native resize did not settle: {:?}",
+                            window.viewport_size()
+                        ));
+                    }
+                    cx.default_global::<PaintedProbes>().0.clear();
+                    root.downcast::<HerdrWindow>()
+                        .map_err(|_| "unexpected root")?
+                        .update(cx, |_, cx| cx.notify());
+                    window.refresh();
+                    window.draw(cx).clear();
+                    let probes = &cx.global::<PaintedProbes>().0;
+                    let mut failed = false;
+                    for input in [
+                        "herdr",
+                        "main",
+                        "review",
+                        "Claude Code",
+                        "agent",
+                        "1256789",
+                        "herdr-gpui-sidebar-rendering-regression-investigation",
+                        "fix/sidebar-label-width-and-overflow-regression",
+                        "Investigate sidebar rendering and verify long agent labels",
+                    ] {
+                        let p = probes
+                            .get(input)
+                            .ok_or_else(|| format!("missing paint: {input}"))?;
+                        if frame == 0 {
+                            eprintln!("SIDEBAR frame={frame} input={input:?} {p:?}");
+                        }
+                        let expected_short = input.len() < 20;
+                        if p.glyph_text != p.cached
+                            || (expected_short && p.glyph_text != input)
+                            || (!expected_short
+                                && (p.width < px(150.) || !p.glyph_text.ends_with('\u{2026}')))
+                            || p.clipped
+                            || p.bounds.size.width != px(sidebar::LABEL_WIDTH)
+                            || p.mask.size.width != px(sidebar::LABEL_WIDTH)
+                            || p.width > p.bounds.size.width
+                            || p.bounds.size.height != px(16.)
+                        {
+                            eprintln!("SIDEBAR bad paint frame={frame} input={input:?} {p:?}");
+                            failed = true;
+                        }
+                    }
+                    if failed {
+                        return Err("incomplete/cropped native glyph output".into());
+                    }
+                    eprintln!(
+                        "SIDEBAR verified frame={frame} viewport={:?} labels=9 clipped=0",
+                        window.viewport_size()
+                    );
+                    Ok(())
+                },
+            );
+            if !matches!(result, Ok(Ok(()))) {
+                eprintln!("SIDEBAR native FAIL: {result:?}");
+                let _ = cx.update(|cx| cx.quit());
+                return;
+            }
+        }
+        eprintln!("SIDEBAR native PASS: 12 full-hierarchy Menlo draws, 4 native sizes");
+        EXIT_CODE.store(0, Ordering::SeqCst);
+        let _ = cx.update(|cx| cx.quit());
+    })
+    .detach();
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct InputProbe {
@@ -28,7 +118,82 @@ const STEPS: &[&str] = &[
     "native resize",
     "reconnect persisted state",
     "input after reconnect",
+    "external workspace pushed to idle GUI",
 ];
+
+const EXTERNAL_TIMEOUT: Duration = Duration::from_secs(3);
+
+struct ExternalWorkspace {
+    // Keep the independent connection alive until the GUI has observed the change.
+    _client: herdr_client::Client,
+    id: String,
+    sent: Instant,
+    responded: Instant,
+}
+
+fn create_external_workspace(
+    target: ConnectTarget,
+    options: ConnectOptions,
+    boot: String,
+) -> Result<ExternalWorkspace, String> {
+    use herdr_client::ClientEvent;
+    let client = connect(target, options).map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut request = None;
+    loop {
+        let event = client
+            .events
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|e| format!("external workspace request: {e}"))?;
+        match event {
+            ClientEvent::Snapshot(snapshot) if request.is_none() => {
+                if snapshot.boot_id != boot {
+                    return Err("external client connected to a different daemon boot".into());
+                }
+                let sent = Instant::now();
+                let id = client
+                    .handle
+                    .request(
+                        &boot,
+                        "workspace.create",
+                        serde_json::json!({
+                            "focus": false, "label": "external-gui-smoke"
+                        }),
+                    )
+                    .map_err(|e| e.to_string())?;
+                request = Some((id, sent));
+            }
+            ClientEvent::Response {
+                request_id,
+                response,
+            } => {
+                let responded = Instant::now();
+                let (expected, sent) = request.as_ref().ok_or("unsolicited external response")?;
+                if &request_id != expected || response.get("error").is_some() {
+                    return Err(format!("external workspace response: {response}"));
+                }
+                let id = response["result"]["workspace"]["workspace_id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .ok_or("external response missing workspace ID")?
+                    .to_owned();
+                return Ok(ExternalWorkspace {
+                    id,
+                    sent: *sent,
+                    responded,
+                    _client: client,
+                });
+            }
+            ClientEvent::Disconnected { reason } | ClientEvent::CommandRejected { reason, .. } => {
+                return Err(reason);
+            }
+            _ => {}
+        }
+        if Instant::now() >= deadline {
+            return Err("external workspace request timed out".into());
+        }
+    }
+}
 
 pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
     let timer = cx.background_executor().clone();
@@ -44,10 +209,57 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
         let marker = format!("HERDR_GUI_{}_OK", std::process::id());
         let reconnected_marker = format!("{marker}_RECONNECTED");
         let mut frames = 0_u64;
+        let mut external_rx = None;
+        let mut external = None;
+        let mut baseline = None;
         loop {
             timer.timer(Duration::from_millis(100)).await;
             let result = AnyWindowHandle::from(handle).update(cx, |root, window, cx| -> Result<bool, String> {
                 let view = root.downcast::<HerdrWindow>().map_err(|_| "unexpected window root")?;
+                // Observe only: no focus, draw, refresh, request, or reconnect can help
+                // deliver this snapshot. The normal GUI event consumer must do it.
+                if step == 13 {
+                    let view = view.read(cx);
+                    let (before, inbox) = baseline.as_ref().ok_or("missing external baseline")?;
+                    if !Arc::ptr_eq(inbox, &view.inbox) || !view.live.connected
+                        || view.handle.as_ref().is_none_or(|h| h.is_disconnected())
+                        || view.local_error.is_some() || view.live.error.is_some() {
+                        return Err("GUI connection changed or failed during external creation".into());
+                    }
+                    if external.is_none() {
+                        let rx: &std::sync::mpsc::Receiver<Result<ExternalWorkspace, String>> = external_rx.as_ref().ok_or("missing external receiver")?;
+                        match rx.try_recv() {
+                            Ok(result) => external = Some(result?),
+                            Err(std::sync::mpsc::TryRecvError::Empty) => {},
+                            Err(error) => return Err(format!("external worker: {error}")),
+                        }
+                    }
+                    if since.elapsed() > Duration::from_secs(12) {
+                        return Err("external workspace worker/GUI timed out".into());
+                    }
+                    let Some(created) = &external else { return Ok(false) };
+                    let elapsed = created.sent.elapsed();
+                    if elapsed > EXTERNAL_TIMEOUT {
+                        return Err(format!("external workspace not consumed by GUI within {EXTERNAL_TIMEOUT:?}: elapsed={elapsed:?} id={} snapshot={:?}", created.id, view.live.snapshot));
+                    }
+                    let Some(snapshot) = &view.live.snapshot else { return Ok(false) };
+                    let before: &Arc<ClientShellSnapshot> = before;
+                    if snapshot.boot_id != before.boot_id || snapshot.focused_workspace_id != before.focused_workspace_id
+                        || snapshot.focused_tab_id != before.focused_tab_id || snapshot.focused_pane_id != before.focused_pane_id {
+                        return Err("external unfocused creation changed GUI boot/focus".into());
+                    }
+                    if !snapshot.workspaces.iter().any(|w| w.workspace_id == created.id && w.label == "external-gui-smoke") { return Ok(false); }
+                    if snapshot.revision <= before.revision || snapshot.workspaces.len() != before.workspaces.len() + 1
+                        || snapshot.tabs.len() != before.tabs.len() + 1 {
+                        return Err(format!("incorrect external workspace snapshot: {snapshot:?}"));
+                    }
+                    eprintln!("GUI external workspace push verified: id={} revision={} -> {} command_to_observed_ms={} response_to_observed_ms={} bound_ms={} observation_poll_ms=100 unchanged_connection=true unchanged_focus=true no_refresh=true",
+                        created.id, before.revision, snapshot.revision, elapsed.as_millis(), created.responded.elapsed().as_millis(), EXTERNAL_TIMEOUT.as_millis());
+                    eprintln!("GUI integration PASS: same boot={boot}, 3 workspaces / 4 tabs, persisted shell output after reconnect, external workspace pushed to idle GUI");
+                    EXIT_CODE.store(0, Ordering::SeqCst);
+                    cx.quit();
+                    return Ok(true);
+                }
                 if frames == 0 {
                     // Exercise the regression: no foreground app or pre-existing input focus.
                     cx.hide();
@@ -165,11 +377,18 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     }
                     12 if has_output(&surface.frame, &reconnected_marker) => {
                         eprintln!("GUI input pipeline verified: frames={frames} focus={focused} active={active} probe={probe:?}");
-                        eprintln!("GUI integration PASS: same boot={boot}, 2 workspaces / 3 tabs, persisted shell output after reconnect");
                         eprintln!("GUI fresh input after reconnect verified: {reconnected_marker}");
-                        EXIT_CODE.store(0, Ordering::SeqCst);
-                        cx.quit();
-                        return Ok(true);
+                        let target = view.read(cx).target.clone();
+                        if !matches!(&target, ConnectTarget::Socket(_)) {
+                            return Err("external smoke requires an explicit isolated socket".into());
+                        }
+                        baseline = Some((snapshot.clone(), view.read(cx).inbox.clone()));
+                        let boot = boot.clone();
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        std::thread::Builder::new().name("external-workspace-smoke".into()).spawn(move || {
+                            let _ = tx.send(create_external_workspace(target, options, boot));
+                        }).map_err(|e| e.to_string())?;
+                        external_rx = Some(rx);
                     }
                     _ => return Ok(false),
                 }

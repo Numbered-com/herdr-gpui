@@ -1,16 +1,25 @@
 use super::{Command, HerdrWindow};
 use gpui::{prelude::*, *};
-use herdr_client::protocol::{AgentStatus, ClientShellAgent};
+use herdr_client::protocol::{AgentStatus, ClientShellAgent, ClientShellWorkspace};
+use std::collections::{HashMap, HashSet};
 
-const BACKGROUND: u32 = 0x1c1c22;
-const FOREGROUND: u32 = 0xc1bdce;
+pub(super) const BACKGROUND: u32 = 0x1c1c22;
+pub(super) const FOREGROUND: u32 = 0xc1bdce;
 const MUTED: u32 = 0x827e91;
-const ACTIVE: u32 = 0x2b2933;
+pub(super) const ACTIVE: u32 = 0x2b2933;
+const SIDEBAR_WIDTH: f32 = 232.;
+const ROW_PADDING: f32 = 12.;
+const STATUS_WIDTH: f32 = 5.;
+const LABEL_GAP: f32 = 8.;
+const CHILD_INDENT: f32 = 16.;
+pub(super) const LABEL_WIDTH: f32 =
+    SIDEBAR_WIDTH - 1. - 2. * ROW_PADDING - STATUS_WIDTH - LABEL_GAP;
 
 impl HerdrWindow {
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let mut spaces = div()
             .id("spaces-scroll")
+            .debug_selector(|| "spaces-scroll".into())
             .flex()
             .flex_col()
             .flex_1()
@@ -18,20 +27,28 @@ impl HerdrWindow {
             .overflow_y_scroll();
         let mut agents = div()
             .id("agents-scroll")
+            .debug_selector(|| "agents-scroll".into())
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
             .overflow_y_scroll();
         if let Some(snapshot) = &self.live.snapshot {
-            for workspace in &snapshot.workspaces {
+            #[cfg(feature = "integration-test")]
+            {
+                spaces = spaces.track_scroll(&self.sidebar_scroll[0]);
+                agents = agents.track_scroll(&self.sidebar_scroll[1]);
+            }
+            for (index, indented) in workspace_entries(&snapshot.workspaces) {
+                let workspace = &snapshot.workspaces[index];
                 let id = workspace.workspace_id.clone();
                 spaces = spaces.child(
                     row(
-                        first_text([Some(workspace.label.as_str())], "workspace"),
+                        workspace_label(workspace, indented),
                         first_text([workspace.branch.as_deref()], ""),
                         workspace.agent_status,
                         workspace.focused,
+                        indented,
                     )
                     .id(SharedString::from(format!("workspace-{id}")))
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -44,7 +61,7 @@ impl HerdrWindow {
                 let id = agent.pane_id.clone();
                 let (name, kind) = agent_labels(agent);
                 agents = agents.child(
-                    row(name, kind, agent.agent_status, agent.focused)
+                    row(name, kind, agent.agent_status, agent.focused, false)
                         .id(SharedString::from(format!("agent-{id}")))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.navigate("pane", &id, cx);
@@ -69,7 +86,8 @@ impl HerdrWindow {
         }
         div()
             .id("sidebar")
-            .w(px(232.))
+            .debug_selector(|| "sidebar".into())
+            .w(px(SIDEBAR_WIDTH))
             .flex_none()
             .h_full()
             .min_h_0()
@@ -136,44 +154,64 @@ fn header(label: &'static str) -> Div {
         .child(label)
 }
 
-fn row(name: &str, detail: &str, status: AgentStatus, focused: bool) -> Div {
+fn row(name: &str, detail: &str, status: AgentStatus, focused: bool, indented: bool) -> Div {
+    let indent = if indented { CHILD_INDENT } else { 0. };
+    let label_width = LABEL_WIDTH - indent;
     div()
+        .debug_selector(|| format!("row-{name}"))
         .h(px(40.))
         .w_full()
         .min_w_0()
         .flex_none()
-        .px(px(12.))
+        .pl(px(ROW_PADDING + indent))
+        .pr(px(ROW_PADDING))
         .flex()
         .items_start()
-        .gap(px(8.))
+        .gap(px(LABEL_GAP))
         .py(px(4.))
         .cursor_pointer()
         .when(focused, |s| s.bg(rgb(ACTIVE)))
         .hover(|s| s.bg(rgb(0x26252e)))
-        .child(
-            div()
-                .size(px(5.))
-                .mt(px(5.))
-                .flex_none()
-                .rounded_full()
-                .bg(rgb(status_color(status))),
-        )
+        .child(status_indicator(status))
         .child(
             div()
                 .flex()
                 .flex_col()
-                .flex_1()
-                .min_w_0()
+                // Avoid zero-basis measurement: GPUI 0.2.2 mutates text run
+                // lengths when truncating and reuses them on wider measurements.
+                .w(px(label_width))
+                .flex_none()
                 .overflow_hidden()
-                .child(div().min_w_0().truncate().child(name.to_owned()))
+                .debug_selector(|| format!("column-{name}"))
                 .child(
                     div()
-                        .min_w_0()
+                        .debug_selector(|| format!("name-{name}"))
+                        .w(px(label_width))
+                        .truncate()
+                        .child(label_text(name)),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| format!("detail-{name}"))
+                        .w(px(label_width))
                         .truncate()
                         .text_color(rgb(MUTED))
-                        .child(detail.to_owned()),
+                        .child(label_text(detail)),
                 ),
         )
+}
+
+#[cfg(any(test, feature = "integration-test"))]
+pub(crate) mod layout_tests;
+
+#[cfg(not(any(test, feature = "integration-test")))]
+fn label_text(text: &str) -> SharedString {
+    text.to_owned().into()
+}
+
+#[cfg(any(test, feature = "integration-test"))]
+fn label_text(text: &str) -> layout_tests::ProbeText {
+    layout_tests::ProbeText(text.to_owned().into())
 }
 
 fn first_text<'a>(values: impl IntoIterator<Item = Option<&'a str>>, fallback: &'a str) -> &'a str {
@@ -201,19 +239,138 @@ fn agent_labels(agent: &ClientShellAgent) -> (&str, &str) {
     (name, kind)
 }
 
-fn status_color(status: AgentStatus) -> u32 {
+// Match the expanded upstream shell order, including orphaned linked worktrees.
+fn workspace_entries(workspaces: &[ClientShellWorkspace]) -> Vec<(usize, bool)> {
+    let mut groups = HashMap::<&str, (Option<usize>, Vec<usize>)>::new();
+    for (index, workspace) in workspaces.iter().enumerate() {
+        if let Some(worktree) = &workspace.worktree {
+            let (parent, members) = groups.entry(&worktree.key).or_default();
+            if !worktree.is_linked_worktree && parent.is_none() {
+                *parent = Some(index);
+            }
+            members.push(index);
+        }
+    }
+    let mut emitted = HashSet::new();
+    let mut entries = Vec::with_capacity(workspaces.len());
+    for (index, workspace) in workspaces.iter().enumerate() {
+        let group = workspace.worktree.as_ref().and_then(|tree| {
+            let (parent, members) = groups.get(tree.key.as_str())?;
+            Some((tree.key.as_str(), (*parent)?, members))
+        });
+        if let Some((key, parent, members)) = group {
+            if emitted.insert(key) {
+                entries.push((parent, false));
+                entries.extend(members.iter().filter(|&&i| i != parent).map(|&i| (i, true)));
+            }
+        } else {
+            entries.push((index, false));
+        }
+    }
+    entries
+}
+
+fn workspace_label(workspace: &ClientShellWorkspace, indented: bool) -> &str {
+    let branch = (indented && !workspace.custom_label)
+        .then_some(workspace.branch.as_deref())
+        .flatten()
+        .map(|branch| branch.strip_prefix("worktree/").unwrap_or(branch));
+    first_text([branch, Some(&workspace.label)], "workspace")
+}
+
+fn status_indicator(status: AgentStatus) -> Div {
+    // Upstream dots: working/blocked/done filled, idle hollow, unknown a small dot.
+    let (diameter, filled, color) = status_style(status);
+    div()
+        .size(px(STATUS_WIDTH))
+        .mt(px(5.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .size(px(diameter))
+                .rounded_full()
+                .border_1()
+                .border_color(rgb(color))
+                .when(filled, |dot| dot.bg(rgb(color))),
+        )
+}
+
+fn status_style(status: AgentStatus) -> (f32, bool, u32) {
     match status {
-        AgentStatus::Working => 0xb4a0d8,
-        AgentStatus::Blocked => 0xd3ad79,
-        AgentStatus::Done => 0x97b59b,
-        AgentStatus::Idle => 0x8c92a7,
-        AgentStatus::Unknown => 0x595563,
+        AgentStatus::Working | AgentStatus::Blocked | AgentStatus::Done => {
+            (STATUS_WIDTH, true, 0x78a9ff)
+        }
+        AgentStatus::Idle => (STATUS_WIDTH, false, 0x78a9ff),
+        AgentStatus::Unknown => (2., true, MUTED),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentStatus, ClientShellAgent, agent_labels, first_text, status_color};
+    #![allow(clippy::unwrap_used)]
+    use super::{
+        AgentStatus, ClientShellAgent, ClientShellWorkspace, STATUS_WIDTH, agent_labels,
+        first_text, layout_tests, status_style, workspace_entries, workspace_label,
+    };
+
+    #[test]
+    fn hierarchy_uses_git_metadata_and_emits_each_workspace_once() {
+        let mut workspaces = layout_tests::snapshot(7).workspaces;
+        for workspace in &mut workspaces {
+            workspace.worktree = None;
+            workspace.label = "same label".into();
+            workspace.branch = Some("main".into());
+        }
+        for (index, key, linked) in [
+            (0, "/repo/.git", true),
+            (2, "/repo/.git", false),
+            (3, "/orphan/.git", true),
+            (4, "/repo/.git", true),
+            (5, "/other/.git", false),
+            (6, "/orphan/.git", true),
+        ] {
+            workspaces[index].worktree = Some(herdr_client::protocol::ClientShellWorktree {
+                key: key.into(),
+                label: "same repo name".into(),
+                is_linked_worktree: linked,
+            });
+        }
+        workspaces[2].branch = Some("develop".into());
+        assert_eq!(
+            workspace_entries(&workspaces),
+            vec![
+                (2, false),
+                (0, true),
+                (4, true),
+                (1, false),
+                (3, false),
+                (5, false),
+                (6, false),
+            ]
+        );
+        workspaces[2].worktree = None;
+        assert_eq!(
+            workspace_entries(&workspaces),
+            (0..7).map(|i| (i, false)).collect::<Vec<_>>()
+        );
+        assert!(workspace_entries(&[]).is_empty());
+    }
+
+    #[test]
+    fn child_labels_follow_upstream_custom_label_and_branch_rules() {
+        let mut workspace = layout_tests::snapshot(1).workspaces.remove(0);
+        workspace.branch = Some("worktree/fix-sidebar".into());
+        assert_eq!(workspace_label(&workspace, true), "fix-sidebar");
+        assert_eq!(workspace_label(&workspace, false), "herdr");
+        workspace.custom_label = true;
+        assert_eq!(workspace_label(&workspace, true), "herdr");
+        workspace.custom_label = false;
+        workspace.branch = None;
+        assert_eq!(workspace_label(&workspace, true), "herdr");
+    }
 
     #[test]
     fn text_fallback_skips_missing_and_blank_metadata() {
@@ -253,18 +410,42 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_statuses_have_distinct_colors_including_unknown() {
-        let colors = [
-            AgentStatus::Idle,
-            AgentStatus::Working,
-            AgentStatus::Blocked,
-            AgentStatus::Done,
-            AgentStatus::Unknown,
-        ]
-        .map(status_color);
-        for (index, color) in colors.iter().enumerate() {
-            assert!(!colors[..index].contains(color));
+    fn status_shapes_match_upstream_dots_and_wire_casing() {
+        let snapshot = layout_tests::snapshot(1);
+        for (wire, status) in [
+            ("idle", AgentStatus::Idle),
+            ("working", AgentStatus::Working),
+            ("blocked", AgentStatus::Blocked),
+            ("done", AgentStatus::Done),
+            ("unknown", AgentStatus::Unknown),
+        ] {
+            let mut value = serde_json::to_value(&snapshot.workspaces[0]).unwrap();
+            value["agent_status"] = wire.into();
+            let workspace: ClientShellWorkspace = serde_json::from_value(value).unwrap();
+            assert_eq!(workspace.agent_status, status);
+            let mut value = serde_json::to_value(&snapshot.agents[0]).unwrap();
+            value["agent_status"] = wire.into();
+            let agent: ClientShellAgent = serde_json::from_value(value).unwrap();
+            assert_eq!(agent.agent_status, status);
+            assert_eq!(serde_json::to_value(status).unwrap(), wire);
+            let (diameter, filled, color) = status_style(status);
+            assert_eq!(
+                color,
+                if status == AgentStatus::Unknown {
+                    super::MUTED
+                } else {
+                    0x78a9ff
+                }
+            );
+            assert_eq!(filled, status != AgentStatus::Idle);
+            assert_eq!(
+                diameter,
+                if status == AgentStatus::Unknown {
+                    2.
+                } else {
+                    STATUS_WIDTH
+                }
+            );
         }
-        assert_eq!(status_color(AgentStatus::Unknown), 0x595563);
     }
 }

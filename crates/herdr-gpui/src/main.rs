@@ -1,16 +1,22 @@
+// objc 0.2's selectors expand a legacy cargo-clippy cfg in the native test adapter.
+#![cfg_attr(feature = "integration-test", allow(unexpected_cfgs))]
+mod app_icon;
 mod controls;
+mod input;
+#[cfg(feature = "integration-test")]
+mod performance;
 mod sidebar;
 #[cfg(feature = "integration-test")]
 mod smoke;
 mod state;
 mod terminal;
+mod terminal_painter;
 
 use controls::Command;
 use gpui::{prelude::*, *};
 use herdr_client::{ClientHandle, ConnectOptions, ConnectTarget, connect, protocol::*};
 use state::LiveState;
 use std::{
-    ops::Range,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -20,6 +26,7 @@ actions!(
     herdr,
     [
         Quit,
+        Reconnect,
         NewWorkspace,
         NewTab,
         SplitRight,
@@ -41,17 +48,25 @@ struct HerdrWindow {
     sent_focus: Option<bool>,
     bounds: Bounds<Pixels>,
     cell_width: f32,
+    painter: std::rc::Rc<std::cell::RefCell<terminal_painter::TerminalPainter>>,
     marked: String,
     local_error: Option<String>,
     wheel: WheelAccumulator,
     #[cfg(feature = "integration-test")]
     input_probe: smoke::InputProbe,
+    #[cfg(feature = "integration-test")]
+    sidebar_scroll: [ScrollHandle; 2],
     _poll: Task<()>,
     _activation: Subscription,
 }
 
 impl HerdrWindow {
-    fn new(target: ConnectTarget, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        target: ConnectTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        #[cfg(feature = "integration-test")] sidebar_test: bool,
+    ) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus);
         let timer = cx.background_executor().clone();
@@ -97,17 +112,26 @@ impl HerdrWindow {
             sent_focus: None,
             bounds: Bounds::default(),
             cell_width: 9.,
+            painter: Default::default(),
             marked: String::new(),
             local_error: None,
             wheel: WheelAccumulator::default(),
             #[cfg(feature = "integration-test")]
             input_probe: smoke::InputProbe::default(),
+            #[cfg(feature = "integration-test")]
+            sidebar_scroll: Default::default(),
             _poll: poll,
             _activation: cx.observe_window_activation(window, |this, window, _| {
                 this.active = window.is_window_active();
                 this.report_focus();
             }),
         };
+        #[cfg(feature = "integration-test")]
+        if sidebar_test {
+            this._poll = Task::ready(());
+            this.live.snapshot = Some(Arc::new(sidebar::layout_tests::snapshot(40)));
+            return this;
+        }
         this.reconnect();
         this
     }
@@ -290,23 +314,7 @@ impl Drop for HerdrWindow {
 impl Render for HerdrWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let font = font("Menlo");
-        self.cell_width = window
-            .text_system()
-            .shape_line(
-                "M".into(),
-                px(FONT_SIZE),
-                &[TextRun {
-                    len: 1,
-                    font: font.clone(),
-                    color: rgb(FOREGROUND).into(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                }],
-                None,
-            )
-            .width
-            .to_f64() as f32;
+        self.cell_width = self.painter.borrow_mut().cell_width(&font, window, cx);
         let sidebar = self.render_sidebar(cx);
         let mut tabs = div()
             .id("tabs")
@@ -314,7 +322,8 @@ impl Render for HerdrWindow {
             .flex_none()
             .h(px(40.))
             .overflow_x_scroll()
-            .bg(rgb(0x181e26))
+            .bg(rgb(sidebar::BACKGROUND))
+            .text_color(rgb(sidebar::FOREGROUND))
             .items_center();
         if let Some(snapshot) = &self.live.snapshot {
             for tab in snapshot
@@ -330,8 +339,12 @@ impl Render for HerdrWindow {
                         .py_2()
                         .flex_none()
                         .cursor_pointer()
-                        .bg(rgb(if tab.focused { 0x2c3c4e } else { 0x181e26 }))
-                        .child(format!("{}  {}", tab.number, tab.label))
+                        .bg(rgb(if tab.focused {
+                            sidebar::ACTIVE
+                        } else {
+                            sidebar::BACKGROUND
+                        }))
+                        .child(tab.label.clone())
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.navigate("tab", &id, cx);
                             window.focus(&this.focus);
@@ -344,6 +357,7 @@ impl Render for HerdrWindow {
         let paint_entity = entity.clone();
         let focus = self.focus.clone();
         let cell_width = self.cell_width;
+        let painter = self.painter.clone();
         let terminal = div()
             .id("terminal")
             .relative()
@@ -408,7 +422,7 @@ impl Render for HerdrWindow {
                             cx,
                         );
                         if let Some(surface) = &surface {
-                            paint_frame(
+                            painter.borrow_mut().paint_frame(
                                 &surface.frame,
                                 bounds.origin,
                                 cell_width,
@@ -428,7 +442,7 @@ impl Render for HerdrWindow {
                                         * CELL_HEIGHT
                                         / 2.),
                                 );
-                                paint_frame(
+                                painter.borrow_mut().paint_frame(
                                     &popup.frame,
                                     bounds.origin + offset,
                                     cell_width,
@@ -449,6 +463,11 @@ impl Render for HerdrWindow {
             .map(|e| format!("{}: {e}", self.live.status))
             .unwrap_or_else(|| self.live.status.clone());
         div()
+            .on_action(cx.listener(|this, _: &Reconnect, window, cx| {
+                this.reconnect();
+                window.focus(&this.focus);
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &NewWorkspace, window, cx| {
                 this.command(Command::Workspace, window, cx)
             }))
@@ -485,7 +504,8 @@ impl Render for HerdrWindow {
                             div()
                                 .flex()
                                 .flex_none()
-                                .bg(rgb(0x181e26))
+                                .bg(rgb(sidebar::BACKGROUND))
+                                .text_color(rgb(sidebar::FOREGROUND))
                                 .child(tabs.flex_1().min_w_0())
                                 .child(
                                     div()
@@ -494,7 +514,7 @@ impl Render for HerdrWindow {
                                         .flex()
                                         .items_center()
                                         .cursor_pointer()
-                                        .hover(|s| s.bg(rgb(0x304055)))
+                                        .hover(|s| s.bg(rgb(sidebar::ACTIVE)))
                                         .child("+")
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.command(Command::Tab, window, cx)
@@ -506,12 +526,24 @@ impl Render for HerdrWindow {
             )
             .child(
                 div()
+                    .id("connection-status")
+                    .debug_selector(|| "connection-status".into())
                     .flex()
+                    .flex_none()
+                    .h(px(22.))
+                    .overflow_hidden()
                     .items_center()
-                    .gap_3()
+                    .gap(px(6.))
                     .px_3()
-                    .py_2()
-                    .bg(rgb(0x202833))
+                    .bg(rgb(sidebar::BACKGROUND))
+                    .text_color(rgb(sidebar::FOREGROUND))
+                    .child(div().size(px(6.)).flex_none().rounded_full().bg(rgb(
+                        if self.live.connected {
+                            0x78c998
+                        } else {
+                            0xe27c7c
+                        },
+                    )))
                     .child(
                         div()
                             .flex_1()
@@ -522,214 +554,8 @@ impl Render for HerdrWindow {
                     )
                     .when(!self.marked.is_empty(), |d| {
                         d.child(format!("Composing: {}", self.marked))
-                    })
-                    .child(
-                        div()
-                            .id("reconnect")
-                            .cursor_pointer()
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .bg(rgb(0x354b62))
-                            .child("Reconnect")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.reconnect();
-                                window.focus(&this.focus);
-                                cx.notify();
-                            })),
-                    ),
+                    }),
             )
-    }
-}
-
-fn paint_frame(
-    frame: &FrameData,
-    origin: Point<Pixels>,
-    cell_width: f32,
-    font: &Font,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    if frame.width == 0 {
-        return;
-    }
-    // Backgrounds first: a wide grapheme must not be erased by its skip cell.
-    for (index, cell) in frame.cells.iter().enumerate() {
-        let x = (index % frame.width as usize) as f32 * cell_width;
-        let y = (index / frame.width as usize) as f32 * CELL_HEIGHT;
-        window.paint_quad(fill(
-            Bounds::new(
-                origin + point(px(x), px(y)),
-                size(px(cell_width), px(CELL_HEIGHT)),
-            ),
-            rgb(cell_colors(cell).1),
-        ));
-    }
-    for (index, cell) in frame.cells.iter().enumerate() {
-        if cell.skip || cell.symbol.is_empty() || cell.symbol == " " {
-            continue;
-        }
-        let x = (index % frame.width as usize) as f32 * cell_width;
-        let y = (index / frame.width as usize) as f32 * CELL_HEIGHT;
-        let mut font = font.clone();
-        if cell.modifier & 1 != 0 {
-            font.weight = FontWeight::BOLD;
-        }
-        if cell.modifier & (1 << 2) != 0 {
-            font.style = FontStyle::Italic;
-        }
-        let fg = rgb(cell_colors(cell).0);
-        let shaped = window.text_system().shape_line(
-            cell.symbol.clone().into(),
-            px(FONT_SIZE),
-            &[TextRun {
-                len: cell.symbol.len(),
-                font,
-                color: fg.into(),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            }],
-            None,
-        );
-        let position = origin + point(px(x), px(y));
-        let _ = shaped.paint(position, px(CELL_HEIGHT), window, cx);
-        if cell.modifier & (1 << 3) != 0 {
-            window.paint_quad(fill(
-                Bounds::new(
-                    position + point(px(0.), px(CELL_HEIGHT - 2.)),
-                    size(px(cell_width), px(1.)),
-                ),
-                fg,
-            ));
-        }
-        if cell.modifier & (1 << 8) != 0 {
-            window.paint_quad(fill(
-                Bounds::new(
-                    position + point(px(0.), px(CELL_HEIGHT / 2.)),
-                    size(px(cell_width), px(1.)),
-                ),
-                fg,
-            ));
-        }
-    }
-    if let Some(cursor) = frame
-        .cursor
-        .as_ref()
-        .filter(|c| c.visible && c.x < frame.width && c.y < frame.height)
-    {
-        let position = origin
-            + point(
-                px(cursor.x as f32 * cell_width),
-                px(cursor.y as f32 * CELL_HEIGHT),
-            );
-        let (offset, dimensions) = match cursor.shape {
-            3 | 4 => (
-                point(px(0.), px(CELL_HEIGHT - 2.)),
-                size(px(cell_width), px(2.)),
-            ),
-            5 | 6 => (point(px(0.), px(0.)), size(px(2.), px(CELL_HEIGHT))),
-            _ => (point(px(0.), px(0.)), size(px(cell_width), px(CELL_HEIGHT))),
-        };
-        window.paint_quad(fill(
-            Bounds::new(position + offset, dimensions),
-            rgba(0xd8dee980),
-        ));
-    }
-}
-
-impl EntityInputHandler for HerdrWindow {
-    fn text_for_range(
-        &mut self,
-        range: Range<usize>,
-        adjusted: &mut Option<Range<usize>>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<String> {
-        let text: Vec<u16> = self.marked.encode_utf16().collect();
-        let range = range.start.min(text.len())..range.end.min(text.len());
-        *adjusted = Some(range.clone());
-        Some(String::from_utf16_lossy(&text[range]))
-    }
-    fn selected_text_range(
-        &mut self,
-        _: bool,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        let end = self.marked.encode_utf16().count();
-        Some(UTF16Selection {
-            range: end..end,
-            reversed: false,
-        })
-    }
-    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        (!self.marked.is_empty()).then(|| 0..self.marked.encode_utf16().count())
-    }
-    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.marked.clear();
-        cx.notify();
-    }
-    fn replace_text_in_range(
-        &mut self,
-        _: Option<Range<usize>>,
-        text: &str,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        #[cfg(feature = "integration-test")]
-        {
-            self.input_probe.text += 1;
-        }
-        self.marked.clear();
-        if !text.is_empty() {
-            self.send(ClientPaneInputEvent::TextCommit(text.into()), cx);
-        }
-        cx.notify();
-    }
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        _: Option<Range<usize>>,
-        text: &str,
-        _: Option<Range<usize>>,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.marked = text.into();
-        cx.notify();
-    }
-    fn bounds_for_range(
-        &mut self,
-        _: Range<usize>,
-        _: Bounds<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
-        let cursor = self
-            .live
-            .surface
-            .as_ref()
-            .and_then(|s| s.frame.cursor.as_ref());
-        let offset = cursor
-            .map(|c| {
-                point(
-                    px(c.x as f32 * self.cell_width),
-                    px(c.y as f32 * CELL_HEIGHT),
-                )
-            })
-            .unwrap_or_default();
-        Some(Bounds::new(
-            self.bounds.origin + offset,
-            size(px(self.cell_width), px(CELL_HEIGHT)),
-        ))
-    }
-    fn character_index_for_point(
-        &mut self,
-        _: Point<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<usize> {
-        None
     }
 }
 
@@ -749,9 +575,17 @@ fn run() {
     let mut development = false;
     #[cfg(feature = "integration-test")]
     let mut integration_test = false;
+    #[cfg(feature = "integration-test")]
+    let mut sidebar_test = false;
+    #[cfg(feature = "integration-test")]
+    let mut performance_test = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            #[cfg(feature = "integration-test")]
+            "--performance-test" => performance_test = true,
+            #[cfg(feature = "integration-test")]
+            "--sidebar-test" => sidebar_test = true,
             #[cfg(feature = "integration-test")]
             "--integration-test" => {
                 integration_test = true;
@@ -775,7 +609,7 @@ fn run() {
                 );
                 #[cfg(feature = "integration-test")]
                 println!(
-                    "  --integration-test  Run native GUI checks (requires explicit --socket)"
+                    "  --integration-test  Run native GUI checks (requires explicit --socket)\n  --sidebar-test      Run native sidebar fixtures without connecting to a daemon\n  --performance-test  Measure native dense-terminal hover/scroll without a daemon (macOS)"
                 );
                 return;
             }
@@ -784,6 +618,26 @@ fn run() {
     }
     if socket.is_some() && (session.is_some() || development) {
         usage_error("--socket cannot be combined with --session or --dev");
+    }
+    #[cfg(feature = "integration-test")]
+    if sidebar_test && performance_test {
+        usage_error("--sidebar-test and --performance-test are mutually exclusive");
+    }
+    #[cfg(all(feature = "integration-test", not(target_os = "macos")))]
+    if performance_test {
+        usage_error("--performance-test currently requires macOS native event delivery");
+    }
+    #[cfg(feature = "integration-test")]
+    if (sidebar_test || performance_test)
+        && (integration_test || socket.is_some() || session.is_some() || development)
+    {
+        usage_error(
+            "fixture tests cannot be combined with connection options or --integration-test",
+        );
+    }
+    #[cfg(feature = "integration-test")]
+    if sidebar_test || performance_test {
+        smoke::EXIT_CODE.store(1, std::sync::atomic::Ordering::SeqCst);
     }
     #[cfg(feature = "integration-test")]
     if integration_test {
@@ -802,6 +656,7 @@ fn run() {
         _ => ConnectTarget::Local,
     };
     Application::new().run(move |cx| {
+        app_icon::install();
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
@@ -832,11 +687,17 @@ fn run() {
                     MenuItem::separator(),
                     MenuItem::action("Next Tab", NextTab),
                     MenuItem::action("Previous Tab", PreviousTab),
+                    MenuItem::separator(),
+                    MenuItem::action("Reconnect", Reconnect),
                 ],
             },
         ]);
-        cx.on_window_closed(|cx| {
+        cx.on_window_closed(move |cx| {
             if cx.windows().is_empty() {
+                #[cfg(feature = "integration-test")]
+                if performance_test {
+                    std::process::exit(1);
+                }
                 cx.quit();
             }
         })
@@ -853,18 +714,41 @@ fn run() {
                 app_id: Some("so.pen.herdr-gpui".into()),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| HerdrWindow::new(target, window, cx)),
+            |window, cx| {
+                cx.new(|cx| {
+                    HerdrWindow::new(
+                        target,
+                        window,
+                        cx,
+                        #[cfg(feature = "integration-test")]
+                        {
+                            sidebar_test || performance_test
+                        },
+                    )
+                })
+            },
         );
         match opened {
-            Ok(_window) =>
-            {
+            Ok(_window) => {
+                #[cfg(feature = "integration-test")]
+                if performance_test {
+                    performance::start(_window, cx);
+                }
                 #[cfg(feature = "integration-test")]
                 if integration_test {
                     smoke::start(_window, cx);
                 }
+                #[cfg(feature = "integration-test")]
+                if sidebar_test {
+                    smoke::start_sidebar(_window, cx);
+                }
             }
             Err(error) => {
                 eprintln!("Unable to open Herdr window: {error}");
+                #[cfg(feature = "integration-test")]
+                if performance_test {
+                    std::process::exit(1);
+                }
                 cx.quit();
             }
         }

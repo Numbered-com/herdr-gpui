@@ -14,11 +14,15 @@ cargo run -p herdr-gpui -- --socket /absolute/path/to/herdr-client.sock
 Without flags, discovery follows `herdr-client`'s environment and release-session
 rules. `--socket` must name the binary **client** socket, not the JSON API socket.
 `--dev` selects the `herdr-dev` config directory. Connection failure is displayed
-in the status bar; Reconnect makes a fresh connection with no input replay.
+in the single-row status bar; Terminal > Reconnect makes a fresh connection with
+no input replay. The status dot is green when connected and red otherwise.
 
 ## Supported
 
-- Workspace/worktree sidebar with branch/path details and live agent status.
+- Workspace/worktree sidebar with main-checkout parents, indented linked
+  workspaces, branch details, and daemon-driven filled/hollow activity indicators.
+- Title-only tabs, without an added tab number. Externally created workspaces
+  arrive through pushed snapshots without manual refresh.
 - Click workspace, tab, agent, or a visible split pane to focus through the API.
 - Native File/Terminal menus and creation buttons: **+ New Workspace** in the
   sidebar and a persistent **+** beside the horizontally scrolling tab strip.

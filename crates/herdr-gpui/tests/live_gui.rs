@@ -15,6 +15,31 @@ struct Isolated {
     gui: Option<Child>,
 }
 
+#[test]
+#[ignore = "requires active native desktop; GUI-only fixtures, no daemon"]
+fn native_sidebar() {
+    let mut gui = Command::new(env!("CARGO_BIN_EXE_herdr-gpui"))
+        .arg("--sidebar-test")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while gui.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = gui.kill();
+            let _ = gui.wait();
+            panic!("native sidebar timeout");
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let output = gui.wait_with_output().unwrap();
+    let log = String::from_utf8_lossy(&output.stderr);
+    eprintln!("{log}");
+    assert!(output.status.success(), "native sidebar failed");
+    assert!(log.contains("SIDEBAR native PASS:"));
+}
+
 impl Isolated {
     fn command(&self, binary: impl AsRef<std::ffi::OsStr>, log: &str) -> Command {
         let log = File::create(self.dir.join(log)).unwrap();
@@ -174,6 +199,12 @@ fn native_gui_live() {
     assert!(
         log.contains("GUI input pipeline verified:"),
         "GUI did not verify native action, key, and text delivery"
+    );
+    assert!(
+        log.contains("GUI external workspace push verified:")
+            && log.contains("bound_ms=3000 observation_poll_ms=100 unchanged_connection=true unchanged_focus=true no_refresh=true")
+            && log.contains("3 workspaces / 4 tabs"),
+        "GUI did not verify bounded external workspace delivery without refresh/reconnect"
     );
     assert!(
         isolated
