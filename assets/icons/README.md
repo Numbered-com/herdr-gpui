@@ -11,3 +11,9 @@ The generator renders the SVG's deliberately small vocabulary (rounded rectangle
 round polylines, and circles) directly, without third-party tools. It fails on
 unsupported elements. Each iconset resolution is rendered from vector geometry.
 Generated assets are checked in, so ordinary builds do not require Swift.
+
+`plus.svg` and `close.svg` are original tab-control artwork; `user.svg` is an
+original generic silhouette for the future account placeholder, not a personal
+identity or GitHub logo. All three are embedded through a
+minimal GPUI asset source. GPUI renders them as SVG masks tinted with the current
+theme foreground, rather than fixed-color cached images.

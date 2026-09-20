@@ -46,6 +46,14 @@ pub struct LiveState {
     outer_focused: Option<bool>,
     pub activation: Option<SurfaceActivation>,
     pub supports_surface: bool,
+    // One modal request, retained across coalesced snapshots until the UI observes it.
+    pub tab_rename: Option<TabRenameResult>,
+}
+
+#[derive(Clone)]
+pub struct TabRenameResult {
+    pub request: String,
+    pub result: Option<Result<(), String>>,
 }
 
 #[derive(Clone)]
@@ -71,6 +79,7 @@ impl Default for LiveState {
             outer_focused: None,
             activation: None,
             supports_surface: false,
+            tab_rename: None,
         }
     }
 }
@@ -216,6 +225,11 @@ impl LiveState {
                 self.agent_presentation = AgentPresentation::default();
             }
             ClientEvent::CommandRejected { request_id, reason } => {
+                if let Some(rename) = &mut self.tab_rename
+                    && request_id.as_ref() == Some(&rename.request)
+                {
+                    rename.result = Some(Err(reason.clone()));
+                }
                 if let Some(activation) = &mut self.activation
                     && request_id.as_ref() == Some(&activation.request)
                 {
@@ -227,6 +241,16 @@ impl LiveState {
                 request_id,
                 response,
             } => {
+                if let Some(rename) = &mut self.tab_rename
+                    && request_id == rename.request
+                {
+                    rename.result = Some(
+                        match response.get("error").filter(|error| !error.is_null()) {
+                            Some(error) => Err(error.to_string()),
+                            None => Ok(()),
+                        },
+                    );
+                }
                 if let Some(activation) = &mut self.activation
                     && request_id == activation.request
                 {

@@ -48,7 +48,12 @@ just ci
 under both default and all features. CI additionally builds release binaries
 for Apple Silicon, Intel macOS, and native Ubuntu 24.04 x86_64/ARM64, exercising
 their release CLI without a desktop. Run `just test-build` for linking or
-packaging changes and `bash scripts/test-package-linux.sh` for archive changes.
+packaging changes and `just release-check` for archive/release changes. The latter
+runs the release packaging/security tests and workflow audits; see
+[release tooling](scripts/release/README.md) for prerequisites. Owner-authored
+internal PRs run audit/test jobs; optimized release builds run only on `main`.
+Outside-contributor and Dependabot PR jobs are skipped, not considered validated;
+see the [CI policy](README.md#continuous-integration).
 
 Some tests are opt-in because they need resources CI does not have:
 

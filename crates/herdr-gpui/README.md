@@ -79,6 +79,36 @@ and validating TOML. Font sections can override either family or size without
 repeating the other field. `FontConfig::line_height()` returns `size * 20 / 14`.
 Config and theme I/O is synchronous; GUI callers should schedule it accordingly.
 
+## Title Bar
+
+macOS keeps `Some(TitlebarOptions)` and the native Herdr window title/traffic lights,
+with transparent chrome and lights positioned at (9, 9) logical pixels. A full-width
+34px header blends `theme.surface` roughly 10% toward white, subtly lifting dark
+themes while keeping light themes light. It sits above the sidebar and tabs: 80px
+of traffic-light clearance, an empty flexible center, and a 40px upper-right slot.
+The slot centers a 16px circular user avatar with a 12px SVG in a 28px hover target, tinted from
+the theme foreground. This placeholder for future GitHub sign-in has no account
+action, network requests, personal identity, or tooltip. It consumes clicks so
+double-clicking it does not invoke the title-bar action.
+The header and clearance remain in fullscreen so the body layout stays stable.
+Windows/Linux keep the existing native frame and do not render this header.
+
+The reference is Zed's `crates/platform_title_bar/src/platform_title_bar.rs` and
+window options in `crates/zed/src/zed.rs`, not a build dependency. Double-click calls
+`Window::titlebar_double_click()` to honor the OS preference. Unlike newer Zed,
+registry GPUI 0.2.2 has no macOS `start_window_move` implementation and ignores
+`WindowControlArea::Drag`. We leave `is_movable` unchanged and rely on native AppKit
+dragging, rather than adding ineffective custom drag handlers or platform patches.
+
+Headless tests check the actual root header/center/account-slot bounds at wide,
+minimum, and narrow sizes, including mock fullscreen entry/exit, and that the
+avatar and hit target stay centered. An SVG decoding test checks the embedded user
+icon produces a nonempty mask. These do not verify AppKit behavior. Native QA remains
+required for dragging across the header, traffic-light alignment and actions,
+double-click preferences (zoom/minimize/do nothing), fullscreen transitions and
+auto-hidden controls, theme changes, and modal/focus/IME behavior. Windows/Linux
+native-frame appearance also remains unverified by these macOS tests.
+
 ## Supported
 
 - Workspace/worktree sidebar with main-checkout parents, indented linked
@@ -96,9 +126,17 @@ Config and theme I/O is synchronous; GUI callers should schedule it accordingly.
   preserving other GUI config settings and comments.
 - Title-only tabs, without an added tab number. Externally created workspaces
   arrive through pushed snapshots without manual refresh.
+- Right-click any tab without focusing it to open Rename.
+  Actions retain the clicked tab/workspace and reject stale connections or targets.
+  Rename selects the current label in a native IME-aware field, with inline errors;
+  Close uses the existing cancel-by-default confirmation. Escape or an outside
+  left/right click dismisses the menu without sending terminal input.
 - Click workspace, tab, agent, or a visible split pane to focus through the API.
 - Native File/Terminal menus and creation buttons: **+ New Workspace** in the
-  sidebar and a persistent **+** beside the horizontally scrolling tab strip.
+  sidebar and a persistent 18px SVG **+** in a 44px-wide button beside the horizontally
+  scrolling tab strip. Each tab has a 16px SVG close cross in a 24px hit target;
+  it opens the same cancel-by-default confirmation without focusing an inactive tab.
+  Both icons use the current theme's foreground tint.
 - Cmd-N creates and focuses a workspace; Cmd-T creates and focuses a tab.
   Cmd-D splits the focused pane vertically (new pane on the right);
   Cmd-Shift-D splits horizontally (new pane below). Cmd-Shift-] / Cmd-Shift-[
@@ -178,7 +216,7 @@ GPUI native action/menu/keybinding patterns.
   not synchronized from the host terminal's theme.
 - No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
   hyperlink activation, image rendering, or animated blinking.
-- No rename dialogs, workspace close/delete actions, horizontal wheel handling,
+- No workspace/pane rename dialogs, workspace close/delete actions, horizontal wheel handling,
   server-owned keybindings, session picker, saved-host editing, or daemon
   stop/upgrade management.
 - IME uses a minimal transient buffer, not a local editable terminal document;
@@ -202,9 +240,9 @@ Requires the normal macOS Rust/Xcode development environment or the
 [Linux build dependencies](../../README.md#linux-builds). Registry GPUI's default
 X11/Wayland backends are retained. Linux uses Vulkan; macOS GPUI's
 `runtime_shaders` feature compiles native Metal shaders at app launch, avoiding
-the separate downloadable build-time Metal compiler. Linux ARM64 compilation,
-Clippy, default/all-feature tests, and release CLI checks have been verified in
-Ubuntu 24.04, not native desktop rendering or input. Linux Cmd bindings mean
+the separate downloadable build-time Metal compiler. Integrated Linux ARM64
+compilation, Clippy, default/all-feature tests, and release CLI checks were
+verified in Ubuntu 24.04, not native desktop rendering or input. Linux Cmd bindings mean
 Super and can conflict with desktop shortcuts; global macOS menus are not
 available. Tests cover wire colors,
 cell modifiers, viewport bounds, semantic key selection, revision coherence,

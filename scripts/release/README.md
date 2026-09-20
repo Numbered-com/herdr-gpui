@@ -1,0 +1,225 @@
+# Release Packaging
+
+Run with Bash; packaging scripts never build or execute the GUI, bundle a daemon,
+or publish artifacts. Output directories must already exist. Existing
+artifacts are refused. Versions must be numeric SemVer `X.Y.Z`, without `v`,
+prerelease/build suffixes, or leading zeros.
+
+```sh
+cargo install cargo-about --version 0.9.2 --locked
+python3 scripts/release/generate-notices.py OUTPUT_DIR/THIRD-PARTY-NOTICES.txt
+bash scripts/release/package-macos.sh VERSION ARM64_BINARY X86_64_BINARY OUTPUT_DIR OUTPUT_DIR/THIRD-PARTY-NOTICES.txt
+bash scripts/release/sign-macos.sh VERSION OUTPUT_DIR/Herdr.app OUTPUT_DIR
+bash scripts/release/package-linux.sh VERSION TARGET BINARY OUTPUT_DIR OUTPUT_DIR/THIRD-PARTY-NOTICES.txt
+bash scripts/release/render-cask.sh VERSION SHA256 > /path/to/rendered/herdr-gpui.rb
+```
+
+macOS assembly requires Apple command-line tools. It produces unsigned
+`Herdr.app`, containing the universal GUI, plist, icon, root `LICENSE` and `NOTICE`,
+protocol license/attribution, Octicons license, and third-party notices.
+Both plist versions are set to the supplied version.
+The package floor is macOS 15 (`:sequoia` in Homebrew), conservatively matching
+both actual release CI runners in `.github/workflows/ci.yml`. The repository
+does not otherwise declare a deployment target or plist minimum; this is not a
+claim that older macOS versions were tested. Build release inputs with
+`MACOSX_DEPLOYMENT_TARGET=15.0`; do not supply binaries targeting a newer OS.
+
+Signing requires macOS, Apple tools, `openssl`, `jq`, network access to Apple's
+notary service, and these environment variables:
+
+- `MACOS_CERTIFICATE_P12_BASE64`: base64-encoded Developer ID Application P12.
+- `MACOS_CERTIFICATE_PASSWORD`: nonempty P12 password.
+- `MACOS_SIGNING_IDENTITY`: full `Developer ID Application: ...` identity.
+- `APPLE_API_PRIVATE_KEY`: literal multiline App Store Connect API `.p8` contents,
+  not a filename or base64 value.
+- `APPLE_API_KEY_ID`: API key ID.
+- `APPLE_API_ISSUER_ID`: team API issuer UUID.
+
+Test P12 import with Apple's `security` tool, not only an OpenSSL roundtrip.
+Some modern OpenSSL exports are rejected by Apple's importer with a misleading
+MAC/password error. The provisioned pair uses password-protected PBE-SHA1-3DES for
+key/certificate encryption and SHA-1 for the P12 MAC; both local and CI exports
+were validated in a temporary keychain. This archive compatibility setting does
+not change the executable's code-signing algorithm.
+
+Use a trusted disposable signing runner and trusted binaries. Do not use shell
+tracing around secret setup. The script uses a private temporary directory and
+explicit temporary keychain and never changes the default keychain. It snapshots
+the user search list, restores it after keychain creation (which may alter it),
+and restores it again during cleanup. It traps exit/INT/TERM to delete credentials
+and the keychain. Do not run concurrent keychain-changing jobs on that user account.
+As with any trap,
+SIGKILL/power loss cannot be cleaned up. Apple security tools receive passwords
+as arguments, so the runner must not have untrusted local users. No GUI executable
+is run, including for version probing. Signing works on a copy of the input app.
+
+Both executable and bundle are explicitly signed with hardened runtime and secure
+timestamps. The zipped app must receive JSON status `Accepted`, then the app is
+stapled and validated. The DMG contains `Herdr.app` and an `/Applications` symlink;
+it is signed, separately notarized, stapled, and checked with codesign and
+Gatekeeper before publishing the local output filename:
+`Herdr-VERSION-universal-apple-darwin.dmg`. Any failed operation aborts.
+
+Linux targets are `x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-gnu`.
+The release workflow builds both natively on Ubuntu 24.04 architecture runners,
+using the same `scripts/install-linux-deps.sh` library setup as CI. Both archives
+are mandatory in the single immutable asset manifest; signing, provenance and
+consumer verification cover both. The SBOM unions both Linux and both macOS
+target graphs. No separate per-platform manifest or publication job is used.
+The caller must supply the matching release binary; packaging does not cross-build
+or resolve shared libraries. Output is `Herdr-VERSION-TARGET.tar.gz`, with a
+same-named root containing `bin/herdr-gpui`, a PNG icon, desktop entry, license and
+notice under `share/`. Install that tree into a chosen prefix with its `bin` on
+PATH. Archives are not promised to be bit-for-bit reproducible.
+
+`homebrew/Casks/herdr-gpui.rb` is deliberately a template, not an installable
+unverified release. Render with the final stapled DMG's SHA-256 (64 hex digits).
+Rendering is deterministic, normalizes hexadecimal to lowercase, and writes only
+stdout. Do not redirect onto the input template. The rendered cask belongs at
+`Casks/herdr-gpui.rb` in `penso/homebrew-herdr-gpui`; install as
+`brew install --cask penso/herdr-gpui/herdr-gpui`. Downloads use repository
+`penso/herdr-gpui`, tag `vVERSION`, and the exact DMG filename above.
+
+`bash scripts/release/update-homebrew.sh VERSION RENDERED_CASK` publishes that cask
+to the resolved default branch of `penso/homebrew-herdr-gpui`. Run only after the
+published DMG checksum has been verified. It requires `git`, `ssh`, `curl`, `jq`,
+and the literal private deploy key in `HOMEBREW_TAP_SSH_KEY`, supplied only to the
+approved Homebrew workflow step. It uses HTTPS GitHub metadata for strict SSH host
+verification, stages only the cask, and skips identical same-version content.
+It rejects numeric version downgrades, changed same-version content (including
+checksums), and malformed or missing versions in an existing cask without
+evaluating Ruby. Leave newer tap releases intact; publish a new version for changed
+assets, and manually review/repair malformed tap metadata before retrying.
+The key and clone
+are trap-cleaned on exit/INT/TERM (not SIGKILL or power loss). No personal SSH keys,
+PAT, credential helper, or global author configuration is used. Keep tap Actions
+disabled and the key scoped to this tap; see the root README's protection setup.
+
+## Third-Party Notices
+
+Python 3.9+, the pinned Rust toolchain, and **cargo-about 0.9.2** are required:
+
+```sh
+cargo install cargo-about --version 0.9.2 --locked
+python3 scripts/release/generate-notices.py OUTPUT_DIR/THIRD-PARTY-NOTICES.txt
+```
+
+The Python wrapper checks that exact tool version, then runs `cargo about generate
+--locked --all-features --workspace --fail --config scripts/release/about.toml
+--format json`. It renders the tool's unique license texts and package associations
+directly, preserving copyright in its evidence rather than inventing holders from
+Cargo authors. No separate Handlebars template is needed. Cargo-about may download
+package sources and retrieve upstream license evidence; when no matching text is
+found, its pinned standard SPDX corpus supplies canonical text. Each report section
+identifies collected evidence versus canonical text. Canonical text does not by
+itself recover every upstream attribution. Network/cache differences may affect
+retrieved evidence, so byte-identical reports across machines are not guaranteed.
+
+`about.toml` filters to the union of `aarch64-apple-darwin`,
+`x86_64-apple-darwin`, `aarch64-unknown-linux-gnu`, and
+`x86_64-unknown-linux-gnu`, matching supported packaging targets. Windows GUI is
+not shipped. All features and build/dev dependencies remain included, a
+conservative superset of any one release binary, not its exact linked inventory.
+The accepted-license list covers the current graph's reviewed choices; Apache is
+preferred for dual licenses. `CDLA-Permissive-2.0` covers `webpki-roots` trust data
+and requires its agreement text with redistribution. MPL is accepted only for
+`cbindgen 0.28.0` (build tool) and `option-ext 0.2.0`. The wrapper rejects version
+changes to those exceptions until reviewed. The report gives version-specific
+crate-source download links, including these unmodified MPL sources. Keep those
+sources available and re-review obligations if dependencies are modified.
+
+The UTF-8 report includes the lockfile SHA-256, package name/version, Cargo source,
+declared license expression and cargo-about license texts. A supplemental scan
+preserves available package-root LICENSE,
+LICENCE, COPYING, COPYRIGHT and NOTICE files (including suffixes), all files
+recursively in root `license`, `licenses`, `licence`, `licences`, `legal`
+directories, and every explicit Cargo `license-file`. This preserves notices and
+alternative license texts even when they were not selected by cargo-about.
+Escaping paths, empty/unreadable discovered files, unresolved or unaccepted
+licenses, failed tool invocations, missing package coverage, and a changed
+lockfile fail generation. A missing source license file is not alone a failure
+when cargo-about resolves a standard SPDX license. No report is written until
+resolution and collection succeed; existing reports are refused to prevent stale
+reuse. Neither Cargo.lock nor dependency versions are updated by this command.
+
+Both package interfaces require a nonempty report. macOS includes it in
+`Contents/Resources/THIRD-PARTY-NOTICES.txt`; Linux includes it in
+`share/licenses/herdr-gpui/THIRD-PARTY-NOTICES.txt`. Secret-free build jobs generate
+reports before packaging. Each macOS binary artifact carries its report; assembly
+requires the two reports to match byte-for-byte before signing. Local DMG builds
+also generate notices before sourcing signing configuration.
+
+Both bundles also preserve root `LICENSE`, `NOTICE`, protocol `LICENSE-APACHE`
+and `NOTICE.md`, and `assets/icons/LICENSE-octicons` as separate files.
+
+**Public release review is required:** generation is an inventory, not legal
+approval or proof that every embedded third-party component was found. Review
+license expressions (including unknown/custom and dual-license choices), text
+coverage, copyright and NOTICE obligations, nested vendored code, native libraries,
+and non-Cargo assets before approving the release environment. Do not treat the
+presence of a report or a configured allowlist as legal approval. Where review
+finds missing upstream notices, add version-bound evidence with provenance rather
+than fabricated fallback text or a broad license exception.
+
+## Local DMG
+
+`just dmg VERSION` (or `bash scripts/release/build-macos.sh VERSION`) builds both
+architectures locally, assembles the app, and signs/notarizes it without publishing.
+Use macOS with Xcode command-line tools, the pinned Rust toolchain, `jq`,
+`cargo-about 0.9.2` installed as above, and the
+signing prerequisites above. Install both targets explicitly first:
+
+```sh
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+just dmg 0.1.0
+```
+
+The version must match the `herdr-gpui` manifest version inherited from
+`[workspace.package].version`. Builds use `--locked`, `--target-dir target`, and
+`MACOSX_DEPLOYMENT_TARGET=15.0`. All six signing variables listed above are removed
+from Cargo's environment, including metadata queries. No local `.envrc` is sourced
+until both builds and unsigned assembly succeed.
+Host build dependencies use `CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP=none`:
+Apple stripping produced unloadable, misaligned proc-macro dylibs during local
+Intel cross-compilation. The setting does not disable optimization or change
+stripping policy for the distributed executable.
+
+A missing root `.envrc` fails before building. This ignored file contains **no
+credentials** and defines `herdr_sign VERSION APP OUT`, calling the ignored
+`.envrc.sign.rb` helper. The helper and its credential storage are machine-specific:
+cloning this repository does not replicate or provision them. Provision them
+separately on a trusted signing machine; do not commit either file or credentials,
+and do not export signing secrets globally through direnv.
+
+Alternatively, define `herdr_sign` in your ignored `.envrc` to invoke
+`bash scripts/release/sign-macos.sh "$@"` with the six variables supplied directly
+to that command's environment by your credential manager (`env NAME=value ...
+bash scripts/release/sign-macos.sh "$@"`). Retrieve them only inside the function,
+not when sourcing `.envrc`; never put literal credentials in shell history or the
+file. This direct environment interface does not require the machine-local Ruby
+helper.
+
+Output is an unsigned assembly at `target/distribution/VERSION/Herdr.app` and the
+signed, notarized
+`Herdr-VERSION-universal-apple-darwin.dmg` in the same directory. An existing version
+directory (including a symlink) is refused before building and checked again before
+promotion. Notices, assembly, and signing use a temporary directory under
+`target/distribution`, cleaned on failure so the command can be retried directly.
+Only after signing succeeds and produces a nonempty DMG is the directory promoted
+to `VERSION`. Helper diagnostics remain visible on stderr; the final DMG path is
+printed on stdout after promotion. Existing version artifacts are never overwritten.
+
+## Local Validation
+
+```sh
+for script in scripts/release/*.sh; do bash -n "$script" || exit; done
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/release/tests -v
+```
+
+Tests run on macOS and Linux with Python 3, Git and `jq`. They use dummy credentials
+and mocked Apple tools/OS detection, check rejection and cleanup paths (including
+macOS-only production guards), and inspect both Linux target tarballs.
+Tap tests mock HTTPS/SSH transport and push only to disposable local repositories;
+they cover default-branch resolution, cask-only commits, no-op updates and failures.
+They do not perform real signing, notarization, Gatekeeper assessment or native
+launch testing. Real release validation still needs the trusted signing runner.

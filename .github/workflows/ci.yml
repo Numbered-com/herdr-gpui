@@ -16,8 +16,17 @@ concurrency:
 jobs:
   # Audits the workflows themselves for injection, over-broad permissions,
   # unpinned actions, and credential persistence. Gates the application
-  # jobs so a compromised workflow change is caught before anything builds.
+  # jobs to catch workflow mistakes early; approval/ref protection remains the
+  # credential boundary, not the scanner.
   zizmor:
+    if: >-
+      github.repository == 'penso/herdr-gpui' &&
+      github.actor == 'penso' && github.triggering_actor == 'penso' &&
+      ((github.event_name == 'pull_request' &&
+        github.event.pull_request.user.login == 'penso' &&
+        github.event.pull_request.head.repo.full_name == 'penso/herdr-gpui') ||
+       ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+        github.ref == 'refs/heads/main'))
     name: Workflow Security
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -33,6 +42,14 @@ jobs:
           online-audits: false
 
   checks:
+    if: >-
+      github.repository == 'penso/herdr-gpui' &&
+      github.actor == 'penso' && github.triggering_actor == 'penso' &&
+      ((github.event_name == 'pull_request' &&
+        github.event.pull_request.user.login == 'penso' &&
+        github.event.pull_request.head.repo.full_name == 'penso/herdr-gpui') ||
+       ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+        github.ref == 'refs/heads/main'))
     name: Format, lint, and test (${{ matrix.runner }})
     needs: zizmor
     strategy:
@@ -50,6 +67,14 @@ jobs:
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: bash scripts/install-linux-deps.sh
+      - name: Test release scripts and security contracts without credentials
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ required"'
+          jq --version
+          python3 -m unittest discover -s scripts/release/tests -v
+          python3 scripts/release/test-release-security.py
       - name: Install pinned Rust toolchain
         run: rustup show
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -58,8 +83,6 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check formatting
         run: cargo fmt --all -- --check
-      - name: Test Linux archive packaging
-        run: bash scripts/test-package-linux.sh
       - name: Lint every target and feature
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - name: Test default features and executable CLI
@@ -71,7 +94,15 @@ jobs:
   checks-passed:
     name: Format, lint, and test
     needs: checks
-    if: always()
+    if: >-
+      always() &&
+      github.repository == 'penso/herdr-gpui' &&
+      github.actor == 'penso' && github.triggering_actor == 'penso' &&
+      ((github.event_name == 'pull_request' &&
+        github.event.pull_request.user.login == 'penso' &&
+        github.event.pull_request.head.repo.full_name == 'penso/herdr-gpui') ||
+       ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+        github.ref == 'refs/heads/main'))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -82,6 +113,11 @@ jobs:
         run: test "$RESULT" = success
 
   build:
+    if: >-
+      github.repository == 'penso/herdr-gpui' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.actor == 'penso' && github.triggering_actor == 'penso'
     name: Release (${{ matrix.runner }}, ${{ matrix.arch }})
     needs: zizmor
     strategy:

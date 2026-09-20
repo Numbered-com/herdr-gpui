@@ -72,6 +72,23 @@ audit-deps:
 sign-release *args:
     ./scripts/gpg-sign-release.sh {{args}}
 
-# Verify a published release's checksums and GPG signatures.
+# Verify published checksums, Sigstore and provenance; optional local GPG approval.
 verify-release *args:
     ./scripts/verify-release.sh {{args}}
+
+# Owner-only remote release. Exported parameter is data, never interpolated shell.
+release $VERSION:
+    bash scripts/release/dispatch.sh "$VERSION"
+
+# Local universal signed/notarized DMG; does not publish anything.
+dmg $VERSION:
+    bash scripts/release/build-macos.sh "$VERSION"
+
+# Static checks and mocked release tests; does not dispatch or publish anything.
+release-check:
+    for script in scripts/*.sh scripts/release/*.sh; do bash -n "$script" || exit; done
+    PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/release/tests -v
+    PYTHONDONTWRITEBYTECODE=1 python3 scripts/release/test-release-security.py
+    actionlint .github/workflows/*.yml
+    zizmor .github/
+    git diff --check
