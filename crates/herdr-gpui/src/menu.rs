@@ -1,6 +1,5 @@
-use super::{HerdrWindow, LiveState, sidebar};
+use super::{HerdrWindow, sidebar};
 use gpui::{prelude::*, *};
-use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Page {
@@ -45,7 +44,7 @@ impl HerdrWindow {
 
     fn menu_items(&self) -> Vec<&'static str> {
         let mut items = vec!["settings", "keybinds"];
-        if self.live.connected {
+        if self.live.status.is_connected() {
             items.push("reload config");
         }
         if self
@@ -56,7 +55,7 @@ impl HerdrWindow {
         {
             items.push("update ready");
         }
-        items.push(if self.handle.is_some() {
+        items.push(if self.connection.handle.is_some() {
             "detach"
         } else {
             "reconnect"
@@ -70,7 +69,9 @@ impl HerdrWindow {
             "keybinds" => self.menu.page = Some(Page::Keybinds),
             "update ready" => self.menu.page = Some(Page::Update),
             "reload config" => {
-                if let (Some(handle), Some(snapshot)) = (&self.handle, &self.live.snapshot) {
+                if let (Some(handle), Some(snapshot)) =
+                    (&self.connection.handle, &self.live.snapshot)
+                {
                     self.local_error = handle
                         .request(
                             &snapshot.boot_id,
@@ -83,14 +84,8 @@ impl HerdrWindow {
                 self.dismiss_menu(window, cx);
             }
             "detach" => {
-                if let Some(handle) = self.handle.take() {
-                    handle.disconnect();
-                }
-                // Isolate any final events from the detached connection.
-                self.live = LiveState::default();
-                self.live.status = "Detached (daemon still running)".into();
-                self.live.set_outer_focus(self.active);
-                self.inbox = Arc::new(Mutex::new(self.live.clone()));
+                self.connection.detach(self.active);
+                self.live = self.connection.take_update().unwrap_or_default();
                 self.local_error = None;
                 self.marked.clear();
                 self.dismiss_menu(window, cx);
@@ -152,7 +147,7 @@ impl HerdrWindow {
             let (title, rows) = match page {
                 Page::Preferences => ("Preferences (read-only)", vec![
                     format!("Connection: {}", self.live.status),
-                    format!("Target: {:?}", self.target),
+                    format!("Target: {:?}", self.connection.target),
                     "Terminal font: Menlo, 14 px (default)".into(),
                     "Sidebar font: Menlo, 12 px (default)".into(),
                     "Daemon configuration editing is not exposed by this native client. No configuration path is assumed.".into(),
