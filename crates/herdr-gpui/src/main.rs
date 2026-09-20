@@ -10,6 +10,8 @@ mod controls;
 mod daemon;
 mod diagnostics;
 mod endpoint;
+mod error;
+pub use error::{Error, Result};
 mod icons;
 mod input;
 mod log_window;
@@ -206,7 +208,7 @@ impl HerdrWindow {
                 Err(error) => (
                     config::Config::default(),
                     config::Theme::default(),
-                    Some(error),
+                    Some(error.to_string()),
                 ),
             };
         log_window::set_appearance(&config, &theme, cx);

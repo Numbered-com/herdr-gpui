@@ -71,13 +71,20 @@ font defaults, theme lookup order, and reload behavior, and
 Font sizes use logical pixels (finite 8..48), not typographic points. Restart the
 GUI or invoke GUI config reload after edits; daemon config reload is separate.
 
-The standalone `src/config.rs` module exposes `Config::load()` and
-`Config::path()`, both returning errors as strings. `Config::theme()` resolves
+The `src/config.rs` module exposes `Config::load()` and
+`Config::path()`, both returning the crate's typed `Result`. `Config::theme()` resolves
 built-ins or Ghostty files into a `Theme` with packed 24-bit RGB colors and all
 256 palette entries. Theme resolution is a separate fallible step from loading
 and validating TOML. Font sections can override either family or size without
 repeating the other field. `FontConfig::line_height()` returns `size * 20 / 14`.
 Config and theme I/O is synchronous; GUI callers should schedule it accordingly.
+
+Production operations use the root `Error`/`Result` types (`src/error.rs`) with
+`thiserror` variants for validation and source-preserving I/O/parser failures.
+Catalog channels retain typed errors, and rename results share errors with `Arc`
+across cloned UI snapshots. Strings are produced at presentation boundaries, not
+as internal error transport. `anyhow` is reserved for framework boundaries and
+test harnesses, not internal catch-all errors.
 
 ## Title Bar
 

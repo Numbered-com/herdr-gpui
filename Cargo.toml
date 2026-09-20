@@ -19,6 +19,8 @@ unwrap_used = "deny"
 expect_used = "deny"
 
 [workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
 herdr-protocol = { path = "crates/herdr-protocol" }
 herdr-client = { path = "crates/herdr-client" }
 gpui = "=0.2.2"

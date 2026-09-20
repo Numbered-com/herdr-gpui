@@ -1,5 +1,5 @@
 use crate::{
-    HerdrWindow, NavigationTarget,
+    Error, HerdrWindow, NavigationTarget, Result,
     controls::{COMMANDS, Command},
     menu::Page,
     search_input::{Changed, SearchInput},
@@ -41,17 +41,17 @@ impl Target {
         }
     }
 
-    fn validate_boot(&self, snapshot: &ClientShellSnapshot) -> Result<(), String> {
+    fn validate_boot(&self, snapshot: &ClientShellSnapshot) -> Result<()> {
         if self.boot.is_empty() || self.boot != snapshot.boot_id {
-            return Err("The daemon session changed. Reopen the palette.".into());
+            return Err(Error::PaletteSessionChanged);
         }
         Ok(())
     }
 
-    fn workspace_exists(&self, snapshot: &ClientShellSnapshot, id: &str) -> Result<(), String> {
+    fn workspace_exists(&self, snapshot: &ClientShellSnapshot, id: &str) -> Result<()> {
         self.validate_boot(snapshot)?;
         if !snapshot.workspaces.iter().any(|w| w.workspace_id == id) {
-            return Err("This workspace no longer exists. Reopen the palette.".into());
+            return Err(Error::PaletteWorkspaceRemoved);
         }
         Ok(())
     }
@@ -61,17 +61,17 @@ impl Target {
         snapshot: &ClientShellSnapshot,
         id: &str,
         action: ClientShellCommandAction,
-    ) -> Result<Value, String> {
+    ) -> Result<Value> {
         self.validate_boot(snapshot)?;
         if action == ClientShellCommandAction::Unknown {
-            return Err("This command action is not supported by this client.".into());
+            return Err(Error::UnsupportedCommand);
         }
         if !snapshot
             .commands
             .iter()
             .any(|c| c.command_id == id && c.action == action)
         {
-            return Err("This command changed or was removed. Reopen the palette.".into());
+            return Err(Error::PaletteCommandChanged);
         }
         if let Some(id) = &self.workspace {
             self.workspace_exists(snapshot, id)?;
@@ -82,9 +82,7 @@ impl Target {
                 .iter()
                 .any(|t| t.tab_id == *id && self.workspace.as_ref() == Some(&t.workspace_id))
         {
-            return Err(
-                "The original tab no longer exists in its workspace. Reopen the palette.".into(),
-            );
+            return Err(Error::PaletteTabRemoved);
         }
         if let Some(id) = &self.pane
             && !snapshot.panes.iter().any(|p| {
@@ -93,9 +91,7 @@ impl Target {
                     && self.tab.as_ref() == Some(&p.tab_id)
             })
         {
-            return Err(
-                "The original pane no longer exists in its tab. Reopen the palette.".into(),
-            );
+            return Err(Error::PalettePaneRemoved);
         }
         let mut params = json!({"command_id": id});
         for (key, value) in [
@@ -269,19 +265,15 @@ impl HerdrWindow {
         }
         let result = (|| {
             if !self.input_ready() {
-                return Err("The selected connection is not ready.".into());
+                return Err(Error::PaletteConnectionNotReady);
             }
-            let snapshot = self
-                .live
-                .snapshot
-                .as_ref()
-                .ok_or("No current daemon snapshot.")?;
+            let snapshot = self.live.snapshot.as_ref().ok_or(Error::NoSnapshot)?;
             let target = self
                 .menu
                 .palette
                 .as_ref()
                 .and_then(|p| p.target.as_ref())
-                .ok_or("No captured daemon session. Reopen the palette.")?;
+                .ok_or(Error::NoPaletteSession)?;
             match &action {
                 Action::Workspace(id) => target.workspace_exists(snapshot, id).map(|()| None),
                 Action::Configured(id, action) => {
@@ -305,7 +297,7 @@ impl HerdrWindow {
             }
             Err(error) => {
                 if let Some(palette) = &mut self.menu.palette {
-                    palette.error = Some(error);
+                    palette.error = Some(error.to_string());
                 }
                 cx.notify();
             }

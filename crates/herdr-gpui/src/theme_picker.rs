@@ -36,7 +36,7 @@ impl HerdrWindow {
                     .iter()
                     .map(|name| (*name).to_owned())
                     .collect(),
-                Some(error),
+                Some(error.to_string()),
             ),
         };
         let mut picker = if let Some(picker) = self.menu.themes.take() {
@@ -89,7 +89,7 @@ impl HerdrWindow {
             }
             Err(error) => {
                 if let Some(picker) = &mut self.menu.themes {
-                    picker.error = Some(error);
+                    picker.error = Some(error.to_string());
                 }
                 cx.notify();
             }
