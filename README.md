@@ -201,11 +201,26 @@ The live protocol and desktop GUI tests are deliberately ignored in hosted CI:
 they require an explicitly selected Herdr binary, and the GUI test also needs an
 active desktop. Run `just test-live` and `just test-gui` locally as shown above.
 
+## Sidebar Width
+
+Workspace titles show the GitHub organization or owner avatar, resolved from
+the local repository's `origin` remote. Git lookups and avatar downloads run
+in the background, with results shared per owner for the app session. The
+GitHub mark is used while loading or when an avatar is unavailable. No GitHub
+token is needed; avatar requests go to `avatars.githubusercontent.com`.
+
+Drag the sidebar's right edge to resize it; double-click the divider to restore
+the default width. The terminal resizes automatically. Width is remembered per
+daemon socket in `$XDG_STATE_HOME/herdr/gpui/local-<socket-hash>.json`, defaulting
+to `~/.local/state/herdr/gpui/`. These logical-pixel preferences are separate
+from the TUI's column-based settings. Narrow windows temporarily limit the
+displayed width without replacing your saved preference.
+
 ## Next Milestones
 
 - Selection/copy, hyperlink interaction, richer mouse support, and inline IME.
 - Rename/close dialogs and full worktree/agent management.
-- Resizable sidebar, editable settings and bundled fonts.
+- Editable settings and bundled fonts.
 - Automatic reconnect, optimized terminal painting and graphics support.
 - Signed macOS app packaging, then SSH endpoints.
 
