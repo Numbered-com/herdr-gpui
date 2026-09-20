@@ -94,6 +94,20 @@ impl CloseConfirmation {
 }
 
 impl HerdrWindow {
+    pub(super) fn open_tab_close(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(close) = self
+            .live
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| CloseConfirmation::capture_tab(snapshot, id))
+        else {
+            return;
+        };
+        self.open_menu(window, cx);
+        self.menu.close = Some(close);
+        self.menu.page = Some(Page::ConfirmClose);
+    }
+
     pub(super) fn open_close_confirmation(
         &mut self,
         command: Command,
@@ -206,8 +220,92 @@ impl HerdrWindow {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use core::prelude::v1::test;
+    use std::sync::Arc;
+
+    #[gpui::test]
+    fn tab_icon_bounds_and_inactive_cross_confirmation(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            crate::bind_keys(cx);
+            let mut view = crate::sidebar::layout_tests::fixture_window(window, cx);
+            let mut snapshot: ClientShellSnapshot = serde_json::from_str(include_str!(
+                "../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json"
+            ))
+            .unwrap();
+            let mut tab = snapshot.tabs[0].clone();
+            tab.tab_id = "inactive".into();
+            tab.focused = false;
+            snapshot.tabs.push(tab);
+            view.live.snapshot = Some(Arc::new(snapshot));
+            view
+        });
+        for width in [800., 360.] {
+            cx.simulate_resize(size(px(width), px(600.)));
+            cx.update(|window, cx| window.draw(cx).clear());
+            let button = cx.debug_bounds("new-tab").unwrap();
+            let icon = cx.debug_bounds("new-tab-icon").unwrap();
+            assert!(button.size.width >= px(44.));
+            assert_eq!(button.size.height, px(32.));
+            assert_eq!(icon.size, size(px(18.), px(18.)));
+            assert_eq!(button.center(), icon.center());
+            assert!(button.right() <= px(width));
+        }
+        cx.simulate_resize(size(px(800.), px(600.)));
+        cx.update(|window, cx| window.draw(cx).clear());
+        let original_focus = view.read_with(cx, |view, _| {
+            view.live.snapshot.as_ref().unwrap().focused_tab_id.clone()
+        });
+        let button = cx.debug_bounds("close-tab-inactive").unwrap();
+        let icon = cx.debug_bounds("close-tab-icon-inactive").unwrap();
+        assert_eq!(button.size, size(px(24.), px(24.)));
+        assert_eq!(icon.size, size(px(16.), px(16.)));
+        assert_eq!(button.center(), icon.center());
+        for fence in ["cancel", "selection", "generation", "boot"] {
+            cx.simulate_mouse_down(button.center(), MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_up(button.center(), MouseButton::Left, Modifiers::default());
+            view.read_with(cx, |view, _| {
+                assert!(view.menu.page == Some(Page::ConfirmClose));
+                let close = view.menu.close.as_ref().unwrap();
+                assert_eq!(close.tab, "inactive");
+                assert!(!close.confirm_selected);
+                assert_eq!(
+                    close.request(view.live.snapshot.as_ref().unwrap()).unwrap(),
+                    ("tab.close", json!({"tab_id": "inactive"}))
+                );
+                assert_eq!(
+                    view.live.snapshot.as_ref().unwrap().focused_tab_id,
+                    original_focus
+                );
+                assert!(view.pending_navigation.is_none());
+            });
+            if fence != "cancel" {
+                cx.update(|window, cx| {
+                    view.update(cx, |view, cx| {
+                        match fence {
+                            "selection" => view.selection_epoch += 1,
+                            "generation" => view.endpoints[0].generation += 1,
+                            _ => {
+                                let snapshot = Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+                                snapshot.boot_id.push_str("-new");
+                                assert!(
+                                    view.menu.close.as_ref().unwrap().request(snapshot).is_err()
+                                );
+                            }
+                        }
+                        view.confirm_close(window, cx);
+                        assert!(view.menu.close.as_ref().unwrap().error.is_some());
+                        assert!(view.pending_navigation.is_none());
+                    });
+                });
+            }
+            cx.simulate_keystrokes("enter");
+            assert!(view.read_with(cx, |view, _| view.menu.page.is_none()));
+            cx.update(|window, cx| window.draw(cx).clear());
+        }
+    }
+
     #[test]
     fn explicit_tab_close_does_not_follow_focus() -> Result<(), String> {
         let mut snapshot: ClientShellSnapshot = serde_json::from_str(include_str!(

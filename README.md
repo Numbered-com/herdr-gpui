@@ -97,6 +97,15 @@ latency is tens of milliseconds locally, not an instant-delivery guarantee.
 
 ### macOS App Bundle
 
+On macOS, a Zed-style integrated title bar lightly blends the theme's surface toward white
+above both the sidebar and tabs, retaining native traffic lights and the Herdr
+window identity. Its upper-right circular user avatar is a placeholder for future
+GitHub sign-in, with no authentication, network requests, or personal identity.
+Double-click outside the avatar uses the macOS title-bar preference;
+window dragging remains owned by AppKit. Windows/Linux retain their native frame
+without an extra header. See the [native shell notes](crates/herdr-gpui/README.md#title-bar)
+for layout coverage and remaining desktop QA.
+
 `cargo run` and `just run` use an embedded original Herdr Dock icon, with no runtime
 asset paths or image-generation processes. To create a local Finder-launchable app:
 
@@ -202,7 +211,9 @@ that an omitted cursor color follows the theme foreground.
 | --- | --- |
 | Sidebar workspace/agent | Focus its workspace or pane |
 | Top tab / terminal pane | Focus the tab or pane |
-| Right-click tab | New tab in its workspace, Rename, or Close with confirmation |
+| Persistent + beside tabs | New tab in the current workspace |
+| Tab close cross | Confirm closing that tab without focusing it |
+| Right-click tab | Rename |
 | Cmd-N | New workspace using daemon directory policy |
 | Cmd-T | New tab |
 | Cmd-D / Cmd-Shift-D | Split right / below |

@@ -1,4 +1,4 @@
-use crate::{HerdrWindow, close_modal::CloseConfirmation, menu::Page, search_input::SearchInput};
+use crate::{HerdrWindow, menu::Page, search_input::SearchInput};
 use gpui::{prelude::*, *};
 use herdr_client::protocol::ClientShellSnapshot;
 use serde_json::{Value, json};
@@ -96,7 +96,7 @@ mod tests {
         });
         cx.simulate_keystrokes("enter");
         assert!(view.read_with(cx, |v, _| v.menu.page == Some(Page::Tab)));
-        cx.simulate_keystrokes("down down enter");
+        cx.simulate_keystrokes("down enter");
         let input = view.read_with(cx, |v, _| {
             assert!(v.menu.page == Some(Page::RenameTab));
             v.menu.tab.as_ref().unwrap().input.clone().unwrap()
@@ -150,15 +150,16 @@ mod tests {
             });
             window.draw(cx).clear();
         });
-        let rename_row = cx.debug_bounds("tab-menu-1").unwrap();
+        assert!(cx.debug_bounds("tab-menu-1").is_none());
+        let rename_row = cx.debug_bounds("tab-menu-0").unwrap();
         cx.simulate_mouse_move(rename_row.center(), None, Modifiers::default());
         assert_eq!(
             view.read_with(cx, |v, _| v.menu.tab.as_ref().unwrap().selected),
-            Some(1)
+            Some(0)
         );
         cx.simulate_keystrokes("down enter");
-        assert!(view.read_with(cx, |v, _| v.menu.page == Some(Page::ConfirmClose)));
-        cx.simulate_keystrokes("enter");
+        assert!(view.read_with(cx, |v, _| v.menu.page == Some(Page::RenameTab)));
+        cx.simulate_keystrokes("escape");
         assert!(view.read_with(cx, |v, _| v.menu.page.is_none()));
 
         for generation in [false, true] {
@@ -171,7 +172,7 @@ mod tests {
                         view.selection_epoch += 1;
                     }
                     assert!(!view.menu_target_current());
-                    for action in [Action::New, Action::Rename, Action::Close] {
+                    for (action, _) in ACTIONS {
                         view.activate_tab_menu(action, window, cx);
                         assert!(view.menu.page == Some(Page::Tab));
                         assert!(view.menu.tab.as_ref().unwrap().error.is_some());
@@ -320,16 +321,10 @@ impl Target {
 
 #[derive(Clone, Copy)]
 enum Action {
-    New,
     Rename,
-    Close,
 }
 
-const ACTIONS: [(Action, &str); 3] = [
-    (Action::New, "New tab"),
-    (Action::Rename, "Rename"),
-    (Action::Close, "Close"),
-];
+const ACTIONS: [(Action, &str); 1] = [(Action::Rename, "Rename")];
 
 pub(super) struct TabMenu {
     target: Target,
@@ -399,20 +394,6 @@ impl HerdrWindow {
             }
         };
         match action {
-            Action::New => {
-                if !self.input_ready() {
-                    self.tab_error("The connection is not ready. Try again.".into(), cx);
-                    return;
-                }
-                self.request_focus_change("tab.create", None, |handle, boot| {
-                    handle.request(
-                        boot,
-                        "tab.create",
-                        json!({"workspace_id": target.workspace, "focus": true}),
-                    )
-                });
-                self.dismiss_menu(window, cx);
-            }
             Action::Rename => {
                 let input = cx.new(SearchInput::new);
                 input.update(cx, |input, cx| {
@@ -426,16 +407,6 @@ impl HerdrWindow {
                     tab.error = None;
                 }
                 self.menu.page = Some(Page::RenameTab);
-                cx.notify();
-            }
-            Action::Close => {
-                self.menu.close = self
-                    .live
-                    .snapshot
-                    .as_ref()
-                    .and_then(|s| CloseConfirmation::capture_tab(s, &target.tab));
-                // Keep the original menu fence, even if daemon focus has changed.
-                self.menu.page = Some(Page::ConfirmClose);
                 cx.notify();
             }
         }
