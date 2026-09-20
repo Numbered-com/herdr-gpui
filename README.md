@@ -53,6 +53,10 @@ then waits up to 20 seconds to connect without blocking the UI. Herdr must alrea
 be installed. A pulsing status indicator and "Starting Herdr server..." message
 remain visible while startup is pending. The executable is discovered
 on PATH or in a standard Homebrew, Cargo, or `~/.local/bin` location.
+If Herdr cannot be found, an installation modal offers an **Install** button that
+opens [herdr.dev](https://herdr.dev/). It does not download or run an installer.
+Use **QA > Show herdr non-detected modal** in the macOS menu bar to preview this
+warning without restarting, disconnecting, or changing daemon detection.
 Explicit `--socket` and `--dev` targets remain attach-only. The app never installs,
 stops, or upgrades the daemon, and closing the window leaves it running. A failed
 connection appears in the status bar with a red dot. Use Terminal > Reconnect to

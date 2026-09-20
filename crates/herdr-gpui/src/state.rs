@@ -40,6 +40,7 @@ pub struct LiveState {
     pub surface: Option<Arc<PaneSurfaceFrame>>,
     pub status: ConnectionStatus,
     pub error: Option<String>,
+    pub missing_installation: bool,
     pub dirty: bool,
     agent_presentation: AgentPresentation,
     outer_focused: Option<bool>,
@@ -52,6 +53,7 @@ impl Default for LiveState {
             surface: None,
             status: ConnectionStatus::Connecting,
             error: None,
+            missing_installation: false,
             dirty: true,
             agent_presentation: AgentPresentation::default(),
             outer_focused: None,
@@ -122,10 +124,12 @@ impl LiveState {
     pub fn apply(&mut self, event: ClientEvent) {
         match event {
             ClientEvent::Connected(_) => {
+                self.missing_installation = false;
                 self.status = ConnectionStatus::AwaitingSnapshot;
                 self.error = None;
             }
             ClientEvent::Snapshot(mut snapshot) => {
+                self.missing_installation = false;
                 if self
                     .surface
                     .as_ref()
@@ -179,6 +183,21 @@ mod tests {
     use super::*;
     use herdr_client::protocol::AgentStatus;
     use herdr_client::protocol::FrameData;
+
+    #[test]
+    fn missing_installation_survives_disconnect_but_clears_on_success() {
+        let mut state = LiveState::default();
+        assert!(!state.missing_installation);
+        state.missing_installation = true;
+        state.apply(ClientEvent::Disconnected {
+            reason: "Herdr not found".into(),
+        });
+        assert!(state.missing_installation);
+        state.set_outer_focus(true);
+        assert!(state.missing_installation);
+        state.apply(ClientEvent::Snapshot(snapshot()));
+        assert!(!state.missing_installation);
+    }
 
     #[test]
     fn daemon_loader_stops_on_success_or_failure() {

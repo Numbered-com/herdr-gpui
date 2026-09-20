@@ -9,6 +9,31 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Debug)]
+struct MissingInstallation(io::Error);
+
+impl std::fmt::Display for MissingInstallation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Could not start herdr server: {}. Install Herdr and use Terminal > Reconnect.",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for MissingInstallation {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+pub(super) fn is_missing_installation(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|source| source.is::<MissingInstallation>())
+}
+
 pub fn connect(
     target: &ConnectTarget,
     stop: &AtomicBool,
@@ -87,7 +112,18 @@ fn connect_or_start(
         .stderr(Stdio::null())
         .process_group(0)
         .spawn()
-        .map_err(|error| io::Error::new(error.kind(), format!("Could not start herdr server: {error}. Install herdr and use Terminal > Reconnect.")))?;
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                io::Error::new(error.kind(), MissingInstallation(error))
+            } else {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "Could not start herdr server: {error}. Use Terminal > Reconnect to retry."
+                    ),
+                )
+            }
+        })?;
     // The daemon outlives the window. Reap it if it exits while the GUI is alive.
     let (exit_tx, exit_rx) = std::sync::mpsc::channel();
     thread::Builder::new()
@@ -180,6 +216,7 @@ mod tests {
             )
             .unwrap_err();
             assert_eq!(error.kind(), kind);
+            assert!(!is_missing_installation(&error));
         }
     }
 
@@ -194,6 +231,7 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(is_missing_installation(&error));
         assert!(error.to_string().contains("Could not start herdr server"));
     }
 

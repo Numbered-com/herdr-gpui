@@ -31,6 +31,7 @@ actions!(
     [
         Quit,
         Reconnect,
+        ShowHerdrNotDetected,
         NewWorkspace,
         NewTab,
         SplitRight,
@@ -60,6 +61,7 @@ struct HerdrWindow {
     marked: String,
     local_error: Option<String>,
     menu: menu::MenuState,
+    install_warning_shown: bool,
     collapsed_repos: std::collections::HashSet<String>,
     wheel: WheelAccumulator,
     #[cfg(feature = "integration-test")]
@@ -80,11 +82,11 @@ impl HerdrWindow {
         let focus = cx.focus_handle();
         window.focus(&focus);
         let timer = cx.background_executor().clone();
-        let poll = cx.spawn(async move |this, cx| {
+        let poll = cx.spawn_in(window, async move |this, cx| {
             loop {
                 timer.timer(Duration::from_millis(16)).await;
                 if this
-                    .update(cx, |this, cx| {
+                    .update_in(cx, |this, window, cx| {
                         let next = this.connection.take_update();
                         if let Some(next) = next {
                             if !next.status.is_connected() {
@@ -97,6 +99,10 @@ impl HerdrWindow {
                             }
                             this.live = next;
                             cx.notify();
+                        }
+                        if this.live.missing_installation && !this.install_warning_shown {
+                            this.install_warning_shown = true;
+                            this.show_install_modal(window, cx);
                         }
                         this.resize();
                         this.report_focus();
@@ -121,6 +127,7 @@ impl HerdrWindow {
             marked: String::new(),
             local_error: None,
             menu: menu::MenuState::new(cx),
+            install_warning_shown: false,
             collapsed_repos: Default::default(),
             wheel: WheelAccumulator::default(),
             #[cfg(feature = "integration-test")]
@@ -145,6 +152,7 @@ impl HerdrWindow {
     }
 
     fn reconnect(&mut self) {
+        self.install_warning_shown = false;
         self.local_error = None;
         self.marked.clear();
         self.last_queued_options = None;
@@ -491,6 +499,9 @@ impl Render for HerdrWindow {
             );
         let status = self.live.status_text(self.local_error.as_deref());
         div()
+            .on_action(cx.listener(|this, _: &ShowHerdrNotDetected, window, cx| {
+                this.show_install_modal(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &Reconnect, window, cx| {
                 if this.menu.page.is_some() {
                     return;
@@ -698,6 +709,13 @@ fn run() -> std::process::ExitCode {
                     MenuItem::separator(),
                     MenuItem::action("Reconnect", Reconnect),
                 ],
+            },
+            Menu {
+                name: "QA".into(),
+                items: vec![MenuItem::action(
+                    "Show herdr non-detected modal",
+                    ShowHerdrNotDetected,
+                )],
             },
         ]);
         cx.on_window_closed(move |cx| {

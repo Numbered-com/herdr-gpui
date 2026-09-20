@@ -56,13 +56,23 @@ impl ConnectionBridge {
         let target = self.target.clone();
         let startup_inbox = self.inbox.clone();
         let result = connect_with_connector(options, move |stop| {
-            crate::daemon::connect(&target, stop, || {
+            let result = crate::daemon::connect(&target, stop, || {
                 if let Ok(mut state) = startup_inbox.lock()
                     && state.status == ConnectionStatus::Connecting
                 {
                     state.daemon_starting();
                 }
-            })
+            });
+            if result
+                .as_ref()
+                .is_err_and(crate::daemon::is_missing_installation)
+                && let Ok(mut state) = startup_inbox.lock()
+                && state.status == ConnectionStatus::StartingDaemon
+            {
+                state.missing_installation = true;
+                state.dirty = true;
+            }
+            result
         })
         .and_then(|client| {
             self.handle = Some(client.handle);
@@ -168,11 +178,13 @@ mod tests {
         let mut bridge = bridge();
         let old = bridge.inbox.clone();
         bridge.detach(true);
+        old.lock().unwrap().missing_installation = true;
         old.lock().unwrap().apply(ClientEvent::Disconnected {
             reason: "old connection".into(),
         });
         let detached = bridge.take_update().unwrap();
         assert_eq!(detached.status, ConnectionStatus::Detached);
+        assert!(!detached.missing_installation);
         assert!(detached.error.is_none());
         assert!(detached.snapshot.is_none() && detached.surface.is_none());
         let old = bridge.inbox.clone();
