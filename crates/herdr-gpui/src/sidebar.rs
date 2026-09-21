@@ -28,7 +28,7 @@ pub(super) const HOST_ARROW_WIDTH: f32 = 12.;
 pub(super) const HOST_GAP: f32 = 6.;
 pub(super) const ICON_RESERVE: f32 = 18.;
 /// The workspace row the pointer is resting on, and where it last rested.
-pub(super) struct HoverMenu {
+pub(super) struct HoverRest {
     workspace: String,
     position: Point<Pixels>,
     /// Where the list stood when the row was entered. Scrolling slides other
@@ -38,6 +38,16 @@ pub(super) struct HoverMenu {
     /// The pointer has moved since it entered the row. Dismissing a menu leaves
     /// the pointer where it was, so without this the menu would reopen under it.
     moved: bool,
+}
+
+/// A menu the pointer opened by resting. It closes again as soon as the pointer
+/// moves anywhere but into it, so a menu nobody asked for needs no click to go.
+pub(super) struct HoverMenu {
+    /// Where the pointer stood when the menu opened.
+    position: Point<Pixels>,
+    /// The pointer is over the popup. Only its own hover reports this: the popup
+    /// may be snapped away from the pointer that opened it.
+    pub(super) inside: bool,
 }
 
 /// What a row shows in its leading icon slot: a repository owner's avatar when
@@ -90,7 +100,7 @@ impl HerdrWindow {
             }
             return;
         }
-        self.hover = Some(HoverMenu {
+        self.hover = Some(HoverRest {
             workspace: workspace.to_owned(),
             position: window.mouse_position(),
             scroll: self.sidebar_scroll[0].offset(),
@@ -109,6 +119,9 @@ impl HerdrWindow {
         cx: &mut Context<Self>,
     ) {
         let position = window.mouse_position();
+        if self.close_hover_menu(position, window, cx) {
+            return;
+        }
         let scroll = self.sidebar_scroll[0].offset();
         let Some(hover) = &mut self.hover else {
             return;
@@ -136,6 +149,41 @@ impl HerdrWindow {
             return;
         }
         self.open_workspace_menu(&hover.workspace, position, window, cx);
+        self.hover_menu = Some(HoverMenu {
+            position,
+            inside: false,
+        });
+    }
+
+    /// Close a menu the pointer opened once the pointer leaves it. Reports
+    /// whether it closed one.
+    fn close_hover_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(open) = &self.hover_menu else {
+            return false;
+        };
+        // Choosing an action leaves the pointer's claim behind: a dialog is
+        // dismissed by its own buttons, never by moving the mouse away.
+        if self.menu.page != Some(crate::menu::Page::Workspace) {
+            self.hover_menu = None;
+            return false;
+        }
+        let drift = position - open.position;
+        if open.inside
+            || (drift.x.abs() <= px(HOVER_MENU_SLOP) && drift.y.abs() <= px(HOVER_MENU_SLOP))
+        {
+            return false;
+        }
+        // The row the pointer moved on to keeps its own dwell, so leaving one
+        // menu for the next row still opens that row's menu.
+        let resting = self.hover.take();
+        self.dismiss_menu(window, cx);
+        self.hover = resting;
+        true
     }
 
     pub(super) fn render_sidebar(

@@ -477,6 +477,7 @@ impl HerdrWindow {
         }
         // Whatever the pointer was resting on, this dismissal ends that intent.
         self.hover = None;
+        self.hover_menu = None;
         self.update_preview = None;
         self.menu.reset();
         window.focus(&self.focus);
@@ -506,6 +507,7 @@ impl HerdrWindow {
             return;
         };
         self.hover = None;
+        self.hover_menu = None;
         self.menu.reset();
         self.menu.endpoint_target = (
             self.selection_epoch,
@@ -1291,7 +1293,17 @@ impl HerdrWindow {
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-            .on_click(|_, _, cx| cx.stop_propagation());
+            .on_click(|_, _, cx| cx.stop_propagation())
+            // A menu the pointer opened follows the pointer's own report of
+            // whether it is over the popup, which occlusion and snapping make
+            // impossible to infer from the anchor alone.
+            .when(self.hover_menu.is_some(), |panel| {
+                panel.on_hover(cx.listener(|this, hovered: &bool, _, _| {
+                    if let Some(open) = &mut this.hover_menu {
+                        open.inside = *hovered;
+                    }
+                }))
+            });
         if page == Page::Menu {
             for (index, item) in self.menu_items().into_iter().enumerate() {
                 panel = panel.child(

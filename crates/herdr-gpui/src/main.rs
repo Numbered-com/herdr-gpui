@@ -154,7 +154,9 @@ struct HerdrWindow {
     painter: std::rc::Rc<std::cell::RefCell<terminal_painter::TerminalPainter>>,
     marked: String,
     /// The sidebar row the pointer is resting on, waiting to open its menu.
-    hover: Option<sidebar::HoverMenu>,
+    hover: Option<sidebar::HoverRest>,
+    /// The menu that resting opened, which the pointer closes by leaving it.
+    hover_menu: Option<sidebar::HoverMenu>,
     local_error: Option<String>,
     menu: menu::MenuState,
     install_warning_shown: bool,
@@ -290,6 +292,7 @@ impl HerdrWindow {
             painter: Default::default(),
             marked: String::new(),
             hover: None,
+            hover_menu: None,
             local_error: None,
             menu: menu::MenuState::new(cx),
             install_warning_shown: false,

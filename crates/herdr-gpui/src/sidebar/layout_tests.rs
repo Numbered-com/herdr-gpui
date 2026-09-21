@@ -371,6 +371,7 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         painter: Default::default(),
         marked: String::new(),
         hover: None,
+        hover_menu: None,
         local_error: None,
         menu: crate::menu::MenuState::new(cx),
         install_warning_shown: false,
@@ -1892,6 +1893,60 @@ fn resting_on_a_workspace_opens_its_menu_once(cx: &mut gpui::TestAppContext) {
         // The same one-shot intent, spent: nothing is left armed behind it.
         assert!(view.hover.is_none());
     });
+
+    // Moving inside the popup keeps it: it is the menu the pointer asked for.
+    let panel = cx.debug_bounds("menu-panel").unwrap();
+    cx.simulate_mouse_move(panel.center(), None, Modifiers::default());
+    settle(&view, cx, super::HOVER_MENU_DELAY);
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.menu.page, Some(crate::menu::Page::Workspace));
+        assert!(view.hover_menu.as_ref().is_some_and(|open| open.inside));
+    });
+
+    // Leaving it closes it, with no click anywhere.
+    cx.simulate_mouse_move(
+        point(panel.right() + px(40.), panel.bottom() + px(40.)),
+        None,
+        Modifiers::default(),
+    );
+    settle(&view, cx, std::time::Duration::ZERO);
+    view.read_with(cx, |view, _| {
+        assert!(view.menu.page.is_none());
+        assert!(view.hover_menu.is_none());
+    });
+
+    // Leaving a menu for a row above it keeps that row's dwell, so the pointer
+    // can walk up the list from one menu to the next without a click.
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.open_workspace_menu("w0", point(px(20.), px(20.)), window, cx);
+            view.hover_menu = Some(super::HoverMenu {
+                position: window.mouse_position() + point(px(60.), px(60.)),
+                inside: false,
+            });
+            view.hover_workspace("w1", true, window);
+            view.poll_hover_menu(std::time::Instant::now(), window, cx);
+            assert!(view.menu.page.is_none());
+            assert!(view.hover.is_some(), "the next row keeps its dwell");
+            assert!(view.hover_menu.is_none());
+        });
+        window.draw(cx).clear();
+    });
+
+    // A menu opened any other way is not the pointer's to close.
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.open_workspace_menu("w0", point(px(20.), px(20.)), window, cx);
+        });
+        window.draw(cx).clear();
+    });
+    cx.simulate_mouse_move(point(px(700.), px(600.)), None, Modifiers::default());
+    settle(&view, cx, super::HOVER_MENU_DELAY);
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.menu.page, Some(crate::menu::Page::Workspace));
+        assert!(view.hover_menu.is_none());
+    });
+    cx.simulate_keystrokes("escape");
 
     // Dismissing must not let a still pointer reopen the menu.
     cx.simulate_keystrokes("escape");
