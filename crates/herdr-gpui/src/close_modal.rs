@@ -245,11 +245,14 @@ mod tests {
             assert!(button.size.width >= px(44.));
             assert_eq!(button.size.height, px(32.));
             assert_eq!(icon.size, size(px(18.), px(18.)));
-            assert_eq!(button.center(), icon.center());
+            // Centred within the content box, which the divider insets by a pixel.
+            assert!((button.center().x - icon.center().x).abs() <= px(1.));
+            assert_eq!(button.center().y, icon.center().y);
             assert!(button.right() <= px(width));
-            // The button follows the last tab rather than the window's right edge.
+            // The button follows the last tab rather than the window's right edge,
+            // within the rounding of the tab's own one-pixel divider.
             let last = cx.debug_bounds("tab-inactive").unwrap();
-            assert_eq!(button.left(), last.right());
+            assert!((button.left() - last.right()).abs() <= px(1.), "{last:?}");
         }
         cx.simulate_resize(size(px(800.), px(600.)));
         cx.update(|window, cx| window.draw(cx).clear());
@@ -261,9 +264,10 @@ mod tests {
         assert_eq!(button.size, size(px(24.), px(24.)));
         assert_eq!(icon.size, size(px(16.), px(16.)));
         assert_eq!(button.center(), icon.center());
-        // Hugging the tab's inner right edge, clear of the label beside it.
+        // Hugging the tab's inner right edge, clear of the label beside it:
+        // four pixels of padding inside the one-pixel divider.
         let tab = cx.debug_bounds("tab-inactive").unwrap();
-        assert_eq!(tab.right() - button.right(), px(4.));
+        assert_eq!(tab.right() - button.right(), px(5.));
         assert!(button.left() - tab.left() >= px(32.));
         for fence in ["cancel", "selection", "generation", "boot"] {
             cx.simulate_mouse_down(button.center(), MouseButton::Left, Modifiers::default());

@@ -49,6 +49,9 @@ use std::time::Duration;
 use terminal::*;
 
 // Release builds embed the same tag used for the bundle and downloadable artifacts.
+// Even tab cells, as on herdr.dev, so short labels do not collapse to a sliver.
+const TAB_WIDTH: f32 = 74.;
+
 const APP_VERSION: &str = match option_env!("HERDR_RELEASE_VERSION") {
     Some(version) => version,
     None => concat!("v", env!("CARGO_PKG_VERSION")),
@@ -648,12 +651,13 @@ impl Render for HerdrWindow {
                 let context_id = id.clone();
                 let close_id = id.clone();
                 // Selected tabs carry the theme's accent, so the choice reads as
-                // primary rather than as the hover tint used elsewhere.
+                // primary rather than as the hover tint used elsewhere; the rest
+                // recede into the strip, as they do in the reference UI.
                 let (background, text) = if tab.focused {
                     let background = self.theme.primary_wash();
                     (background, self.theme.text_on(background))
                 } else {
-                    (self.theme.surface, self.theme.foreground)
+                    (self.theme.surface, self.theme.muted)
                 };
                 tabs = tabs.child(
                     div()
@@ -667,6 +671,10 @@ impl Render for HerdrWindow {
                         // clear of the label it would otherwise crowd.
                         .pr(px(4.))
                         .py(px(4.))
+                        // Even cells divided by a single rule, as in the reference UI.
+                        .min_w(px(TAB_WIDTH))
+                        .border_r_1()
+                        .border_color(rgb(self.theme.active))
                         .flex_none()
                         .flex()
                         .items_center()
@@ -674,6 +682,7 @@ impl Render for HerdrWindow {
                         .cursor_pointer()
                         .bg(rgb(background))
                         .text_color(rgb(text))
+                        .when(tab.focused, |tab| tab.font_weight(FontWeight::EXTRA_BOLD))
                         .child(tab.label.clone())
                         .child(
                             div()
@@ -919,6 +928,8 @@ impl Render for HerdrWindow {
                                             .debug_selector(|| "new-tab".into())
                                             .w(px(44.))
                                             .min_h(px(32.))
+                                            .border_r_1()
+                                            .border_color(rgb(self.theme.active))
                                             .flex_none()
                                             .flex()
                                             .items_center()
@@ -930,7 +941,8 @@ impl Render for HerdrWindow {
                                                     .path("icons/plus.svg")
                                                     .debug_selector(|| "new-tab-icon".into())
                                                     .size(px(18.))
-                                                    .text_color(rgb(self.theme.foreground)),
+                                                    // Quiet like the unselected tabs beside it.
+                                                    .text_color(rgb(self.theme.muted)),
                                             )
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.command(Command::Tab, window, cx)
