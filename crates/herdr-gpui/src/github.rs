@@ -11,12 +11,16 @@ use std::{
 };
 use zeroize::Zeroizing;
 
-#[cfg(any(not(target_os = "macos"), test))]
 mod credentials;
 pub(super) const PLAINTEXT_WARNING: &str = "WARNING: plaintext credential storage is enabled. GitHub tokens are unencrypted on disk; software running as you and backups can read them.";
+pub(super) const DEVELOPMENT_WARNING: &str = "WARNING: this development build does not use the macOS Keychain. GitHub tokens are unencrypted beside the GUI config; software running as you and backups can read them.";
+pub(super) const KEYCHAIN_NOTICE: &str =
+    "Credentials are saved in macOS Keychain. macOS may ask you to unlock or approve access.";
 
 const LIMIT: u64 = 2 * 1024 * 1024;
+#[cfg(target_os = "macos")]
 const SERVICE: &str = "dev.herdr.gpui.github";
+#[cfg(target_os = "macos")]
 const ACCOUNT: &str = "github.com";
 pub(super) const VERIFY_URL: &str = "https://github.com/login/device";
 const SETUP_MESSAGE: &str = "Connect with Herdr GPUI's GitHub App. Optionally set [github] oauth_client_id in config-gpui.toml, or HERDR_GITHUB_OAUTH_CLIENT_ID, to another GitHub App or OAuth App public client ID with Device Flow enabled. Reload GUI config after file edits.";
@@ -97,8 +101,65 @@ fn environment_token(name: &str) -> Result<Option<SecretString>> {
         .transpose()
 }
 
+/// Where a saved GitHub token lives for this build.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Store {
+    /// No persistent store: `GH_TOKEN` / `GITHUB_TOKEN` only.
+    #[default]
+    Environment,
+    /// The app-specific macOS login Keychain entry.
+    Keychain,
+    /// A private `0600` file beside the GUI config.
+    File,
+}
+
+// A development build is unsigned and gets a fresh code identity on every rebuild,
+// so macOS would re-prompt for the Keychain item's ACL on every run. Only the
+// signed release pipeline sets `HERDR_RELEASE_VERSION`, so only it uses Keychain.
+const KEYCHAIN: bool = cfg!(target_os = "macos") && crate::RELEASE_BUILD;
+// Those development builds have no other secure store to fall back on, so the
+// private file is their default. Every other platform keeps it an explicit opt-in.
+const FILE_DEFAULT: bool = cfg!(target_os = "macos") && !KEYCHAIN;
+// An unsigned build must never reach the Keychain, whatever else changes here.
+const _: () = assert!(!KEYCHAIN || crate::RELEASE_BUILD);
+
+impl Store {
+    pub(super) fn select(config: &crate::config::Config) -> Self {
+        Self::choose(
+            config.github.allow_plaintext_credentials,
+            KEYCHAIN,
+            FILE_DEFAULT,
+        )
+    }
+
+    const fn choose(opted_in: bool, keychain: bool, file_default: bool) -> Self {
+        if keychain {
+            Self::Keychain
+        } else if opted_in || file_default {
+            Self::File
+        } else {
+            Self::Environment
+        }
+    }
+
+    /// Credential handling shown in the GitHub menu, so storage is never implicit.
+    pub(super) fn note(self, connected: bool) -> Option<Note> {
+        match self {
+            Self::File if FILE_DEFAULT => Some(Note::Warning(DEVELOPMENT_WARNING)),
+            Self::File => Some(Note::Warning(PLAINTEXT_WARNING)),
+            Self::Keychain if !connected => Some(Note::Info(KEYCHAIN_NOTICE)),
+            Self::Keychain | Self::Environment => None,
+        }
+    }
+}
+
+pub(super) enum Note {
+    Warning(&'static str),
+    Info(&'static str),
+}
+
 #[cfg(target_os = "macos")]
-fn saved_token() -> Result<Option<SecretString>> {
+fn keychain_token() -> Result<Option<SecretString>> {
     match security_framework::passwords::get_generic_password(SERVICE, ACCOUNT) {
         Ok(bytes) => credential_bytes(bytes).map(Some),
         Err(e) if e.code() == -25300 => Ok(None),
@@ -106,7 +167,40 @@ fn saved_token() -> Result<Option<SecretString>> {
     }
 }
 
-fn load_token(plaintext: bool) -> Result<Option<SecretString>> {
+// `Store::Keychain` is never selected off macOS; the stubs keep the match total.
+#[cfg(not(target_os = "macos"))]
+fn keychain_token() -> Result<Option<SecretString>> {
+    Ok(None)
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_save(token: Option<&SecretString>) -> Result<()> {
+    use security_framework::passwords::{delete_generic_password, set_generic_password};
+    let result = match token {
+        Some(token) => set_generic_password(SERVICE, ACCOUNT, token.expose_secret().as_bytes()),
+        None => delete_generic_password(SERVICE, ACCOUNT),
+    };
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) if token.is_none() && e.code() == -25300 => Ok(()),
+        Err(error) => Err(Error::KeychainWrite(error)),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keychain_save(_: Option<&SecretString>) -> Result<()> {
+    Err(Error::CredentialPolicy)
+}
+
+fn saved_token(store: Store) -> Result<Option<SecretString>> {
+    match store {
+        Store::Environment => Ok(None),
+        Store::Keychain => keychain_token(),
+        Store::File => credentials::read(&credential_directory()?),
+    }
+}
+
+fn load_token(store: Store) -> Result<Option<SecretString>> {
     let gh = environment_token("GH_TOKEN")?;
     let github = if gh
         .as_ref()
@@ -116,21 +210,7 @@ fn load_token(plaintext: bool) -> Result<Option<SecretString>> {
     } else {
         None
     };
-    let saved = || {
-        #[cfg(target_os = "macos")]
-        {
-            let _ = plaintext;
-            saved_token()
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            if plaintext {
-                credentials::read(&credential_directory()?)
-            } else {
-                saved_token()
-            }
-        }
-    };
+    let saved = || saved_token(store);
     if gh
         .as_ref()
         .is_none_or(|s| s.expose_secret().trim().is_empty())
@@ -145,7 +225,6 @@ fn load_token(plaintext: bool) -> Result<Option<SecretString>> {
     resolve_token(gh, github, saved).map(Some)
 }
 
-#[cfg(not(target_os = "macos"))]
 fn credential_directory() -> Result<std::path::PathBuf> {
     crate::config::Config::path()?
         .parent()
@@ -153,30 +232,13 @@ fn credential_directory() -> Result<std::path::PathBuf> {
         .ok_or(Error::CredentialDirectory)
 }
 
-#[cfg(not(target_os = "macos"))]
-fn saved_token() -> Result<Option<SecretString>> {
-    Ok(None)
-}
-
-fn store(token: Option<&SecretString>, plaintext: bool) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = plaintext;
-        use security_framework::passwords::{delete_generic_password, set_generic_password};
-        let result = match token {
-            Some(token) => set_generic_password(SERVICE, ACCOUNT, token.expose_secret().as_bytes()),
-            None => delete_generic_password(SERVICE, ACCOUNT),
-        };
-        match result {
-            Ok(()) => Ok(()),
-            Err(e) if token.is_none() && e.code() == -25300 => Ok(()),
-            Err(error) => Err(Error::KeychainWrite(error)),
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (SERVICE, ACCOUNT);
-        credentials::store(&credential_directory()?, token, plaintext)
+fn save(token: Option<&SecretString>, store: Store) -> Result<()> {
+    match store {
+        Store::Keychain => keychain_save(token),
+        // Removal stays allowed without an opt-in, so a file written under an
+        // earlier policy is still cleaned up by an explicit sign-out.
+        Store::Environment => credentials::store(&credential_directory()?, token, false),
+        Store::File => credentials::store(&credential_directory()?, token, true),
     }
 }
 
@@ -414,7 +476,7 @@ pub(super) struct Auth {
     initialized: bool,
     signed_out: bool,
     reload_pending: bool,
-    plaintext: bool,
+    store: Store,
     profile_incoming: Option<mpsc::Receiver<Result<Option<Profile>>>>,
     pub profile: Option<Profile>,
     pub message: Option<String>,
@@ -443,9 +505,11 @@ impl Auth {
         self.reload_pending || self.profile_incoming.is_some()
     }
     pub fn initialize(&mut self, config: &crate::config::Config) -> bool {
-        let changed =
-            !self.initialized || self.plaintext != config.github.allow_plaintext_credentials;
-        self.plaintext = config.github.allow_plaintext_credentials;
+        self.initialize_with(Store::select(config))
+    }
+    fn initialize_with(&mut self, store: Store) -> bool {
+        let changed = !self.initialized || self.store != store;
+        self.store = store;
         self.initialized = true;
         if !changed || self.signed_out {
             return false;
@@ -464,15 +528,15 @@ impl Auth {
     fn load_profile_with(
         &mut self,
         token: Option<Arc<SecretString>>,
-        load: impl FnOnce(Option<Arc<SecretString>>, bool) -> Result<Option<Profile>> + Send + 'static,
+        load: impl FnOnce(Option<Arc<SecretString>>, Store) -> Result<Option<Profile>> + Send + 'static,
     ) {
         self.failed = false;
-        let plaintext = self.plaintext;
+        let store = self.store;
         let (tx, rx) = mpsc::sync_channel(1);
         match thread::Builder::new()
             .name("herdr-github-profile".into())
             .spawn(move || {
-                let _ = tx.send(load(token, plaintext));
+                let _ = tx.send(load(token, store));
             }) {
             Ok(_) => self.profile_incoming = Some(rx),
             Err(_) => {
@@ -564,10 +628,10 @@ impl Auth {
         if self.busy() || self.connected() || self.loading_profile() {
             return;
         }
-        self.plaintext = config.github.allow_plaintext_credentials;
+        self.store = Store::select(config);
         self.initialized = true;
         self.failed = false;
-        if !cfg!(target_os = "macos") && !self.plaintext {
+        if self.store == Store::Environment {
             self.failed = true;
             self.message =
                 Some("No secure credential store configured. To accept unencrypted token storage, set [github] allow_plaintext_credentials = true and reload GUI config. Otherwise use GH_TOKEN / GITHUB_TOKEN.".into());
@@ -631,17 +695,21 @@ impl Auth {
         self.message = Some("Signed out locally. Removing saved GitHub credential...".into());
     }
     pub fn poll(&mut self) -> bool {
-        let plaintext = self.plaintext;
-        self.poll_with_store(move |token| store(token, plaintext))
+        let store = self.store;
+        self.poll_with_store(move |token| save(token, store))
+    }
+    /// Credential backend chosen for this build and configuration.
+    pub(super) fn store(&self) -> Store {
+        self.store
     }
     fn poll_with_store(
         &mut self,
         persist: impl FnOnce(Option<&SecretString>) -> Result<()> + Send + 'static,
     ) -> bool {
-        self.poll_with(persist, |token, plaintext| {
+        self.poll_with(persist, |token, store| {
             let token = match token {
                 Some(token) => Some(token),
-                None => load_token(plaintext)?.map(Arc::new),
+                None => load_token(store)?.map(Arc::new),
             };
             token.map(profile).transpose()
         })
@@ -649,7 +717,7 @@ impl Auth {
     fn poll_with(
         &mut self,
         persist: impl FnOnce(Option<&SecretString>) -> Result<()> + Send + 'static,
-        load: impl FnOnce(Option<Arc<SecretString>>, bool) -> Result<Option<Profile>> + Send + 'static,
+        load: impl FnOnce(Option<Arc<SecretString>>, Store) -> Result<Option<Profile>> + Send + 'static,
     ) -> bool {
         if self.signout_pending && !self.committing {
             self.signout_pending = false;
@@ -883,12 +951,48 @@ mod tests {
         assert!(Auth::connected_fixture().can_sign_out());
     }
 
-    fn load_fixture_profile(auth: &mut Auth, plaintext: bool, profile: Option<Profile>) {
+    #[test]
+    fn only_a_signed_release_build_uses_the_keychain() {
+        // A signed release build keeps the Keychain whatever the config says.
+        assert_eq!(Store::choose(false, true, false), Store::Keychain);
+        assert_eq!(Store::choose(true, true, false), Store::Keychain);
+        // An unsigned development build gets a new code identity on every rebuild,
+        // so it uses the private file instead of re-prompting for Keychain access.
+        assert_eq!(Store::choose(false, false, true), Store::File);
+        assert_eq!(Store::choose(true, false, true), Store::File);
+        // Everywhere else unencrypted storage stays an explicit opt-in.
+        assert_eq!(Store::choose(false, false, false), Store::Environment);
+        assert_eq!(Store::choose(true, false, false), Store::File);
+        let mut config = crate::config::Config::default();
+        #[cfg(target_os = "macos")]
+        if !crate::RELEASE_BUILD {
+            assert_eq!(Store::select(&config), Store::File);
+        }
+        config.github.allow_plaintext_credentials = true;
+        assert_eq!(Store::select(&config), Store::choose(true, KEYCHAIN, false));
+    }
+    #[test]
+    fn credential_notes_state_where_tokens_are_kept() {
+        assert!(Store::Environment.note(false).is_none());
+        assert!(Store::Environment.note(true).is_none());
+        assert!(matches!(Store::Keychain.note(false), Some(Note::Info(_))));
+        assert!(
+            Store::Keychain.note(true).is_none(),
+            "a connected account already proved Keychain access"
+        );
+        for connected in [false, true] {
+            let Some(Note::Warning(text)) = Store::File.note(connected) else {
+                panic!("unencrypted storage must always warn");
+            };
+            assert!(text.starts_with("WARNING: "));
+        }
+    }
+    fn load_fixture_profile(auth: &mut Auth, store: Store, profile: Option<Profile>) {
         assert!(auth.poll_with(
             |_| panic!("policy reload must not change stored credentials"),
             move |token, policy| {
                 assert!(token.is_none(), "must resolve under the new policy");
-                assert_eq!(policy, plaintext);
+                assert_eq!(policy, store);
                 assert_eq!(thread::current().name(), Some("herdr-github-profile"));
                 Ok(profile)
             },
@@ -911,15 +1015,18 @@ mod tests {
     #[test]
     fn enabling_plaintext_reloads_saved_token_but_explicit_signout_stays_suppressed() {
         let mut auth = Auth::default();
-        let mut config = crate::config::Config::default();
-        assert!(auth.initialize(&config));
-        load_fixture_profile(&mut auth, false, None);
+        // Drive the backend directly: which one a configuration selects depends on
+        // the build, but every transition between them must behave the same way.
+        assert!(auth.initialize_with(Store::Environment));
+        load_fixture_profile(&mut auth, Store::Environment, None);
         assert!(!auth.connected());
-        config.github.allow_plaintext_credentials = true;
-        assert!(auth.initialize(&config));
-        load_fixture_profile(&mut auth, true, Auth::connected_fixture().profile);
+        assert!(auth.initialize_with(Store::File));
+        load_fixture_profile(&mut auth, Store::File, Auth::connected_fixture().profile);
         assert!(auth.connected());
-        assert!(!auth.initialize(&config), "unchanged policy must not poll");
+        assert!(
+            !auth.initialize_with(Store::File),
+            "unchanged policy must not poll"
+        );
         auth.sign_out();
         auth.poll_with(
             |token| {
@@ -936,10 +1043,9 @@ mod tests {
             .unwrap();
         deliver(&mut auth, reply);
         auth.poll_with(|_| panic!("already removed"), |_, _| panic!("signed out"));
-        for plaintext in [false, true, false] {
-            config.github.allow_plaintext_credentials = plaintext;
-            assert!(!auth.initialize(&config));
-            assert_eq!(auth.plaintext, plaintext);
+        for store in [Store::Environment, Store::File, Store::Keychain] {
+            assert!(!auth.initialize_with(store));
+            assert_eq!(auth.store(), store);
             assert!(auth.signed_out);
             assert!(!auth.loading_profile());
             assert!(!auth.connected());
@@ -953,29 +1059,24 @@ mod tests {
     #[test]
     fn disabling_plaintext_clears_session_and_rejects_late_profile() {
         let mut auth = Auth::default();
-        let mut config = crate::config::Config::default();
-        config.github.allow_plaintext_credentials = true;
-        assert!(auth.initialize(&config));
-        load_fixture_profile(&mut auth, true, Auth::connected_fixture().profile);
+        assert!(auth.initialize_with(Store::File));
+        load_fixture_profile(&mut auth, Store::File, Auth::connected_fixture().profile);
         assert!(auth.connected());
-        config.github.allow_plaintext_credentials = false;
-        assert!(auth.initialize(&config));
+        assert!(auth.initialize_with(Store::Environment));
         assert!(
             !auth.connected(),
             "old token cannot remain usable during reload"
         );
         assert!(!auth.signed_out, "policy changes are not explicit sign-out");
-        load_fixture_profile(&mut auth, false, None);
+        load_fixture_profile(&mut auth, Store::Environment, None);
         assert!(!auth.connected());
 
-        config.github.allow_plaintext_credentials = true;
-        assert!(auth.initialize(&config));
+        assert!(auth.initialize_with(Store::File));
         // A pending load from the opted-in policy must not win after opting out.
         auth.reload_pending = false;
         let (tx, rx) = mpsc::sync_channel(1);
         auth.profile_incoming = Some(rx);
-        config.github.allow_plaintext_credentials = false;
-        assert!(auth.initialize(&config));
+        assert!(auth.initialize_with(Store::Environment));
         assert!(tx.send(Ok(Auth::connected_fixture().profile)).is_ok());
         assert!(auth.poll_with(
             |_| panic!("no store access"),
@@ -983,20 +1084,24 @@ mod tests {
         ));
         assert!(!auth.connected());
         // An environment credential is still allowed under the new policy.
-        load_fixture_profile(&mut auth, false, Auth::connected_fixture().profile);
+        load_fixture_profile(
+            &mut auth,
+            Store::Environment,
+            Auth::connected_fixture().profile,
+        );
         assert!(auth.connected());
     }
 
     #[test]
     fn policy_reload_drains_accepted_write_without_applying_its_token() {
         let mut auth = Auth::connected_fixture();
-        auth.plaintext = true;
+        auth.store = Store::File;
         auth.committing = true;
         deliver(
             &mut auth,
             Ok(Reply::Authenticated(Arc::new("late-fixture".into()))),
         );
-        assert!(auth.initialize(&crate::config::Config::default()));
+        assert!(auth.initialize_with(Store::Environment));
         assert!(auth.poll_with(
             |_| panic!("write was already accepted"),
             |_, _| panic!("must drain the accepted write first"),
@@ -1004,7 +1109,7 @@ mod tests {
         assert!(!auth.committing);
         assert!(auth.reload_pending);
         assert!(!auth.connected());
-        load_fixture_profile(&mut auth, false, None);
+        load_fixture_profile(&mut auth, Store::Environment, None);
         assert!(!auth.connected());
     }
 

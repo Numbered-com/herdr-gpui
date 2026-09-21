@@ -363,15 +363,12 @@ impl HerdrWindow {
                     .child(message),
             );
         }
-        if !cfg!(target_os = "macos") && self.config.github.allow_plaintext_credentials {
-            body = body.child(
-                div()
-                    .mt(px(12.))
-                    .text_color(rgb(theme.palette[1]))
-                    .child(crate::github::PLAINTEXT_WARNING),
-            );
-        } else if cfg!(target_os = "macos") && !auth.connected() {
-            body = body.child(div().mt(px(12.)).text_color(rgb(theme.muted)).child("Credentials are saved in macOS Keychain. macOS may ask you to unlock or approve access."));
+        if let Some(note) = auth.store().note(auth.connected()) {
+            let (color, text) = match note {
+                crate::github::Note::Warning(text) => (theme.palette[1], text),
+                crate::github::Note::Info(text) => (theme.muted, text),
+            };
+            body = body.child(div().mt(px(12.)).text_color(rgb(color)).child(text));
         }
         let mut footer = div()
             .debug_selector(|| "github-footer".into())

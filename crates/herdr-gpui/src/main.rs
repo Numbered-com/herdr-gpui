@@ -59,6 +59,11 @@ const APP_VERSION: &str = match option_env!("HERDR_RELEASE_VERSION") {
     None => concat!("v", env!("CARGO_PKG_VERSION")),
 };
 
+// Only the signed release pipeline sets that tag. Local `just run` and worktree
+// builds are unsigned, so features that depend on a stable code identity (such as
+// macOS Keychain access) must treat them as development builds.
+const RELEASE_BUILD: bool = option_env!("HERDR_RELEASE_VERSION").is_some();
+
 actions!(
     herdr,
     [

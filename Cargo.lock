@@ -2624,7 +2624,7 @@ dependencies = [
  "chrono",
  "cocoa 0.27.0",
  "config",
- "core-graphics 0.24.0",
+ "core-graphics 0.25.0",
  "ed25519-dalek",
  "flate2",
  "foreign-types",

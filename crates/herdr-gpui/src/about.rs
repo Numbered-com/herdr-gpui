@@ -6,7 +6,11 @@ use std::sync::{Arc, LazyLock};
 
 pub(super) const WEBSITE: &str = "https://herdr.dev/";
 pub(super) const REPOSITORY: &str = "https://github.com/penso/herdr-gpui";
-const COPYRIGHT: &str = "© 2026 Fabien Penso · Apache-2.0";
+const COPYRIGHT_YEAR: &str = "© 2026";
+const AUTHOR: &str = "Fabien Penso";
+const AUTHOR_URL: &str = "https://pen.so";
+const TWITTER_URL: &str = "https://x.com/fabienpenso";
+const LICENSE: &str = "· Apache-2.0";
 const SUMMARY: &str = "Native client for an existing local Herdr daemon.";
 const UNAFFILIATED: &str = "An independent project, not affiliated with or endorsed by herdr.dev.";
 
@@ -87,10 +91,25 @@ impl HerdrWindow {
             .child(
                 div()
                     .debug_selector(|| "about-copyright".into())
+                    .flex()
+                    .items_center()
+                    .gap(px(3.))
                     .pt(px(10.))
                     .text_size(px(font.size * 0.85))
                     .text_color(muted)
-                    .child(COPYRIGHT),
+                    .child(COPYRIGHT_YEAR)
+                    .child(self.about_link("about-author", AUTHOR, AUTHOR_URL))
+                    .child(
+                        self.about_link(
+                            "about-twitter",
+                            svg()
+                                .path("icons/x.svg")
+                                .size(px(font.size * 0.85))
+                                .text_color(crate::menu::accent(theme)),
+                            TWITTER_URL,
+                        ),
+                    )
+                    .child(LICENSE),
             )
             .child(
                 div()
@@ -145,7 +164,7 @@ impl HerdrWindow {
     fn about_link(
         &self,
         id: &'static str,
-        label: impl Into<SharedString>,
+        label: impl IntoElement,
         url: impl Into<String>,
     ) -> Stateful<Div> {
         let url = url.into();
@@ -153,10 +172,14 @@ impl HerdrWindow {
             .id(id)
             .debug_selector(move || id.into())
             .flex_none()
+            .flex()
+            .items_center()
             .cursor_pointer()
             .text_color(crate::menu::accent(&self.theme))
-            .hover(|style| style.underline())
-            .child(label.into())
+            .border_b_1()
+            .border_color(transparent_black())
+            .hover(|style| style.border_color(crate::menu::accent(&self.theme)))
+            .child(label)
             .on_click(move |_, _, cx| {
                 cx.stop_propagation();
                 cx.open_url(&url);
@@ -178,9 +201,10 @@ mod tests {
             .lines()
             .find_map(|line| line.strip_prefix("Copyright "))
             .unwrap();
-        assert!(COPYRIGHT.contains(holder), "{COPYRIGHT} lacks {holder}");
+        let copyright = format!("{COPYRIGHT_YEAR} {AUTHOR} {LICENSE}");
+        assert!(copyright.contains(holder), "{copyright} lacks {holder}");
         assert!(notice.contains("Apache License, Version 2.0"));
-        assert!(COPYRIGHT.contains("Apache-2.0"));
+        assert!(LICENSE.contains("Apache-2.0"));
     }
 
     /// Classic macOS puts About first in the application menu, above a separator.
@@ -236,6 +260,8 @@ mod tests {
             for (selector, url) in [
                 ("about-website", WEBSITE.to_owned()),
                 ("about-repository", REPOSITORY.to_owned()),
+                ("about-author", "https://pen.so".to_owned()),
+                ("about-twitter", "https://x.com/fabienpenso".to_owned()),
             ] {
                 let link = cx.debug_bounds(selector).unwrap();
                 cx.simulate_click(link.center(), Modifiers::default());

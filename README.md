@@ -132,9 +132,10 @@ Click the **top-right profile icon** to immediately request a device sign-in cod
 Once connected it displays your GitHub avatar; right-click it and choose **Sign out**.
 The profile panel is also available via **menu > GitHub sign-in**. Authentication
 is available even when repository discovery is blocked. On startup, token
-priority is `GH_TOKEN`, then `GITHUB_TOKEN`, then this app's dedicated macOS
-Keychain entry (service `dev.herdr.gpui.github`, account `github.com`), or the explicitly
-enabled Linux plaintext store described below. Empty
+priority is `GH_TOKEN`, then `GITHUB_TOKEN`, then the saved credential: a signed
+release build on macOS uses this app's dedicated Keychain entry (service
+`dev.herdr.gpui.github`, account `github.com`), while development builds and Linux
+use the file store described below. Empty
 environment values are ignored. A rejected environment token is not silently
 replaced with a saved token. GitHub CLI and Arbor credential files are never read.
 
@@ -202,7 +203,17 @@ grants. If deletion fails, the panel reports the error; the session stays signed
 out but the saved credential may be used on a later app launch. Revoke grants in
 GitHub settings if desired. Keychain I/O runs off the UI thread, but macOS may
 require unlocking/approving access and its prompt cannot be cancelled by the
-HTTP timeout. macOS always uses Keychain, with no silent plaintext fallback.
+HTTP timeout. A signed macOS release build always uses Keychain, with no silent
+plaintext fallback.
+
+Unsigned development builds (`just run`, `just run-debug`, `cargo run`, and every
+worktree build) deliberately skip the Keychain. Each rebuild produces a new code
+identity, so macOS would ask you to approve Keychain access on every launch. Only
+the release pipeline sets `HERDR_RELEASE_VERSION`, and only that build reads or
+writes the Keychain entry; development builds use the same file store as Linux,
+enabled by default there because they have no secure store to fall back on. The
+profile panel says so with its own warning, and a development build never reads or
+removes a credential saved by a signed release build.
 
 Linux credential persistence currently requires explicit opt-in:
 
@@ -221,7 +232,9 @@ files, and uses exclusive `0600` temporary files, fsync, and an atomic fd-relati
 rename. File access and writes run off the UI thread. Linux Secret Service support
 is not implemented; Linux native GPUI builds are not yet validated.
 
-Reloading GUI config applies changes to this opt-in immediately. A policy change
+This opt-in changes nothing for a signed macOS release build, which always uses
+the Keychain, and nothing for a macOS development build, which always uses the
+file store. Reloading GUI config applies changes to this opt-in immediately. A policy change
 clears the current profile and PR results, cancels pending authorization, and
 re-evaluates credentials using the new policy and normal environment-first priority.
 Enabling it can load an existing saved token; disabling it stops using plaintext
