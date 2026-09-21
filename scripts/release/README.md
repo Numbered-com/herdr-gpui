@@ -152,12 +152,12 @@ set before making it public; Homebrew still verifies and uses only the final DMG
 unverified release. Render with the final stapled DMG's SHA-256 (64 hex digits).
 Rendering is deterministic, normalizes hexadecimal to lowercase, and writes only
 stdout. Do not redirect onto the input template. The rendered cask belongs at
-`Casks/herdr-gpui.rb` in `penso/homebrew-herdr-gpui`; install as
-`brew install --cask penso/herdr-gpui/herdr-gpui`. Downloads use repository
+`Casks/herdr-gpui.rb` in `penso/homebrew-tap`; install as
+`brew install penso/tap/herdr-gpui`. Downloads use repository
 `penso/herdr-gpui`, tag `vVERSION`, and the exact DMG filename above.
 
 `bash scripts/release/update-homebrew.sh VERSION RENDERED_CASK` publishes that cask
-to the resolved default branch of `penso/homebrew-herdr-gpui`. Run only after the
+to the resolved default branch of `penso/homebrew-tap`. Run only after the
 published DMG checksum has been verified. It requires `git`, `ssh`, `curl`, `jq`,
 and the literal private deploy key in `HOMEBREW_TAP_SSH_KEY`, supplied only to the
 approved Homebrew workflow step. It uses HTTPS GitHub metadata for strict SSH host

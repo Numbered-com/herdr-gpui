@@ -31,14 +31,21 @@ Requires [Homebrew](https://brew.sh/) and macOS 15 Sequoia or newer, on Apple
 Silicon or Intel. The cask installs the signed, notarized universal app.
 
 ```sh
-brew install --cask penso/herdr-gpui/herdr-gpui
+brew install penso/tap/herdr-gpui
 open -a Herdr
 ```
 
-**Availability:** the [tap](https://github.com/penso/homebrew-herdr-gpui) exists,
-but the cask becomes installable only after the first successful release. Until
-then, build from source. macOS `.dmg` and experimental Linux tarballs are also
-published on [Releases](https://github.com/penso/herdr-gpui/releases).
+`brew install` resolves casks directly, so `--cask` is not required. To update it
+later, or to install by its short name, tap once first:
+
+```sh
+brew tap penso/tap
+brew install herdr-gpui
+```
+
+The cask is published from the [tap](https://github.com/penso/homebrew-tap) by the
+release workflow. macOS `.dmg` and experimental Linux tarballs are also published
+on [Releases](https://github.com/penso/herdr-gpui/releases).
 
 ### From source
 
