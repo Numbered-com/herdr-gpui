@@ -144,8 +144,6 @@ pub enum Error {
     GitHubHeader(#[source] ureq::http::header::InvalidHeaderValue),
     #[error("Invalid GitHub device authorization response.")]
     GitHubDevice,
-    #[error("Invalid GitHub profile response.")]
-    GitHubProfile,
     #[error("GitHub code expired. Sign in again.")]
     GitHubExpired,
     #[error("GitHub authorization denied.")]
