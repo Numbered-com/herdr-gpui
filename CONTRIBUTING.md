@@ -34,6 +34,9 @@ just run          # optimized build; use this for anything interactive
 just run-debug    # unoptimized, notably slower with a dense terminal
 ```
 
+On macOS these launch `target/<profile>/Herdr.app`, so the running app is named
+**Herdr** rather than the `herdr-gpui` executable a bare `cargo run` produces.
+
 ## Verifying a Change
 
 Run the workspace gates before opening a PR:

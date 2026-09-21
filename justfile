@@ -1,11 +1,24 @@
 default:
     @just --list
 
+# macOS names a running app after its executable, so run the bundle to stay "Herdr".
 run *args:
-    cargo run --locked --release -p herdr-gpui -- {{args}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(uname -s)" != Darwin ]; then
+        exec cargo run --locked --release -p herdr-gpui -- {{args}}
+    fi
+    {{just_executable()}} bundle release
+    exec target/release/Herdr.app/Contents/MacOS/Herdr {{args}}
 
 run-debug *args:
-    cargo run --locked -p herdr-gpui -- {{args}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(uname -s)" != Darwin ]; then
+        exec cargo run --locked -p herdr-gpui -- {{args}}
+    fi
+    {{just_executable()}} bundle debug
+    exec target/debug/Herdr.app/Contents/MacOS/Herdr {{args}}
 
 format:
     cargo fmt --all
@@ -45,14 +58,22 @@ icons:
     swift scripts/generate-icons.swift
 
 # Local, unsigned GUI-only bundle. Never installs or packages a daemon.
-bundle:
+bundle profile="release":
+    #!/usr/bin/env bash
+    set -euo pipefail
     test "$(uname -s)" = Darwin
-    cargo build --locked --release --target-dir target -p herdr-gpui
-    mkdir -p target/release/Herdr.app/Contents/MacOS target/release/Herdr.app/Contents/Resources
-    cp target/release/herdr-gpui target/release/Herdr.app/Contents/MacOS/Herdr
-    cp assets/macos/Info.plist target/release/Herdr.app/Contents/Info.plist
-    cp "$(python3 scripts/release/build-icon.py icns target/release/Herdr.app/Contents/MacOS/Herdr)" target/release/Herdr.app/Contents/Resources/Herdr.icns
-    plutil -lint target/release/Herdr.app/Contents/Info.plist
+    case "{{profile}}" in
+        release) flags=--release ;;
+        debug) flags= ;;
+        *) echo "Unknown profile: {{profile}} (release or debug)" >&2; exit 2 ;;
+    esac
+    app=target/{{profile}}/Herdr.app
+    cargo build --locked $flags --target-dir target -p herdr-gpui
+    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+    cp target/{{profile}}/herdr-gpui "$app/Contents/MacOS/Herdr"
+    cp assets/macos/Info.plist "$app/Contents/Info.plist"
+    cp "$(python3 scripts/release/build-icon.py icns "$app/Contents/MacOS/Herdr")" "$app/Contents/Resources/Herdr.icns"
+    plutil -lint "$app/Contents/Info.plist"
 
 # Link the actual optimized application and exercise its CLI without a desktop.
 test-build: build-release
