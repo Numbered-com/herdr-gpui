@@ -34,13 +34,49 @@ fn agent(timeout: Duration) -> ureq::Agent {
         .into()
 }
 
-fn response<T: DeserializeOwned>(mut response: ureq::http::Response<ureq::Body>) -> Result<T> {
-    match response.status().as_u16() {
-        200..=299 => {}
-        401 => return Err(Error::GitHubAuthentication),
-        403 => return Err(Error::GitHubForbidden),
-        429 => return Err(Error::GitHubRateLimit),
-        status => return Err(Error::GitHubStatus(status)),
+/// A short, public response header, or `""` when GitHub did not send it.
+fn header<'a>(headers: &'a ureq::http::HeaderMap, name: &str) -> &'a str {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+}
+
+/// The SSO challenge without its one-time authorization request identifier, so
+/// the log names the organization that must approve the token and nothing more.
+fn public_sso(challenge: &str) -> &str {
+    challenge.split('?').next().unwrap_or(challenge)
+}
+
+/// Why a GitHub call failed, from public headers only: no body, no credential.
+/// Enterprise sign-ins fail on exactly these (SSO, scopes, org policy), and the
+/// request id is what GitHub support asks for.
+fn log_http(context: &'static str, status: u16, headers: &ureq::http::HeaderMap) {
+    tracing::warn!(
+        category = "github_http",
+        context,
+        status,
+        request_id = header(headers, "x-github-request-id"),
+        scopes = header(headers, "x-oauth-scopes"),
+        accepted_scopes = header(headers, "x-accepted-oauth-scopes"),
+        sso = public_sso(header(headers, "x-github-sso")),
+        "GitHub request failed"
+    );
+}
+
+fn response<T: DeserializeOwned>(
+    context: &'static str,
+    mut response: ureq::http::Response<ureq::Body>,
+) -> Result<T> {
+    let status = response.status().as_u16();
+    if !(200..=299).contains(&status) {
+        log_http(context, status, response.headers());
+        return Err(match status {
+            401 => Error::GitHubAuthentication,
+            403 => Error::GitHubForbidden,
+            429 => Error::GitHubRateLimit,
+            status => Error::GitHubStatus(status),
+        });
     }
     // Allocate the bounded capacity up front: no reallocations leave old body
     // fragments behind, and partial reads are wiped even on I/O errors.
@@ -52,9 +88,78 @@ fn response<T: DeserializeOwned>(mut response: ureq::http::Response<ureq::Body>)
         .read_to_end(&mut bytes)
         .map_err(Error::GitHubRead)?;
     if bytes.len() > LIMIT as usize {
+        tracing::warn!(
+            category = "github_http",
+            context,
+            status,
+            "GitHub response exceeded the size limit"
+        );
         return Err(Error::GitHubSize);
     }
-    serde_json::from_slice(&bytes).map_err(Error::github_json)
+    serde_json::from_slice(&bytes).map_err(|error| {
+        // The body may hold credentials, so only its shape is recorded.
+        tracing::warn!(
+            category = "github_http",
+            context,
+            status,
+            bytes = bytes.len() as u64,
+            "GitHub response was not the expected JSON"
+        );
+        Error::github_json(error)
+    })
+}
+
+/// Stable label for a failure, so the log window can be filtered by step and
+/// cause without matching on user-facing sentences.
+fn kind(error: &Error) -> &'static str {
+    match error {
+        Error::GitHubAuthentication => "authentication",
+        Error::GitHubForbidden => "forbidden",
+        Error::GitHubRateLimit => "rate_limit",
+        Error::GitHubStatus(_) => "status",
+        Error::GitHubRead(_) => "read",
+        Error::GitHubSize => "size",
+        Error::GitHubJson(_) => "json",
+        Error::GitHubToken => "token",
+        Error::GitHubTokenType => "token_type",
+        Error::GitHubEncoding(_) => "encoding",
+        Error::GitHubNetwork(_) => "network",
+        Error::GitHubHeader(_) => "header",
+        Error::GitHubDevice => "device",
+        Error::GitHubProfile => "profile",
+        Error::GitHubExpired => "expired",
+        Error::GitHubDenied => "denied",
+        Error::GitHubAuthorization => "authorization",
+        Error::GitHubQuery => "query",
+        Error::GitHubWorker(_) => "worker",
+        #[cfg(target_os = "macos")]
+        Error::KeychainRead(_) => "keychain_read",
+        #[cfg(target_os = "macos")]
+        Error::KeychainWrite(_) => "keychain_write",
+        Error::CredentialDirectory => "credential_directory",
+        Error::CredentialPermissions => "credential_permissions",
+        Error::CredentialIo(_) => "credential_io",
+        Error::CredentialPolicy => "credential_policy",
+        _ => "other",
+    }
+}
+
+/// Records the failed step next to the message the menu shows. Transport text
+/// is kept because proxies, TLS interception, and DNS are invisible otherwise;
+/// it describes the connection, never a request field or a response body.
+fn log_failure(context: &'static str, error: &Error) {
+    let transport = match error {
+        Error::GitHubNetwork(source) => source.to_string(),
+        _ => String::new(),
+    };
+    tracing::warn!(
+        category = "github_failure",
+        context,
+        kind = kind(error),
+        transport = transport.as_str(),
+        detail = %error,
+        "GitHub operation failed"
+    );
 }
 
 fn valid_token(token: &str) -> bool {
@@ -268,17 +373,25 @@ pub(super) fn graphql(
         .header("Content-Type", "application/json")
         .header("Authorization", authorization(token)?)
         .send(body.as_bytes())
-        .map_err(Error::GitHubNetwork)?;
+        .map_err(log_network("graphql"))?;
     *cooldown = pr_cooldown(
         reply.status().as_u16(),
         reply.headers(),
         std::time::SystemTime::now(),
     );
-    let result: Value = response(reply)?;
+    let result: Value = response("graphql", reply)?;
     if cancelled() {
         return Err(Error::PrCancelled);
     }
     if result.get("errors").is_some() {
+        // GitHub explains SAML/SSO and org policy denials only in this text.
+        tracing::warn!(
+            category = "github_graphql",
+            detail = result["errors"][0]["message"].as_str().unwrap_or_default(),
+            error_type = result["errors"][0]["type"].as_str().unwrap_or_default(),
+            count = result["errors"].as_array().map_or(0, Vec::len) as u64,
+            "GitHub GraphQL query returned errors"
+        );
         if result["errors"].as_array().is_some_and(|errors| {
             errors.iter().any(|error| {
                 matches!(
@@ -337,16 +450,35 @@ fn pr_cooldown(
     ))
 }
 
-fn oauth<T: DeserializeOwned>(path: &str, fields: &[(&str, &str)], timeout: Duration) -> Result<T> {
+/// Transport failures carry the connection's own diagnosis, not the exchange:
+/// the request form and the response body stay out of the log.
+fn log_network(context: &'static str) -> impl FnOnce(ureq::Error) -> Error {
+    move |error| {
+        tracing::warn!(
+            category = "github_network",
+            context,
+            transport = %error,
+            "GitHub request did not complete"
+        );
+        Error::GitHubNetwork(error)
+    }
+}
+
+fn oauth<T: DeserializeOwned>(
+    path: &'static str,
+    fields: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<T> {
     // ureq owns form serialization and HTTP/TLS buffers; their copies cannot be
-    // zeroized by this module. Never log request fields or raw response errors.
+    // zeroized by this module. Never log request fields or response bodies.
     response(
+        path,
         agent(timeout)
             .post(format!("https://github.com/login/{path}"))
             .header("User-Agent", "Herdr-GPUI")
             .header("Accept", "application/json")
             .send_form(fields.iter().copied())
-            .map_err(Error::GitHubNetwork)?,
+            .map_err(log_network(path))?,
     )
 }
 
@@ -364,18 +496,42 @@ fn default_interval() -> u64 {
 }
 
 impl Device {
-    fn validate(self) -> Result<Self> {
+    /// The single check that rejected this response, for diagnostics only.
+    fn rejection(&self) -> Option<&'static str> {
         let user_code = self.user_code.expose_secret();
-        if !valid_token(self.device_code.expose_secret())
+        if !valid_token(self.device_code.expose_secret()) {
+            Some("device_code")
+        } else if user_code.is_empty()
             || user_code.len() > 32
-            || user_code.is_empty()
             || !user_code
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            || self.verification_uri != VERIFY_URL
-            || !(1..=900).contains(&self.expires_in)
-            || !(1..=900).contains(&self.interval)
         {
+            Some("user_code")
+        } else if self.verification_uri != VERIFY_URL {
+            Some("verification_uri")
+        } else if !(1..=900).contains(&self.expires_in) {
+            Some("expires_in")
+        } else if !(1..=900).contains(&self.interval) {
+            Some("interval")
+        } else {
+            None
+        }
+    }
+
+    fn validate(self) -> Result<Self> {
+        if let Some(rejection) = self.rejection() {
+            // The verification URI is a public endpoint. An enterprise or data
+            // residency host is exactly what this rejection would be hiding, so
+            // it is logged; the device and user codes never are.
+            tracing::warn!(
+                category = "github_device",
+                rejection,
+                verification_uri = self.verification_uri.as_str(),
+                expires_in = self.expires_in,
+                interval = self.interval,
+                "GitHub device authorization response rejected"
+            );
             return Err(Error::GitHubDevice);
         }
         Ok(self)
@@ -404,18 +560,31 @@ fn profile(token: Arc<SecretString>) -> Result<Profile> {
         avatar_url: String,
     }
     let user: User = response(
+        "profile",
         agent(Duration::from_secs(15))
             .get("https://api.github.com/user")
             .header("User-Agent", "Herdr-GPUI")
             .header("Accept", "application/vnd.github+json")
             .header("Authorization", authorization(&token)?)
             .call()
-            .map_err(Error::GitHubNetwork)?,
+            .map_err(log_network("profile"))?,
     )?;
     if crate::avatars::github_repo(&format!("https://github.com/{}/profile", user.login)).is_none()
     {
+        // The account name is already shown in the menu once connected, and an
+        // unsupported one is the whole failure, so it is recorded here.
+        tracing::warn!(
+            category = "github_profile",
+            login = user.login.as_str(),
+            "GitHub account name is not a supported login"
+        );
         return Err(Error::GitHubProfile);
     }
+    tracing::info!(
+        category = "github_profile",
+        login = user.login.as_str(),
+        "GitHub profile loaded"
+    );
     // The image transport receives no Authorization header and follows no redirects.
     let (avatar, avatar_updates) = crate::avatars::profile_avatar(&user.avatar_url);
     Ok(Profile {
@@ -431,25 +600,49 @@ struct TokenResponse {
     access_token: Option<SecretString>,
     token_type: Option<String>,
     error: Option<String>,
+    /// Logged, never displayed: GitHub's own wording is the only place an
+    /// enterprise policy or app-approval denial is explained.
+    error_description: Option<String>,
 }
 
 fn token_reply(value: TokenResponse) -> Result<Reply> {
     match value.error.as_deref() {
         Some("authorization_pending") => Ok(Reply::Pending(false)),
         Some("slow_down") => Ok(Reply::Pending(true)),
-        Some("expired_token") => Err(Error::GitHubExpired),
-        Some("access_denied") => Err(Error::GitHubDenied),
-        Some(_) => Err(Error::GitHubAuthorization),
+        Some(code) => {
+            tracing::warn!(
+                category = "github_oauth",
+                code,
+                detail = value.error_description.as_deref().unwrap_or_default(),
+                "GitHub rejected the device authorization"
+            );
+            Err(match code {
+                "expired_token" => Error::GitHubExpired,
+                "access_denied" => Error::GitHubDenied,
+                _ => Error::GitHubAuthorization,
+            })
+        }
         None => {
             let token = value
                 .access_token
                 .filter(|t| valid_token(t.expose_secret()))
-                .ok_or(Error::GitHubToken)?;
+                .ok_or_else(|| {
+                    tracing::warn!(
+                        category = "github_oauth",
+                        "GitHub returned no usable access token"
+                    );
+                    Error::GitHubToken
+                })?;
             if value
                 .token_type
                 .as_deref()
                 .is_none_or(|t| !t.eq_ignore_ascii_case("bearer"))
             {
+                tracing::warn!(
+                    category = "github_oauth",
+                    token_type = value.token_type.as_deref().unwrap_or_default(),
+                    "GitHub returned an unsupported token type"
+                );
                 return Err(Error::GitHubTokenType);
             }
             Ok(Reply::Token(token))
@@ -539,7 +732,8 @@ impl Auth {
                 let _ = tx.send(load(token, store));
             }) {
             Ok(_) => self.profile_incoming = Some(rx),
-            Err(_) => {
+            Err(error) => {
+                tracing::error!(category = "github_worker", error_kind = ?error.kind(), "Could not start GitHub profile worker");
                 self.failed = true;
                 self.message = Some("Could not start GitHub profile worker.".into());
             }
@@ -616,7 +810,8 @@ impl Auth {
                 let _ = tx.send(work());
             }) {
             Ok(_) => self.incoming = Some(rx),
-            Err(_) => {
+            Err(error) => {
+                tracing::error!(category = "github_worker", error_kind = ?error.kind(), "Could not start GitHub authentication worker");
                 self.flow = None;
                 self.committing = false;
                 self.failed = true;
@@ -632,6 +827,11 @@ impl Auth {
         self.initialized = true;
         self.failed = false;
         if self.store == Store::Environment {
+            tracing::warn!(
+                category = "github_signin",
+                store = ?self.store,
+                "No secure credential store is configured for GitHub sign-in"
+            );
             self.failed = true;
             self.message =
                 Some("No secure credential store configured. To accept unencrypted token storage, set [github] allow_plaintext_credentials = true and reload GUI config. Otherwise use GH_TOKEN / GITHUB_TOKEN.".into());
@@ -640,10 +840,15 @@ impl Auth {
         let client = match config.github.client_id() {
             Ok(Some(client)) => client,
             Ok(None) => {
+                tracing::info!(
+                    category = "github_signin",
+                    "No GitHub OAuth client ID is configured"
+                );
                 self.message = Some(SETUP_MESSAGE.into());
                 return;
             }
             Err(error) => {
+                log_failure("client_id", &error);
                 self.failed = true;
                 self.message = Some(error.to_string());
                 return;
@@ -653,6 +858,11 @@ impl Auth {
         self.signed_out = false;
         self.profile_incoming = None;
         self.message = Some("Requesting GitHub sign-in code...".into());
+        tracing::info!(
+            category = "github_signin",
+            store = ?self.store,
+            "Requesting a GitHub device code"
+        );
         self.launch(move || {
             let started = Instant::now();
             let device = oauth::<Device>(
@@ -764,6 +974,7 @@ impl Auth {
                             self.message = None;
                         }
                         Err(error) => {
+                            log_failure("profile", &error);
                             self.credential_cleanup = true;
                             self.profile = None;
                             self.failed = true;
@@ -793,6 +1004,12 @@ impl Auth {
                     match reply {
                         Ok(Reply::Device(device, client, started)) => {
                             let now = Instant::now();
+                            tracing::info!(
+                                category = "github_signin",
+                                expires_in = device.expires_in,
+                                interval = device.interval,
+                                "GitHub device code ready; waiting for authorization"
+                            );
                             self.flow = Some(Flow {
                                 copied_until: None,
                                 client,
@@ -823,11 +1040,20 @@ impl Auth {
                                 self.committing = true;
                                 self.credential_cleanup = true;
                                 self.message = Some("Saving GitHub credential...".into());
+                                tracing::info!(
+                                    category = "github_signin",
+                                    store = ?self.store,
+                                    "GitHub authorized; saving the credential"
+                                );
                                 self.launch(move || {
                                     persist(Some(&token))?;
                                     Ok(Reply::Authenticated(Arc::new(token)))
                                 });
                             } else {
+                                tracing::warn!(
+                                    category = "github_signin",
+                                    "GitHub authorized after the device code expired"
+                                );
                                 self.failed = true;
                                 self.message = Some("GitHub code expired. Sign in again.".into());
                             }
@@ -844,6 +1070,7 @@ impl Auth {
                             self.load_profile_with(Some(token), load);
                         }
                         Err(error) => {
+                            log_failure("authentication", &error);
                             self.flow = None;
                             self.committing = false;
                             self.failed = true;
@@ -866,6 +1093,10 @@ impl Auth {
         {
             let now = Instant::now();
             if now >= flow.deadline {
+                tracing::warn!(
+                    category = "github_signin",
+                    "GitHub device code expired before authorization"
+                );
                 self.flow = None;
                 self.failed = true;
                 self.message = Some("GitHub code expired. Sign in again.".into());
@@ -1313,9 +1544,10 @@ mod tests {
                 .body(ureq::Body::builder().data(body.to_vec()))
                 .unwrap()
         };
-        let parsed: TokenResponse = response(reply(
-            br#"{"access_token":"fixture-access-secret","token_type":"bearer"}"#,
-        ))
+        let parsed: TokenResponse = response(
+            "test",
+            reply(br#"{"access_token":"fixture-access-secret","token_type":"bearer"}"#),
+        )
         .unwrap();
         assert!(!format!("{parsed:?}").contains("fixture-access-secret"));
         let Reply::Token(token) = super::token_reply(parsed).unwrap() else {
@@ -1328,13 +1560,13 @@ mod tests {
             b"private-invalid-secret\xff",
         ] {
             assert_eq!(
-                response::<TokenResponse>(reply(body))
+                response::<TokenResponse>("test", reply(body))
                     .unwrap_err()
                     .to_string(),
                 "Invalid GitHub JSON response."
             );
         }
-        let parsed: Device = response(reply(br#"{"device_code":"fixture-device","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","expires_in":900}"#)).unwrap();
+        let parsed: Device = response("test", reply(br#"{"device_code":"fixture-device","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","expires_in":900}"#)).unwrap();
         assert_eq!(
             parsed.validate().unwrap().user_code.expose_secret(),
             "ABCD-1234"
@@ -1395,17 +1627,17 @@ mod tests {
             (302, "request failed"),
             (500, "request failed"),
         ] {
-            let error =
-                response::<Value>(reply(status, b"private-error-secret".to_vec())).unwrap_err();
+            let error = response::<Value>("test", reply(status, b"private-error-secret".to_vec()))
+                .unwrap_err();
             assert!(error.to_string().contains(message));
             assert!(!error.to_string().contains("private-error-secret"));
         }
         assert_eq!(
-            response::<Value>(reply(200, b"{\"ok\":true}".to_vec())).unwrap()["ok"],
+            response::<Value>("test", reply(200, b"{\"ok\":true}".to_vec())).unwrap()["ok"],
             true
         );
-        assert!(response::<Value>(reply(200, b"not-json".to_vec())).is_err());
-        assert!(response::<Value>(reply(200, vec![b' '; LIMIT as usize + 1])).is_err());
+        assert!(response::<Value>("test", reply(200, b"not-json".to_vec())).is_err());
+        assert!(response::<Value>("test", reply(200, vec![b' '; LIMIT as usize + 1])).is_err());
         assert!(
             graphql(
                 &"fixture".into(),
@@ -1420,6 +1652,57 @@ mod tests {
             .contains("cancelled")
         );
     }
+    #[test]
+    fn rejected_device_responses_name_the_failing_check() {
+        let device = |key: &str, value: Value| {
+            let mut v = serde_json::json!({"device_code":"fixture", "user_code":"ABCD-1234", "verification_uri":VERIFY_URL, "expires_in":900, "interval":5});
+            v[key] = value;
+            serde_json::from_value::<Device>(v).unwrap()
+        };
+        for (key, value, rejection) in [
+            ("device_code", serde_json::json!(""), "device_code"),
+            ("user_code", serde_json::json!("bad\ncode"), "user_code"),
+            ("user_code", serde_json::json!(""), "user_code"),
+            (
+                "verification_uri",
+                serde_json::json!("https://github.example.test/login/device"),
+                "verification_uri",
+            ),
+            ("expires_in", serde_json::json!(901), "expires_in"),
+            ("interval", serde_json::json!(0), "interval"),
+        ] {
+            let device = device(key, value);
+            assert_eq!(device.rejection(), Some(rejection));
+            assert!(device.validate().is_err());
+        }
+        assert_eq!(
+            device("interval", serde_json::json!(5)).rejection(),
+            None,
+            "a valid response must not report a rejection"
+        );
+    }
+
+    #[test]
+    fn diagnostics_keep_public_details_and_drop_the_sso_request_id() {
+        assert_eq!(
+            public_sso(
+                "required; url=https://github.com/orgs/acme/sso?authorization_request=SECRET"
+            ),
+            "required; url=https://github.com/orgs/acme/sso"
+        );
+        assert_eq!(public_sso(""), "");
+        let mut headers = ureq::http::HeaderMap::new();
+        assert_eq!(header(&headers, "x-github-request-id"), "");
+        headers.insert("x-github-request-id", "ABCD:1234".parse().unwrap());
+        assert_eq!(header(&headers, "x-github-request-id"), "ABCD:1234");
+        // Categories stay stable so a log filter keeps working across releases.
+        assert_eq!(kind(&Error::GitHubForbidden), "forbidden");
+        assert_eq!(kind(&Error::GitHubProfile), "profile");
+        assert_eq!(kind(&Error::GitHubStatus(500)), "status");
+        assert_eq!(kind(&Error::GitHubWorker("profile")), "worker");
+        assert_eq!(kind(&Error::PrTimeout), "other");
+    }
+
     #[test]
     fn device_validation_and_oauth_error_lifecycle() {
         for (key, value) in [
