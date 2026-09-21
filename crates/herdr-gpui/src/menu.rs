@@ -236,9 +236,20 @@ impl Deletion {
     }
 }
 
-/// Mix the theme's blue with foreground so accents remain readable on dark themes.
+/// Mix an ANSI color with foreground so it stays readable on dark themes, where
+/// the palette entry alone can sit too close to the surface it is painted on.
+fn tint(theme: &crate::config::Theme, index: usize) -> Rgba {
+    rgb(theme.foreground).blend(rgba((theme.palette[index] << 8) | 0x70))
+}
+
+/// The theme's blue, as accents and links use it.
 pub(super) fn accent(theme: &crate::config::Theme) -> Rgba {
-    rgb(theme.foreground).blend(rgba((theme.palette[4] << 8) | 0x70))
+    tint(theme, 4)
+}
+
+/// The theme's red, as destructive actions and errors use it.
+fn danger(theme: &crate::config::Theme) -> Rgba {
+    tint(theme, 1)
 }
 
 impl MenuState {
@@ -822,6 +833,202 @@ impl HerdrWindow {
         cx.notify();
     }
 
+    /// Workspace dialogs share the confirmation chrome of the close modal and
+    /// the theme picker: a titled header, the body, then right-aligned actions.
+    /// Deletion shows the daemon-supplied path as its own block so a long
+    /// checkout stays readable instead of running into the prose.
+    fn render_workspace_dialog(&self, action: WorkspaceAction, cx: &mut Context<Self>) -> Div {
+        let Some(target) = &self.menu.target else {
+            return div();
+        };
+        let theme = &self.theme;
+        let font = &self.config.ui;
+        let danger = danger(theme);
+        let deletion = self.menu.deletion.as_ref();
+        let force = deletion.is_some_and(|deletion| deletion.force);
+        let removing = deletion.is_some_and(|deletion| deletion.pending.is_some());
+        // Until the daemon names the checkout there is nothing to confirm.
+        let armed = action != WorkspaceAction::DeleteWorktree
+            || deletion.is_some_and(|deletion| deletion.ready());
+        let destructive = matches!(
+            action,
+            WorkspaceAction::Close | WorkspaceAction::DeleteWorktree
+        );
+        let (title, submit) = match action {
+            WorkspaceAction::Rename => ("Rename workspace", "Rename"),
+            WorkspaceAction::Close => (target.close_label(), target.close_label()),
+            WorkspaceAction::NewWorktree => ("New worktree", "Create"),
+            WorkspaceAction::DeleteWorktree if force => ("Force delete checkout?", "Force remove"),
+            WorkspaceAction::DeleteWorktree => ("Delete worktree checkout?", "Remove"),
+        };
+        let mut body = div().flex().flex_col().gap(px(10.)).px(px(16.)).py(px(12.));
+        body = match action {
+            WorkspaceAction::Rename => {
+                body.child(div().text_color(rgb(theme.muted)).child("Edit the workspace label."))
+            }
+            WorkspaceAction::Close => body.child(div().text_color(rgb(theme.muted)).child(format!(
+                "Closes {} workspace(s) and terminates their running terminals. Checkout files and branches are not deleted.",
+                target.close_members.len()
+            ))),
+            WorkspaceAction::NewWorktree => body.child(div().text_color(rgb(theme.muted)).child(
+                "Branch (optional). Blank uses the daemon default. Base: HEAD. Repository trust is not granted.",
+            )),
+            WorkspaceAction::DeleteWorktree => body
+                .child(if force {
+                    "This force removes the checkout folder:"
+                } else {
+                    "This removes the checkout folder:"
+                })
+                .child(
+                    div()
+                        .debug_selector(|| "dialog-path".into())
+                        .rounded(px(4.))
+                        .bg(rgb(theme.active))
+                        .px(px(10.))
+                        .py(px(6.))
+                        .child(
+                            deletion
+                                .and_then(|deletion| deletion.path.as_deref())
+                                .unwrap_or("Waiting for the daemon to name the checkout...")
+                                .to_owned(),
+                        ),
+                )
+                .child(div().text_color(rgb(theme.muted)).child(if force {
+                    "Modified and untracked files, including submodule contents, are discarded. The branch is not deleted. The Herdr workspace will close."
+                } else {
+                    "The branch is not deleted. The Herdr workspace will close."
+                })),
+        };
+        if self.menu.input.is_some() {
+            body = body.child(self.render_dialog_input(cx));
+        }
+        if let Some(error) = &self.menu.error {
+            body = body.child(
+                div()
+                    .debug_selector(|| "dialog-error".into())
+                    .rounded(px(4.))
+                    .bg(rgb(theme.active))
+                    .px(px(10.))
+                    .py(px(6.))
+                    .text_color(danger)
+                    .child(error.clone()),
+            );
+        }
+        if armed && removing {
+            // Dismissing only closes the panel; the daemon keeps the queued removal.
+            body = body.child(
+                div()
+                    .text_color(rgb(theme.muted))
+                    .child("Waiting for the daemon. Dismissing does not cancel it."),
+            );
+        }
+        let button = |id: &'static str| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .px(px(12.))
+                .py(px(6.))
+                .rounded(px(4.))
+                .border_1()
+                .cursor_pointer()
+        };
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .px(px(16.))
+                    .py(px(12.))
+                    .border_b_1()
+                    .border_color(rgb(theme.active))
+                    .when_some(
+                        WorkspaceMenuAction::Dialog(action).icon(),
+                        |header, icon| {
+                            header.child(svg().path(icon).size(px(16.)).flex_none().text_color(
+                                if destructive {
+                                    danger
+                                } else {
+                                    rgb(theme.muted)
+                                },
+                            ))
+                        },
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_size(px(font.size * 1.35))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_color(rgb(theme.muted))
+                                    .child(target.label.clone()),
+                            ),
+                    ),
+            )
+            .child(body)
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .px(px(16.))
+                    .py(px(12.))
+                    .border_t_1()
+                    .border_color(rgb(theme.active))
+                    .child(
+                        button("dialog-cancel")
+                            .border_color(rgb(theme.active))
+                            .hover(|button| button.bg(rgb(theme.active)))
+                            .child("Cancel")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.dismiss_menu(window, cx);
+                            })),
+                    )
+                    .child(
+                        button("dialog-submit")
+                            // The primary action carries the fill; a
+                            // destructive one also carries the warning hue.
+                            .border_color(if !armed {
+                                rgb(theme.active)
+                            } else if destructive {
+                                danger
+                            } else {
+                                rgb(theme.foreground)
+                            })
+                            .when(armed, |button| button.bg(rgb(theme.active)))
+                            .text_color(if !armed {
+                                rgb(theme.muted)
+                            } else if destructive {
+                                danger
+                            } else {
+                                rgb(theme.foreground)
+                            })
+                            .hover(|button| button.bg(rgb(theme.active)))
+                            .child(if removing && armed {
+                                "Removing..."
+                            } else {
+                                submit
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.submit_workspace_dialog(window, cx);
+                            })),
+                    ),
+            )
+    }
+
     pub(super) fn render_menu(&self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let page = self.menu.page.unwrap_or(Page::Menu);
         let font = &self.config.ui;
@@ -899,7 +1106,13 @@ impl HerdrWindow {
                         | Page::AppUpdate
                         | Page::GitHub
                 ),
-                |panel| panel.overflow_y_scroll().p(px(6.)),
+                |panel| {
+                    // Dialogs draw their own full-bleed header and footer rules,
+                    // so the panel's own inset would cut those rules short.
+                    panel
+                        .overflow_y_scroll()
+                        .when(!matches!(page, Page::Dialog(_)), |panel| panel.p(px(6.)))
+                },
             )
             .when(
                 matches!(
@@ -1026,78 +1239,7 @@ impl HerdrWindow {
                 ));
             }
         } else if let Page::Dialog(action) = page {
-            if let Some(target) = &self.menu.target {
-                let (title, detail, submit) = match action {
-                    WorkspaceAction::Rename => ("Rename workspace", "Edit the workspace label.".to_owned(), "Rename"),
-                    WorkspaceAction::Close => (target.close_label(), format!("Close {} workspace(s) and terminate their running terminals? Checkout files and branches are not deleted.", target.close_members.len()), target.close_label()),
-                    WorkspaceAction::NewWorktree => ("New worktree", "Branch (optional). Blank uses the daemon default. Base: HEAD. Repository trust is not granted.".to_owned(), "Create"),
-                    WorkspaceAction::DeleteWorktree => {
-                        let deletion = self.menu.deletion.as_ref();
-                        let path = deletion.and_then(|d| d.path.as_deref()).unwrap_or("Waiting for the daemon to name the checkout...");
-                        let force = deletion.is_some_and(|d| d.force);
-                        let mut detail = if force {
-                            format!("This force removes the checkout folder:\n{path}\nModified and untracked files, including submodule contents, are discarded. The branch is not deleted. The Herdr workspace will close.")
-                        } else {
-                            format!("This removes the checkout folder:\n{path}\nThe branch is not deleted. The Herdr workspace will close.")
-                        };
-                        if deletion.is_some_and(|d| d.pending.is_some() && d.path.is_some()) {
-                            // Dismissing only closes the panel; the daemon keeps the queued removal.
-                            detail.push_str("\nWaiting for the daemon. Dismissing does not cancel it.");
-                        }
-                        ("Delete worktree checkout?", detail, if force { "Force remove" } else { "Remove" })
-                    }
-                };
-                panel = panel
-                    .child(div().p(px(8.)).child(title))
-                    .child(div().p(px(8.)).truncate().child(target.label.clone()))
-                    .child(div().p(px(8.)).child(detail));
-                if self.menu.input.is_some() {
-                    panel = panel.child(self.render_dialog_input(cx));
-                }
-                if let Some(error) = &self.menu.error {
-                    panel = panel.child(
-                        div()
-                            .debug_selector(|| "dialog-error".into())
-                            .p(px(8.))
-                            .text_color(rgb(theme.palette[1]))
-                            .child(error.clone()),
-                    );
-                }
-                panel = panel.child(
-                    div()
-                        .flex()
-                        .gap(px(16.))
-                        .p(px(8.))
-                        .child(
-                            div()
-                                .id("dialog-cancel")
-                                .cursor_pointer()
-                                .child("Cancel (Escape)")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.dismiss_menu(window, cx);
-                                })),
-                        )
-                        .child(
-                            div()
-                                .id("dialog-submit")
-                                .debug_selector(|| "dialog-submit".into())
-                                .cursor_pointer()
-                                .when(
-                                    matches!(
-                                        action,
-                                        WorkspaceAction::Close | WorkspaceAction::DeleteWorktree
-                                    ),
-                                    |button| button.text_color(rgb(theme.palette[1])),
-                                )
-                                .child(submit)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.submit_workspace_dialog(window, cx);
-                                })),
-                        ),
-                );
-            }
+            panel = panel.child(self.render_workspace_dialog(action, cx));
         } else if matches!(page, Page::Tab | Page::RenameTab) {
             panel = panel.child(self.render_tab_menu(cx));
         } else if page == Page::Keybinds {
@@ -1185,7 +1327,7 @@ impl HerdrWindow {
                     .id("menu-close")
                     .p(px(8.))
                     .cursor_pointer()
-                    .child("close (Escape)")
+                    .child("Close")
                     .on_click(cx.listener(|this, _, window, cx| {
                         cx.stop_propagation();
                         this.dismiss_menu(window, cx);
@@ -1806,8 +1948,19 @@ pub(crate) mod workspace_tests {
         });
         cx.run_until_parked();
         assert!(cx.debug_bounds("dialog-input").is_none());
-        assert!(cx.debug_bounds("dialog-submit").is_some());
         assert!(cx.debug_bounds("dialog-error").is_none());
+        // The daemon path reads as its own block above right-aligned actions,
+        // all of it inside the panel rather than clipped by it.
+        let panel = cx.debug_bounds("menu-panel").unwrap();
+        let path = cx.debug_bounds("dialog-path").unwrap();
+        let cancel = cx.debug_bounds("dialog-cancel").unwrap();
+        let submit = cx.debug_bounds("dialog-submit").unwrap();
+        assert!(panel.contains(&path.origin) && path.right() <= panel.right());
+        assert!(path.bottom() <= cancel.top() && path.bottom() <= submit.top());
+        assert_eq!(cancel.top(), submit.top());
+        assert!(cancel.right() < submit.left());
+        assert!(submit.right() <= panel.right());
+        assert!(submit.bottom() <= panel.bottom());
     }
 
     #[gpui::test]
