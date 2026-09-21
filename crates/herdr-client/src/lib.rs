@@ -9,13 +9,12 @@ mod ssh;
 pub use catalog::{
     SavedHost, load_saved_host_selection, load_saved_hosts, store_saved_host_selection,
 };
-/// Error returned when queueing commands; also available as the crate's `Error`.
-pub use error::Error as SendError;
-pub use error::{Error, Result, StorageOperation};
-pub mod presentation;
 pub use crossbeam_channel::Receiver;
 use crossbeam_channel::{SendTimeoutError, Sender, TrySendError, bounded};
 pub use discovery::{ConnectTarget, session_socket};
+/// Error returned when queueing commands; also available as the crate's `Error`.
+pub use error::Error as SendError;
+pub use error::{Error, Result, StorageOperation};
 pub use herdr_protocol as protocol;
 use protocol::{endpoint::*, *};
 use serde_json::{Value, json};

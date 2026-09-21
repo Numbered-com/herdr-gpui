@@ -87,7 +87,9 @@ impl Default for Config {
             theme: "Default".into(),
             github: GitHubConfig::default(),
             sidebar: font(monospace, 12.0),
-            tabs: font(ui, 14.0),
+            // Tabs are terminal chrome, so they read in the monospace face the
+            // sidebar and terminal use, as they do in the reference UI.
+            tabs: font(monospace, 12.0),
             terminal: font(monospace, 14.0),
             ui: font(ui, 12.0),
         }
@@ -425,6 +427,16 @@ impl Default for Theme {
     }
 }
 
+/// `percent` of `over` blended onto `base`, per channel.
+fn mix(base: u32, over: u32, percent: u32) -> u32 {
+    let channel = |shift: u32| {
+        let base = (base >> shift) & 255;
+        let over = (over >> shift) & 255;
+        (base * (100 - percent) + over * percent) / 100
+    };
+    (channel(16) << 16) | (channel(8) << 8) | channel(0)
+}
+
 impl Theme {
     pub const BUILTIN_NAMES: &'static [&'static str] = &[
         "Default",
@@ -434,15 +446,43 @@ impl Theme {
         "Catppuccin Latte",
     ];
 
-    fn derive_chrome(&mut self) {
-        let blend = |percent: u32| {
-            let channel = |shift: u32| {
-                let bg = (self.background >> shift) & 255;
-                let fg = (self.foreground >> shift) & 255;
-                (bg * (100 - percent) + fg * percent) / 100
-            };
-            (channel(16) << 16) | (channel(8) << 8) | channel(0)
+    /// The theme's primary accent, used for selection colors that must read as
+    /// chosen rather than merely hovered.
+    pub fn primary(&self) -> u32 {
+        self.palette[5]
+    }
+
+    /// Dimmed foreground for rows that are not the current one: upstream's
+    /// subtext sits between its text and its muted overlay.
+    pub fn subtext(&self) -> u32 {
+        mix(self.background, self.foreground, 78)
+    }
+
+    /// A wash of [`Self::primary`] over the chrome, for filled selections such
+    /// as the current tab. Large areas of the full accent shout; this keeps the
+    /// hue while staying quiet enough to sit behind text all day.
+    pub fn primary_wash(&self) -> u32 {
+        mix(self.surface, self.primary(), 22)
+    }
+
+    /// Whichever of the theme's two text colors contrasts more with `fill`.
+    /// A fixed light-or-dark rule breaks on light themes, where the accent and
+    /// the background sit on the same side of any threshold.
+    pub fn text_on(&self, fill: u32) -> u32 {
+        let luminance = |color: u32| {
+            let channel = |shift: u32| ((color >> shift) & 255) as f32 / 255.;
+            0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
         };
+        let fill = luminance(fill);
+        if (luminance(self.background) - fill).abs() >= (luminance(self.foreground) - fill).abs() {
+            self.background
+        } else {
+            self.foreground
+        }
+    }
+
+    fn derive_chrome(&mut self) {
+        let blend = |percent| mix(self.background, self.foreground, percent);
         self.surface = blend(5);
         self.active = blend(12);
         self.muted = blend(55);
@@ -556,6 +596,45 @@ impl Theme {
 mod tests {
     use super::*;
     use anyhow::Context as _;
+
+    #[test]
+    fn primary_selection_text_contrasts_in_every_builtin_theme() {
+        let luminance = |color: u32| {
+            let channel = |shift: u32| ((color >> shift) & 255) as f32 / 255.;
+            0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+        };
+        for name in Theme::BUILTIN_NAMES {
+            let theme = Theme::builtin(name).unwrap_or_else(|| panic!("missing theme {name}"));
+            assert_eq!(
+                theme.primary(),
+                theme.palette[5],
+                "{name}: accent is ANSI 5"
+            );
+            // The tab fill is the softened wash, not the raw accent.
+            let primary = theme.primary_wash();
+            let text = theme.text_on(primary);
+            assert_ne!(primary, theme.surface, "{name}: selection must be visible");
+            assert_ne!(
+                primary, theme.active,
+                "{name}: selection must outrank hover"
+            );
+            assert!(
+                text == theme.background || text == theme.foreground,
+                "{name}: text must be one of the theme's own colors"
+            );
+            let gap = (luminance(text) - luminance(primary)).abs();
+            let other = if text == theme.background {
+                theme.foreground
+            } else {
+                theme.background
+            };
+            assert!(gap >= 0.3, "{name}: unreadable selection, gap {gap}");
+            assert!(
+                gap >= (luminance(other) - luminance(primary)).abs(),
+                "{name}: the other text color contrasts more"
+            );
+        }
+    }
 
     #[test]
     fn errors_retain_paths_categories_and_parser_sources() -> anyhow::Result<()> {
@@ -791,15 +870,16 @@ mod tests {
 
     #[test]
     fn defaults_and_partial_settings() -> anyhow::Result<()> {
+        // Sidebar, tabs, terminal, ui: only the status bar and modals are sans.
         #[cfg(target_os = "linux")]
         let families = [
             "DejaVu Sans Mono",
-            "DejaVu Sans",
+            "DejaVu Sans Mono",
             "DejaVu Sans Mono",
             "DejaVu Sans",
         ];
         #[cfg(not(target_os = "linux"))]
-        let families = ["Menlo", ".SystemUIFont", "Menlo", ".SystemUIFont"];
+        let families = ["Menlo", "Menlo", "Menlo", ".SystemUIFont"];
 
         for config in [
             Config::default(),
@@ -812,7 +892,7 @@ mod tests {
             for ((font, family), size) in [config.sidebar, config.tabs, config.terminal, config.ui]
                 .into_iter()
                 .zip(families)
-                .zip([12.0, 14.0, 14.0, 12.0])
+                .zip([12.0, 12.0, 14.0, 12.0])
             {
                 assert_eq!(font.family, family);
                 assert_eq!(font.size, size);
@@ -827,7 +907,7 @@ mod tests {
             for ((font, family), size) in [config.sidebar, config.tabs, config.terminal, config.ui]
                 .into_iter()
                 .zip(families)
-                .zip([12.0, 14.0, 14.0, 12.0])
+                .zip([12.0, 12.0, 14.0, 12.0])
             {
                 assert_eq!(
                     font.family,

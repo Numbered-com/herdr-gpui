@@ -1,25 +1,43 @@
 use super::{Command, HerdrWindow, NavigationTarget};
 use crate::config::{FontConfig, Theme};
 use gpui::{prelude::*, *};
-use herdr_client::protocol::{AgentStatus, ClientShellAgent, ClientShellWorkspace};
+use herdr_client::protocol::{
+    AgentStatus, ClientShellAgent, ClientShellSnapshot, ClientShellWorkspace,
+};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 const SIDEBAR_WIDTH: f32 = 232.;
 const ROW_PADDING: f32 = 12.;
-const STATUS_WIDTH: f32 = 5.;
+const STATUS_WIDTH: f32 = 8.;
+// Unknown stays a smaller dot so it reads as "no reported status" next to the full ones.
+const STATUS_DOT_UNKNOWN: f32 = 3.;
 pub(super) const LABEL_GAP: f32 = 8.;
-const CHILD_INDENT: f32 = 16.;
+// Children clear the gutter their tree lines run in, which starts at the
+// parent's label column so the trunk lines up under the parent's branch.
+const TREE_GUTTER: f32 = ROW_PADDING + STATUS_WIDTH + LABEL_GAP;
+const CHILD_INDENT: f32 = TREE_GUTTER - ROW_PADDING + 12.;
 pub(super) const ARROW_RESERVE: f32 = 18.;
 pub(super) const HOST_ARROW_WIDTH: f32 = 12.;
 pub(super) const HOST_GAP: f32 = 6.;
 pub(super) const ICON_RESERVE: f32 = 18.;
-pub(super) static GITHUB_ICON: LazyLock<Arc<Image>> = LazyLock::new(|| {
-    Arc::new(Image::from_bytes(
-        ImageFormat::Svg,
-        include_bytes!("../../../assets/icons/github.svg").to_vec(),
-    ))
-});
+/// What a row shows in its leading icon slot: a repository owner's avatar when
+/// one is cached, the GitHub mark while it is not, and nothing for the child
+/// rows that reserve no slot at all.
+enum RowIcon {
+    None,
+    Mark,
+    Avatar(Arc<Image>),
+}
+
+/// The mark paints as vector rather than a rasterized image, so it stays sharp
+/// at every size it stands in for an avatar.
+pub(super) fn github_mark(color: u32) -> Svg {
+    svg()
+        .path("icons/github.svg")
+        .flex_none()
+        .text_color(rgb(color))
+}
 #[cfg(any(test, feature = "integration-test"))]
 pub(super) const LABEL_WIDTH: f32 =
     SIDEBAR_WIDTH - 1. - 2. * ROW_PADDING - STATUS_WIDTH - LABEL_GAP;
@@ -27,8 +45,16 @@ pub(super) const LABEL_WIDTH: f32 =
 impl HerdrWindow {
     fn save_sidebar_width(&mut self) {
         self.sidebar_modified = true;
+        self.save_chrome();
+    }
+
+    /// One file holds the whole chrome, so every save carries both fields.
+    pub(super) fn save_chrome(&self) {
         if let Some(preferences) = &self.sidebar_preferences {
-            preferences.save(self.sidebar_width);
+            preferences.save(crate::preferences::Chrome {
+                sidebar_width: self.sidebar_width,
+                agent_sort: self.agent_sort,
+            });
         }
     }
 
@@ -66,13 +92,14 @@ impl HerdrWindow {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll();
-        #[cfg(feature = "integration-test")]
-        {
-            spaces = spaces.track_scroll(&self.sidebar_scroll[0]);
-            agents = agents.track_scroll(&self.sidebar_scroll[1]);
-        }
+        spaces = spaces.track_scroll(&self.sidebar_scroll[0]);
+        agents = agents.track_scroll(&self.sidebar_scroll[1]);
         let multi = self.endpoints.len() > 1;
         let mut agent_count = 0;
+        // Child positions of the highlighted rows, for the one-time reveal below.
+        // Agent rows are counted by `agent_count`, which indexes that list.
+        let mut space_rows = 0usize;
+        let mut highlighted = [None; 2];
         for (endpoint_index, endpoint) in self.endpoints.iter().enumerate() {
             let selected = endpoint_index == self.selected_endpoint;
             let endpoint_id = endpoint.id.clone();
@@ -145,6 +172,7 @@ impl HerdrWindow {
                             window.focus(&this.focus);
                         })),
                 );
+                space_rows += 1;
             }
             let live = if selected { &self.live } else { &endpoint.live };
             let Some(snapshot) = &live.snapshot else {
@@ -155,69 +183,89 @@ impl HerdrWindow {
             } else {
                 &endpoint.collapsed_repos
             };
-            for (index, indented, group) in
-                visible_workspace_entries(&snapshot.workspaces, collapsed_repos)
-            {
+            let entries = visible_workspace_entries(&snapshot.workspaces, collapsed_repos);
+            // A child closes the group when no child follows it.
+            let closes: Vec<bool> = (0..entries.len())
+                .map(|position| {
+                    entries[position].1 && !entries.get(position + 1).is_some_and(|next| next.1)
+                })
+                .collect();
+            for (position, (index, indented, group)) in entries.into_iter().enumerate() {
                 if multi && endpoint.collapsed {
                     break;
                 }
                 let workspace = &snapshot.workspaces[index];
+                if selected && workspace.focused {
+                    highlighted[0] = Some(space_rows);
+                }
+                space_rows += 1;
                 let id = workspace.workspace_id.clone();
                 let context_id = id.clone();
                 let context_endpoint = endpoint_id.clone();
                 let navigate_endpoint = endpoint_id.clone();
                 let collapse_endpoint = endpoint_id.clone();
+                let reserve_arrow = group.is_some() || indented;
+                let tree = match (indented, closes[position]) {
+                    (false, _) => RowTree::None,
+                    (true, false) => RowTree::Child,
+                    (true, true) => RowTree::LastChild,
+                };
+                let arrow = group.map(|key| {
+                    let collapsed = collapsed_repos.contains(&key);
+                    div()
+                        .id(SharedString::from(format!("collapse-{endpoint_id}-{id}")))
+                        .debug_selector(move || format!("collapse-{index}"))
+                        .w(px(ARROW_RESERVE - LABEL_GAP))
+                        .h(px(2. * line_height(font)))
+                        .flex_none()
+                        .text_size(px(16.))
+                        .text_color(rgb(theme.muted))
+                        .hover(|s| s.text_color(rgb(theme.foreground)))
+                        .child(label_text(if collapsed { "\u{25b8}" } else { "\u{25be}" }))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            let collapsed = if collapse_endpoint == super::endpoint::LOCAL {
+                                &mut this.collapsed_repos
+                            } else if let Some(endpoint) = this
+                                .endpoints
+                                .iter_mut()
+                                .find(|e| e.id == collapse_endpoint)
+                            {
+                                &mut endpoint.collapsed_repos
+                            } else {
+                                return;
+                            };
+                            if !collapsed.remove(&key) {
+                                collapsed.insert(key.clone());
+                            }
+                            cx.notify();
+                        }))
+                });
+                let label = workspace_label(workspace, indented);
                 spaces = spaces.child(
                     row(
-                        workspace_label(workspace, indented),
+                        label,
+                        &[(label, true)],
                         first_text([workspace.branch.as_deref()], ""),
+                        RowKind::Workspace,
                         workspace.agent_status,
                         selected && workspace.focused,
-                        indented,
-                        group.is_some() || indented,
+                        tree,
+                        reserve_arrow,
                         width,
-                        (!indented).then(|| {
+                        if indented {
+                            RowIcon::None
+                        } else {
                             self.avatars
                                 .as_ref()
                                 .filter(|_| endpoint_index == 0)
                                 .and_then(|avatars| avatars.image(&workspace.new_workspace_cwd))
-                                .unwrap_or_else(|| GITHUB_ICON.clone())
-                        }),
+                                .map_or(RowIcon::Mark, RowIcon::Avatar)
+                        },
+                        arrow,
+                        workspace_pr(workspace, &self.menu.pr_cache, theme),
                         (font, theme),
                     )
-                    .when_some(group, |row, key| {
-                        let collapsed = collapsed_repos.contains(&key);
-                        row.child(
-                            div()
-                                .id(SharedString::from(format!("collapse-{endpoint_id}-{id}")))
-                                .debug_selector(move || format!("collapse-{index}"))
-                                .w(px(ARROW_RESERVE - LABEL_GAP))
-                                .h(px(2. * line_height(font)))
-                                .flex_none()
-                                .text_size(px(16.))
-                                .text_color(rgb(theme.muted))
-                                .hover(|s| s.text_color(rgb(theme.foreground)))
-                                .child(label_text(if collapsed { "\u{25b8}" } else { "\u{25be}" }))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    let collapsed = if collapse_endpoint == super::endpoint::LOCAL {
-                                        &mut this.collapsed_repos
-                                    } else if let Some(endpoint) = this
-                                        .endpoints
-                                        .iter_mut()
-                                        .find(|e| e.id == collapse_endpoint)
-                                    {
-                                        &mut endpoint.collapsed_repos
-                                    } else {
-                                        return;
-                                    };
-                                    if !collapsed.remove(&key) {
-                                        collapsed.insert(key.clone());
-                                    }
-                                    cx.notify();
-                                })),
-                        )
-                    })
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -243,25 +291,29 @@ impl HerdrWindow {
                     })),
                 );
             }
-            for agent in &snapshot.agents {
+            for agent in sorted_agents(&snapshot.agents, self.agent_sort) {
+                if selected && agent.focused {
+                    highlighted[1] = Some(agent_count);
+                }
                 agent_count += 1;
                 let id = agent.pane_id.clone();
                 let navigate_endpoint = endpoint_id.clone();
-                let (name, kind) = agent_labels(agent);
-                let detail = if multi {
-                    format!("{} / {kind}", endpoint.label)
-                } else {
-                    kind.to_owned()
-                };
+                let host = (multi && endpoint_id != super::endpoint::LOCAL)
+                    .then_some(endpoint.label.as_str());
+                let (name, detail) = agent_labels(agent, snapshot, host);
                 agents = agents.child(
                     row(
-                        name,
-                        &detail,
+                        &format!("agent-{id}"),
+                        &name,
+                        detail,
+                        RowKind::Agent,
                         agent.agent_status,
                         selected && agent.focused,
-                        false,
+                        RowTree::None,
                         false,
                         width,
+                        RowIcon::None,
+                        None,
                         None,
                         (font, theme),
                     )
@@ -274,6 +326,19 @@ impl HerdrWindow {
                         window.focus(&this.focus);
                     })),
                 );
+            }
+        }
+        // Follow the selection, but only once a frame has measured the viewport:
+        // the handle resolves the request against the previous frame's bounds, so
+        // an unmeasured list would scroll to a meaningless offset. Recording what
+        // was revealed keeps later frames from undoing the user's own scrolling.
+        for (list, row) in highlighted.iter().enumerate() {
+            let Some(row) = *row else { continue };
+            if self.sidebar_revealed[list].get() != Some(row)
+                && self.sidebar_scroll[list].bounds().size.height > px(0.)
+            {
+                self.sidebar_scroll[list].scroll_to_item(row);
+                self.sidebar_revealed[list].set(Some(row));
             }
         }
         if agent_count == 0 {
@@ -320,6 +385,8 @@ impl HerdrWindow {
                             .px(px(12.))
                             .flex()
                             .items_center()
+                            // Menu hugs the sidebar's edge, as in the terminal client.
+                            .justify_between()
                             .text_color(rgb(theme.muted))
                             .gap(px(20.))
                             .child(
@@ -356,7 +423,11 @@ impl HerdrWindow {
                     .flex_1()
                     .min_h_0()
                     .overflow_hidden()
-                    .child(header("agents", font, theme))
+                    .child(
+                        header("agents", font, theme)
+                            .justify_between()
+                            .child(agents_sort(self, cx)),
+                    )
                     .child(agents),
             )
             .child(
@@ -453,39 +524,331 @@ fn header(label: &'static str, font: &FontConfig, theme: &Theme) -> Div {
         .child(label)
 }
 
+/// Upstream's agents panel ends its header with the current sort, which a
+/// click flips. An active agent view names itself there instead, and cannot be
+/// re-sorted, so the label is inert while one is on.
+fn agents_sort(window: &HerdrWindow, cx: &mut Context<HerdrWindow>) -> Stateful<Div> {
+    let theme = &window.theme;
+    let view = window
+        .live
+        .snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.agent_view_label.clone());
+    let label = view
+        .clone()
+        .unwrap_or_else(|| window.agent_sort.label().into());
+    div()
+        .id("agents-sort")
+        .debug_selector(|| "agents-sort".into())
+        .flex_none()
+        .min_w_0()
+        .truncate()
+        .text_color(rgb(theme.muted))
+        .when(view.is_none(), |sort| {
+            sort.cursor_pointer()
+                .hover(|style| style.text_color(rgb(theme.foreground)))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.agent_sort = this.agent_sort.toggled();
+                    this.agent_sort_modified = true;
+                    this.save_chrome();
+                    cx.notify();
+                }))
+        })
+        .child(label_text(&label))
+}
+
+/// Attention first, then the most recent change, as upstream orders it.
+fn status_priority(status: AgentStatus) -> u8 {
+    match status {
+        AgentStatus::Blocked => 4,
+        AgentStatus::Done => 3,
+        AgentStatus::Working => 2,
+        AgentStatus::Idle => 1,
+        AgentStatus::Unknown => 0,
+    }
+}
+
+/// The agents of one endpoint in the order the panel paints them.
+fn sorted_agents(
+    agents: &[ClientShellAgent],
+    sort: crate::preferences::AgentSort,
+) -> Vec<&ClientShellAgent> {
+    let mut ordered: Vec<_> = agents.iter().collect();
+    if sort == crate::preferences::AgentSort::Priority {
+        ordered.sort_by_key(|agent| {
+            (
+                std::cmp::Reverse(status_priority(agent.agent_status)),
+                std::cmp::Reverse(agent.state_change_seq),
+            )
+        });
+    }
+    ordered
+}
+
+/// Sidebar labels are monospace by default and digits are near-uniform
+/// elsewhere, so an em-fraction bounds a glyph well enough to divide a line.
+fn glyph_width(font: &FontConfig) -> f32 {
+    font.size * 0.62
+}
+
+/// Widths in glyphs for segments sharing one line, as upstream shares them:
+/// every segment keeps one glyph, then they grow in turn until the line is
+/// full, so a long name cannot crowd a short one out entirely.
+fn segment_budgets(lengths: &[usize], available: usize) -> Vec<usize> {
+    let mut budgets: Vec<usize> = lengths
+        .iter()
+        .map(|length| usize::from(*length > 0))
+        .collect();
+    let mut remaining = available.saturating_sub(budgets.iter().sum());
+    while remaining > 0 {
+        let mut grew = false;
+        for (budget, length) in budgets.iter_mut().zip(lengths) {
+            if *budget > 0 && *budget < *length {
+                *budget += 1;
+                remaining -= 1;
+                grew = true;
+                if remaining == 0 {
+                    break;
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    budgets
+}
+
+/// What a row lists, which decides how its two lines are weighted: upstream
+/// keeps agent names bold throughout and reserves bold workspaces for the
+/// current one, with the branch picking up the accent while it is focused.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowKind {
+    Workspace,
+    Agent,
+}
+
+/// Name color, name weight, and detail color for a row.
+fn row_text(kind: RowKind, focused: bool, theme: &Theme) -> (u32, FontWeight, u32) {
+    let weight = if focused || kind == RowKind::Agent {
+        FontWeight::BOLD
+    } else {
+        FontWeight::NORMAL
+    };
+    let name = if focused {
+        theme.foreground
+    } else {
+        theme.subtext()
+    };
+    let detail = if focused && kind == RowKind::Workspace {
+        theme.primary()
+    } else {
+        theme.muted
+    };
+    (name, weight, detail)
+}
+
+/// Where a row sits in its worktree group, which decides whether the gutter
+/// carries a trunk through the row or ends in an elbow.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowTree {
+    None,
+    Child,
+    LastChild,
+}
+
+/// Trunk and tick for a child row, given the gutter the row reserves between
+/// the parent's label column and the child's status dot. Snapped to whole
+/// device pixels and painted as quads rather than borders: a bordered box
+/// rounds each edge on its own, which left the trunk thinner than its tick.
+fn tree_lines(
+    gutter: Bounds<Pixels>,
+    tree: RowTree,
+    font: &FontConfig,
+    scale: f32,
+) -> [Bounds<Pixels>; 2] {
+    let device = |value: Pixels| f32::from(value) * scale;
+    let logical = |value: f32| px(value / scale);
+    let weight = scale.round().max(1.);
+    let snap = |value: Pixels| logical(device(value).round());
+    // The trunk runs down the gutter's leading edge; the tick crosses it at the
+    // status dot's middle row and stops where the dot begins.
+    let x = snap(gutter.origin.x);
+    let middle =
+        logical((device(gutter.origin.y + px(4. + line_height(font) / 2.)) - weight / 2.).round());
+    let end = if tree == RowTree::LastChild {
+        middle + logical(weight)
+    } else {
+        snap(gutter.bottom())
+    };
+    [
+        Bounds::from_corners(
+            point(x, snap(gutter.origin.y)),
+            point(x + logical(weight), end),
+        ),
+        Bounds::from_corners(
+            point(x, middle),
+            point(snap(gutter.right()), middle + logical(weight)),
+        ),
+    ]
+}
+
+/// Cached pull request state for a worktree row: the number carries the
+/// lifecycle color, the counts sit under it.
+struct PrBadge {
+    number: String,
+    color: u32,
+    additions: String,
+    deletions: String,
+}
+
+impl PrBadge {
+    fn new(pr: &crate::pull_request::PullRequest, theme: &Theme) -> Self {
+        Self {
+            number: format!("#{}", pr.number),
+            color: pr.color(theme),
+            additions: format!("+{}", compact(pr.additions)),
+            deletions: format!("-{}", compact(pr.deletions)),
+        }
+    }
+
+    /// Reserved width. Sidebar labels are monospace by default and digits are
+    /// near-uniform elsewhere, so an em-fraction per glyph bounds both lines;
+    /// a wider face truncates the counts rather than eating the label.
+    fn width(&self, font: &FontConfig) -> f32 {
+        let glyphs = self
+            .number
+            .chars()
+            .count()
+            .max(self.additions.chars().count() + self.deletions.chars().count() + 1);
+        (glyph_width(font) * glyphs as f32).ceil()
+    }
+}
+
+/// Four digits of churn is already a big diff; abbreviate past that so the
+/// column stays narrow enough to leave the branch readable.
+fn compact(lines: u64) -> String {
+    match lines {
+        0..=9999 => lines.to_string(),
+        _ => format!("{}k", lines / 1000),
+    }
+}
+
+/// A row's first line: segments joined by upstream's separator, the primary one
+/// carrying the row's weight and color while the rest stay muted. Segments are
+/// placed at measured offsets rather than flexed, because GPUI 0.2.2 only
+/// ellipsizes text whose width its parent already fixed.
+fn name_line(
+    segments: &[(&str, bool)],
+    appearance: (u32, FontWeight, u32),
+    width: f32,
+    font: &FontConfig,
+) -> Div {
+    let (primary, weight, muted) = appearance;
+    let glyph = glyph_width(font);
+    let separator = 3. * glyph;
+    let separators = segments.len().saturating_sub(1);
+    let lengths: Vec<usize> = segments
+        .iter()
+        .map(|(text, _)| text.chars().count())
+        .collect();
+    let available = (width - separators as f32 * separator).max(0.);
+    let budgets = segment_budgets(&lengths, (available / glyph).floor() as usize);
+    // The last segment takes the rounding remainder, so one segment fills the
+    // line exactly as it did before a line could carry several.
+    let used: f32 = budgets.iter().map(|budget| *budget as f32 * glyph).sum();
+    let slack = (available - used).max(0.);
+    let mut line = div()
+        .relative()
+        .w(px(width))
+        .h(px(line_height(font)))
+        .flex_none()
+        .overflow_hidden();
+    let mut x = 0.;
+    for (index, ((text, is_primary), budget)) in segments.iter().zip(budgets).enumerate() {
+        if index > 0 {
+            line = line.child(
+                div()
+                    .absolute()
+                    .left(px(x))
+                    .w(px(separator))
+                    .text_color(rgb(muted))
+                    .child(label_text(" \u{b7} ")),
+            );
+            x += separator;
+        }
+        let last = index + 1 == segments.len();
+        let segment = budget as f32 * glyph + if last { slack } else { 0. };
+        line = line.child(
+            div()
+                .absolute()
+                .left(px(x))
+                .w(px(segment))
+                .truncate()
+                .when(*is_primary, |part| {
+                    part.font_weight(weight).text_color(rgb(primary))
+                })
+                .when(!*is_primary, |part| part.text_color(rgb(muted)))
+                .child(label_text(text)),
+        );
+        x += segment;
+    }
+    line
+}
+
 #[allow(clippy::too_many_arguments)]
 fn row(
-    name: &str,
+    // Rows are probed by key, not by label: an agent names its workspace, which
+    // already names a row of its own.
+    key: &str,
+    name: &[(&str, bool)],
     detail: &str,
+    kind: RowKind,
     status: AgentStatus,
     focused: bool,
-    indented: bool,
+    tree: RowTree,
     reserve_arrow: bool,
     width: f32,
-    workspace_icon: Option<Arc<Image>>,
+    workspace_icon: RowIcon,
+    arrow: Option<Stateful<Div>>,
+    pr: Option<PrBadge>,
     appearance: (&FontConfig, &Theme),
 ) -> Div {
     let (font, theme) = appearance;
-    let icon_reserve = if workspace_icon.is_some() {
-        ICON_RESERVE
-    } else {
-        0.
+    let (name_color, weight, detail_color) = row_text(kind, focused, theme);
+    let icon_reserve = match workspace_icon {
+        RowIcon::None => 0.,
+        _ => ICON_RESERVE,
     };
-    let indent = if indented { CHILD_INDENT } else { 0. };
+    let muted = theme.muted;
+    let indent = if tree == RowTree::None {
+        0.
+    } else {
+        CHILD_INDENT
+    };
+    let pr_reserve = pr
+        .as_ref()
+        .map(|badge| badge.width(font) + LABEL_GAP)
+        .unwrap_or_default();
+    let arrow_reserve = if reserve_arrow { ARROW_RESERVE } else { 0. };
+    let arrow_absent = arrow.is_none();
     let label_width = (width
         - 1.
         - 2. * ROW_PADDING
         - STATUS_WIDTH
         - LABEL_GAP
         - indent
-        - if reserve_arrow { ARROW_RESERVE } else { 0. })
-    .max(0.);
+        - pr_reserve
+        - arrow_reserve)
+        .max(0.);
     div()
-        .debug_selector(|| format!("row-{name}"))
+        .debug_selector(|| format!("row-{key}"))
         .h(px(2. * line_height(font) + 8.))
         .w_full()
         .min_w_0()
         .flex_none()
+        .relative()
         .pl(px(ROW_PADDING + indent))
         .pr(px(ROW_PADDING))
         .flex()
@@ -495,7 +858,33 @@ fn row(
         .cursor_pointer()
         .when(focused, |s| s.bg(rgb(theme.active)))
         .hover(|s| s.bg(rgb(theme.active)))
-        .child(status_indicator(status, font, theme))
+        // Tree lines run in the indent the row already reserves, so a child is
+        // tied to its parent without box-drawing glyphs in the label.
+        .when(tree != RowTree::None, |row| {
+            let (color, font) = (theme.muted, font.clone());
+            row.child(
+                div()
+                    .debug_selector(|| format!("tree-{key}"))
+                    .absolute()
+                    // Between the parent's label column and this row's own dot.
+                    .left(px(TREE_GUTTER))
+                    .w(px(ROW_PADDING + CHILD_INDENT - TREE_GUTTER))
+                    .top_0()
+                    .bottom_0()
+                    .child(
+                        canvas(
+                            |_, _, _| (),
+                            move |bounds, _, window, _| {
+                                for line in tree_lines(bounds, tree, &font, window.scale_factor()) {
+                                    window.paint_quad(fill(line, rgb(color)));
+                                }
+                            },
+                        )
+                        .size_full(),
+                    ),
+            )
+        })
+        .child(status_indicator(status, font))
         .child(
             div()
                 .flex()
@@ -505,60 +894,107 @@ fn row(
                 .w(px(label_width))
                 .flex_none()
                 .overflow_hidden()
-                .debug_selector(|| format!("column-{name}"))
+                .debug_selector(|| format!("column-{key}"))
                 .child(
                     div()
                         .relative()
                         .w(px(label_width))
                         .h(px(line_height(font)))
-                        .when_some(workspace_icon, |title, image| {
+                        .when(!matches!(workspace_icon, RowIcon::None), |title| {
                             title.child(
                                 div()
-                                    .debug_selector(|| format!("github-{name}"))
+                                    .debug_selector(|| format!("github-{key}"))
                                     .absolute()
                                     .left_0()
                                     .top(px((line_height(font) - 12.) / 2.))
                                     .size(px(12.))
                                     .flex_none()
                                     .overflow_hidden()
-                                    .child(
-                                        img(image)
+                                    .child(match workspace_icon {
+                                        RowIcon::Avatar(image) => img(image)
                                             .size_full()
                                             .rounded_full()
-                                            .with_fallback(|| {
-                                                img(GITHUB_ICON.clone())
-                                                    .size_full()
-                                                    .rounded_full()
-                                                    .into_any_element()
+                                            .with_fallback(move || {
+                                                github_mark(muted).size_full().into_any_element()
                                             })
-                                            .with_loading(|| {
-                                                img(GITHUB_ICON.clone())
-                                                    .size_full()
-                                                    .rounded_full()
-                                                    .into_any_element()
-                                            }),
-                                    ),
+                                            .with_loading(move || {
+                                                github_mark(muted).size_full().into_any_element()
+                                            })
+                                            .into_any_element(),
+                                        _ => github_mark(muted).size_full().into_any_element(),
+                                    }),
                             )
                         })
                         .child(
-                            div()
-                                .debug_selector(|| format!("name-{name}"))
-                                .ml(px(icon_reserve))
-                                .w(px((label_width - icon_reserve).max(0.)))
-                                .flex_none()
-                                .truncate()
-                                .child(label_text(name)),
+                            name_line(
+                                name,
+                                (name_color, weight, theme.muted),
+                                (label_width - icon_reserve).max(0.),
+                                font,
+                            )
+                            .debug_selector(|| format!("name-{key}"))
+                            .ml(px(icon_reserve)),
                         ),
                 )
                 .child(
                     div()
-                        .debug_selector(|| format!("detail-{name}"))
+                        .debug_selector(|| format!("detail-{key}"))
                         .w(px(label_width))
                         .truncate()
-                        .text_color(rgb(theme.muted))
+                        .text_color(rgb(detail_color))
                         .child(label_text(detail)),
                 ),
         )
+        // The collapse column comes first so the badge can hug the row's edge;
+        // a reserved-but-empty column keeps every badge on the same right edge.
+        .when_some(arrow, |row, arrow| row.child(arrow))
+        .when(arrow_absent && reserve_arrow, |row| {
+            row.child(div().w(px(ARROW_RESERVE - LABEL_GAP)).flex_none())
+        })
+        .when_some(pr, |row, badge| {
+            row.child(
+                div()
+                    .debug_selector(|| format!("pr-{key}"))
+                    .w(px(badge.width(font)))
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .h(px(line_height(font)))
+                            .flex_none()
+                            .truncate()
+                            .text_color(rgb(badge.color))
+                            .child(label_text(&badge.number)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(rgb(theme.palette[2]))
+                                    .child(label_text(&badge.additions)),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(rgb(theme.muted))
+                                    .child(label_text("/")),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(rgb(theme.palette[1]))
+                                    .child(label_text(&badge.deletions)),
+                            ),
+                    ),
+            )
+        })
 }
 
 #[cfg(any(test, feature = "integration-test"))]
@@ -586,20 +1022,51 @@ fn first_text<'a>(values: impl IntoIterator<Item = Option<&'a str>>, fallback: &
         .unwrap_or(fallback)
 }
 
-fn agent_labels(agent: &ClientShellAgent) -> (&str, &str) {
-    let kind = first_text(
-        [agent.display_agent.as_deref(), agent.agent.as_deref()],
-        "agent",
-    );
+/// Upstream's default agent rows: host, workspace and tab on the first line,
+/// the agent itself on the second. The tab only earns its place when the
+/// workspace has more than one or the user named it, as upstream decides.
+fn agent_labels<'a>(
+    agent: &'a ClientShellAgent,
+    snapshot: &'a ClientShellSnapshot,
+    host: Option<&'a str>,
+) -> (Vec<(&'a str, bool)>, &'a str) {
     let name = first_text(
         [
+            agent.display_agent.as_deref(),
             agent.name.as_deref(),
+            agent.agent.as_deref(),
             agent.title.as_deref(),
-            agent.terminal_title_stripped.as_deref(),
         ],
-        kind,
+        "agent",
     );
-    (name, kind)
+    // A pane whose workspace has gone leaves the agent to name the row.
+    let Some(workspace) = snapshot
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.workspace_id == agent.workspace_id)
+        .map(|workspace| workspace.label.as_str())
+    else {
+        return (vec![(name, true)], "");
+    };
+    let tabs = snapshot
+        .tabs
+        .iter()
+        .filter(|tab| tab.workspace_id == agent.workspace_id)
+        .count();
+    let tab = snapshot
+        .tabs
+        .iter()
+        .find(|tab| tab.tab_id == agent.tab_id)
+        .filter(|tab| tabs > 1 || tab.custom_label)
+        .map(|tab| tab.label.as_str());
+    // Only the workspace carries the row's weight: upstream paints the host and
+    // tab around it in its secondary color.
+    let segments = [(host, false), (Some(workspace), true), (tab, false)]
+        .into_iter()
+        .filter_map(|(text, primary)| Some((text?, primary)))
+        .filter(|(text, _)| !text.is_empty())
+        .collect();
+    (segments, name)
 }
 
 // Match the expanded upstream shell order, including orphaned linked worktrees.
@@ -654,6 +1121,18 @@ fn visible_workspace_entries(
         .collect()
 }
 
+/// Cached pull request for a worktree row, if the prefetch already has one.
+/// Rendering only reads: a missing entry simply shows no badge.
+fn workspace_pr(
+    workspace: &ClientShellWorkspace,
+    cache: &crate::pull_request::Cache,
+    theme: &Theme,
+) -> Option<PrBadge> {
+    let key = workspace.worktree.as_ref()?.key.as_str();
+    let branch = workspace.branch.as_deref()?;
+    cache.peek(key, branch).map(|pr| PrBadge::new(pr, theme))
+}
+
 fn workspace_label(workspace: &ClientShellWorkspace, indented: bool) -> &str {
     let branch = (indented && !workspace.custom_label)
         .then_some(workspace.branch.as_deref())
@@ -662,9 +1141,9 @@ fn workspace_label(workspace: &ClientShellWorkspace, indented: bool) -> &str {
     first_text([branch, Some(&workspace.label)], "workspace")
 }
 
-fn status_indicator(status: AgentStatus, font: &FontConfig, theme: &Theme) -> Div {
+fn status_indicator(status: AgentStatus, font: &FontConfig) -> Div {
     // Upstream dots: working/blocked/done filled, idle hollow, unknown a small dot.
-    let (diameter, filled, color) = status_style(status, theme);
+    let (diameter, filled, color) = status_style(status);
     div()
         .size(px(STATUS_WIDTH))
         .mt(px((line_height(font) - STATUS_WIDTH) / 2.))
@@ -682,13 +1161,17 @@ fn status_indicator(status: AgentStatus, font: &FontConfig, theme: &Theme) -> Di
         )
 }
 
-fn status_style(status: AgentStatus, theme: &Theme) -> (f32, bool, u32) {
+/// Upstream draws status from its own palette, defaulting to Catppuccin Mocha,
+/// and never from the terminal's ANSI colors. Matching those literals keeps a
+/// dot the same color in both clients whatever terminal theme is loaded, where
+/// ANSI slots would drift: Xcode Dark paints its cyan purple.
+fn status_style(status: AgentStatus) -> (f32, bool, u32) {
     match status {
-        AgentStatus::Working => (STATUS_WIDTH, true, theme.palette[3]),
-        AgentStatus::Blocked => (STATUS_WIDTH, true, theme.palette[1]),
-        AgentStatus::Done => (STATUS_WIDTH, true, theme.palette[6]),
-        AgentStatus::Idle => (STATUS_WIDTH, false, theme.palette[2]),
-        AgentStatus::Unknown => (2., true, theme.muted),
+        AgentStatus::Working => (STATUS_WIDTH, true, 0xf9e2af),
+        AgentStatus::Blocked => (STATUS_WIDTH, true, 0xf38ba8),
+        AgentStatus::Done => (STATUS_WIDTH, true, 0x94e2d5),
+        AgentStatus::Idle => (STATUS_WIDTH, false, 0xa6e3a1),
+        AgentStatus::Unknown => (STATUS_DOT_UNKNOWN, true, 0x6c7086),
     }
 }
 
@@ -696,8 +1179,9 @@ fn status_style(status: AgentStatus, theme: &Theme) -> (f32, bool, u32) {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::{
-        AgentStatus, ClientShellAgent, ClientShellWorkspace, STATUS_WIDTH, agent_labels,
-        first_text, layout_tests, status_style, workspace_entries, workspace_label,
+        AgentStatus, ClientShellAgent, ClientShellSnapshot, ClientShellWorkspace,
+        STATUS_DOT_UNKNOWN, STATUS_WIDTH, agent_labels, first_text, layout_tests, status_style,
+        workspace_entries, workspace_label,
     };
 
     #[test]
@@ -814,51 +1298,137 @@ mod tests {
     }
 
     #[test]
-    fn agent_name_title_and_kind_fallbacks() {
-        let mut agent = ClientShellAgent {
-            pane_id: "p".into(),
-            workspace_id: "w".into(),
-            tab_id: "t".into(),
-            name: Some("review".into()),
-            title: Some("Fix sidebar".into()),
-            display_agent: Some("Claude Code".into()),
-            agent: Some("claude".into()),
-            terminal_title: Some("raw title".into()),
-            terminal_title_stripped: Some("terminal".into()),
-            agent_status: AgentStatus::Unknown,
-            state_change_seq: 0,
-            state_labels: vec![],
-            tokens: vec![],
-            focused: false,
-        };
-        assert_eq!(agent_labels(&agent), ("review", "Claude Code"));
-        agent.name = Some(" ".into());
-        assert_eq!(agent_labels(&agent), ("Fix sidebar", "Claude Code"));
-        agent.title = None;
-        agent.display_agent = None;
-        assert_eq!(agent_labels(&agent), ("terminal", "claude"));
-        agent.terminal_title_stripped = None;
-        assert_eq!(agent_labels(&agent), ("claude", "claude"));
-        agent.agent = None;
-        assert_eq!(agent_labels(&agent), ("agent", "agent"));
+    fn agent_rows_name_their_place_then_their_agent() {
+        let mut snapshot = layout_tests::snapshot(1);
+        let agent = &mut snapshot.agents[0];
+        agent.workspace_id = "w0".into();
+        agent.tab_id = "t0".into();
+        agent.display_agent = Some("Claude Code".into());
+        agent.name = Some("review".into());
+        agent.agent = Some("claude".into());
+        agent.title = Some("Fix sidebar".into());
+        let agent = snapshot.agents[0].clone();
+        // Host first when there is one, then the workspace, then the tab. Only
+        // the workspace is primary; upstream mutes what sits around it.
+        fn labels<'a>(
+            snapshot: &'a ClientShellSnapshot,
+            host: Option<&'a str>,
+        ) -> (Vec<(&'a str, bool)>, &'a str) {
+            agent_labels(&snapshot.agents[0], snapshot, host)
+        }
+        assert_eq!(
+            labels(&snapshot, None),
+            (vec![("herdr", true), ("tab 1", false)], "Claude Code")
+        );
+        assert_eq!(
+            labels(&snapshot, Some("remote")),
+            (
+                vec![("remote", false), ("herdr", true), ("tab 1", false)],
+                "Claude Code"
+            )
+        );
+        // One unnamed tab is noise, so only its workspace shows.
+        snapshot.tabs.retain(|tab| tab.tab_id == "t0");
+        assert_eq!(labels(&snapshot, None).0, vec![("herdr", true)]);
+        snapshot.tabs[0].custom_label = true;
+        assert_eq!(
+            labels(&snapshot, None).0,
+            vec![("herdr", true), ("tab 1", false)]
+        );
+        // The agent name falls back through the same order as upstream.
+        for (display, name, kind, title, expected) in [
+            (None, Some("review"), Some("claude"), None, "review"),
+            (None, None, Some("claude"), Some("Fix sidebar"), "claude"),
+            (None, None, None, Some("Fix sidebar"), "Fix sidebar"),
+            (None, None, None, None, "agent"),
+        ] {
+            snapshot.agents[0] = ClientShellAgent {
+                display_agent: display.map(str::to_owned),
+                name: name.map(str::to_owned),
+                agent: kind.map(str::to_owned),
+                title: title.map(str::to_owned),
+                ..agent.clone()
+            };
+            assert_eq!(labels(&snapshot, None).1, expected);
+        }
+        // Without its workspace the agent names the row itself.
+        snapshot.workspaces.clear();
+        assert_eq!(labels(&snapshot, None), (vec![("agent", true)], ""));
     }
 
     #[test]
-    fn status_colors_follow_the_supplied_theme() {
-        let mut theme = crate::config::Theme::default();
-        theme.palette[1] = 0x112233;
-        theme.palette[2] = 0x223344;
-        theme.palette[3] = 0x334455;
-        theme.palette[6] = 0x667788;
-        theme.muted = 0x778899;
-        for (status, color) in [
-            (AgentStatus::Blocked, 0x112233),
-            (AgentStatus::Idle, 0x223344),
-            (AgentStatus::Working, 0x334455),
-            (AgentStatus::Done, 0x667788),
-            (AgentStatus::Unknown, 0x778899),
+    fn rows_weight_and_dim_their_text_like_upstream() {
+        use super::{RowKind, row_text};
+        use gpui::FontWeight;
+        let theme = crate::config::Theme::default();
+        // Agents stay bold whether or not they are the current row; a workspace
+        // earns bold only while focused, and hands its branch the accent then.
+        for (kind, focused, weight, name, detail) in [
+            (
+                RowKind::Agent,
+                false,
+                FontWeight::BOLD,
+                theme.subtext(),
+                theme.muted,
+            ),
+            (
+                RowKind::Agent,
+                true,
+                FontWeight::BOLD,
+                theme.foreground,
+                theme.muted,
+            ),
+            (
+                RowKind::Workspace,
+                false,
+                FontWeight::NORMAL,
+                theme.subtext(),
+                theme.muted,
+            ),
+            (
+                RowKind::Workspace,
+                true,
+                FontWeight::BOLD,
+                theme.foreground,
+                theme.primary(),
+            ),
         ] {
-            assert_eq!(status_style(status, &theme).2, color);
+            assert_eq!(row_text(kind, focused, &theme), (name, weight, detail));
+        }
+        // Subtext sits between the muted detail and the focused name.
+        let brightness = |color: u32| (color >> 16) + ((color >> 8) & 255) + (color & 255);
+        assert!(brightness(theme.muted) < brightness(theme.subtext()));
+        assert!(brightness(theme.subtext()) < brightness(theme.foreground));
+    }
+
+    #[test]
+    fn status_colors_match_upstream_and_ignore_the_theme() {
+        // The literals are upstream's default palette (Catppuccin Mocha), which
+        // its status dots use whatever terminal colors are loaded.
+        for (status, color) in [
+            (AgentStatus::Working, 0xf9e2af),
+            (AgentStatus::Blocked, 0xf38ba8),
+            (AgentStatus::Done, 0x94e2d5),
+            (AgentStatus::Idle, 0xa6e3a1),
+            (AgentStatus::Unknown, 0x6c7086),
+        ] {
+            assert_eq!(status_style(status).2, color);
+        }
+        for name in crate::config::Theme::BUILTIN_NAMES {
+            let theme = crate::config::Theme::builtin(name).unwrap();
+            for status in [
+                AgentStatus::Working,
+                AgentStatus::Blocked,
+                AgentStatus::Done,
+                AgentStatus::Idle,
+                AgentStatus::Unknown,
+            ] {
+                let color = status_style(status).2;
+                assert!(
+                    !theme.palette.contains(&color) || theme.palette[..16].contains(&color),
+                    "{name}: dots must not be read out of the theme"
+                );
+            }
         }
     }
 
@@ -881,23 +1451,22 @@ mod tests {
             let agent: ClientShellAgent = serde_json::from_value(value).unwrap();
             assert_eq!(agent.agent_status, status);
             assert_eq!(serde_json::to_value(status).unwrap(), wire);
-            let theme = crate::config::Theme::default();
-            let (diameter, filled, color) = status_style(status, &theme);
+            let (diameter, filled, color) = status_style(status);
             assert_eq!(
                 color,
                 match status {
-                    AgentStatus::Working => theme.palette[3],
-                    AgentStatus::Blocked => theme.palette[1],
-                    AgentStatus::Done => theme.palette[6],
-                    AgentStatus::Idle => theme.palette[2],
-                    AgentStatus::Unknown => theme.muted,
+                    AgentStatus::Working => 0xf9e2af,
+                    AgentStatus::Blocked => 0xf38ba8,
+                    AgentStatus::Done => 0x94e2d5,
+                    AgentStatus::Idle => 0xa6e3a1,
+                    AgentStatus::Unknown => 0x6c7086,
                 }
             );
             assert_eq!(filled, status != AgentStatus::Idle);
             assert_eq!(
                 diameter,
                 if status == AgentStatus::Unknown {
-                    2.
+                    STATUS_DOT_UNKNOWN
                 } else {
                     STATUS_WIDTH
                 }

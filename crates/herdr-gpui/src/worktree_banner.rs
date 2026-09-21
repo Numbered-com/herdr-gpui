@@ -1,5 +1,12 @@
 use gpui::{prelude::*, *};
 
+/// Worktree builds hang this strip under the titlebar; other builds do not.
+const HEIGHT: f32 = 22.;
+
+pub(super) fn reserved(worktree: bool) -> f32 {
+    if worktree { HEIGHT } else { 0. }
+}
+
 pub(super) fn pull_request_url(pr: &str) -> String {
     format!("{}/pull/{pr}", crate::about::REPOSITORY)
 }
@@ -14,7 +21,7 @@ pub(super) fn render(worktree: bool, branch: &str, pr: &str) -> Option<Div> {
             .gap(px(10.))
             .px(px(12.))
             .w_full()
-            .h(px(22.))
+            .h(px(HEIGHT))
             .overflow_hidden()
             .bg(rgb(0xf6c453))
             .text_color(rgb(0x402b08))

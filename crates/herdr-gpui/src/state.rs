@@ -1,6 +1,5 @@
 use herdr_client::{
     ClientEvent,
-    presentation::AgentPresentation,
     protocol::{ClientShellSnapshot, PaneSurfaceFrame, ServerMessage},
 };
 use std::sync::Arc;
@@ -48,7 +47,6 @@ pub struct LiveState {
     pub(crate) supports_workspace_get: bool,
     pub dirty: bool,
     pub(crate) dialog_response: Option<(String, Option<DialogResponse>)>,
-    agent_presentation: AgentPresentation,
     outer_focused: Option<bool>,
     pub activation: Option<SurfaceActivation>,
     pub supports_surface: bool,
@@ -84,7 +82,6 @@ impl Default for LiveState {
             supports_workspace_get: false,
             dirty: true,
             dialog_response: None,
-            agent_presentation: AgentPresentation::default(),
             outer_focused: None,
             activation: None,
             supports_surface: false,
@@ -144,44 +141,6 @@ impl LiveState {
         self.outer_focused = Some(focused);
     }
 
-    /// Only acknowledge the coherent pair captured for an active UI paint.
-    /// Reject superseded projections rather than consuming newer unseen events.
-    pub fn acknowledge_presented_surface(
-        &mut self,
-        presented: &ClientShellSnapshot,
-        surface: &PaneSurfaceFrame,
-        focused: bool,
-    ) -> bool {
-        if self.activation.is_some() && !self.surface_ready() {
-            return false;
-        }
-        let Some(snapshot) = self.snapshot.as_mut() else {
-            return false;
-        };
-        if !focused
-            || self.outer_focused != Some(true)
-            || !coherent(presented, surface)
-            || !coherent(snapshot, surface)
-            || surface.panes.iter().any(|pane| {
-                let sequence = |snapshot: &ClientShellSnapshot| {
-                    snapshot
-                        .agents
-                        .iter()
-                        .find(|agent| agent.pane_id == pane.pane_id)
-                        .map(|agent| agent.state_change_seq)
-                };
-                sequence(presented) != sequence(snapshot)
-            })
-        {
-            return false;
-        }
-        let changed =
-            self.agent_presentation
-                .acknowledge_surface(Arc::make_mut(snapshot), surface, focused);
-        self.dirty |= changed;
-        changed
-    }
-
     pub fn apply(&mut self, event: ClientEvent) {
         match event {
             ClientEvent::Connected(welcome) => {
@@ -202,7 +161,7 @@ impl LiveState {
                 self.status = ConnectionStatus::AwaitingSnapshot;
                 self.error = None;
             }
-            ClientEvent::Snapshot(mut snapshot) => {
+            ClientEvent::Snapshot(snapshot) => {
                 if let Some(activation) = &mut self.activation
                     && activation.boot != snapshot.boot_id
                 {
@@ -217,8 +176,6 @@ impl LiveState {
                     self.surface = None;
                 }
                 self.status = ConnectionStatus::Connected;
-                self.agent_presentation
-                    .project_snapshot(Arc::make_mut(&mut snapshot));
                 self.snapshot = Some(snapshot);
             }
             ClientEvent::Surface(surface) => {
@@ -235,7 +192,6 @@ impl LiveState {
                 self.error = Some(reason);
                 self.snapshot = None;
                 self.surface = None;
-                self.agent_presentation = AgentPresentation::default();
             }
             ClientEvent::CommandRejected { request_id, reason } => {
                 self.error = Some(reason.to_string());
@@ -528,11 +484,15 @@ mod tests {
         );
     }
 
+    /// The daemon aggregates a workspace's and tab's status itself, so a
+    /// snapshot carries the same value on all three rows.
     fn agent_snapshot(status: AgentStatus, sequence: u64) -> Arc<ClientShellSnapshot> {
         let mut snapshot = snapshot();
         let next = Arc::make_mut(&mut snapshot);
         next.agents[0].agent_status = status;
         next.agents[0].state_change_seq = sequence;
+        next.tabs[0].agent_status = status;
+        next.workspaces[0].agent_status = status;
         next.revision = sequence;
         snapshot
     }
@@ -561,6 +521,37 @@ mod tests {
     }
 
     #[test]
+    fn daemon_status_reaches_the_sidebar_unchanged() {
+        // Every client shows the same dot: painting a focused surface, changing
+        // boot, or reconnecting must not rewrite what the daemon reported.
+        let mut state = LiveState::default();
+        state.set_outer_focus(true);
+        for status in [
+            AgentStatus::Working,
+            AgentStatus::Done,
+            AgentStatus::Idle,
+            AgentStatus::Blocked,
+        ] {
+            let snapshot = agent_snapshot(status, 10);
+            state.apply(ClientEvent::Snapshot(snapshot.clone()));
+            state.apply(ClientEvent::Surface(agent_surface(&snapshot)));
+            assert_status(&state, status);
+        }
+        let mut reboot = agent_snapshot(AgentStatus::Done, 100);
+        Arc::make_mut(&mut reboot).boot_id = "new-boot".into();
+        state.apply(ClientEvent::Snapshot(reboot));
+        assert_status(&state, AgentStatus::Done);
+        state.apply(ClientEvent::Disconnected {
+            reason: "test".into(),
+        });
+        state.apply(ClientEvent::Snapshot(agent_snapshot(
+            AgentStatus::Done,
+            200,
+        )));
+        assert_status(&state, AgentStatus::Done);
+    }
+
+    #[test]
     fn agent_view_projection_is_a_query_not_an_activity_override() {
         // This is the endpoint.agent-view.v1 envelope and AgentViewSetParams
         // shape from upstream, not a per-agent status payload.
@@ -571,181 +562,6 @@ mod tests {
             data: include_str!("../../herdr-protocol/tests/fixtures/endpoint-agent-view-v1.json")
                 .into(),
         }));
-        assert_status(&state, AgentStatus::Idle);
-    }
-
-    #[test]
-    fn idle_wire_completion_is_done_until_focused_coherent_surface_is_painted() {
-        let mut state = LiveState::default();
-        state.set_outer_focus(false);
-        state.apply(ClientEvent::Snapshot(agent_snapshot(
-            AgentStatus::Working,
-            9,
-        )));
-        assert_status(&state, AgentStatus::Working);
-        let idle = agent_snapshot(AgentStatus::Idle, 10);
-        state.apply(ClientEvent::Snapshot(idle.clone()));
-        assert_status(&state, AgentStatus::Done);
-        assert_eq!(
-            idle.agents[0].agent_status,
-            AgentStatus::Idle,
-            "wire snapshot stays raw"
-        );
-        let frame = agent_surface(&idle);
-        state.apply(ClientEvent::Surface(frame.clone()));
-        assert_status(&state, AgentStatus::Done);
-        assert!(!state.acknowledge_presented_surface(&idle, &frame, false));
-        assert!(!state.acknowledge_presented_surface(&idle, &frame, true));
-        state.dirty = false;
-        state.set_outer_focus(true);
-        assert!(
-            state.dirty,
-            "focus gain requests a draw, not an acknowledgement"
-        );
-        assert_status(&state, AgentStatus::Done);
-        assert!(!state.acknowledge_presented_surface(&idle, &frame, false));
-        let painted = state.snapshot.clone().unwrap();
-        assert!(state.acknowledge_presented_surface(&painted, &frame, true));
-        assert_status(&state, AgentStatus::Idle);
-        assert_eq!(painted.agents[0].agent_status, AgentStatus::Done);
-        state.apply(ClientEvent::Snapshot(idle));
-        assert_status(&state, AgentStatus::Idle);
-    }
-
-    #[test]
-    fn initial_idle_or_done_is_seen_and_clients_acknowledge_independently() {
-        for initial_status in [AgentStatus::Idle, AgentStatus::Done] {
-            let mut viewer = LiveState::default();
-            viewer.set_outer_focus(true);
-            viewer.apply(ClientEvent::Snapshot(agent_snapshot(initial_status, 9)));
-            assert_status(&viewer, AgentStatus::Idle);
-            let mut background = viewer.clone();
-            let idle = agent_snapshot(AgentStatus::Idle, 10);
-            viewer.apply(ClientEvent::Snapshot(idle.clone()));
-            background.apply(ClientEvent::Snapshot(idle.clone()));
-            let frame = agent_surface(&idle);
-            viewer.apply(ClientEvent::Surface(frame.clone()));
-            assert_status(&viewer, AgentStatus::Done);
-            assert!(viewer.acknowledge_presented_surface(&idle, &frame, true));
-            assert_status(&viewer, AgentStatus::Idle);
-            assert_status(&background, AgentStatus::Done);
-        }
-    }
-
-    #[test]
-    fn stale_wrong_boot_and_offscreen_surfaces_do_not_consume_done() {
-        let mut state = LiveState::default();
-        state.set_outer_focus(true);
-        let initial = agent_snapshot(AgentStatus::Working, 9);
-        state.apply(ClientEvent::Snapshot(initial.clone()));
-        let idle = agent_snapshot(AgentStatus::Idle, 10);
-        state.apply(ClientEvent::Snapshot(idle.clone()));
-        state.apply(ClientEvent::Surface(agent_surface(&initial)));
-        assert!(!state.acknowledge_presented_surface(&initial, &agent_surface(&initial), true));
-        assert_status(&state, AgentStatus::Done);
-        let mut wrong_boot = agent_surface(&idle);
-        Arc::make_mut(&mut wrong_boot).boot_id = "wrong".into();
-        state.apply(ClientEvent::Surface(wrong_boot.clone()));
-        assert!(!state.acknowledge_presented_surface(&idle, &wrong_boot, true));
-        state.apply(ClientEvent::Surface(surface(&idle)));
-        assert!(!state.acknowledge_presented_surface(&idle, &surface(&idle), true));
-        assert_status(&state, AgentStatus::Done);
-    }
-
-    #[test]
-    fn coalesced_receipts_and_stale_paints_cannot_acknowledge_newer_completion() {
-        for same_revision in [false, true] {
-            let mut state = LiveState::default();
-            state.set_outer_focus(true);
-            state.apply(ClientEvent::Snapshot(agent_snapshot(
-                AgentStatus::Working,
-                9,
-            )));
-            let a = agent_snapshot(AgentStatus::Idle, 10);
-            let a_surface = agent_surface(&a);
-            state.apply(ClientEvent::Snapshot(a));
-            state.apply(ClientEvent::Surface(a_surface.clone()));
-            let painted_a = state.snapshot.clone().unwrap();
-            assert_status(&state, AgentStatus::Done);
-
-            let mut b = agent_snapshot(AgentStatus::Idle, 11);
-            if same_revision {
-                Arc::make_mut(&mut b).revision = painted_a.revision;
-            }
-            let b_surface = agent_surface(&b);
-            state.apply(ClientEvent::Snapshot(b.clone()));
-            state.apply(ClientEvent::Surface(b_surface.clone()));
-            assert_status(&state, AgentStatus::Done);
-            assert!(!state.acknowledge_presented_surface(&painted_a, &a_surface, true));
-            assert_status(&state, AgentStatus::Done);
-            assert!(state.acknowledge_presented_surface(&b, &b_surface, true));
-            assert_status(&state, AgentStatus::Idle);
-        }
-    }
-
-    #[test]
-    fn coherent_paint_from_previous_boot_cannot_acknowledge_current_boot() {
-        let mut state = LiveState::default();
-        state.set_outer_focus(true);
-        let old = agent_snapshot(AgentStatus::Idle, 10);
-        let old_surface = agent_surface(&old);
-        state.apply(ClientEvent::Snapshot(old.clone()));
-        let mut baseline = agent_snapshot(AgentStatus::Working, 9);
-        Arc::make_mut(&mut baseline).boot_id = "new-boot".into();
-        state.apply(ClientEvent::Snapshot(baseline));
-        let mut next = agent_snapshot(AgentStatus::Idle, 10);
-        Arc::make_mut(&mut next).boot_id = "new-boot".into();
-        state.apply(ClientEvent::Snapshot(next));
-        assert!(!state.acknowledge_presented_surface(&old, &old_surface, true));
-        assert_status(&state, AgentStatus::Done);
-    }
-
-    #[test]
-    fn paint_only_acknowledges_agents_in_presented_panes() {
-        let mut state = LiveState::default();
-        state.set_outer_focus(true);
-        let mut initial = agent_snapshot(AgentStatus::Working, 9);
-        let mut second = initial.agents[0].clone();
-        second.pane_id = "offscreen".into();
-        Arc::make_mut(&mut initial).agents.push(second);
-        state.apply(ClientEvent::Snapshot(initial.clone()));
-        let next = Arc::make_mut(&mut initial);
-        next.revision += 1;
-        for agent in &mut next.agents {
-            agent.state_change_seq += 1;
-            agent.agent_status = AgentStatus::Idle;
-        }
-        let frame = agent_surface(&initial);
-        state.apply(ClientEvent::Snapshot(initial.clone()));
-        state.apply(ClientEvent::Surface(frame.clone()));
-        assert!(state.acknowledge_presented_surface(&initial, &frame, true));
-        let snapshot = state.snapshot.as_ref().unwrap();
-        assert_eq!(snapshot.agents[0].agent_status, AgentStatus::Idle);
-        assert_eq!(snapshot.agents[1].agent_status, AgentStatus::Done);
-        assert_eq!(snapshot.tabs[0].agent_status, AgentStatus::Done);
-        assert_eq!(snapshot.workspaces[0].agent_status, AgentStatus::Done);
-    }
-
-    #[test]
-    fn boot_change_and_disconnect_establish_a_new_seen_baseline() {
-        let mut state = LiveState::default();
-        state.apply(ClientEvent::Snapshot(agent_snapshot(
-            AgentStatus::Working,
-            9,
-        )));
-        state.apply(ClientEvent::Snapshot(agent_snapshot(AgentStatus::Idle, 10)));
-        assert_status(&state, AgentStatus::Done);
-        let mut reboot = agent_snapshot(AgentStatus::Idle, 100);
-        Arc::make_mut(&mut reboot).boot_id = "new-boot".into();
-        state.apply(ClientEvent::Snapshot(reboot));
-        assert_status(&state, AgentStatus::Idle);
-        state.apply(ClientEvent::Disconnected {
-            reason: "test".into(),
-        });
-        state.apply(ClientEvent::Snapshot(agent_snapshot(
-            AgentStatus::Done,
-            200,
-        )));
         assert_status(&state, AgentStatus::Idle);
     }
 
@@ -828,23 +644,6 @@ mod tests {
                 assert!(settled.active && !settled.failed);
             }
         }
-    }
-
-    #[test]
-    fn deferred_paint_cannot_acknowledge_while_surface_activation_is_pending() {
-        let mut state = LiveState::default();
-        state.set_outer_focus(true);
-        state.apply(ClientEvent::Snapshot(agent_snapshot(
-            AgentStatus::Working,
-            9,
-        )));
-        let idle = agent_snapshot(AgentStatus::Idle, 10);
-        let frame = agent_surface(&idle);
-        state.apply(ClientEvent::Snapshot(idle.clone()));
-        state.apply(ClientEvent::Surface(frame.clone()));
-        state.activation = Some(activating(&idle));
-        assert!(!state.acknowledge_presented_surface(&idle, &frame, true));
-        assert_status(&state, AgentStatus::Done);
     }
 
     #[test]

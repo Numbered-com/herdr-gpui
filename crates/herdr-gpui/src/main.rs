@@ -48,6 +48,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use terminal::*;
 
+// Even tab cells, as on herdr.dev, so short labels do not collapse to a sliver.
+const TAB_WIDTH: f32 = 64.;
+// The reference strip is a shallow band: chrome, not a toolbar.
+const TAB_HEIGHT: f32 = 24.;
+
 // Release builds embed the same calendar version (YYYYMMDD.COUNTER) used for the
 // tag, the bundle, and the downloadable artifacts. Local builds are not releases,
 // so they carry no version the updater or an issue report could act on.
@@ -157,11 +162,17 @@ struct HerdrWindow {
     sidebar_drag: Option<(f32, f32)>,
     sidebar_preferences: Option<preferences::Preferences>,
     sidebar_modified: bool,
+    agent_sort: preferences::AgentSort,
+    /// Keeps a toggle made before the stored chrome arrives from being undone.
+    agent_sort_modified: bool,
     avatars: Option<avatars::Avatars>,
     #[cfg(feature = "integration-test")]
     input_probe: smoke::InputProbe,
-    #[cfg(feature = "integration-test")]
+    /// Spaces and agents lists, in that order.
     sidebar_scroll: [ScrollHandle; 2],
+    /// The row each list has scrolled into view, so a new selection is revealed
+    /// while the user's own scrolling of an unchanged one is left alone.
+    sidebar_revealed: [std::cell::Cell<Option<usize>>; 2],
     _poll: Task<()>,
     _activation: Subscription,
 }
@@ -201,11 +212,15 @@ impl HerdrWindow {
                         if this.avatars.as_mut().is_some_and(|avatars| avatars.poll()) {
                             cx.notify();
                         }
-                        if let Some(width) =
+                        if let Some(chrome) =
                             this.sidebar_preferences.as_mut().and_then(|p| p.loaded())
-                            && !this.sidebar_modified
                         {
-                            this.sidebar_width = width;
+                            if !this.sidebar_modified {
+                                this.sidebar_width = chrome.sidebar_width;
+                            }
+                            if !this.agent_sort_modified {
+                                this.agent_sort = chrome.agent_sort;
+                            }
                             cx.notify();
                         }
                         let old_pane = this
@@ -280,11 +295,13 @@ impl HerdrWindow {
             sidebar_drag: None,
             sidebar_preferences: None,
             sidebar_modified: false,
+            agent_sort: preferences::AgentSort::default(),
+            agent_sort_modified: false,
             avatars: None,
             #[cfg(feature = "integration-test")]
             input_probe: smoke::InputProbe::default(),
-            #[cfg(feature = "integration-test")]
             sidebar_scroll: Default::default(),
+            sidebar_revealed: Default::default(),
             _poll: poll,
             _activation: cx.observe_window_activation(window, |this, window, cx| {
                 this.active = window.is_window_active();
@@ -635,7 +652,7 @@ impl Render for HerdrWindow {
             .id("tabs")
             .flex()
             .flex_none()
-            .h(px((self.config.tabs.size * 1.5 + 8.).max(32.)))
+            .h(px((self.config.tabs.size * 1.6 + 4.).max(TAB_HEIGHT)))
             .font_family(self.config.tabs.family.clone())
             .text_size(px(self.config.tabs.size))
             .overflow_x_scroll()
@@ -651,6 +668,15 @@ impl Render for HerdrWindow {
                 let id = tab.tab_id.clone();
                 let context_id = id.clone();
                 let close_id = id.clone();
+                // Selected tabs carry the theme's accent, so the choice reads as
+                // primary rather than as the hover tint used elsewhere; the rest
+                // recede into the strip, as they do in the reference UI.
+                let (background, text) = if tab.focused {
+                    let background = self.theme.primary_wash();
+                    (background, self.theme.text_on(background))
+                } else {
+                    (self.theme.surface, self.theme.muted)
+                };
                 tabs = tabs.child(
                     div()
                         .id(SharedString::from(format!("tab-{id}")))
@@ -658,18 +684,22 @@ impl Render for HerdrWindow {
                             let id = id.clone();
                             move || format!("tab-{id}")
                         })
-                        .px_4()
-                        .py(px(4.))
+                        .pl(px(12.))
+                        // The close button hugs the tab's inner right edge, well
+                        // clear of the label it would otherwise crowd.
+                        .pr(px(3.))
+                        .py(px(2.))
+                        // Even cells divided by a single rule, as in the reference UI.
+                        .min_w(px(TAB_WIDTH))
+                        .border_r_1()
+                        .border_color(rgb(self.theme.active))
                         .flex_none()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(px(10.))
                         .cursor_pointer()
-                        .bg(rgb(if tab.focused {
-                            self.theme.active
-                        } else {
-                            self.theme.surface
-                        }))
+                        .bg(rgb(background))
+                        .text_color(rgb(text))
                         .child(tab.label.clone())
                         .child(
                             div()
@@ -678,13 +708,13 @@ impl Render for HerdrWindow {
                                     let id = id.clone();
                                     move || format!("close-tab-{id}")
                                 })
-                                .size(px(24.))
+                                .size(px(18.))
                                 .flex_none()
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .rounded(px(4.))
-                                .hover(|s| s.bg(rgba((self.theme.foreground << 8) | 0x24)))
+                                .rounded(px(3.))
+                                .hover(move |s| s.bg(rgba((text << 8) | 0x24)))
                                 .child(
                                     svg()
                                         .path("icons/close.svg")
@@ -692,8 +722,8 @@ impl Render for HerdrWindow {
                                             let id = id.clone();
                                             move || format!("close-tab-icon-{id}")
                                         })
-                                        .size(px(16.))
-                                        .text_color(rgb(self.theme.foreground)),
+                                        .size(px(12.))
+                                        .text_color(rgb(text)),
                                 )
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                     cx.stop_propagation();
@@ -722,13 +752,6 @@ impl Render for HerdrWindow {
             .surface
             .clone()
             .filter(|_| self.live.surface_ready());
-        let snapshot = self.live.snapshot.clone();
-        let inbox = self.endpoints[self.selected_endpoint]
-            .connection
-            .inbox
-            .clone();
-        let paint_epoch = self.selection_epoch;
-        let paint_generation = self.endpoints[self.selected_endpoint].generation;
         let entity = cx.entity();
         let paint_entity = entity.clone();
         let focus = self.focus.clone();
@@ -823,35 +846,6 @@ impl Render for HerdrWindow {
                                     cx,
                                 );
                             }
-                            if window.is_window_active()
-                                && let Some(snapshot) = &snapshot
-                            {
-                                let snapshot = snapshot.clone();
-                                let surface = surface.clone();
-                                // Defer projection/COW work until after paint. On contention,
-                                // retry via another draw, never by acknowledging inbox cells.
-                                cx.defer(move |cx| {
-                                    let owned = paint_entity.read(cx).owns_paint(
-                                        paint_epoch,
-                                        paint_generation,
-                                        &inbox,
-                                    );
-                                    if !owned {
-                                        return;
-                                    }
-                                    match inbox.try_lock() {
-                                        Ok(mut state) => {
-                                            state.acknowledge_presented_surface(
-                                                &snapshot, &surface, true,
-                                            );
-                                        }
-                                        Err(std::sync::TryLockError::WouldBlock) => {
-                                            paint_entity.update(cx, |_, cx| cx.notify());
-                                        }
-                                        Err(std::sync::TryLockError::Poisoned(_)) => {}
-                                    }
-                                });
-                            }
                         }
                     },
                 )
@@ -905,13 +899,18 @@ impl Render for HerdrWindow {
                                     .flex_none()
                                     .bg(rgb(self.theme.surface))
                                     .text_color(rgb(self.theme.foreground))
-                                    .child(tabs.flex_1().min_w_0())
+                                    // Tabs size to their content and shrink when the
+                                    // row is full, so the button sits after the last
+                                    // tab instead of at the far right of the window.
+                                    .child(tabs.flex_shrink().min_w_0())
                                     .child(
                                         div()
                                             .id("new-tab")
                                             .debug_selector(|| "new-tab".into())
-                                            .w(px(44.))
-                                            .min_h(px(32.))
+                                            .w(px(34.))
+                                            .min_h(px(TAB_HEIGHT))
+                                            .border_r_1()
+                                            .border_color(rgb(self.theme.active))
                                             .flex_none()
                                             .flex()
                                             .items_center()
@@ -922,8 +921,9 @@ impl Render for HerdrWindow {
                                                 svg()
                                                     .path("icons/plus.svg")
                                                     .debug_selector(|| "new-tab-icon".into())
-                                                    .size(px(18.))
-                                                    .text_color(rgb(self.theme.foreground)),
+                                                    .size(px(14.))
+                                                    // Quiet like the unselected tabs beside it.
+                                                    .text_color(rgb(self.theme.muted)),
                                             )
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.command(Command::Tab, window, cx)

@@ -182,12 +182,7 @@ impl HerdrWindow {
             .min_w_0();
         if let Some(value) = &pr.value {
             let action = WorkspaceMenuAction::PullRequest;
-            let color = match value.state.as_str() {
-                "MERGED" => theme.palette[5],
-                "CLOSED" => theme.palette[1],
-                _ if value.is_draft => theme.muted,
-                _ => theme.palette[2],
-            };
+            let color = value.color(theme);
             section =
                 section
                     .child(
@@ -631,7 +626,11 @@ mod tests {
             window.draw(cx).clear();
         });
         // GPUI retains removed debug selectors; measure the remaining action panel.
-        assert!(cx.debug_bounds("menu-panel").unwrap().size.height < px(120.));
+        // Four action rows and nothing else: no PR section, no stale metadata.
+        let rows = cx.update(|_, cx| view.read(cx).workspace_menu_actions().len());
+        assert_eq!(rows, 4);
+        let panel = cx.debug_bounds("menu-panel").unwrap().size.height;
+        assert!(panel < px(35. * rows as f32), "{panel:?}");
     }
 
     /// Explicitly selected running daemon only: no start, focus, resize, input,
