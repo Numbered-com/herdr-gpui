@@ -19,3 +19,6 @@
 *.keychain-db
 id_rsa*
 id_ed25519*
+
+# Machine-local mise overrides.
+mise.local.toml
