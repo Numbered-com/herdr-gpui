@@ -163,6 +163,8 @@ impl HerdrWindow {
                 }
                 let workspace = &snapshot.workspaces[index];
                 let id = workspace.workspace_id.clone();
+                let context_id = id.clone();
+                let context_endpoint = endpoint_id.clone();
                 let navigate_endpoint = endpoint_id.clone();
                 let collapse_endpoint = endpoint_id.clone();
                 spaces = spaces.child(
@@ -216,6 +218,17 @@ impl HerdrWindow {
                                 })),
                         )
                     })
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            if this.menu.page.is_none()
+                                && this.select_endpoint(&context_endpoint, cx)
+                            {
+                                this.open_workspace_menu(&context_id, event.position, window, cx);
+                            }
+                        }),
+                    )
                     .id(SharedString::from(format!("workspace-{endpoint_id}-{id}")))
                     .when(multi, |row| {
                         row.debug_selector(|| format!("workspace-{endpoint_id}-{id}"))
@@ -555,12 +568,12 @@ pub(crate) mod layout_tests;
 pub(crate) mod native_tests;
 
 #[cfg(not(any(test, feature = "integration-test")))]
-fn label_text(text: &str) -> SharedString {
+pub(crate) fn label_text(text: &str) -> SharedString {
     text.to_owned().into()
 }
 
 #[cfg(any(test, feature = "integration-test"))]
-fn label_text(text: &str) -> layout_tests::ProbeText {
+pub(crate) fn label_text(text: &str) -> layout_tests::ProbeText {
     layout_tests::ProbeText(text.to_owned().into())
 }
 

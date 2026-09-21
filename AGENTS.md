@@ -10,6 +10,9 @@ Engineering guidance for agents working in this repository. Read this alongside
 - Prefer existing standard traits and generics over unnecessarily concrete APIs.
 - Protect protocol compatibility, bounded resource use, and UI responsiveness.
 - Add regression tests for changed behavior and report what was actually verified.
+- Never modify or patch Herdr itself. It is owned by an unrelated external team;
+  sibling Herdr checkouts are read-only references. Propose an upstream PR only
+  when genuinely justified, never make incidental upstream edits for this client.
 
 ## Architecture
 
@@ -48,7 +51,8 @@ Closing or detaching the GUI must leave the daemon and its terminals running.
 - Never use `String` or `&str` as an error type, including `Result<(), String>`, worker-channel results, and intermediate operation state. Strings are allowed as diagnostic payloads, unchanged wire-protocol fields, and final UI display text, not as catch-all internal error wrappers.
 - Propagate errors with `?`; preserve original causes with `#[from]`/`#[source]` and retain structured operation/path context until the display boundary. Do not flatten sources with `to_string()` or `format!()` during propagation. Keep `io::Result` where an actual I/O trait or connector contract requires it, preserving typed sources when adapting errors.
 - Test error variants and source chains as well as user-facing diagnostics. Preserve redaction, bounded remote diagnostics, retry/cancellation classification, and protocol compatibility when changing error handling.
-- No `unwrap()` or `expect()` in production. Test-only allowances must be scoped to test code. Keep unsafe exceptions narrow and document their safety conditions.
+- No `unwrap()` or `expect()` in production. Test-only allowances must be scoped to test code.
+- Prefer safe Rust. Do not introduce `unsafe` unless there is no practical safe alternative; investigate standard-library APIs and maintained safe wrappers first. Any unavoidable exception must be tightly scoped and document both why safe alternatives are insufficient and the safety invariants.
 - Prefer guard clauses and readable iterators. Avoid clones, allocations, helper layers, and generic parameters that provide no benefit.
 - Comments should explain invariants, ownership, or non-obvious decisions, not narrate assignments.
 

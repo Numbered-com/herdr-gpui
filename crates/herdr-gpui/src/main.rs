@@ -10,8 +10,10 @@ mod connection;
 mod controls;
 mod daemon;
 mod diagnostics;
+mod dialog_input;
 mod endpoint;
 mod error;
+mod github;
 pub use error::{Error, Result};
 mod icons;
 mod input;
@@ -21,6 +23,7 @@ mod palette;
 #[cfg(feature = "integration-test")]
 mod performance;
 mod preferences;
+mod pull_request;
 mod search_input;
 mod sidebar;
 #[cfg(feature = "integration-test")]
@@ -118,6 +121,7 @@ struct HerdrWindow {
     update_preview: Option<updater::State>,
     config: config::Config,
     theme: config::Theme,
+    config_load: Option<Task<()>>,
     endpoints: Vec<endpoint::Endpoint>,
     selected_endpoint: usize,
     selection_epoch: u64,
@@ -203,6 +207,7 @@ impl HerdrWindow {
                             .as_ref()
                             .and_then(|s| s.focused_pane_id.clone());
                         this.poll_endpoints(cx);
+                        this.update_deletion_dialog();
                         this.poll_tab_rename(window, cx);
                         if old_pane
                             != this
@@ -212,6 +217,9 @@ impl HerdrWindow {
                                 .and_then(|s| s.focused_pane_id.clone())
                         {
                             this.marked.clear();
+                        }
+                        if this.update_workspace_pr() {
+                            cx.notify();
                         }
                         if this.live.missing_installation && !this.install_warning_shown {
                             this.install_warning_shown = true;
@@ -226,29 +234,12 @@ impl HerdrWindow {
                 }
             }
         });
-        let fixture = false;
-        #[cfg(feature = "integration-test")]
-        let fixture = fixture || sidebar_test;
-        let loaded = if fixture {
-            Ok(config::Config::default())
-        } else {
-            config::Config::load()
-        };
-        let (config, theme, config_error) =
-            match loaded.and_then(|config| config.theme().map(|theme| (config, theme))) {
-                Ok((config, theme)) => (config, theme, None),
-                Err(error) => (
-                    config::Config::default(),
-                    config::Theme::default(),
-                    Some(error.to_string()),
-                ),
-            };
-        log_window::set_appearance(&config, &theme, cx);
         let mut this = Self {
             updater: updater::Updater::default(),
             update_preview: None,
-            config,
-            theme,
+            config: config::Config::default(),
+            theme: config::Theme::default(),
+            config_load: None,
             catalog: endpoint::Catalog::new(&target),
             endpoints: vec![endpoint::Endpoint::new(
                 endpoint::LOCAL.into(),
@@ -312,10 +303,8 @@ impl HerdrWindow {
             .map(|path| preferences::Preferences::new(&path));
         this.avatars = Some(avatars::Avatars::new());
         this.reconnect();
-        if config_error.is_some() {
-            tracing::warn!("GUI configuration could not be loaded; using defaults");
-            this.local_error = config_error;
-        }
+        log_window::set_appearance(&this.config, &this.theme, cx);
+        this.load_gui_config(cx);
         this
     }
 
@@ -382,7 +371,7 @@ impl HerdrWindow {
     }
 
     fn navigate(&mut self, target: NavigationTarget<&str>, cx: &mut Context<Self>) {
-        if !self.input_ready() {
+        if self.menu.page.is_some() || !self.input_ready() {
             return;
         }
         self.request_focus_change(
@@ -410,44 +399,56 @@ impl HerdrWindow {
         if let (Some(handle), Some(snapshot)) = (
             &self.endpoints[self.selected_endpoint].connection.handle,
             &self.live.snapshot,
+        ) {
+            if let Err(error) = enqueue(handle, &snapshot.boot_id) {
+                self.local_error = Some(format!("{method}: {error}"));
+            } else {
+                self.fence_focus_change(focus);
+            }
+        }
+    }
+
+    fn fence_focus_change(&mut self, focus: Option<OwnedNavigationTarget>) {
+        if !self.live.supports_surface {
+            return;
+        }
+        if let (Some(handle), Some(snapshot)) = (
+            &self.endpoints[self.selected_endpoint].connection.handle,
+            &self.live.snapshot,
         ) && let Ok(mut state) = self.endpoints[self.selected_endpoint]
             .connection
             .inbox
             .lock()
         {
-            if let Err(error) = enqueue(handle, &snapshot.boot_id) {
-                self.local_error = Some(format!("{method}: {error}"));
-            } else if self.live.supports_surface {
-                // An ordered surface barrier prevents input hitting the previous
-                // pane while navigation/creation and its projection are in flight.
-                // Hold the inbox lock until both requests and the fence are set.
-                let (request, failed) = match handle.set_surface_active(&snapshot.boot_id, true) {
-                    Ok(request) => (request, false),
-                    Err(error) => {
-                        self.local_error = Some(error.to_string());
-                        (String::new(), true)
-                    }
-                };
-                state.activation = Some(state::SurfaceActivation {
-                    request,
-                    boot: snapshot.boot_id.clone(),
-                    revision: None,
-                    failed,
-                    focus,
-                    active: true,
-                });
-                state.surface = None;
-                state.dirty = true;
-                self.live = state.clone();
-                self.activation_deadline = Some(
-                    std::time::Instant::now()
-                        + if failed {
-                            Duration::ZERO
-                        } else {
-                            Duration::from_secs(5)
-                        },
-                );
-            }
+            // An ordered surface barrier prevents input hitting the previous
+            // pane while navigation/creation and its projection are in flight.
+            // Register the barrier under the inbox lock before input can resume.
+            let (request, failed) = match handle.set_surface_active(&snapshot.boot_id, true) {
+                Ok(request) => (request, false),
+                Err(error) => {
+                    self.local_error = Some(error.to_string());
+                    (String::new(), true)
+                }
+            };
+            state.activation = Some(state::SurfaceActivation {
+                request,
+                boot: snapshot.boot_id.clone(),
+                revision: None,
+                failed,
+                focus,
+                active: true,
+            });
+            state.surface = None;
+            state.dirty = true;
+            self.live = state.clone();
+            self.activation_deadline = Some(
+                std::time::Instant::now()
+                    + if failed {
+                        Duration::ZERO
+                    } else {
+                        Duration::from_secs(5)
+                    },
+            );
         }
     }
 
@@ -613,6 +614,7 @@ mod tests {
 
 impl Render for HerdrWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.restore_menu_focus(window);
         let font = font(self.config.terminal.family.clone());
         let cell_height = self.config.terminal.line_height();
         self.painter.borrow_mut().set_appearance(
@@ -871,11 +873,7 @@ impl Render for HerdrWindow {
             .text_color(rgb(self.theme.foreground))
             .font_family(self.config.ui.family.clone())
             .text_size(px(self.config.ui.size))
-            .map(|root| {
-                #[cfg(target_os = "macos")]
-                let root = root.child(titlebar::render(self.theme.surface, self.theme.foreground));
-                root
-            })
+            .child(self.render_titlebar(cx))
             .children(worktree_banner::render(
                 env!("HERDR_BUILD_WORKTREE") == "1",
                 env!("HERDR_BUILD_BRANCH"),

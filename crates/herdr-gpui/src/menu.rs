@@ -1,6 +1,11 @@
 use super::HerdrWindow;
+use super::dialog_input::DialogInput;
 use crate::config::Config;
 use gpui::{prelude::*, *};
+use herdr_client::protocol::{ClientShellSnapshot, ClientShellWorkspace, ClientShellWorktree};
+
+mod github;
+mod pr;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Page {
@@ -16,15 +21,155 @@ pub(super) enum Page {
     Install,
     Tab,
     RenameTab,
+    Workspace,
+    GitHub,
+    Dialog(WorkspaceAction),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum WorkspaceAction {
+    Rename,
+    Close,
+    NewWorktree,
+    DeleteWorktree,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkspaceMenuAction {
+    Dialog(WorkspaceAction),
+    PullRequest,
+}
+
+struct WorkspaceTarget {
+    boot_id: String,
+    id: String,
+    label: String,
+    worktree: Option<ClientShellWorktree>,
+    close_members: Vec<String>,
+    branch: Option<String>,
+}
+
+impl WorkspaceTarget {
+    fn new(snapshot: &ClientShellSnapshot, workspace: &ClientShellWorkspace) -> Self {
+        Self {
+            boot_id: snapshot.boot_id.clone(),
+            id: workspace.workspace_id.clone(),
+            label: workspace.label.clone(),
+            worktree: workspace.worktree.clone(),
+            close_members: close_members(snapshot, workspace),
+            branch: workspace.branch.clone(),
+        }
+    }
+
+    fn can_create(&self) -> bool {
+        self.worktree
+            .as_ref()
+            .is_some_and(|tree| !tree.is_linked_worktree)
+    }
+
+    fn can_delete(&self) -> bool {
+        self.worktree
+            .as_ref()
+            .is_some_and(|tree| tree.is_linked_worktree)
+    }
+
+    fn close_label(&self) -> &'static str {
+        if self.close_members.len() > 1 {
+            "Close group"
+        } else {
+            "Close"
+        }
+    }
+
+    fn request(
+        &self,
+        snapshot: &ClientShellSnapshot,
+        action: WorkspaceAction,
+        text: &str,
+    ) -> crate::Result<(&'static str, serde_json::Value)> {
+        let workspace = snapshot
+            .workspaces
+            .iter()
+            .find(|w| w.workspace_id == self.id)
+            .filter(|_| snapshot.boot_id == self.boot_id)
+            .ok_or(crate::Error::StaleWorkspace)?;
+        let params = match action {
+            WorkspaceAction::Rename => {
+                let label = text.trim();
+                if label.is_empty() {
+                    return Err(crate::Error::EmptyWorkspaceLabel);
+                }
+                (
+                    "workspace.rename",
+                    serde_json::json!({"workspace_id": self.id, "label": label}),
+                )
+            }
+            WorkspaceAction::Close => {
+                if self.worktree != workspace.worktree
+                    || self.close_members != close_members(snapshot, workspace)
+                {
+                    return Err(crate::Error::WorkspaceGroupChanged);
+                }
+                (
+                    "workspace.close",
+                    serde_json::json!({"workspace_id": self.id, "close_group": true}),
+                )
+            }
+            WorkspaceAction::NewWorktree => {
+                if !self.can_create() || self.worktree != workspace.worktree {
+                    return Err(crate::Error::WorkspaceRepositoryChanged);
+                }
+                let mut params = serde_json::json!({"workspace_id": self.id, "base": "HEAD", "focus": true, "trust_repository": false});
+                if !text.trim().is_empty() {
+                    params["branch"] = text.trim().into();
+                }
+                ("worktree.create", params)
+            }
+            WorkspaceAction::DeleteWorktree => {
+                if !self.can_delete() || self.worktree != workspace.worktree {
+                    return Err(crate::Error::WorkspaceCheckoutChanged);
+                }
+                (
+                    "worktree.remove",
+                    serde_json::json!({"workspace_id": self.id, "force": false, "trust_repository": false}),
+                )
+            }
+        };
+        Ok(params)
+    }
+}
+
+fn close_members(snapshot: &ClientShellSnapshot, workspace: &ClientShellWorkspace) -> Vec<String> {
+    let mut members: Vec<_> = snapshot
+        .workspaces
+        .iter()
+        .filter(|w| {
+            w.workspace_id == workspace.workspace_id
+                || workspace.worktree.as_ref().is_some_and(|tree| {
+                    !tree.is_linked_worktree
+                        && w.worktree
+                            .as_ref()
+                            .is_some_and(|other| tree.key == other.key)
+                })
+        })
+        .map(|w| w.workspace_id.clone())
+        .collect();
+    members.sort();
+    members
 }
 
 pub(super) struct MenuState {
     pub page: Option<Page>,
     // Selection epoch and connection generation fence captured modal actions.
-    target: (u64, u64),
+    endpoint_target: (u64, u64),
     pub anchor: Point<Pixels>,
-    pub(super) focus: FocusHandle,
-    selected: usize,
+    pub focus: FocusHandle,
+    selected: Option<usize>,
+    workspace_selected: Option<WorkspaceMenuAction>,
+    target: Option<WorkspaceTarget>,
+    pub input: Option<DialogInput>,
+    error: Option<String>,
+    deletion: Option<Deletion>,
     keybinds_scroll: ScrollHandle,
     pub(super) keybinds_search: Option<Entity<crate::search_input::SearchInput>>,
     _keybinds_subscription: Option<Subscription>,
@@ -33,6 +178,28 @@ pub(super) struct MenuState {
     pub(super) palette: Option<crate::palette::Palette>,
     pub(super) close: Option<crate::close_modal::CloseConfirmation>,
     pub(super) tab: Option<crate::tab_menu::TabMenu>,
+    pub(super) pr: crate::pull_request::Lookup,
+    pr_cache: crate::pull_request::Cache,
+    pr_cache_connection: Option<std::sync::Weak<std::sync::Mutex<crate::state::LiveState>>>,
+    pr_snapshot: Option<std::sync::Weak<ClientShellSnapshot>>,
+    pub(super) github: crate::github::Auth,
+    github_selected: Option<github::Action>,
+    github_scroll: ScrollHandle,
+    pr_connection: Option<std::sync::Weak<std::sync::Mutex<crate::state::LiveState>>>,
+}
+
+struct Deletion {
+    pending: Option<String>,
+    path: Option<String>,
+    force: bool,
+}
+
+impl Deletion {
+    fn confirmed(&self, text: &str) -> bool {
+        self.pending.is_none()
+            && self.path.is_some()
+            && text == if self.force { "FORCE DELETE" } else { "DELETE" }
+    }
 }
 
 /// Mix the theme's blue with foreground so accents remain readable on dark themes.
@@ -41,13 +208,84 @@ pub(super) fn accent(theme: &crate::config::Theme) -> Rgba {
 }
 
 impl MenuState {
+    fn apply_deletion_response(&mut self, id: &str, result: crate::state::DialogResponse) {
+        let Some(deletion) = &mut self.deletion else {
+            return;
+        };
+        if deletion.pending.as_deref() != Some(id) {
+            return;
+        }
+        deletion.pending = None;
+        let response = match result {
+            Ok(response) => response,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                return;
+            }
+        };
+        if let Some(error) = response.get("error") {
+            self.error = Some(format!(
+                "{}: {}",
+                error["code"].as_str().unwrap_or("endpoint_error"),
+                error["message"].as_str().unwrap_or("Invalid daemon error")
+            ));
+            if deletion.path.is_some()
+                && !deletion.force
+                && error["code"] == "dirty_worktree_requires_force"
+            {
+                deletion.force = true;
+                self.input = Some(DialogInput::default());
+            }
+            return;
+        }
+        let result = &response["result"];
+        let Some(target) = &self.target else {
+            return;
+        };
+        if deletion.path.is_none() && result["type"] == "worktree_list" {
+            let entry = result["worktrees"].as_array().and_then(|entries| {
+                let mut matches = entries
+                    .iter()
+                    .filter(|entry| entry["open_workspace_id"] == target.id);
+                let entry = matches.next()?;
+                (matches.next().is_none()
+                    && entry["is_linked_worktree"] == true
+                    && entry["is_bare"] == false)
+                    .then_some(entry)
+            });
+            deletion.path = entry
+                .and_then(|entry| entry["path"].as_str())
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned);
+            if deletion.path.is_none() {
+                self.error = Some("Daemon did not identify a unique linked checkout. Dismiss and reopen the menu.".into());
+            }
+        } else if result["type"] == "worktree_removed"
+            && result["workspace_id"] == target.id
+            && result["path"].as_str() == deletion.path.as_deref()
+            && result["forced"] == deletion.force
+        {
+            self.reset();
+        } else {
+            self.error = Some(
+                "Unexpected daemon response. Review current workspace state before retrying."
+                    .into(),
+            );
+        }
+    }
+
     pub fn new(cx: &App) -> Self {
         Self {
             page: None,
-            target: (0, 0),
+            endpoint_target: (0, 0),
             anchor: Point::default(),
             focus: cx.focus_handle(),
-            selected: 0,
+            selected: None,
+            workspace_selected: None,
+            target: None,
+            input: None,
+            error: None,
+            deletion: None,
             keybinds_scroll: ScrollHandle::new(),
             keybinds_search: None,
             _keybinds_subscription: None,
@@ -55,8 +293,35 @@ impl MenuState {
             themes: None,
             palette: None,
             close: None,
+            pr: Default::default(),
+            pr_cache: Default::default(),
+            pr_cache_connection: None,
+            pr_snapshot: None,
+            github: Default::default(),
+            github_selected: None,
+            github_scroll: ScrollHandle::new(),
+            pr_connection: None,
             tab: None,
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.tab = None;
+        self.github_selected = None;
+        self.github_scroll.set_offset(Point::default());
+        if self.github.busy() {
+            self.github.cancel();
+        }
+        self.page = None;
+        self.selected = None;
+        self.workspace_selected = None;
+        self.target = None;
+        self.input = None;
+        self.error = None;
+        self.deletion = None;
+        self.close = None;
+        self.pr.clear();
+        self.pr_connection = None;
     }
 }
 
@@ -95,23 +360,54 @@ impl HerdrWindow {
         if self.theme_save_in_flight() {
             return;
         }
-        // Load both before replacing either, so invalid themes preserve the UI.
-        match Config::load().and_then(|config| {
-            let theme = config.theme()?;
-            Ok((config, theme))
-        }) {
-            Ok((config, theme)) => {
-                self.cancel_theme_preview(cx);
-                self.config = config;
-                self.theme = theme;
-                crate::log_window::set_appearance(&self.config, &self.theme, cx);
-                self.wheel = Default::default();
-                self.last_queued_options = None;
-                self.local_error = None;
-            }
-            Err(error) => self.local_error = Some(format!("Reload GUI config: {error}")),
-        }
+        self.load_gui_config(cx);
         self.dismiss_menu(window, cx);
+    }
+
+    pub(super) fn load_gui_config(&mut self, cx: &mut Context<Self>) {
+        self.load_gui_config_with(
+            || {
+                let config = Config::load()?;
+                let theme = config.theme()?;
+                Ok((config, theme))
+            },
+            cx,
+        );
+    }
+
+    fn load_gui_config_with(
+        &mut self,
+        load: impl FnOnce() -> crate::Result<(Config, crate::config::Theme)> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if self.config_load.is_some() {
+            return;
+        }
+        let load = cx.background_executor().spawn(async move { load() });
+        self.config_load = Some(cx.spawn(async move |this, cx| {
+            let loaded = load.await;
+            let _ = this.update(cx, |this, cx| {
+                this.config_load = None;
+                // Apply a coherent pair only after both have loaded successfully.
+                match loaded {
+                    Ok((config, theme)) => {
+                        if this.avatars.is_some() && this.menu.github.initialize(&config) {
+                            this.menu.pr_cache.clear();
+                            this.menu.pr.clear();
+                            this.menu.pr_connection = None;
+                        }
+                        this.config = config;
+                        this.theme = theme;
+                        crate::log_window::set_appearance(&this.config, &this.theme, cx);
+                        this.wheel = Default::default();
+                        this.last_queued_options = None;
+                        this.local_error = None;
+                    }
+                    Err(error) => this.local_error = Some(format!("Load GUI config: {error}")),
+                }
+                cx.notify();
+            });
+        }));
     }
 
     pub(super) fn show_install_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -125,13 +421,12 @@ impl HerdrWindow {
         if !self.cancel_theme_preview(cx) {
             return false;
         }
-        self.menu.tab = None;
-        self.menu.target = (
+        self.menu.reset();
+        self.menu.endpoint_target = (
             self.selection_epoch,
             self.endpoints[self.selected_endpoint].generation,
         );
         self.menu.page = Some(Page::Menu);
-        self.menu.selected = 0;
         self.marked.clear();
         window.focus(&self.menu.focus);
         cx.notify();
@@ -142,16 +437,235 @@ impl HerdrWindow {
         if !self.cancel_theme_preview(cx) {
             return;
         }
-        self.menu.page = None;
         self.update_preview = None;
-        self.menu.close = None;
-        self.menu.tab = None;
+        self.menu.reset();
         window.focus(&self.focus);
         cx.notify();
     }
 
+    pub(super) fn restore_menu_focus(&self, window: &mut Window) {
+        if self.menu.page.is_none() && self.menu.focus.is_focused(window) {
+            window.focus(&self.focus);
+        }
+    }
+
+    pub(super) fn open_workspace_menu(
+        &mut self,
+        id: &str,
+        anchor: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.menu.page.is_some() || !self.live.status.is_connected() {
+            return;
+        }
+        let Some(snapshot) = &self.live.snapshot else {
+            return;
+        };
+        let Some(workspace) = snapshot.workspaces.iter().find(|w| w.workspace_id == id) else {
+            return;
+        };
+        self.menu.reset();
+        self.menu.endpoint_target = (
+            self.selection_epoch,
+            self.endpoints[self.selected_endpoint].generation,
+        );
+        self.menu.target = Some(WorkspaceTarget::new(snapshot, workspace));
+        self.menu.anchor = anchor;
+        self.menu.page = Some(Page::Workspace);
+        self.refresh_workspace_pr();
+        self.marked.clear();
+        window.focus(&self.menu.focus);
+        cx.notify();
+    }
+
+    fn workspace_items(&self) -> Vec<(WorkspaceAction, &'static str)> {
+        let Some(target) = &self.menu.target else {
+            return vec![];
+        };
+        let mut items = vec![
+            (WorkspaceAction::Rename, "Rename"),
+            (WorkspaceAction::Close, target.close_label()),
+        ];
+        if target.can_create() {
+            items.push((WorkspaceAction::NewWorktree, "New worktree"));
+        }
+        if target.can_delete() {
+            items.push((WorkspaceAction::DeleteWorktree, "Delete worktree checkout"));
+        }
+        items
+    }
+
+    fn open_workspace_dialog(&mut self, action: WorkspaceAction, cx: &mut Context<Self>) {
+        let Some(target) = &self.menu.target else {
+            return;
+        };
+        self.menu.input = match action {
+            WorkspaceAction::Rename => Some(DialogInput::new(target.label.clone())),
+            WorkspaceAction::NewWorktree => Some(DialogInput::default()),
+            WorkspaceAction::Close => None,
+            WorkspaceAction::DeleteWorktree => Some(DialogInput::default()),
+        };
+        self.menu.page = Some(Page::Dialog(action));
+        self.menu.pr.clear();
+        self.menu.pr_connection = None;
+        self.menu.error = None;
+        if action == WorkspaceAction::DeleteWorktree {
+            let result = self.endpoints[self.selected_endpoint]
+                .connection
+                .request_dialog(
+                    &target.boot_id,
+                    "worktree.list",
+                    serde_json::json!({"workspace_id": target.id, "trust_repository": false}),
+                );
+            self.menu.deletion = Some(Deletion {
+                pending: result.as_ref().ok().cloned(),
+                path: None,
+                force: false,
+            });
+            self.menu.error = result.err().map(|error| error.to_string());
+        }
+        cx.notify();
+    }
+
+    fn workspace_menu_actions(&self) -> Vec<WorkspaceMenuAction> {
+        let mut actions: Vec<_> = self
+            .workspace_items()
+            .into_iter()
+            .map(|(action, _)| WorkspaceMenuAction::Dialog(action))
+            .collect();
+        if self.menu.github.connected() && self.menu.pr.value.is_some() {
+            actions.push(WorkspaceMenuAction::PullRequest);
+        }
+        actions
+    }
+
+    fn activate_workspace_menu(&mut self, action: WorkspaceMenuAction, cx: &mut Context<Self>) {
+        match action {
+            WorkspaceMenuAction::Dialog(action) => self.open_workspace_dialog(action, cx),
+            WorkspaceMenuAction::PullRequest => self.open_workspace_pr(cx),
+        }
+    }
+
+    pub(super) fn update_deletion_dialog(&mut self) {
+        if self.menu.deletion.is_none() {
+            return;
+        }
+        if !self.menu_target_current()
+            || !self.live.status.is_connected()
+            || self.menu.target.as_ref().is_some_and(|target| {
+                self.live
+                    .snapshot
+                    .as_ref()
+                    .is_none_or(|snapshot| snapshot.boot_id != target.boot_id)
+            })
+        {
+            self.menu.reset();
+            return;
+        }
+        let Some((id, Some(result))) = &self.live.dialog_response else {
+            return;
+        };
+        self.menu.apply_deletion_response(id, result.clone());
+    }
+
+    fn submit_workspace_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Page::Dialog(action)) = self.menu.page else {
+            return;
+        };
+        if self
+            .menu
+            .input
+            .as_ref()
+            .is_some_and(|input| input.marked.is_some())
+        {
+            return;
+        }
+        let result = (|| {
+            if !self.menu_target_current() {
+                return Err(crate::Error::StaleConnection);
+            }
+            if !self.live.status.is_connected() {
+                return Err(crate::Error::NotConnected);
+            }
+            let target = self
+                .menu
+                .target
+                .as_ref()
+                .ok_or(crate::Error::StaleWorkspace)?;
+            let snapshot = self
+                .live
+                .snapshot
+                .as_ref()
+                .ok_or(crate::Error::NoSnapshot)?;
+            let text = self
+                .menu
+                .input
+                .as_ref()
+                .map(|input| input.text.as_str())
+                .unwrap_or("");
+            let (method, mut params) = target.request(snapshot, action, text)?;
+            if action == WorkspaceAction::DeleteWorktree {
+                let deletion = self
+                    .menu
+                    .deletion
+                    .as_ref()
+                    .ok_or(crate::Error::MissingDeletion)?;
+                if deletion.pending.is_some() {
+                    return Ok(false);
+                }
+                if deletion.path.is_none() {
+                    return Err(crate::Error::DeletionLookup);
+                }
+                let confirmation = if deletion.force {
+                    "FORCE DELETE"
+                } else {
+                    "DELETE"
+                };
+                if !deletion.confirmed(text) {
+                    return Err(crate::Error::DeletionConfirmation(confirmation));
+                }
+                params["force"] = deletion.force.into();
+                let id = self.endpoints[self.selected_endpoint]
+                    .connection
+                    .request_dialog(&target.boot_id, method, params)?;
+                if let Some(deletion) = &mut self.menu.deletion {
+                    deletion.pending = Some(id);
+                }
+                self.menu.error = None;
+                return Ok(true);
+            }
+            let handle = self.endpoints[self.selected_endpoint]
+                .connection
+                .handle
+                .as_ref()
+                .ok_or(crate::Error::NotConnected)?;
+            handle
+                .request(&target.boot_id, method, params)
+                .map(|_| action != WorkspaceAction::Rename)
+                .map_err(|source| crate::Error::Request { method, source })
+        })();
+        match result {
+            Ok(focus_changed) => {
+                self.local_error = None;
+                if focus_changed {
+                    self.fence_focus_change(None);
+                }
+                if action != WorkspaceAction::DeleteWorktree {
+                    self.dismiss_menu(window, cx);
+                } else {
+                    cx.notify();
+                }
+            }
+            Err(error) => {
+                self.menu.error = Some(error.to_string());
+                cx.notify();
+            }
+        }
+    }
+
     pub(super) fn menu_target_current(&self) -> bool {
-        self.menu.target
+        self.menu.endpoint_target
             == (
                 self.selection_epoch,
                 self.endpoints[self.selected_endpoint].generation,
@@ -168,6 +682,7 @@ impl HerdrWindow {
             "reload GUI config",
             "app updates",
             "preview app update",
+            "GitHub sign-in",
             "about",
         ];
         if self.live.status.is_connected() {
@@ -197,6 +712,7 @@ impl HerdrWindow {
 
     fn activate_menu(&mut self, item: &str, window: &mut Window, cx: &mut Context<Self>) {
         match item {
+            "GitHub sign-in" => self.menu.page = Some(Page::GitHub),
             "about" => self.open_about(window, cx),
             "settings" => self.open_preferences(window, cx),
             "keybinds" => self.open_keybinds(window, cx),
@@ -241,10 +757,35 @@ impl HerdrWindow {
         let font = &self.config.ui;
         let theme = &self.theme;
         let viewport = window.viewport_size();
-        let pointer_anchored = matches!(page, Page::Tab | Page::RenameTab);
+        let pointer_anchored = matches!(
+            page,
+            Page::Workspace | Page::Dialog(_) | Page::Tab | Page::RenameTab
+        );
         let mut panel = div()
             .id("menu-panel")
             .debug_selector(|| "menu-panel".into())
+            .when(matches!(page, Page::Workspace | Page::Dialog(_)), |panel| {
+                panel
+                    .w(px(if page == Page::Workspace {
+                        340.
+                    } else if page == Page::Dialog(WorkspaceAction::DeleteWorktree) {
+                        480.
+                    } else {
+                        420.
+                    })
+                    .min((viewport.width - px(24.)).max(px(0.))))
+                    .max_h(
+                        (if matches!(
+                            page,
+                            Page::Workspace | Page::Dialog(WorkspaceAction::DeleteWorktree)
+                        ) {
+                            viewport.height - px(24.)
+                        } else {
+                            viewport.height / 2. - px(12.)
+                        })
+                        .max(px(0.)),
+                    )
+            })
             .when(page == Page::Menu, |panel| {
                 panel
                     .absolute()
@@ -253,7 +794,7 @@ impl HerdrWindow {
                     .w(px(180.))
                     .max_h((viewport.height / 2. - px(12.)).max(px(0.)))
             })
-            .when(pointer_anchored, |panel| {
+            .when(matches!(page, Page::Tab | Page::RenameTab), |panel| {
                 panel
                     .w((viewport.width - px(24.))
                         .max(px(0.))
@@ -273,6 +814,7 @@ impl HerdrWindow {
                         | Page::Palette
                         | Page::Preferences
                         | Page::AppUpdate
+                        | Page::GitHub
                 ),
                 |panel| panel.overflow_y_scroll().p(px(6.)),
             )
@@ -291,6 +833,14 @@ impl HerdrWindow {
                         .shadow_lg()
                 },
             )
+            .when(page == Page::GitHub, |panel| {
+                panel
+                    .w((viewport.width - px(32.)).max(px(0.)).min(px(400.)))
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .shadow_lg()
+            })
             .when(page == Page::Install, |panel| {
                 panel
                     .w((viewport.width - px(24.)).max(px(0.)).min(px(420.)))
@@ -325,8 +875,17 @@ impl HerdrWindow {
                         .flex()
                         .items_center()
                         .cursor_pointer()
-                        .when(index == self.menu.selected, |row| row.bg(rgb(theme.active)))
-                        .hover(|row| row.bg(rgb(theme.active)))
+                        .when(Some(index) == self.menu.selected, |row| {
+                            row.bg(rgb(theme.active))
+                        })
+                        .on_hover(cx.listener(move |this, hovered, _, cx| {
+                            if *hovered {
+                                this.menu.selected = Some(index);
+                            } else if this.menu.selected == Some(index) {
+                                this.menu.selected = None;
+                            }
+                            cx.notify();
+                        }))
                         .child(item)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
@@ -334,7 +893,110 @@ impl HerdrWindow {
                         })),
                 );
             }
-        } else if pointer_anchored {
+        } else if page == Page::GitHub {
+            panel = panel.child(self.render_github_auth(cx));
+        } else if page == Page::Workspace {
+            for (action, label) in self.workspace_items() {
+                let action = WorkspaceMenuAction::Dialog(action);
+                panel = panel.child(
+                    div()
+                        .id(label)
+                        .debug_selector(move || format!("workspace-menu-{label}"))
+                        .min_h(px(font.line_height() + 12.))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .cursor_pointer()
+                        .rounded(px(3.))
+                        .when(Some(action) == self.menu.workspace_selected, |row| {
+                            row.bg(rgb(theme.active))
+                        })
+                        .on_hover(cx.listener(move |this, hovered, _, cx| {
+                            if *hovered {
+                                this.menu.workspace_selected = Some(action);
+                            } else if this.menu.workspace_selected == Some(action) {
+                                this.menu.workspace_selected = None;
+                            }
+                            cx.notify();
+                        }))
+                        .child(label)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.activate_workspace_menu(action, cx);
+                        })),
+                );
+            }
+            if self.menu.github.connected() {
+                panel = panel.child(self.render_workspace_pr(
+                    (px(340.).min((viewport.width - px(24.)).max(px(0.))) - px(30.)).max(px(0.)),
+                    cx,
+                ));
+            }
+        } else if let Page::Dialog(action) = page {
+            if let Some(target) = &self.menu.target {
+                let (title, detail, submit) = match action {
+                    WorkspaceAction::Rename => ("Rename workspace", "Edit the workspace label.".to_owned(), "Rename"),
+                    WorkspaceAction::Close => (target.close_label(), format!("Close {} workspace(s) and terminate their running terminals? Checkout files and branches are not deleted.", target.close_members.len()), target.close_label()),
+                    WorkspaceAction::NewWorktree => ("New worktree", "Branch (optional). Blank uses the daemon default. Base: HEAD. Repository trust is not granted.".to_owned(), "Create"),
+                    WorkspaceAction::DeleteWorktree => {
+                        let deletion = self.menu.deletion.as_ref();
+                        let path = deletion.and_then(|d| d.path.as_deref()).unwrap_or("Waiting for daemon checkout lookup...");
+                        let force = deletion.is_some_and(|d| d.force);
+                        ("Delete worktree checkout", format!("Checkout: {path}\n\nDeletes checkout files and closes its workspace and terminals. Branches are preserved. The daemon does not check for unpushed commits. Detached commits may become unreachable.\n\n{}\n\n{}", if force { "WARNING: Force deletion discards modified and untracked files, including submodule contents. Type FORCE DELETE to confirm." } else { "Git may reject modified/untracked files or submodules. Ignored files are not protected. Type DELETE to confirm." }, if deletion.is_some_and(|d| d.pending.is_some()) { "Waiting for daemon. Dismissing does not cancel a queued operation." } else { "" }), if force { "Force delete" } else { "Delete checkout" })
+                    }
+                };
+                panel = panel
+                    .child(div().p(px(8.)).child(title))
+                    .child(div().p(px(8.)).truncate().child(target.label.clone()))
+                    .child(div().p(px(8.)).child(detail));
+                if self.menu.input.is_some() {
+                    panel = panel.child(self.render_dialog_input(cx));
+                }
+                if let Some(error) = &self.menu.error {
+                    panel = panel.child(
+                        div()
+                            .debug_selector(|| "dialog-error".into())
+                            .p(px(8.))
+                            .text_color(rgb(theme.palette[1]))
+                            .child(error.clone()),
+                    );
+                }
+                panel = panel.child(
+                    div()
+                        .flex()
+                        .gap(px(16.))
+                        .p(px(8.))
+                        .child(
+                            div()
+                                .id("dialog-cancel")
+                                .cursor_pointer()
+                                .child("Cancel (Escape)")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.dismiss_menu(window, cx);
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("dialog-submit")
+                                .debug_selector(|| "dialog-submit".into())
+                                .cursor_pointer()
+                                .when(
+                                    matches!(
+                                        action,
+                                        WorkspaceAction::Close | WorkspaceAction::DeleteWorktree
+                                    ),
+                                    |button| button.text_color(rgb(theme.palette[1])),
+                                )
+                                .child(submit)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.submit_workspace_dialog(window, cx);
+                                })),
+                        ),
+                );
+            }
+        } else if matches!(page, Page::Tab | Page::RenameTab) {
             panel = panel.child(self.render_tab_menu(cx));
         } else if page == Page::Keybinds {
             panel = panel.child(self.render_keybinds(cx));
@@ -457,6 +1119,20 @@ impl HerdrWindow {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if let Some(input) = this.menu.input.as_mut() {
+                    if input.key(&event.keystroke, cx) {
+                        cx.stop_propagation();
+                        window.prevent_default();
+                        cx.notify();
+                        return;
+                    }
+                    // Let the platform deliver printable text and IME navigation/commit.
+                    if input.marked.is_some()
+                        || !matches!(event.keystroke.key.as_str(), "escape" | "enter")
+                    {
+                        return;
+                    }
+                }
                 if matches!(this.menu.page, Some(Page::Tab | Page::RenameTab)) {
                     this.tab_menu_key(event, window, cx);
                     return;
@@ -467,6 +1143,10 @@ impl HerdrWindow {
                 }
                 if this.menu.page == Some(Page::ConfirmClose) {
                     this.close_confirmation_key(event, window, cx);
+                    return;
+                }
+                if this.menu.page == Some(Page::GitHub) {
+                    this.github_key(event, window, cx);
                     return;
                 }
                 if this.menu.page == Some(Page::Themes) {
@@ -491,6 +1171,47 @@ impl HerdrWindow {
                 window.prevent_default();
                 match event.keystroke.key.as_str() {
                     "escape" => this.dismiss_menu(window, cx),
+                    "enter" if matches!(this.menu.page, Some(Page::Dialog(_))) => {
+                        this.submit_workspace_dialog(window, cx)
+                    }
+                    "up" | "down" if this.menu.page == Some(Page::Workspace) => {
+                        let actions = this.workspace_menu_actions();
+                        let selected = this.menu.workspace_selected.and_then(|selected| {
+                            actions.iter().position(|action| *action == selected)
+                        });
+                        if !actions.is_empty() {
+                            let index = match (selected, event.keystroke.key.as_str()) {
+                                (None, "up") => actions.len() - 1,
+                                (None, _) => 0,
+                                (Some(index), "up") => (index + actions.len() - 1) % actions.len(),
+                                (Some(index), _) => (index + 1) % actions.len(),
+                            };
+                            this.menu.workspace_selected = Some(actions[index]);
+                        }
+                        cx.notify();
+                    }
+                    "up" | "down" if this.menu.page == Some(Page::Menu) => {
+                        let count = this.menu_items().len();
+                        if count > 0 {
+                            this.menu.selected =
+                                Some(match (this.menu.selected, event.keystroke.key.as_str()) {
+                                    (None, "up") => count - 1,
+                                    (None, _) => 0,
+                                    (Some(index), "up") => (index + count - 1) % count,
+                                    (Some(index), _) => (index + 1) % count,
+                                });
+                        }
+                        cx.notify();
+                    }
+                    "enter" if this.menu.page == Some(Page::Workspace) => {
+                        if let Some(action) = this
+                            .menu
+                            .workspace_selected
+                            .filter(|action| this.workspace_menu_actions().contains(action))
+                        {
+                            this.activate_workspace_menu(action, cx);
+                        }
+                    }
                     "up" | "down" | "pageup" | "pagedown"
                         if matches!(this.menu.page, Some(Page::Keybinds | Page::Preferences)) =>
                     {
@@ -515,19 +1236,12 @@ impl HerdrWindow {
                     "enter" if this.menu.page == Some(Page::About) => {
                         this.dismiss_menu(window, cx);
                     }
-                    "up" | "down" if this.menu.page == Some(Page::Menu) => {
-                        let count = this.menu_items().len();
-                        this.menu.selected = (this.menu.selected
-                            + if event.keystroke.key == "up" {
-                                count - 1
-                            } else {
-                                1
-                            })
-                            % count;
-                        cx.notify();
-                    }
                     "enter" if this.menu.page == Some(Page::Menu) => {
-                        if let Some(item) = this.menu_items().get(this.menu.selected) {
+                        if let Some(item) = this
+                            .menu
+                            .selected
+                            .and_then(|index| this.menu_items().get(index).copied())
+                        {
                             this.activate_menu(item, window, cx);
                         }
                     }
@@ -544,7 +1258,596 @@ impl HerdrWindow {
                 panel.into_any_element()
             })
     }
+}
 
+#[cfg(test)]
+pub(crate) mod workspace_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::{WorkspaceAction, WorkspaceTarget};
+    use crate::sidebar;
+
+    pub(crate) fn submit_focus_change(
+        view: &mut super::HerdrWindow,
+        method: &str,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<super::HerdrWindow>,
+    ) {
+        let action = match method {
+            "workspace.close" => WorkspaceAction::Close,
+            "worktree.create" => WorkspaceAction::NewWorktree,
+            "worktree.remove" => WorkspaceAction::DeleteWorktree,
+            _ => panic!("unexpected fixture action"),
+        };
+        let snapshot = std::sync::Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+        snapshot.workspaces = sidebar::layout_tests::snapshot(7).workspaces;
+        let index = if action == WorkspaceAction::DeleteWorktree {
+            4
+        } else {
+            3
+        };
+        let target = WorkspaceTarget::new(snapshot, &snapshot.workspaces[index]);
+        view.open_menu(window, cx);
+        view.menu.target = Some(target);
+        view.menu.page = Some(super::Page::Dialog(action));
+        if action == WorkspaceAction::DeleteWorktree {
+            view.menu.input = Some(super::DialogInput::new("DELETE".into()));
+            view.menu.deletion = Some(super::Deletion {
+                pending: None,
+                path: Some("/fixture/checkout".into()),
+                force: false,
+            });
+        }
+        view.submit_workspace_dialog(window, cx);
+        assert!(view.menu.error.is_none());
+        if action == WorkspaceAction::DeleteWorktree {
+            let inbox = view.endpoints[view.selected_endpoint]
+                .connection
+                .inbox
+                .lock()
+                .unwrap();
+            assert_eq!(
+                inbox.dialog_response.as_ref().map(|(id, _)| id),
+                view.menu.deletion.as_ref().unwrap().pending.as_ref()
+            );
+        }
+        view.dismiss_menu(window, cx);
+    }
+
+    #[gpui::test]
+    fn signed_out_workspace_has_no_github_section_or_requests(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(sidebar::layout_tests::fixture_window);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.live.status = crate::state::ConnectionStatus::Connected;
+                view.open_workspace_menu("w3", Default::default(), window, cx);
+                view.refresh_workspace_pr();
+                assert!(!view.menu.pr.loading);
+                assert!(view.menu.pr.message.is_none());
+                assert!(!view.menu.github.busy());
+                assert!(!view.menu.github.loading_profile());
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("workspace-pr").is_none());
+    }
+
+    #[gpui::test]
+    fn workspace_dialogs_and_prs_are_fenced_by_host_and_generation(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(sidebar::layout_tests::fixture_window);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.menu.github = crate::github::Auth::connected_fixture();
+                view.live.status = crate::state::ConnectionStatus::Connected;
+                view.endpoints[0].live = view.live.clone();
+                view.endpoints[0].live.supports_surface = true;
+                let mut remote = crate::endpoint::Endpoint::new(
+                    "ssh:fixture".into(),
+                    "Remote".into(),
+                    herdr_client::ConnectTarget::Ssh {
+                        target: "unused".into(),
+                        session: "default".into(),
+                    },
+                    true,
+                );
+                // Identical boot/workspace IDs must not make different hosts interchangeable.
+                remote.live = view.live.clone();
+                remote.live.local_daemon_peer = true;
+                view.endpoints.push(remote);
+                view.open_workspace_menu("w3", Default::default(), window, cx);
+                view.open_workspace_dialog(WorkspaceAction::Rename, cx);
+                view.endpoints[0].generation += 1;
+                view.submit_workspace_dialog(window, cx);
+                assert_eq!(
+                    view.menu.error.as_deref(),
+                    Some("The selected connection changed or is not ready. Cancel and try again.")
+                );
+                assert!(view.select_endpoint("ssh:fixture", cx));
+                assert!(view.menu.page.is_none());
+                assert!(view.menu.input.is_none());
+                view.open_workspace_menu("w3", Default::default(), window, cx);
+                assert!(
+                    view.menu
+                        .pr
+                        .message
+                        .as_deref()
+                        .unwrap()
+                        .contains("requires your owned local session socket")
+                );
+                view.open_workspace_dialog(WorkspaceAction::DeleteWorktree, cx);
+                assert!(view.select_endpoint(crate::endpoint::LOCAL, cx));
+                assert!(view.menu.deletion.is_none());
+            });
+        });
+    }
+
+    pub(crate) fn check_pr_fences(
+        view: &gpui::Entity<super::HerdrWindow>,
+        cx: &mut gpui::VisualTestContext,
+    ) {
+        use std::sync::{Arc, Mutex};
+        cx.update(|_, cx| {
+            view.update(cx, |view, _| {
+                view.menu.github = crate::github::Auth::connected_fixture();
+                let snapshot = view.live.snapshot.clone();
+                let inbox = view.endpoints[view.selected_endpoint]
+                    .connection
+                    .inbox
+                    .clone();
+                let status = view.live.status;
+                let target_id = view.menu.target.as_ref().unwrap().id.clone();
+                for change in 0..5 {
+                    view.live.snapshot = snapshot.clone();
+                    view.live.status = status;
+                    view.endpoints[view.selected_endpoint].connection.inbox = inbox.clone();
+                    view.menu.pr_connection = Some(Arc::downgrade(&inbox));
+                    view.menu.pr.value = Some(crate::pull_request::fixture().unwrap());
+                    view.menu.pr.message = None;
+                    let snapshot = Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+                    match change {
+                        0 => snapshot.boot_id = "restarted".into(),
+                        1 => snapshot
+                            .workspaces
+                            .retain(|workspace| workspace.workspace_id != target_id),
+                        2 => {
+                            snapshot
+                                .workspaces
+                                .iter_mut()
+                                .find(|workspace| workspace.workspace_id == target_id)
+                                .unwrap()
+                                .branch = Some("other".into())
+                        }
+                        3 => {
+                            view.endpoints[view.selected_endpoint].connection.inbox =
+                                Arc::new(Mutex::new(Default::default()))
+                        }
+                        _ => view.live.status = crate::state::ConnectionStatus::Detached,
+                    }
+                    assert!(view.update_workspace_pr());
+                    assert!(view.menu.pr.value.is_none());
+                }
+                view.live.snapshot = snapshot;
+                view.live.status = status;
+                view.endpoints[view.selected_endpoint].connection.inbox = inbox;
+                view.menu.pr_connection = None;
+                view.menu.pr.clear();
+                let connection_target = view.endpoints[view.selected_endpoint]
+                    .connection
+                    .target
+                    .clone();
+                let local_peer = view.live.local_daemon_peer;
+                let supports_workspace_get = view.live.supports_workspace_get;
+                view.live.supports_workspace_get = true;
+                for target in [
+                    herdr_client::ConnectTarget::Local,
+                    herdr_client::ConnectTarget::Socket("/local-or-forwarded.sock".into()),
+                ] {
+                    view.endpoints[view.selected_endpoint].connection.target = target;
+                    view.live.local_daemon_peer = false;
+                    view.refresh_workspace_pr();
+                    assert!(
+                        view.menu
+                            .pr
+                            .message
+                            .as_deref()
+                            .unwrap()
+                            .contains("requires your owned local session socket")
+                    );
+                    view.live.local_daemon_peer = true;
+                    view.refresh_workspace_pr();
+                    // Menu open is cache-only, even on a newer daemon.
+                    assert!(view.menu.pr.loading);
+                    assert!(view.menu.pr.message.is_none());
+                }
+                view.live.supports_workspace_get = false;
+                view.refresh_workspace_pr();
+                assert!(
+                    view.menu.pr.loading,
+                    "older local daemon uses Git registry worker"
+                );
+                assert!(
+                    view.live.dialog_response.is_none(),
+                    "no workspace.get request or dialog slot registration"
+                );
+                assert!(
+                    view.menu.pr_connection.is_some(),
+                    "fallback keeps reconnect fence"
+                );
+                view.endpoints[view.selected_endpoint].connection.target = connection_target;
+                view.live.local_daemon_peer = local_peer;
+                view.live.supports_workspace_get = supports_workspace_get;
+                view.menu.pr.clear();
+            })
+        });
+    }
+
+    pub(crate) fn check_menu_interactions(
+        view: &gpui::Entity<super::HerdrWindow>,
+        cx: &mut gpui::VisualTestContext,
+    ) {
+        use gpui::{Modifiers, point, px};
+        let selection = |view: &super::HerdrWindow| {
+            if view.menu.page == Some(super::Page::Workspace) {
+                view.menu.workspace_selected.and_then(|selected| {
+                    view.workspace_menu_actions()
+                        .iter()
+                        .position(|action| *action == selected)
+                })
+            } else {
+                view.menu.selected
+            }
+        };
+        let (page, count, first, second) = cx.update(|_, cx| {
+            let view = view.read(cx);
+            assert_eq!(view.menu.selected, None);
+            if view.menu.page == Some(super::Page::Workspace) {
+                (
+                    super::Page::Workspace,
+                    view.workspace_items().len(),
+                    "workspace-menu-Rename",
+                    "workspace-menu-Close group",
+                )
+            } else {
+                (
+                    super::Page::Menu,
+                    view.menu_items().len(),
+                    "menu-settings",
+                    "menu-keybinds",
+                )
+            }
+        });
+        cx.simulate_keystrokes("enter");
+        cx.update(|_, cx| {
+            assert!(view.read(cx).menu.page == Some(page));
+            assert_eq!(view.read(cx).menu.selected, None);
+            assert!(view.read(cx).menu.input.is_none());
+        });
+        let first = cx.debug_bounds(first).unwrap().center();
+        let second = cx.debug_bounds(second).unwrap().center();
+        let outside = point(px(790.), px(590.));
+        for (position, selected) in [(second, Some(1)), (first, Some(0)), (outside, None)] {
+            cx.simulate_mouse_move(position, None, Modifiers::default());
+            cx.update(|window, cx| {
+                window.draw(cx).clear();
+                assert_eq!(selection(view.read(cx)), selected);
+            });
+        }
+        // Leaving the hovered row also leaves Enter inert.
+        cx.simulate_keystrokes("enter");
+        cx.update(|_, cx| assert!(view.read(cx).menu.page == Some(page)));
+        for (keys, selected) in [
+            ("up", count - 1),
+            ("down", 0),
+            ("up", count - 1),
+            ("down down", 1),
+        ] {
+            cx.simulate_keystrokes(keys);
+            cx.update(|window, cx| {
+                window.draw(cx).clear();
+                assert_eq!(selection(view.read(cx)), Some(selected));
+            });
+        }
+        cx.simulate_mouse_move(first, None, Modifiers::default());
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+            assert_eq!(selection(view.read(cx)), Some(0));
+        });
+        // Keyboard selection replaces hover even while the pointer stays on the first row.
+        cx.simulate_keystrokes("down");
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+            assert_eq!(selection(view.read(cx)), Some(1));
+        });
+        cx.simulate_mouse_move(second, None, Modifiers::default());
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+            assert_eq!(selection(view.read(cx)), Some(1));
+        });
+        cx.simulate_mouse_move(outside, None, Modifiers::default());
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+            assert_eq!(selection(view.read(cx)), None);
+        });
+        cx.simulate_keystrokes("down");
+        cx.update(|_, cx| assert_eq!(selection(view.read(cx)), Some(0)));
+        cx.simulate_mouse_move(second, None, Modifiers::default());
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+            assert_eq!(selection(view.read(cx)), Some(1));
+        });
+        cx.simulate_keystrokes("enter");
+        cx.update(|_, cx| {
+            assert!(
+                view.read(cx).menu.page
+                    == Some(if page == super::Page::Workspace {
+                        super::Page::Dialog(WorkspaceAction::Close)
+                    } else {
+                        super::Page::Keybinds
+                    })
+            );
+        });
+        cx.simulate_mouse_move(outside, None, Modifiers::default());
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                let anchor = view.menu.anchor;
+                let target = view.menu.target.as_ref().map(|target| target.id.clone());
+                view.dismiss_menu(window, cx);
+                if let Some(target) = target {
+                    view.open_workspace_menu(&target, anchor, window, cx);
+                } else {
+                    view.open_menu(window, cx);
+                }
+                assert_eq!(view.menu.selected, None);
+            });
+            window.draw(cx).clear();
+        });
+    }
+
+    #[test]
+    fn deletion_schema_and_target_validation() {
+        let mut snapshot = sidebar::layout_tests::snapshot(7);
+        let target = WorkspaceTarget::new(&snapshot, &snapshot.workspaces[4]);
+        assert_eq!(
+            target
+                .request(&snapshot, WorkspaceAction::DeleteWorktree, "")
+                .unwrap(),
+            (
+                "worktree.remove",
+                serde_json::json!({"workspace_id":"w4", "force":false, "trust_repository":false})
+            )
+        );
+        for index in [0, 3] {
+            assert!(
+                WorkspaceTarget::new(&snapshot, &snapshot.workspaces[index])
+                    .request(&snapshot, WorkspaceAction::DeleteWorktree, "")
+                    .is_err()
+            );
+        }
+        snapshot.workspaces[4].worktree = None;
+        assert!(
+            target
+                .request(&snapshot, WorkspaceAction::DeleteWorktree, "")
+                .is_err()
+        );
+        snapshot.workspaces[4].worktree = target.worktree.clone();
+        snapshot.boot_id = "replacement".into();
+        assert!(
+            target
+                .request(&snapshot, WorkspaceAction::DeleteWorktree, "")
+                .is_err()
+        );
+        snapshot.boot_id = target.boot_id.clone();
+        snapshot.workspaces.remove(4);
+        assert!(
+            target
+                .request(&snapshot, WorkspaceAction::DeleteWorktree, "")
+                .is_err()
+        );
+    }
+
+    #[gpui::test]
+    fn deletion_lookup_dirty_force_errors_success_and_cancel(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let snapshot = sidebar::layout_tests::snapshot(7);
+            let mut menu = super::MenuState::new(cx);
+            menu.target = Some(WorkspaceTarget::new(&snapshot, &snapshot.workspaces[4]));
+            menu.page = Some(super::Page::Dialog(WorkspaceAction::DeleteWorktree));
+            menu.deletion = Some(super::Deletion { pending: Some("list".into()), path: None, force: false });
+            let lookup = serde_json::json!({"result":{"type":"worktree_list", "worktrees":[{"open_workspace_id":"w4", "path":"/daemon/checkout", "is_linked_worktree":true, "is_bare":false}]}});
+            menu.apply_deletion_response("unrelated", Ok(lookup.clone()));
+            assert!(menu.deletion.as_ref().unwrap().path.is_none());
+            menu.apply_deletion_response("list", Ok(lookup));
+            let deletion = menu.deletion.as_mut().unwrap();
+            assert_eq!(deletion.path.as_deref(), Some("/daemon/checkout"));
+            for text in ["", "delete", " DELETE", "FORCE DELETE"] { assert!(!deletion.confirmed(text)); }
+            assert!(deletion.confirmed("DELETE"));
+            deletion.pending = Some("remove".into());
+            assert!(!deletion.confirmed("DELETE"));
+            menu.input = Some(super::DialogInput::new("DELETE".into()));
+            menu.apply_deletion_response("remove", Ok(serde_json::json!({"error":{"code":"dirty_worktree_requires_force", "message":"modified or untracked files"}})));
+            assert!(menu.error.as_ref().unwrap().contains("modified or untracked files"));
+            assert_eq!(menu.input.as_ref().unwrap().text, "");
+            let deletion = menu.deletion.as_mut().unwrap();
+            assert!(deletion.force);
+            assert!(!deletion.confirmed("DELETE"));
+            assert!(deletion.confirmed("FORCE DELETE"));
+            deletion.pending = Some("forced".into());
+            menu.apply_deletion_response("forced", Err(std::sync::Arc::new(crate::Error::Client(herdr_client::Error::UnsupportedMethod))));
+            assert_eq!(menu.error.as_deref(), Some("method not advertised by endpoint"));
+            menu.deletion.as_mut().unwrap().pending = Some("success".into());
+            menu.apply_deletion_response("success", Ok(serde_json::json!({"result":{"type":"worktree_removed", "workspace_id":"w4", "path":"/daemon/checkout", "forced":true}})));
+            assert!(menu.page.is_none());
+            menu.deletion = Some(super::Deletion { pending: Some("late".into()), path: None, force: false });
+            menu.reset();
+            menu.apply_deletion_response("late", Err(std::sync::Arc::new(crate::Error::Client(herdr_client::Error::Disconnected))));
+            assert!(menu.deletion.is_none());
+            assert!(menu.error.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn deletion_fails_closed_on_lookup_and_does_not_force_generic_errors(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let snapshot = sidebar::layout_tests::snapshot(7);
+            for response in [
+                serde_json::json!({"result":{"type":"worktree_list", "worktrees":[]}}),
+                serde_json::json!({"error":{"code":"worktree_remove_failed", "message":"is not a working tree"}}),
+                serde_json::json!({"result":{"type":"unexpected"}}),
+            ] {
+                let mut menu = super::MenuState::new(cx);
+                menu.target = Some(WorkspaceTarget::new(&snapshot, &snapshot.workspaces[4]));
+                menu.deletion = Some(super::Deletion { pending: Some("id".into()), path: None, force: false });
+                menu.apply_deletion_response("id", Ok(response));
+                assert!(menu.error.is_some());
+                let deletion = menu.deletion.as_ref().unwrap();
+                assert!(!deletion.force);
+                assert!(!deletion.confirmed("DELETE"));
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn reset_drops_target_draft_composition_and_error(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let snapshot = sidebar::layout_tests::snapshot(7);
+            let mut menu = super::MenuState::new(cx);
+            menu.target = Some(WorkspaceTarget::new(&snapshot, &snapshot.workspaces[3]));
+            menu.page = Some(super::Page::Dialog(WorkspaceAction::Rename));
+            let mut input = super::DialogInput::new("draft".into());
+            input.replace(None, "composition", true, None);
+            menu.input = Some(input);
+            menu.error = Some("old connection error".into());
+            menu.reset();
+            assert!(menu.page.is_none());
+            assert!(menu.target.is_none());
+            assert!(menu.input.is_none());
+            assert!(menu.error.is_none());
+        });
+    }
+
+    #[test]
+    fn actions_target_clicked_workspace_and_match_daemon_schemas() {
+        let snapshot = sidebar::layout_tests::snapshot(7);
+        let target = WorkspaceTarget::new(&snapshot, &snapshot.workspaces[3]);
+        assert!(target.can_create());
+        assert_eq!(target.close_label(), "Close group");
+        assert_eq!(target.close_members, ["w3", "w4", "w5"]);
+        assert_eq!(
+            target
+                .request(&snapshot, WorkspaceAction::Rename, "new label")
+                .unwrap(),
+            (
+                "workspace.rename",
+                serde_json::json!({"workspace_id": "w3", "label": "new label"})
+            )
+        );
+        assert_eq!(
+            target
+                .request(&snapshot, WorkspaceAction::Close, "")
+                .unwrap(),
+            (
+                "workspace.close",
+                serde_json::json!({"workspace_id": "w3", "close_group": true})
+            )
+        );
+        for branch in ["", "  ", " feature/test "] {
+            let (method, params) = target
+                .request(&snapshot, WorkspaceAction::NewWorktree, branch)
+                .unwrap();
+            assert_eq!(method, "worktree.create");
+            let mut expected = serde_json::json!({"workspace_id": "w3", "base": "HEAD", "focus": true, "trust_repository": false});
+            if !branch.trim().is_empty() {
+                expected["branch"] = branch.trim().into();
+            }
+            assert_eq!(params, expected);
+        }
+        for index in [0, 4, 5] {
+            let target = WorkspaceTarget::new(&snapshot, &snapshot.workspaces[index]);
+            assert_eq!(target.close_label(), "Close");
+            assert_eq!(target.close_members.len(), 1);
+            assert!(!target.can_create());
+            assert!(
+                target
+                    .request(&snapshot, WorkspaceAction::NewWorktree, "")
+                    .is_err()
+            );
+        }
+        let mut standalone = snapshot.clone();
+        standalone
+            .workspaces
+            .retain(|w| w.workspace_id != "w4" && w.workspace_id != "w5");
+        let target = WorkspaceTarget::new(&standalone, &standalone.workspaces[3]);
+        assert!(target.can_create());
+        assert_eq!(target.close_label(), "Close");
+    }
+
+    #[test]
+    fn stale_boot_target_and_changed_close_members_are_rejected() {
+        let mut snapshot = sidebar::layout_tests::snapshot(7);
+        let target = WorkspaceTarget::new(&snapshot, &snapshot.workspaces[3]);
+        snapshot.boot_id = "replacement".into();
+        for action in [
+            WorkspaceAction::Rename,
+            WorkspaceAction::Close,
+            WorkspaceAction::NewWorktree,
+        ] {
+            assert!(target.request(&snapshot, action, "valid label").is_err());
+        }
+        snapshot.boot_id = target.boot_id.clone();
+        snapshot.workspaces.swap(0, 6);
+        assert!(
+            target
+                .request(&snapshot, WorkspaceAction::Close, "")
+                .is_ok()
+        );
+        snapshot.workspaces.retain(|w| w.workspace_id != "w4");
+        assert!(
+            target
+                .request(&snapshot, WorkspaceAction::Close, "")
+                .is_err()
+        );
+        assert!(
+            target
+                .request(&snapshot, WorkspaceAction::Rename, "valid label")
+                .is_ok()
+        );
+        snapshot.workspaces.retain(|w| w.workspace_id != "w3");
+        assert!(
+            target
+                .request(&snapshot, WorkspaceAction::Rename, "valid label")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn rename_trims_unicode_whitespace_and_rejects_blank_labels() {
+        let snapshot = sidebar::layout_tests::snapshot(7);
+        let target = WorkspaceTarget::new(&snapshot, &snapshot.workspaces[3]);
+        for text in ["", " \t\r\n", "\u{2003}\u{3000}"] {
+            assert!(matches!(
+                target.request(&snapshot, WorkspaceAction::Rename, text),
+                Err(crate::Error::EmptyWorkspaceLabel)
+            ));
+        }
+        assert_eq!(
+            target
+                .request(
+                    &snapshot,
+                    WorkspaceAction::Rename,
+                    " \u{3000}new label\u{2003} "
+                )
+                .unwrap(),
+            (
+                "workspace.rename",
+                serde_json::json!({"workspace_id": "w3", "label": "new label"})
+            )
+        );
+    }
+}
+
+impl HerdrWindow {
     fn render_keybinds(&self, cx: &mut Context<Self>) -> Div {
         use crate::controls::{COMMANDS, Command};
 
@@ -797,6 +2100,52 @@ fn shortcut_matches(query: &str, keys: &str, description: &str, section: &str) -
 
 #[cfg(test)]
 mod tests {
+    #[gpui::test]
+    #[allow(clippy::unwrap_used)]
+    fn config_load_is_coherent_bounded_and_cancellable(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        view.update(cx, |view, cx| {
+            view.load_gui_config_with(
+                || {
+                    let config = crate::config::Config {
+                        theme: "Nord".into(),
+                        ..Default::default()
+                    };
+                    let theme = config.theme()?;
+                    Ok((config, theme))
+                },
+                cx,
+            );
+            view.load_gui_config_with(|| panic!("only one config load at a time"), cx);
+            assert_eq!(view.config.theme, "Default");
+        });
+        cx.run_until_parked();
+        view.update(cx, |view, cx| {
+            assert_eq!(view.config.theme, "Nord");
+            assert_eq!(view.theme, view.config.theme().unwrap());
+            assert!(view.config_load.is_none());
+            view.load_gui_config_with(|| Err(crate::Error::EmptyTheme), cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                assert_eq!(view.config.theme, "Nord");
+                assert_eq!(view.theme, view.config.theme().unwrap());
+                assert!(
+                    view.local_error
+                        .as_deref()
+                        .unwrap()
+                        .contains("theme must not be empty")
+                );
+                view.load_gui_config_with(|| Ok((Default::default(), Default::default())), cx);
+                view.open_theme_picker(window, cx);
+                assert!(view.config_load.is_none());
+            });
+        });
+        cx.run_until_parked();
+        view.update(cx, |view, _| assert_eq!(view.config.theme, "Nord"));
+    }
+
     #[test]
     fn shortcut_search_matches_labels_keys_and_sections() {
         for query in ["", "pane close", "CMD+W", "cmd-w", "workspaces"] {

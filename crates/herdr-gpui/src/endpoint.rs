@@ -325,6 +325,7 @@ impl HerdrWindow {
     }
 
     fn reset_selected(&mut self) {
+        self.menu.reset();
         self.selection_epoch += 1;
         let endpoint = &self.endpoints[self.selected_endpoint];
         self.selected_generation = endpoint.generation;
@@ -437,6 +438,9 @@ impl HerdrWindow {
         target: NavigationTarget<&str>,
         cx: &mut Context<Self>,
     ) {
+        if self.menu.page.is_some() {
+            return;
+        }
         if !self.select_endpoint(endpoint, cx) {
             return;
         }
@@ -537,6 +541,9 @@ impl HerdrWindow {
                     state.dirty = true;
                     endpoint.initial_surface = true;
                     self.live = state.clone();
+                    // take_update already moved this response out of the inbox.
+                    // Installing an activation fence must not discard that delivery.
+                    self.live.dialog_response = endpoint.live.dialog_response.clone();
                     self.activation_deadline = Some(Instant::now() + ACTIVATION_TIMEOUT);
                     self.last_queued_options = Some(self.options);
                     self.sent_focus = None;

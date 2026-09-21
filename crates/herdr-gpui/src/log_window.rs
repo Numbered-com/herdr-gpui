@@ -474,7 +474,7 @@ impl Render for LogWindow {
             .line_height(px(config.ui.line_height()))
             .map(|root| {
                 #[cfg(target_os = "macos")]
-                let root = root.child(crate::titlebar::render(theme.surface, theme.foreground));
+                let root = root.child(crate::titlebar::render(theme.surface));
                 root
             })
             .child(

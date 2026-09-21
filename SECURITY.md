@@ -17,16 +17,21 @@ a week; this is a small project without a paid on-call rotation.
 
 ## Scope
 
-This repository is a **client**. It connects over a Unix domain socket to a
-Herdr daemon that you already run, and it owns no terminal processes, no
-server state, and no network listener.
+This repository is a **client**. It connects to local Herdr daemons over Unix
+sockets and to saved remote hosts through noninteractive SSH. It may start an
+installed local daemon when absent, but owns no terminal processes, server state,
+or network listener. Closing the GUI leaves daemon sessions running.
 
 In scope:
 
 - Parsing and framing of daemon messages in `crates/herdr-protocol` — decoder
   limits, bounds, and malformed or hostile payloads.
 - Socket discovery and connection handling in `crates/herdr-client`, including
-  which socket paths are trusted and how a session is selected.
+  socket peer validation, SSH target validation, and host/session selection.
+- Native GitHub PR lookup and OAuth device sign-in, including HTTPS boundaries,
+  cancellation, secret redaction/zeroization, and the app-specific macOS Keychain
+  entry. The [README](README.md#native-github-sign-in) documents credential
+  precedence, requested scope, and the limits of memory erasure.
 - Anything in `crates/herdr-gpui` that lets terminal content escape its pane:
   unintended command execution, clipboard or notification writes, or path
   handling from daemon-supplied strings.

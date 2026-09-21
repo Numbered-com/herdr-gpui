@@ -12,9 +12,10 @@ human and agent contributors alike.
   Vulkan with X11/Wayland on Linux. CI/release builds cover Linux x86_64 and
   ARM64; native Linux desktop verification is still pending. No Windows build
   currently exists.
-- **You need a running Herdr daemon.** This repository is a client of the
-  daemon from [herdrdev/herdr](https://github.com/herdrdev/herdr); it never
-  installs, starts, or upgrades one for you. Bugs in the daemon, its session
+- **You need Herdr installed.** This repository is a client of the
+  daemon from [herdrdev/herdr](https://github.com/herdrdev/herdr). Normal local
+  launches may start it if absent; explicit sockets remain attach-only. The GUI
+  never installs, stops, or upgrades it. Bugs in the daemon, its session
   model, or its socket handling belong upstream, not here.
 - **Open an issue first for anything large.** The README's *Next Milestones*
   section is the roadmap. A PR that lands a milestone differently than planned

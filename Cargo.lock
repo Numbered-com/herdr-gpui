@@ -1020,6 +1020,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "config"
+version = "0.15.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b85f248a4de22d204ceabc6299d89d2c70fbd7f09fea53c06c852369652d8139"
+dependencies = [
+ "pathdiff",
+ "serde_core",
+ "toml 1.1.6+spec-1.1.0",
+ "winnow 1.0.4",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2582,17 +2594,23 @@ dependencies = [
  "anyhow",
  "chrono",
  "cocoa 0.26.0",
+ "config",
  "core-graphics 0.24.0",
  "ed25519-dalek",
  "flate2",
  "foreign-types",
  "gpui",
  "herdr-client",
+ "image",
+ "nix 0.31.3",
  "objc",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "raw-window-handle",
+ "rustix 1.1.5",
+ "secrecy",
+ "security-framework",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2603,7 +2621,9 @@ dependencies = [
  "toml_edit 0.22.27",
  "tracing",
  "tracing-subscriber",
+ "unicode-segmentation",
  "ureq",
+ "zeroize",
 ]
 
 [[package]]
@@ -3545,6 +3565,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset",
 ]
 
 [[package]]
@@ -3960,6 +3981,12 @@ name = "pastey"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
+
+[[package]]
+name = "pathdiff"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 
 [[package]]
 name = "pathfinder_geometry"
@@ -4954,6 +4981,16 @@ name = "seahash"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
+
+[[package]]
+name = "secrecy"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
+dependencies = [
+ "serde",
+ "zeroize",
+]
 
 [[package]]
 name = "security-framework"

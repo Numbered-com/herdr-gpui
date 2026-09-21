@@ -152,6 +152,9 @@ fn connected_endpoint(id: &str) -> (Endpoint, Server) {
             "pane.close",
             "tab.close",
             "command.invoke",
+            "workspace.close",
+            "worktree.create",
+            "worktree.remove",
         ]
         .map(str::to_owned),
     );
@@ -237,6 +240,40 @@ fn saved_selection_waits_for_snapshot_without_overwriting_preference(
 }
 
 #[gpui::test]
+fn dialog_response_survives_initial_surface_activation(cx: &mut gpui::TestAppContext) {
+    let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+    let (mut endpoint, _server) = connected_endpoint("ssh:fixture");
+    endpoint.initial_surface = false;
+    let response = serde_json::json!({"result":{"type":"worktree_list","worktrees":[]}});
+    {
+        let mut state = endpoint.connection.inbox.lock().unwrap();
+        state.dialog_response = Some(("lookup".into(), Some(Ok(response.clone()))));
+        state.dirty = true;
+    }
+    view.update(cx, |view, cx| {
+        view.endpoints[0].detached = true;
+        view.endpoints.push(endpoint);
+        view.selected_endpoint = 1;
+        view.reset_selected();
+        view.poll_endpoints(cx);
+        assert!(view.live.activation.is_some());
+        assert!(matches!(&view.live.dialog_response, Some((id, Some(Ok(value)))) if id == "lookup" && value == &response));
+        assert!(
+            view.endpoints[1]
+                .connection
+                .inbox
+                .lock()
+                .unwrap()
+                .dialog_response
+                .as_ref()
+                .unwrap()
+                .1
+                .is_none()
+        );
+    });
+}
+
+#[gpui::test]
 fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -263,6 +300,9 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
         (Command::CloseTab, "tab.close"),
         (Command::WorkspacePicker, "workspace.focus"),
         (Command::Palette, "command.invoke"),
+        (Command::Workspace, "workspace.close"),
+        (Command::Workspace, "worktree.create"),
+        (Command::Workspace, "worktree.remove"),
     ] {
         let (endpoint, mut server) = connected_endpoint("ssh:fixture");
         cx.update(|window, cx| {
@@ -274,7 +314,14 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
                 view.reset_selected();
                 view.activation_deadline = None;
                 assert!(view.input_ready());
-                view.command(command, window, cx);
+                if matches!(
+                    method,
+                    "workspace.close" | "worktree.create" | "worktree.remove"
+                ) {
+                    crate::menu::workspace_tests::submit_focus_change(view, method, window, cx);
+                } else {
+                    view.command(command, window, cx);
+                }
                 let key = |key: &str| gpui::KeyDownEvent {
                     keystroke: gpui::Keystroke::parse(key).unwrap(),
                     is_held: false,

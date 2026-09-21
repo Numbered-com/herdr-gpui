@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use herdr_client::ConnectTarget;
 use std::{
     env, io,
@@ -23,11 +25,11 @@ pub fn connect(
     target: &ConnectTarget,
     stop: &AtomicBool,
     on_start: impl FnOnce(),
-) -> io::Result<UnixStream> {
+) -> io::Result<(UnixStream, bool)> {
     let socket = target
         .socket_path()
         .map_err(|error| io::Error::new(error.kind(), error))?;
-    connect_or_start(
+    let stream = connect_or_start(
         &socket,
         stop,
         Duration::from_secs(20),
@@ -48,7 +50,9 @@ pub fn connect(
                     ..
                 }
         ),
-    )
+    )?;
+    let local = is_local_peer(&stream, target, &socket);
+    Ok((stream, local))
 }
 
 fn executable() -> PathBuf {
@@ -68,6 +72,53 @@ fn executable() -> PathBuf {
         .into_iter()
         .find(|path| path.is_file())
         .unwrap_or_else(|| "herdr".into())
+}
+
+/// Trust the user's standard local endpoint, not an upgrade-sensitive executable.
+/// A same-user proxy deliberately installed at that endpoint is within this trust
+/// boundary; this is not remote-origin attestation.
+fn is_local_peer(stream: &UnixStream, target: &ConnectTarget, socket: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        target
+            .local_session_socket_path()
+            .is_ok_and(|expected| peer_matches_local_endpoint(stream, socket, &expected))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (stream, target, socket);
+        false
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn peer_matches_local_endpoint(stream: &UnixStream, socket: &Path, expected: &Path) -> bool {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let uid = nix::unistd::geteuid();
+    if !nix::unistd::getpeereid(stream).is_ok_and(|(peer, _)| peer == uid) {
+        return false;
+    }
+    // Do not allow the standard socket itself to redirect to another location.
+    if !std::fs::symlink_metadata(expected).is_ok_and(|metadata| metadata.file_type().is_socket()) {
+        return false;
+    }
+    let Ok(expected) = expected.canonicalize() else {
+        return false;
+    };
+    // Use the path actually dialed, not peer_addr(): BSD sockaddr lengths from
+    // some listeners omit the NUL and std can truncate the reported pathname.
+    if !socket.canonicalize().is_ok_and(|socket| socket == expected) {
+        return false;
+    }
+    let Some(parent) = expected.parent() else {
+        return false;
+    };
+    let owned = |metadata: &std::fs::Metadata| {
+        metadata.uid() == uid.as_raw() && metadata.mode() & 0o022 == 0
+    };
+    std::fs::symlink_metadata(&expected)
+        .is_ok_and(|metadata| metadata.file_type().is_socket() && owned(&metadata))
+        && std::fs::metadata(parent).is_ok_and(|metadata| metadata.is_dir() && owned(&metadata))
 }
 
 fn connect_or_start(
@@ -174,6 +225,75 @@ mod tests {
         assert!(result.is_ok());
         drop(listener);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn local_endpoint_survives_executable_removal_and_replacement() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = socket();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let dir = root.join("session");
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("herdr-client.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let stream = UnixStream::connect(&path).unwrap();
+        let (_accepted, _) = listener.accept().unwrap();
+        // No executable argument or process-path probe participates in trust.
+        let installed = dir.join("herdr");
+        std::fs::write(&installed, "old installation").unwrap();
+        assert!(peer_matches_local_endpoint(&stream, &path, &path));
+        std::fs::remove_file(&installed).unwrap();
+        assert!(peer_matches_local_endpoint(&stream, &path, &path));
+        std::fs::write(&installed, "replacement installation").unwrap();
+        assert!(peer_matches_local_endpoint(&stream, &path, &path));
+        assert!(!peer_matches_local_endpoint(
+            &stream,
+            &path,
+            &dir.join("forwarded.sock")
+        ));
+        assert!(!is_local_peer(
+            &stream,
+            &ConnectTarget::Ssh {
+                target: "remote".into(),
+                session: "default".into(),
+            },
+            &path,
+        ));
+        let forwarded = dir.join("forwarded.sock");
+        let proxy = UnixListener::bind(&forwarded).unwrap();
+        let proxy_stream = UnixStream::connect(&forwarded).unwrap();
+        assert!(!peer_matches_local_endpoint(
+            &proxy_stream,
+            &forwarded,
+            &path
+        ));
+        let redirected = dir.join("redirected.sock");
+        std::os::unix::fs::symlink(&forwarded, &redirected).unwrap();
+        assert!(!peer_matches_local_endpoint(
+            &proxy_stream,
+            &redirected,
+            &redirected
+        ));
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&dir, &alias).unwrap();
+        let alias_socket = alias.join("herdr-client.sock");
+        let alias_stream = UnixStream::connect(&alias_socket).unwrap();
+        assert!(peer_matches_local_endpoint(
+            &alias_stream,
+            &alias_socket,
+            &path
+        ));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o622)).unwrap();
+        assert!(!peer_matches_local_endpoint(&stream, &path, &path));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!peer_matches_local_endpoint(&stream, &path, &path));
+        drop(proxy);
+        drop(listener);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

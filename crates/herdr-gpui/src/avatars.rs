@@ -1,15 +1,18 @@
 use gpui::{Image, ImageFormat};
+mod cache;
 use std::{
     collections::HashMap,
     process::Command,
     sync::{Arc, mpsc},
     thread,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
-/// Session-local avatar cache. Git and HTTP work never run on the caller's thread.
+const MAX_REQUESTS: usize = 128;
+
+/// Memory front end to the shared public-image disk cache.
 pub struct Avatars {
-    requests: mpsc::Sender<String>,
+    requests: mpsc::SyncSender<String>,
     results: mpsc::Receiver<(String, Option<Arc<Image>>)>,
     // Presence deduplicates pending requests as well as resolved hits and misses.
     images: HashMap<String, Option<Arc<Image>>>,
@@ -17,25 +20,40 @@ pub struct Avatars {
 
 impl Avatars {
     pub fn new() -> Self {
-        let (requests, incoming) = mpsc::channel::<String>();
-        let (outgoing, results) = mpsc::channel();
+        let (requests, incoming) = mpsc::sync_channel::<String>(MAX_REQUESTS);
+        let (outgoing, results) = mpsc::sync_channel(MAX_REQUESTS * 2);
+        let (refresh, network) = mpsc::sync_channel::<(String, String)>(MAX_REQUESTS);
+        let updated = outgoing.clone();
+        thread::spawn(move || {
+            let agent = avatar_agent();
+            let mut owners = HashMap::new();
+            for (cwd, url) in network {
+                let image = owners
+                    .entry(url.clone())
+                    .or_insert_with(|| download(&agent, &url))
+                    .clone();
+                if let Some(image) = image
+                    && updated.send((cwd, Some(image))).is_err()
+                {
+                    break;
+                }
+            }
+        });
         // Deliberately detach: dropping the sender ends the worker without a UI join.
         thread::spawn(move || {
-            let agent: ureq::Agent = ureq::Agent::config_builder()
-                .timeout_global(Some(Duration::from_secs(5)))
-                .max_redirects(0)
-                .build()
-                .into();
-            let mut owners = HashMap::new();
             for cwd in incoming {
-                let image = repo_owner(&cwd).and_then(|owner| {
-                    owners
-                        .entry(owner.clone())
-                        .or_insert_with(|| fetch_avatar(&agent, &owner))
-                        .clone()
-                });
-                if outgoing.send((cwd, image)).is_err() {
+                let url = repo_owner(&cwd)
+                    .map(|owner| format!("https://avatars.githubusercontent.com/{owner}?size=48"));
+                let cached = url.as_deref().and_then(cached_image);
+                let fresh = cached.as_ref().is_some_and(|(_, fresh)| *fresh);
+                if outgoing
+                    .send((cwd.clone(), cached.map(|(image, _)| image)))
+                    .is_err()
+                {
                     break;
+                }
+                if !fresh && let Some(url) = url {
+                    let _ = refresh.try_send((cwd, url));
                 }
             }
         });
@@ -48,9 +66,12 @@ impl Avatars {
 
     /// Enqueue each exact cwd at most once, including failed resolutions.
     pub fn request(&mut self, cwd: &str) {
+        if self.images.len() >= MAX_REQUESTS {
+            return;
+        }
         if let std::collections::hash_map::Entry::Vacant(entry) = self.images.entry(cwd.to_owned())
+            && self.requests.try_send(entry.key().clone()).is_ok()
         {
-            let _ = self.requests.send(entry.key().clone());
             entry.insert(None);
         }
     }
@@ -87,6 +108,10 @@ fn repo_owner(cwd: &str) -> Option<String> {
 }
 
 fn github_owner(remote: &str) -> Option<String> {
+    github_repo(remote).map(|(owner, _)| owner)
+}
+
+pub(crate) fn github_repo(remote: &str) -> Option<(String, String)> {
     let path = [
         "https://github.com/",
         "http://github.com/",
@@ -118,13 +143,77 @@ fn github_owner(remote: &str) -> Option<String> {
     {
         return None;
     }
-    Some(owner.to_ascii_lowercase())
+    Some((owner.to_ascii_lowercase(), repo.to_owned()))
 }
 
-fn fetch_avatar(agent: &ureq::Agent, owner: &str) -> Option<Arc<Image>> {
-    // Only called with an owner validated by github_owner, never a remote URL.
-    let url = format!("https://avatars.githubusercontent.com/{owner}?size=48");
-    let mut response = agent.get(&url).call().ok()?;
+fn cached_image(url: &str) -> Option<(Arc<Image>, bool)> {
+    if !valid_profile_avatar(url) {
+        return None;
+    }
+    cache::read(&cache::root()?, url, SystemTime::now())
+}
+
+pub(crate) type AvatarUpdates = mpsc::Receiver<Arc<Image>>;
+
+/// Called by the profile worker after authenticated identity resolution.
+pub(crate) fn profile_avatar(url: &str) -> (Option<Arc<Image>>, Option<AvatarUpdates>) {
+    profile_avatar_with(cache::root(), url, SystemTime::now(), |url| {
+        download(&avatar_agent(), &url)
+    })
+}
+
+fn profile_avatar_with(
+    root: Option<std::path::PathBuf>,
+    url: &str,
+    now: SystemTime,
+    fetch: impl FnOnce(String) -> Option<Arc<Image>> + Send + 'static,
+) -> (Option<Arc<Image>>, Option<AvatarUpdates>) {
+    if !valid_profile_avatar(url) {
+        return (None, None);
+    }
+    let cached = root.as_deref().and_then(|path| cache::read(path, url, now));
+    let fresh = cached.as_ref().is_some_and(|(_, fresh)| *fresh);
+    let image = cached.map(|(image, _)| image);
+    if fresh {
+        return (image, None);
+    }
+    let (tx, rx) = mpsc::sync_channel(1);
+    let url = url.to_owned();
+    let _ = thread::Builder::new()
+        .name("herdr-profile-avatar".into())
+        .spawn(move || {
+            if let Some(image) = fetch(url) {
+                let _ = tx.send(image);
+            }
+        });
+    (image, Some(rx))
+}
+
+fn avatar_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(5)))
+        .max_redirects(0)
+        .build()
+        .into()
+}
+
+fn valid_profile_avatar(url: &str) -> bool {
+    url.len() <= 2048
+        && url
+            .strip_prefix("https://avatars.githubusercontent.com/")
+            .is_some_and(|path| {
+                !path.is_empty()
+                    && path
+                        .bytes()
+                        .all(|b| b.is_ascii_graphic() && !matches!(b, b'\\' | b'#'))
+            })
+}
+
+fn download(agent: &ureq::Agent, url: &str) -> Option<Arc<Image>> {
+    if !valid_profile_avatar(url) {
+        return None;
+    }
+    let mut response = agent.get(url).call().ok()?;
     if !response.status().is_success() {
         return None;
     }
@@ -133,13 +222,17 @@ fn fetch_avatar(agent: &ureq::Agent, owner: &str) -> Option<Arc<Image>> {
     let bytes = response
         .body_mut()
         .with_config()
-        .limit(1_000_000)
+        .limit(cache::LIMIT as u64)
         .read_to_vec()
         .ok()?;
-    if bytes.is_empty() {
+    let image = cache::decode(&bytes)?;
+    if image.format != format {
         return None;
     }
-    Some(Arc::new(Image::from_bytes(format, bytes)))
+    if let Some(root) = cache::root() {
+        let _ = cache::write(&root, url, &bytes, SystemTime::now());
+    }
+    Some(image)
 }
 
 fn avatar_format(content_type: &str) -> Option<ImageFormat> {
@@ -164,6 +257,80 @@ mod tests {
     use super::*;
 
     #[test]
+    fn profile_disk_hits_skip_network_and_stale_images_survive_failed_refresh() {
+        let fixture = cache::tests::Fixture::new();
+        let url = "https://avatars.githubusercontent.com/u/123?v=4";
+        let now = SystemTime::now();
+        let bytes = cache::tests::png();
+        cache::write(&fixture.0, url, &bytes, now).expect("cache write");
+        for _ in 0..2 {
+            let (image, updates) = profile_avatar_with(Some(fixture.0.clone()), url, now, |_| {
+                panic!("fresh disk hit must not fetch")
+            });
+            assert_eq!(image.expect("disk hit").bytes, bytes);
+            assert!(updates.is_none());
+        }
+        let stale = now + Duration::from_secs(86400);
+        let (release, wait) = mpsc::sync_channel(1);
+        let (image, updates) =
+            profile_avatar_with(Some(fixture.0.clone()), url, stale, move |_| {
+                wait.recv_timeout(Duration::from_secs(5))
+                    .expect("release refresh");
+                None
+            });
+        assert_eq!(
+            image.expect("stale image immediately available").bytes,
+            bytes
+        );
+        release.send(()).expect("refresh waiting");
+        assert!(matches!(
+            updates
+                .expect("refresh receiver")
+                .recv_timeout(Duration::from_secs(5)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+        assert!(cache::read(&fixture.0, url, stale).is_some());
+        let replacement = Arc::new(Image::empty());
+        let fetched = replacement.clone();
+        let (image, updates) =
+            profile_avatar_with(Some(fixture.0.clone()), url, stale, move |_| Some(fetched));
+        assert!(image.is_some());
+        assert!(Arc::ptr_eq(
+            &updates
+                .expect("refresh")
+                .recv_timeout(Duration::from_secs(5))
+                .expect("replacement"),
+            &replacement
+        ));
+        let (image, updates) = profile_avatar_with(
+            Some(fixture.0.clone()),
+            "https://evil.test/avatar",
+            now,
+            |_| panic!("invalid URL must not fetch"),
+        );
+        assert!(image.is_none() && updates.is_none());
+    }
+
+    #[test]
+    fn profile_avatar_urls_never_accept_credentials_or_other_hosts() {
+        assert!(valid_profile_avatar(
+            "https://avatars.githubusercontent.com/u/123?v=4"
+        ));
+        for url in [
+            "http://avatars.githubusercontent.com/u/1",
+            "https://avatars.githubusercontent.com.evil.test/u/1",
+            "https://avatars.githubusercontent.com@evil.test/u/1",
+            "https://evil.test/avatar",
+            "https://user:token@avatars.githubusercontent.com/u/1",
+            "https://avatars.githubusercontent.com:443/u/1",
+            "https://avatars.githubusercontent.com/\\evil.test/u/1",
+            "https://avatars.githubusercontent.com/u/1\n",
+        ] {
+            assert!(!valid_profile_avatar(url), "{url}");
+        }
+    }
+
+    #[test]
     #[ignore = "requires HERDR_AVATAR_TEST_REPO and network access to GitHub avatars"]
     fn loads_local_repository_owner_avatar() {
         let cwd =
@@ -172,7 +339,8 @@ mod tests {
         let mut avatars = Avatars::new();
         avatars.request(&cwd);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !avatars.poll() {
+        while avatars.image(&cwd).is_none() {
+            avatars.poll();
             assert!(
                 std::time::Instant::now() < deadline,
                 "avatar worker timed out"
@@ -262,7 +430,7 @@ mod tests {
 
     #[test]
     fn deduplicates_pending_hits_and_misses_and_drains_results() {
-        let (requests, incoming) = mpsc::channel();
+        let (requests, incoming) = mpsc::sync_channel(MAX_REQUESTS);
         let (outgoing, results) = mpsc::channel();
         let mut avatars = Avatars {
             requests,

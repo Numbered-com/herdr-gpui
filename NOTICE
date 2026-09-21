@@ -11,6 +11,9 @@ adapted files, the upstream revision they came from, and the modifications
 made to them are recorded in crates/herdr-protocol/NOTICE.md. No upstream
 NOTICE file was present at the revision used.
 
+The native GitHub integration's Arbor references and attribution are recorded
+in crates/herdr-gpui/GITHUB-NOTICE.md.
+
 The application icons in assets/icons/herdr-ui-icon-clean.svg and
 herdr-icon-square-clean.svg, their PNG exports, and Herdr.icns use a ram path
 adapted from Herdr's logo:
