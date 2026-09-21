@@ -475,6 +475,8 @@ impl HerdrWindow {
         if !self.cancel_theme_preview(cx) {
             return;
         }
+        // Whatever the pointer was resting on, this dismissal ends that intent.
+        self.hover = None;
         self.update_preview = None;
         self.menu.reset();
         window.focus(&self.focus);
@@ -503,6 +505,7 @@ impl HerdrWindow {
         let Some(workspace) = snapshot.workspaces.iter().find(|w| w.workspace_id == id) else {
             return;
         };
+        self.hover = None;
         self.menu.reset();
         self.menu.endpoint_target = (
             self.selection_epoch,
@@ -1638,6 +1641,11 @@ pub(crate) mod workspace_tests {
     #![allow(clippy::unwrap_used)]
     use super::{WorkspaceAction, WorkspaceTarget};
     use crate::sidebar;
+
+    /// The workspace a menu currently targets, for tests outside this module.
+    pub(crate) fn target_id(view: &super::HerdrWindow) -> Option<&str> {
+        view.menu.target.as_ref().map(|target| target.id.as_str())
+    }
 
     pub(crate) fn submit_focus_change(
         view: &mut super::HerdrWindow,

@@ -11,7 +11,7 @@ use gpui::{
     SharedString, TextLayout, Window, prelude::*, px,
 };
 #[cfg(test)]
-use gpui::{Context, Entity, Task, size};
+use gpui::{Context, Entity, Modifiers, Task, point, size};
 use herdr_client::protocol::*;
 #[cfg(test)]
 use herdr_client::{ConnectOptions, ConnectTarget};
@@ -370,6 +370,7 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         cell_width: 9.,
         painter: Default::default(),
         marked: String::new(),
+        hover: None,
         local_error: None,
         menu: crate::menu::MenuState::new(cx),
         install_warning_shown: false,
@@ -1507,7 +1508,7 @@ fn the_sidebar_follows_the_selection_without_undoing_manual_scrolling(
     });
     // While the selection holds, later frames must not fight manual scrolling.
     cx.update(|window, cx| {
-        view.read(cx).sidebar_scroll[0].set_offset(gpui::point(px(0.), px(0.)));
+        view.read(cx).sidebar_scroll[0].set_offset(point(px(0.), px(0.)));
         window.refresh();
         window.draw(cx).clear();
     });
@@ -1764,7 +1765,7 @@ fn the_sidebar_menu_stays_clear_of_the_window_chrome(cx: &mut gpui::TestAppConte
     for anchor in [chrome + px(100.), px(560.)] {
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
-                view.menu.anchor = gpui::point(px(120.), anchor);
+                view.menu.anchor = point(px(120.), anchor);
                 view.open_menu(window, cx);
             });
             window.draw(cx).clear();
@@ -1841,4 +1842,96 @@ fn the_agents_header_toggles_between_grouped_and_priority(cx: &mut gpui::TestApp
         assert_eq!(view.agent_sort, AgentSort::Grouped);
         assert!(view.agent_sort_modified);
     });
+}
+
+/// Resting the pointer on a workspace opens the menu its right click opens,
+/// once, and only after the pointer has both moved and settled.
+#[gpui::test]
+fn resting_on_a_workspace_opens_its_menu_once(cx: &mut gpui::TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        crate::bind_keys(cx);
+        let mut view = fixture_window(window, cx);
+        view.live.status = crate::state::ConnectionStatus::Connected;
+        view.active = true;
+        view
+    });
+    cx.simulate_resize(size(px(900.), px(700.)));
+    cx.update(|window, cx| window.draw(cx).clear());
+    let row = cx.debug_bounds("row-herdr").unwrap().center();
+    let settle = |view: &Entity<HerdrWindow>,
+                  cx: &mut gpui::VisualTestContext,
+                  elapsed: std::time::Duration| {
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.poll_hover_menu(std::time::Instant::now() + elapsed, window, cx);
+            });
+            window.draw(cx).clear();
+        });
+    };
+
+    // Entering the row alone is not a rest: the pointer has not moved yet.
+    cx.simulate_mouse_move(row, None, Modifiers::default());
+    assert!(
+        view.read_with(cx, |view, _| view.hover.is_some()),
+        "row armed"
+    );
+    settle(&view, cx, super::HOVER_MENU_DELAY);
+    assert!(view.read_with(cx, |view, _| view.menu.page.is_none()));
+
+    // Drifting inside the row restarts the dwell rather than opening early.
+    cx.simulate_mouse_move(row + point(px(8.), px(0.)), None, Modifiers::default());
+    settle(&view, cx, std::time::Duration::ZERO);
+    assert!(view.read_with(cx, |view, _| view.menu.page.is_none()));
+    settle(&view, cx, super::HOVER_MENU_DELAY / 2);
+    assert!(view.read_with(cx, |view, _| view.menu.page.is_none()));
+
+    settle(&view, cx, super::HOVER_MENU_DELAY);
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.menu.page, Some(crate::menu::Page::Workspace));
+        assert_eq!(crate::menu::workspace_tests::target_id(view), Some("w0"));
+        // The same one-shot intent, spent: nothing is left armed behind it.
+        assert!(view.hover.is_none());
+    });
+
+    // Dismissing must not let a still pointer reopen the menu.
+    cx.simulate_keystrokes("escape");
+    assert!(view.read_with(cx, |view, _| view.menu.page.is_none()));
+    for _ in 0..3 {
+        settle(&view, cx, super::HOVER_MENU_DELAY);
+        assert!(view.read_with(cx, |view, _| view.menu.page.is_none()));
+    }
+
+    // Scrolling slides another row under the pointer without a hover event of
+    // its own, so the row it entered can no longer speak for what it covers.
+    let away = point(px(700.), px(400.));
+    cx.simulate_mouse_move(away, None, Modifiers::default());
+    cx.simulate_mouse_move(row, None, Modifiers::default());
+    cx.simulate_mouse_move(row + point(px(4.), px(4.)), None, Modifiers::default());
+    assert!(
+        view.read_with(cx, |view, _| view.hover.is_some()),
+        "row armed"
+    );
+    cx.update(|_, cx| {
+        view.read(cx).sidebar_scroll[0].set_offset(point(px(0.), px(-40.)));
+    });
+    settle(&view, cx, super::HOVER_MENU_DELAY);
+    view.read_with(cx, |view, _| {
+        assert!(view.menu.page.is_none());
+        assert!(view.hover.is_none());
+    });
+
+    // An inactive window keeps its menus closed under the same pointer.
+    cx.update(|_, cx| {
+        view.update(cx, |view, _| view.active = false);
+        view.read(cx).sidebar_scroll[0].set_offset(point(px(0.), px(0.)));
+    });
+    cx.simulate_mouse_move(away, None, Modifiers::default());
+    cx.simulate_mouse_move(row, None, Modifiers::default());
+    cx.simulate_mouse_move(row + point(px(0.), px(6.)), None, Modifiers::default());
+    assert!(
+        view.read_with(cx, |view, _| view.hover.is_some()),
+        "row armed"
+    );
+    settle(&view, cx, super::HOVER_MENU_DELAY);
+    assert!(view.read_with(cx, |view, _| view.menu.page.is_none()));
 }

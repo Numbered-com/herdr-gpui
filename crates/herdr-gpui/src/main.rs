@@ -153,6 +153,8 @@ struct HerdrWindow {
     cell_width: f32,
     painter: std::rc::Rc<std::cell::RefCell<terminal_painter::TerminalPainter>>,
     marked: String,
+    /// The sidebar row the pointer is resting on, waiting to open its menu.
+    hover: Option<sidebar::HoverMenu>,
     local_error: Option<String>,
     menu: menu::MenuState,
     install_warning_shown: bool,
@@ -231,6 +233,7 @@ impl HerdrWindow {
                             .and_then(|s| s.focused_pane_id.clone());
                         this.poll_endpoints(cx);
                         this.update_workspace_dialog(window, cx);
+                        this.poll_hover_menu(std::time::Instant::now(), window, cx);
                         this.poll_tab_rename(window, cx);
                         if old_pane
                             != this
@@ -286,6 +289,7 @@ impl HerdrWindow {
             cell_width: 9.,
             painter: Default::default(),
             marked: String::new(),
+            hover: None,
             local_error: None,
             menu: menu::MenuState::new(cx),
             install_warning_shown: false,
