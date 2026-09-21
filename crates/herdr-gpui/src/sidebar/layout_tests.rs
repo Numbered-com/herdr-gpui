@@ -1522,3 +1522,60 @@ fn the_sidebar_follows_the_selection_without_undoing_manual_scrolling(
         assert!(row.bottom() + offset <= spaces.bounds().bottom(), "{row:?}");
     });
 }
+
+#[gpui::test]
+fn worktree_rows_wear_their_cached_pull_request(cx: &mut gpui::TestAppContext) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| fixture_window(window, cx));
+        cx.observe(&view, |_, _, cx| cx.notify()).detach();
+        SidebarFixture(view)
+    });
+    let view = cx.update(|_, cx| fixture.read(cx).0.clone());
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear());
+    // Rows w3..w5 are the fixture's worktree group; w4 is a linked checkout.
+    let bare = cx.debug_bounds("name-sidebar-child").unwrap();
+    assert!(cx.debug_bounds("pr-sidebar-child").is_none());
+    cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            let mut value = crate::pull_request::fixture().unwrap();
+            value.number = 7;
+            value.state = "MERGED".into();
+            value.additions = 23;
+            value.deletions = 342;
+            view.menu.pr_cache.seed(
+                crate::pull_request::Input {
+                    checkout: None,
+                    repo_key: "/fixture/agent-launcher/.git".into(),
+                    branch: "worktree/sidebar-child".into(),
+                },
+                value,
+                std::time::Instant::now(),
+            );
+            cx.notify();
+        })
+    });
+    cx.update(|window, cx| {
+        cx.default_global::<TextProbes>().0.clear();
+        window.refresh();
+        window.draw(cx).clear();
+    });
+    let badge = cx.debug_bounds("pr-sidebar-child").unwrap();
+    let row = cx.debug_bounds("row-sidebar-child").unwrap();
+    let name = cx.debug_bounds("name-sidebar-child").unwrap();
+    // The badge takes its column from the label, inside the row.
+    assert!(badge.right() <= row.right());
+    assert!(name.right() <= badge.left());
+    assert!(name.size.width < bare.size.width);
+    cx.update(|_, cx| {
+        let probes = &cx.global::<TextProbes>().0;
+        for text in ["#7", "+23", "-342"] {
+            assert!(
+                probes.contains_key(text),
+                "missing {text}: {:?}",
+                probes.keys()
+            );
+        }
+    });
+}

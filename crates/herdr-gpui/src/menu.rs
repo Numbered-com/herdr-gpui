@@ -191,7 +191,8 @@ pub(super) struct MenuState {
     pub(super) close: Option<crate::close_modal::CloseConfirmation>,
     pub(super) tab: Option<crate::tab_menu::TabMenu>,
     pub(super) pr: crate::pull_request::Lookup,
-    pr_cache: crate::pull_request::Cache,
+    /// Also read by the sidebar, which paints each worktree's cached PR badge.
+    pub(super) pr_cache: crate::pull_request::Cache,
     pr_cache_connection: Option<std::sync::Weak<std::sync::Mutex<crate::state::LiveState>>>,
     pr_snapshot: Option<std::sync::Weak<ClientShellSnapshot>>,
     pub(super) github: crate::github::Auth,

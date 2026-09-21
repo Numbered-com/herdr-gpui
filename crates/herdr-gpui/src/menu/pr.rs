@@ -182,12 +182,7 @@ impl HerdrWindow {
             .min_w_0();
         if let Some(value) = &pr.value {
             let action = WorkspaceMenuAction::PullRequest;
-            let color = match value.state.as_str() {
-                "MERGED" => theme.palette[5],
-                "CLOSED" => theme.palette[1],
-                _ if value.is_draft => theme.muted,
-                _ => theme.palette[2],
-            };
+            let color = value.color(theme);
             section =
                 section
                     .child(

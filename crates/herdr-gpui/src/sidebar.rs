@@ -191,6 +191,7 @@ impl HerdrWindow {
                                 .and_then(|avatars| avatars.image(&workspace.new_workspace_cwd))
                                 .unwrap_or_else(|| GITHUB_ICON.clone())
                         }),
+                        workspace_pr(workspace, &self.menu.pr_cache, theme),
                         (font, theme),
                     )
                     .when_some(group, |row, key| {
@@ -273,6 +274,7 @@ impl HerdrWindow {
                         false,
                         false,
                         width,
+                        None,
                         None,
                         (font, theme),
                     )
@@ -477,6 +479,47 @@ fn header(label: &'static str, font: &FontConfig, theme: &Theme) -> Div {
         .child(label)
 }
 
+/// Cached pull request state for a worktree row: the number carries the
+/// lifecycle color, the counts sit under it.
+struct PrBadge {
+    number: String,
+    color: u32,
+    additions: String,
+    deletions: String,
+}
+
+impl PrBadge {
+    fn new(pr: &crate::pull_request::PullRequest, theme: &Theme) -> Self {
+        Self {
+            number: format!("#{}", pr.number),
+            color: pr.color(theme),
+            additions: format!("+{}", compact(pr.additions)),
+            deletions: format!("-{}", compact(pr.deletions)),
+        }
+    }
+
+    /// Reserved width. Sidebar labels are monospace by default and digits are
+    /// near-uniform elsewhere, so an em-fraction per glyph bounds both lines;
+    /// a wider face truncates the counts rather than eating the label.
+    fn width(&self, font: &FontConfig) -> f32 {
+        let glyphs = self
+            .number
+            .chars()
+            .count()
+            .max(self.additions.chars().count() + self.deletions.chars().count() + 1);
+        (font.size * 0.62 * glyphs as f32).ceil()
+    }
+}
+
+/// Four digits of churn is already a big diff; abbreviate past that so the
+/// column stays narrow enough to leave the branch readable.
+fn compact(lines: u64) -> String {
+    match lines {
+        0..=9999 => lines.to_string(),
+        _ => format!("{}k", lines / 1000),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn row(
     name: &str,
@@ -487,6 +530,7 @@ fn row(
     reserve_arrow: bool,
     width: f32,
     workspace_icon: Option<Arc<Image>>,
+    pr: Option<PrBadge>,
     appearance: (&FontConfig, &Theme),
 ) -> Div {
     let (font, theme) = appearance;
@@ -496,12 +540,17 @@ fn row(
         0.
     };
     let indent = if indented { CHILD_INDENT } else { 0. };
+    let pr_reserve = pr
+        .as_ref()
+        .map(|badge| badge.width(font) + LABEL_GAP)
+        .unwrap_or_default();
     let label_width = (width
         - 1.
         - 2. * ROW_PADDING
         - STATUS_WIDTH
         - LABEL_GAP
         - indent
+        - pr_reserve
         - if reserve_arrow { ARROW_RESERVE } else { 0. })
     .max(0.);
     div()
@@ -583,6 +632,50 @@ fn row(
                         .child(label_text(detail)),
                 ),
         )
+        .when_some(pr, |row, badge| {
+            row.child(
+                div()
+                    .debug_selector(|| format!("pr-{name}"))
+                    .w(px(badge.width(font)))
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .h(px(line_height(font)))
+                            .flex_none()
+                            .truncate()
+                            .text_color(rgb(badge.color))
+                            .child(label_text(&badge.number)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(rgb(theme.palette[2]))
+                                    .child(label_text(&badge.additions)),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(rgb(theme.muted))
+                                    .child(label_text("/")),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(rgb(theme.palette[1]))
+                                    .child(label_text(&badge.deletions)),
+                            ),
+                    ),
+            )
+        })
 }
 
 #[cfg(any(test, feature = "integration-test"))]
@@ -676,6 +769,18 @@ fn visible_workspace_entries(
             Some((index, child, group))
         })
         .collect()
+}
+
+/// Cached pull request for a worktree row, if the prefetch already has one.
+/// Rendering only reads: a missing entry simply shows no badge.
+fn workspace_pr(
+    workspace: &ClientShellWorkspace,
+    cache: &crate::pull_request::Cache,
+    theme: &Theme,
+) -> Option<PrBadge> {
+    let key = workspace.worktree.as_ref()?.key.as_str();
+    let branch = workspace.branch.as_deref()?;
+    cache.peek(key, branch).map(|pr| PrBadge::new(pr, theme))
 }
 
 fn workspace_label(workspace: &ClientShellWorkspace, indented: bool) -> &str {

@@ -78,6 +78,17 @@ struct Check {
 }
 
 impl PullRequest {
+    /// Lifecycle color, shared by the workspace menu and the sidebar badge so
+    /// one legend covers both: merged, closed, draft, open.
+    pub fn color(&self, theme: &crate::config::Theme) -> u32 {
+        match self.state.as_str() {
+            "MERGED" => theme.palette[5],
+            "CLOSED" => theme.palette[1],
+            _ if self.is_draft => theme.muted,
+            _ => theme.palette[2],
+        }
+    }
+
     pub fn lifecycle(&self) -> &'static str {
         match self.state.as_str() {
             "MERGED" => "Merged",
@@ -325,6 +336,19 @@ impl Cache {
             }
         }
         changed
+    }
+
+    /// Pure cache read for chrome painted every frame: never schedules work and
+    /// never reorders the cache, so rendering cannot start a request.
+    pub fn peek(&self, repo_key: &str, branch: &str) -> Option<&PullRequest> {
+        self.entries
+            .iter()
+            .find(|entry| {
+                entry.input.checkout.is_none()
+                    && entry.input.repo_key == repo_key
+                    && entry.input.branch == branch
+            })
+            .and_then(|entry| entry.value.as_ref())
     }
 
     /// Pure cache read: opening a menu cannot launch Git, HTTPS or daemon requests.
