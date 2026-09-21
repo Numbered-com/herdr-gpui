@@ -452,6 +452,12 @@ impl Theme {
         self.palette[5]
     }
 
+    /// Dimmed foreground for rows that are not the current one: upstream's
+    /// subtext sits between its text and its muted overlay.
+    pub fn subtext(&self) -> u32 {
+        mix(self.background, self.foreground, 78)
+    }
+
     /// A wash of [`Self::primary`] over the chrome, for filled selections such
     /// as the current tab. Large areas of the full accent shout; this keeps the
     /// hue while staying quiet enough to sit behind text all day.

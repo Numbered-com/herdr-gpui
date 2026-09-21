@@ -236,6 +236,7 @@ impl HerdrWindow {
                         label,
                         label,
                         first_text([workspace.branch.as_deref()], ""),
+                        RowKind::Workspace,
                         workspace.agent_status,
                         selected && workspace.focused,
                         tree,
@@ -292,6 +293,7 @@ impl HerdrWindow {
                         &format!("agent-{id}"),
                         &name,
                         &detail,
+                        RowKind::Agent,
                         agent.agent_status,
                         selected && agent.focused,
                         RowTree::None,
@@ -571,6 +573,35 @@ fn sorted_agents(
     ordered
 }
 
+/// What a row lists, which decides how its two lines are weighted: upstream
+/// keeps agent names bold throughout and reserves bold workspaces for the
+/// current one, with the branch picking up the accent while it is focused.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowKind {
+    Workspace,
+    Agent,
+}
+
+/// Name color, name weight, and detail color for a row.
+fn row_text(kind: RowKind, focused: bool, theme: &Theme) -> (u32, FontWeight, u32) {
+    let weight = if focused || kind == RowKind::Agent {
+        FontWeight::BOLD
+    } else {
+        FontWeight::NORMAL
+    };
+    let name = if focused {
+        theme.foreground
+    } else {
+        theme.subtext()
+    };
+    let detail = if focused && kind == RowKind::Workspace {
+        theme.primary()
+    } else {
+        theme.muted
+    };
+    (name, weight, detail)
+}
+
 /// Where a row sits in its worktree group, which decides whether the gutter
 /// carries a trunk through the row or ends in an elbow.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -664,6 +695,7 @@ fn row(
     key: &str,
     name: &str,
     detail: &str,
+    kind: RowKind,
     status: AgentStatus,
     focused: bool,
     tree: RowTree,
@@ -675,6 +707,7 @@ fn row(
     appearance: (&FontConfig, &Theme),
 ) -> Div {
     let (font, theme) = appearance;
+    let (name_color, weight, detail_color) = row_text(kind, focused, theme);
     let icon_reserve = if workspace_icon.is_some() {
         ICON_RESERVE
     } else {
@@ -794,6 +827,8 @@ fn row(
                                 .w(px((label_width - icon_reserve).max(0.)))
                                 .flex_none()
                                 .truncate()
+                                .font_weight(weight)
+                                .text_color(rgb(name_color))
                                 .child(label_text(name)),
                         ),
                 )
@@ -802,7 +837,7 @@ fn row(
                         .debug_selector(|| format!("detail-{key}"))
                         .w(px(label_width))
                         .truncate()
-                        .text_color(rgb(theme.muted))
+                        .text_color(rgb(detail_color))
                         .child(label_text(detail)),
                 ),
         )
@@ -1207,6 +1242,51 @@ mod tests {
         // Without its workspace the agent names the row itself.
         snapshot.workspaces.clear();
         assert_eq!(labels(&snapshot, None), ("agent".into(), String::new()));
+    }
+
+    #[test]
+    fn rows_weight_and_dim_their_text_like_upstream() {
+        use super::{RowKind, row_text};
+        use gpui::FontWeight;
+        let theme = crate::config::Theme::default();
+        // Agents stay bold whether or not they are the current row; a workspace
+        // earns bold only while focused, and hands its branch the accent then.
+        for (kind, focused, weight, name, detail) in [
+            (
+                RowKind::Agent,
+                false,
+                FontWeight::BOLD,
+                theme.subtext(),
+                theme.muted,
+            ),
+            (
+                RowKind::Agent,
+                true,
+                FontWeight::BOLD,
+                theme.foreground,
+                theme.muted,
+            ),
+            (
+                RowKind::Workspace,
+                false,
+                FontWeight::NORMAL,
+                theme.subtext(),
+                theme.muted,
+            ),
+            (
+                RowKind::Workspace,
+                true,
+                FontWeight::BOLD,
+                theme.foreground,
+                theme.primary(),
+            ),
+        ] {
+            assert_eq!(row_text(kind, focused, &theme), (name, weight, detail));
+        }
+        // Subtext sits between the muted detail and the focused name.
+        let brightness = |color: u32| (color >> 16) + ((color >> 8) & 255) + (color & 255);
+        assert!(brightness(theme.muted) < brightness(theme.subtext()));
+        assert!(brightness(theme.subtext()) < brightness(theme.foreground));
     }
 
     #[test]
