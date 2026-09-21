@@ -159,6 +159,8 @@ struct HerdrWindow {
     marked: String,
     local_error: Option<String>,
     menu: menu::MenuState,
+    /// A `worktree.remove` queued after its dialog closed.
+    removal: Option<menu::Removal>,
     install_warning_shown: bool,
     collapsed_repos: std::collections::HashSet<String>,
     sidebar_visible: bool,
@@ -234,7 +236,7 @@ impl HerdrWindow {
                             .as_ref()
                             .and_then(|s| s.focused_pane_id.clone());
                         this.poll_endpoints(cx);
-                        this.update_deletion_dialog();
+                        this.update_deletion_dialog(cx);
                         this.poll_tab_rename(window, cx);
                         if old_pane
                             != this
@@ -294,6 +296,7 @@ impl HerdrWindow {
             marked: String::new(),
             local_error: None,
             menu: menu::MenuState::new(cx),
+            removal: None,
             install_warning_shown: false,
             collapsed_repos: Default::default(),
             sidebar_visible: true,
