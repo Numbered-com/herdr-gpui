@@ -207,9 +207,16 @@ pub(crate) fn snapshot(workspace_count: usize) -> ClientShellSnapshot {
         "update_install_command": "", "latest_release_notes_available": false,
         "integration_updates_available": false, "worktree_directory": "",
         "tab_bar_right": [], "tab_bar_right_separator": "", "agent_order": [],
-        "tabs": [], "panes": [], "commands": [],
+        // A workspace always has at least one tab; two here so the agents panel
+        // has a tab label to show, as it does against a live daemon.
+        "tabs": (0..2).map(|i| serde_json::json!({
+            "tab_id": format!("t{i}"), "workspace_id": "w0", "number": i + 1,
+            "label": format!("tab {}", i + 1), "custom_label": false,
+            "zoomed": false, "focused": i == 0, "agent_status": "working"
+        })).collect::<Vec<_>>(),
+        "panes": [], "commands": [],
         "workspaces": (0..workspace_count).map(|i| serde_json::json!({
-            "workspace_id": format!("w{i}"), "active_tab_id": "t", "new_workspace_cwd": "/tmp",
+            "workspace_id": format!("w{i}"), "active_tab_id": "t0", "new_workspace_cwd": "/tmp",
             "number": i + 1,
             "label": match i { 0 => "herdr", 1 => "herdr-gpui-sidebar-rendering-regression-investigation", 3..=5 => "agent-launcher", _ => "another workspace" },
             "custom_label": false,
@@ -220,7 +227,8 @@ pub(crate) fn snapshot(workspace_count: usize) -> ClientShellSnapshot {
             "tokens": [], "focused": i == 0, "agent_status": "working"
         })).collect::<Vec<_>>(),
         "agents": (["review", "Investigate sidebar rendering and verify long agent labels"].into_iter().enumerate().map(|(i, name)| serde_json::json!({
-            "pane_id": format!("p{i}"), "workspace_id": "w0", "tab_id": "t",
+            "pane_id": format!("p{i}"), "workspace_id": if i == 0 { "w0" } else { "w1" },
+            "tab_id": if i == 0 { "t0" } else { "none" },
             "name": name, "display_agent": if i == 0 { "Claude Code" } else { "agent" }, "agent": "claude",
             "agent_status": "working", "state_change_seq": 0, "state_labels": [],
             "tokens": [], "focused": false
@@ -308,11 +316,14 @@ fn multi_host_rows_scope_duplicate_ids_and_keep_agents_when_host_collapses(
         cx.default_global::<TextProbes>().0.clear();
         window.refresh();
         let _ = window.draw(cx);
+        // The remote workspace row folds away; its agent keeps naming its host.
         assert!(!cx.global::<TextProbes>().0.contains_key("remote workspace"));
         assert!(
             cx.global::<TextProbes>()
                 .0
-                .contains_key("Remote / Claude Code")
+                .contains_key("Remote \u{b7} remote workspace \u{b7} tab 1"),
+            "{:?}",
+            cx.global::<TextProbes>().0.keys()
         );
     });
     assert!(cx.debug_bounds("workspace-local-w0").is_some());
@@ -438,7 +449,7 @@ fn check_sidebar(
                 "glyphs must fit the allocation"
             );
         }
-        for input in ["herdr", "main", "review", "Claude Code"] {
+        for input in ["herdr", "main", "herdr \u{b7} tab 1", "Claude Code"] {
             let (bounds, rendered, _) = &cx.global::<TextProbes>().0[input];
             assert_eq!(
                 rendered, input,
@@ -448,7 +459,6 @@ fn check_sidebar(
         for input in [
             "herdr-gpui-sidebar-rendering-regression-investigation",
             "fix/sidebar-label-width-and-overflow-regression",
-            "Investigate sidebar rendering and verify long agent labels",
         ] {
             let (bounds, rendered, width) = &cx.global::<TextProbes>().0[input];
             assert!(bounds.size.width > px(150.));
@@ -514,16 +524,16 @@ fn check_sidebar(
             "detail-herdr-gpui-sidebar-rendering-regression-investigation",
         ),
         (
-            "row-review",
-            "column-review",
-            "name-review",
-            "detail-review",
+            "row-agent-p0",
+            "column-agent-p0",
+            "name-agent-p0",
+            "detail-agent-p0",
         ),
         (
-            "row-Investigate sidebar rendering and verify long agent labels",
-            "column-Investigate sidebar rendering and verify long agent labels",
-            "name-Investigate sidebar rendering and verify long agent labels",
-            "detail-Investigate sidebar rendering and verify long agent labels",
+            "row-agent-p1",
+            "column-agent-p1",
+            "name-agent-p1",
+            "detail-agent-p1",
         ),
     ] {
         let row_bounds = cx.debug_bounds(row).unwrap();
@@ -1793,10 +1803,7 @@ fn the_agents_header_toggles_between_grouped_and_priority(cx: &mut gpui::TestApp
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear());
-    let (first, second) = (
-        "row-review",
-        "row-Investigate sidebar rendering and verify long agent labels",
-    );
+    let (first, second) = ("row-agent-p0", "row-agent-p1");
     let sort = cx.debug_bounds("agents-sort").unwrap();
     let header = cx.debug_bounds("sidebar").unwrap();
     // The label ends at the sidebar's inner edge, opposite the "agents" title.

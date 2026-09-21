@@ -1,7 +1,9 @@
 use super::{Command, HerdrWindow, NavigationTarget};
 use crate::config::{FontConfig, Theme};
 use gpui::{prelude::*, *};
-use herdr_client::protocol::{AgentStatus, ClientShellAgent, ClientShellWorkspace};
+use herdr_client::protocol::{
+    AgentStatus, ClientShellAgent, ClientShellSnapshot, ClientShellWorkspace,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 
@@ -228,9 +230,11 @@ impl HerdrWindow {
                             cx.notify();
                         }))
                 });
+                let label = workspace_label(workspace, indented);
                 spaces = spaces.child(
                     row(
-                        workspace_label(workspace, indented),
+                        label,
+                        label,
                         first_text([workspace.branch.as_deref()], ""),
                         workspace.agent_status,
                         selected && workspace.focused,
@@ -280,15 +284,13 @@ impl HerdrWindow {
                 agent_count += 1;
                 let id = agent.pane_id.clone();
                 let navigate_endpoint = endpoint_id.clone();
-                let (name, kind) = agent_labels(agent);
-                let detail = if multi {
-                    format!("{} / {kind}", endpoint.label)
-                } else {
-                    kind.to_owned()
-                };
+                let host = (multi && endpoint_id != super::endpoint::LOCAL)
+                    .then_some(endpoint.label.as_str());
+                let (name, detail) = agent_labels(agent, snapshot, host);
                 agents = agents.child(
                     row(
-                        name,
+                        &format!("agent-{id}"),
+                        &name,
                         &detail,
                         agent.agent_status,
                         selected && agent.focused,
@@ -657,6 +659,9 @@ fn compact(lines: u64) -> String {
 
 #[allow(clippy::too_many_arguments)]
 fn row(
+    // Rows are probed by key, not by label: an agent names its workspace, which
+    // already names a row of its own.
+    key: &str,
     name: &str,
     detail: &str,
     status: AgentStatus,
@@ -696,7 +701,7 @@ fn row(
         - arrow_reserve)
         .max(0.);
     div()
-        .debug_selector(|| format!("row-{name}"))
+        .debug_selector(|| format!("row-{key}"))
         .h(px(2. * line_height(font) + 8.))
         .w_full()
         .min_w_0()
@@ -717,7 +722,7 @@ fn row(
             let (color, font) = (theme.muted, font.clone());
             row.child(
                 div()
-                    .debug_selector(|| format!("tree-{name}"))
+                    .debug_selector(|| format!("tree-{key}"))
                     .absolute()
                     // Between the parent's label column and this row's own dot.
                     .left(px(TREE_GUTTER))
@@ -747,7 +752,7 @@ fn row(
                 .w(px(label_width))
                 .flex_none()
                 .overflow_hidden()
-                .debug_selector(|| format!("column-{name}"))
+                .debug_selector(|| format!("column-{key}"))
                 .child(
                     div()
                         .relative()
@@ -756,7 +761,7 @@ fn row(
                         .when_some(workspace_icon, |title, image| {
                             title.child(
                                 div()
-                                    .debug_selector(|| format!("github-{name}"))
+                                    .debug_selector(|| format!("github-{key}"))
                                     .absolute()
                                     .left_0()
                                     .top(px((line_height(font) - 12.) / 2.))
@@ -784,7 +789,7 @@ fn row(
                         })
                         .child(
                             div()
-                                .debug_selector(|| format!("name-{name}"))
+                                .debug_selector(|| format!("name-{key}"))
                                 .ml(px(icon_reserve))
                                 .w(px((label_width - icon_reserve).max(0.)))
                                 .flex_none()
@@ -794,7 +799,7 @@ fn row(
                 )
                 .child(
                     div()
-                        .debug_selector(|| format!("detail-{name}"))
+                        .debug_selector(|| format!("detail-{key}"))
                         .w(px(label_width))
                         .truncate()
                         .text_color(rgb(theme.muted))
@@ -810,7 +815,7 @@ fn row(
         .when_some(pr, |row, badge| {
             row.child(
                 div()
-                    .debug_selector(|| format!("pr-{name}"))
+                    .debug_selector(|| format!("pr-{key}"))
                     .w(px(badge.width(font)))
                     .flex_none()
                     .flex()
@@ -878,20 +883,50 @@ fn first_text<'a>(values: impl IntoIterator<Item = Option<&'a str>>, fallback: &
         .unwrap_or(fallback)
 }
 
-fn agent_labels(agent: &ClientShellAgent) -> (&str, &str) {
-    let kind = first_text(
-        [agent.display_agent.as_deref(), agent.agent.as_deref()],
-        "agent",
-    );
+/// Upstream's default agent rows: host, workspace and tab on the first line,
+/// the agent itself on the second. The tab only earns its place when the
+/// workspace has more than one or the user named it, as upstream decides.
+fn agent_labels(
+    agent: &ClientShellAgent,
+    snapshot: &ClientShellSnapshot,
+    host: Option<&str>,
+) -> (String, String) {
     let name = first_text(
         [
+            agent.display_agent.as_deref(),
             agent.name.as_deref(),
+            agent.agent.as_deref(),
             agent.title.as_deref(),
-            agent.terminal_title_stripped.as_deref(),
         ],
-        kind,
+        "agent",
     );
-    (name, kind)
+    // A pane whose workspace has gone leaves the agent to name the row.
+    let Some(workspace) = snapshot
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.workspace_id == agent.workspace_id)
+        .map(|workspace| workspace.label.as_str())
+    else {
+        return (name.to_owned(), String::new());
+    };
+    let tabs = snapshot
+        .tabs
+        .iter()
+        .filter(|tab| tab.workspace_id == agent.workspace_id)
+        .count();
+    let tab = snapshot
+        .tabs
+        .iter()
+        .find(|tab| tab.tab_id == agent.tab_id)
+        .filter(|tab| tabs > 1 || tab.custom_label)
+        .map(|tab| tab.label.as_str());
+    let title = [host, Some(workspace), tab]
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" \u{b7} ");
+    (title, name.to_owned())
 }
 
 // Match the expanded upstream shell order, including orphaned linked worktrees.
@@ -1004,8 +1039,9 @@ fn status_style(status: AgentStatus) -> (f32, bool, u32) {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::{
-        AgentStatus, ClientShellAgent, ClientShellWorkspace, STATUS_DOT_UNKNOWN, STATUS_WIDTH,
-        agent_labels, first_text, layout_tests, status_style, workspace_entries, workspace_label,
+        AgentStatus, ClientShellAgent, ClientShellSnapshot, ClientShellWorkspace,
+        STATUS_DOT_UNKNOWN, STATUS_WIDTH, agent_labels, first_text, layout_tests, status_style,
+        workspace_entries, workspace_label,
     };
 
     #[test]
@@ -1122,33 +1158,55 @@ mod tests {
     }
 
     #[test]
-    fn agent_name_title_and_kind_fallbacks() {
-        let mut agent = ClientShellAgent {
-            pane_id: "p".into(),
-            workspace_id: "w".into(),
-            tab_id: "t".into(),
-            name: Some("review".into()),
-            title: Some("Fix sidebar".into()),
-            display_agent: Some("Claude Code".into()),
-            agent: Some("claude".into()),
-            terminal_title: Some("raw title".into()),
-            terminal_title_stripped: Some("terminal".into()),
-            agent_status: AgentStatus::Unknown,
-            state_change_seq: 0,
-            state_labels: vec![],
-            tokens: vec![],
-            focused: false,
+    fn agent_rows_name_their_place_then_their_agent() {
+        let mut snapshot = layout_tests::snapshot(1);
+        let agent = &mut snapshot.agents[0];
+        agent.workspace_id = "w0".into();
+        agent.tab_id = "t0".into();
+        agent.display_agent = Some("Claude Code".into());
+        agent.name = Some("review".into());
+        agent.agent = Some("claude".into());
+        agent.title = Some("Fix sidebar".into());
+        let agent = snapshot.agents[0].clone();
+        // Host first when there is one, then the workspace, then the tab.
+        let labels = |snapshot: &ClientShellSnapshot, host| {
+            agent_labels(&snapshot.agents[0], snapshot, host)
         };
-        assert_eq!(agent_labels(&agent), ("review", "Claude Code"));
-        agent.name = Some(" ".into());
-        assert_eq!(agent_labels(&agent), ("Fix sidebar", "Claude Code"));
-        agent.title = None;
-        agent.display_agent = None;
-        assert_eq!(agent_labels(&agent), ("terminal", "claude"));
-        agent.terminal_title_stripped = None;
-        assert_eq!(agent_labels(&agent), ("claude", "claude"));
-        agent.agent = None;
-        assert_eq!(agent_labels(&agent), ("agent", "agent"));
+        assert_eq!(
+            labels(&snapshot, None),
+            ("herdr \u{b7} tab 1".into(), "Claude Code".into())
+        );
+        assert_eq!(
+            labels(&snapshot, Some("remote")),
+            (
+                "remote \u{b7} herdr \u{b7} tab 1".into(),
+                "Claude Code".into()
+            )
+        );
+        // One unnamed tab is noise, so only its workspace shows.
+        snapshot.tabs.retain(|tab| tab.tab_id == "t0");
+        assert_eq!(labels(&snapshot, None).0, "herdr");
+        snapshot.tabs[0].custom_label = true;
+        assert_eq!(labels(&snapshot, None).0, "herdr \u{b7} tab 1");
+        // The agent name falls back through the same order as upstream.
+        for (display, name, kind, title, expected) in [
+            (None, Some("review"), Some("claude"), None, "review"),
+            (None, None, Some("claude"), Some("Fix sidebar"), "claude"),
+            (None, None, None, Some("Fix sidebar"), "Fix sidebar"),
+            (None, None, None, None, "agent"),
+        ] {
+            snapshot.agents[0] = ClientShellAgent {
+                display_agent: display.map(str::to_owned),
+                name: name.map(str::to_owned),
+                agent: kind.map(str::to_owned),
+                title: title.map(str::to_owned),
+                ..agent.clone()
+            };
+            assert_eq!(labels(&snapshot, None).1, expected);
+        }
+        // Without its workspace the agent names the row itself.
+        snapshot.workspaces.clear();
+        assert_eq!(labels(&snapshot, None), ("agent".into(), String::new()));
     }
 
     #[test]
