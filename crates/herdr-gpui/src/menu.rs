@@ -7,6 +7,10 @@ use herdr_client::protocol::{ClientShellSnapshot, ClientShellWorkspace, ClientSh
 mod github;
 mod pr;
 
+/// Breathing room between a popup and the window's edges, so a list that had
+/// to be clamped still shows that it stops short of the frame.
+const MENU_MARGIN: f32 = 8.;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Page {
     Menu,
@@ -862,12 +866,25 @@ impl HerdrWindow {
                     )
             })
             .when(page == Page::Menu, |panel| {
-                panel
-                    .absolute()
-                    .left(px(56.))
-                    .bottom((viewport.height - self.menu.anchor.y + px(12.)).max(px(30.)))
-                    .w(px(180.))
-                    .max_h((viewport.height / 2. - px(12.)).max(px(0.)))
+                // Open on whichever side of the anchor has room, and keep a
+                // margin from the window chrome and the bottom edge: a clamped
+                // list then reads as scrollable rather than clipped.
+                let chrome = px(crate::titlebar::HEIGHT
+                    + crate::worktree_banner::reserved(env!("HERDR_BUILD_WORKTREE") == "1"));
+                let band = (viewport.height - chrome - px(2. * MENU_MARGIN)).max(px(60.));
+                let room = |side: Pixels| side.clamp(px(0.), band).max(px(60.)).min(band);
+                let above = room(self.menu.anchor.y - px(12. + MENU_MARGIN) - chrome);
+                let below = room(viewport.height - self.menu.anchor.y - px(12. + MENU_MARGIN));
+                let panel = panel.absolute().left(px(56.)).w(px(180.));
+                if above >= below {
+                    panel
+                        .bottom(
+                            (viewport.height - self.menu.anchor.y + px(12.)).max(px(MENU_MARGIN)),
+                        )
+                        .max_h(above)
+                } else {
+                    panel.top(self.menu.anchor.y + px(12.)).max_h(below)
+                }
             })
             .when(matches!(page, Page::Tab | Page::RenameTab), |panel| {
                 panel

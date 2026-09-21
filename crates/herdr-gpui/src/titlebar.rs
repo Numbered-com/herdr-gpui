@@ -6,6 +6,9 @@ use gpui::{prelude::*, *};
 /// comfortable size for the pointer.
 const AVATAR: f32 = 20.;
 
+/// Native chrome the window draws above its body; popups must clear it.
+pub(super) const HEIGHT: f32 = 34.;
+
 impl HerdrWindow {
     fn open_profile(&mut self, connect: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.menu.page != Some(Page::GitHub) && !self.open_menu(window, cx) {
@@ -102,7 +105,7 @@ pub(super) fn render(surface: u32) -> Stateful<Div> {
         .flex()
         .flex_none()
         .w_full()
-        .h(px(34.))
+        .h(px(HEIGHT))
         .bg(rgb(surface).blend(rgba(0xffffff1a)))
         .child(div().flex_none().w(px(80.)).h_full())
         .child(

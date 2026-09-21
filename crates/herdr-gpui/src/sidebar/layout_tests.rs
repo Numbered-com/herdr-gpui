@@ -1750,3 +1750,42 @@ fn child_rows_are_tied_to_their_parent_with_gutter_lines(cx: &mut gpui::TestAppC
         assert!(!cx.global::<TextProbes>().0.contains_key("sidebar-child"));
     });
 }
+
+#[gpui::test]
+fn the_sidebar_menu_stays_clear_of_the_window_chrome(cx: &mut gpui::TestAppContext) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        crate::bind_keys(cx);
+        let view = cx.new(|cx| fixture_window(window, cx));
+        cx.observe(&view, |_, _, cx| cx.notify()).detach();
+        SidebarFixture(view)
+    });
+    let view = cx.update(|_, cx| fixture.read(cx).0.clone());
+    let chrome = px(crate::titlebar::HEIGHT
+        + crate::worktree_banner::reserved(env!("HERDR_BUILD_WORKTREE") == "1"));
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.run_until_parked();
+    // An anchor near the top leaves no room above it, one near the footer
+    // plenty; either way the panel stays between the chrome and the bottom.
+    for anchor in [chrome + px(100.), px(560.)] {
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.menu.anchor = gpui::point(px(120.), anchor);
+                view.open_menu(window, cx);
+            });
+            window.draw(cx).clear();
+            assert!(view.read(cx).menu.page == Some(crate::menu::Page::Menu));
+        });
+        let panel = cx.debug_bounds("menu-panel").unwrap();
+        // A margin from the chrome and the bottom edge, so a clamped list is
+        // visibly a list that scrolls rather than one cut off by the frame.
+        assert!(
+            panel.top() >= chrome + px(8.),
+            "anchor {anchor:?}: {panel:?}"
+        );
+        assert!(panel.bottom() <= px(592.), "anchor {anchor:?}: {panel:?}");
+        // Whatever the room, the list keeps enough height to scroll through.
+        assert!(panel.size.height >= px(60.), "anchor {anchor:?}: {panel:?}");
+        cx.simulate_keystrokes("escape");
+        cx.update(|window, cx| window.draw(cx).clear());
+    }
+}
