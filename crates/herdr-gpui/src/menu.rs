@@ -660,12 +660,9 @@ impl HerdrWindow {
             .as_ref()
             .map_or("", |input| input.text.trim());
         match (repo, root) {
-            _ if branch.is_empty() => "Checkout: named by the daemon".to_owned(),
-            (Some(repo), Some(root)) => format!(
-                "Checkout: {}",
-                crate::worktree::checkout_preview(root, repo, branch)
-            ),
-            _ => "Checkout: chosen by the daemon".to_owned(),
+            _ if branch.is_empty() => "Named by the daemon".to_owned(),
+            (Some(repo), Some(root)) => crate::worktree::checkout_preview(root, repo, branch),
+            _ => "Chosen by the daemon".to_owned(),
         }
     }
 
@@ -958,6 +955,221 @@ impl HerdrWindow {
         cx.notify();
     }
 
+    /// Workspace dialogs share the chrome of the close confirmation and the
+    /// pickers: a titled header over the workspace it acts on, captioned
+    /// sections, then a right-aligned button row and a key hint.
+    fn render_workspace_dialog(&self, action: WorkspaceAction, cx: &mut Context<Self>) -> Div {
+        let Some(target) = &self.menu.target else {
+            return div();
+        };
+        let theme = &self.theme;
+        let font = &self.config.ui;
+        let deletion = self.menu.deletion.as_ref();
+        let force = deletion.is_some_and(|deletion| deletion.force);
+        let waiting = self.menu.creation.is_some() || deletion.is_some_and(|d| d.pending.is_some());
+        let destructive = matches!(
+            action,
+            WorkspaceAction::Close | WorkspaceAction::DeleteWorktree
+        );
+        let title = match action {
+            WorkspaceAction::Rename => "Rename workspace",
+            WorkspaceAction::Close => target.close_label(),
+            WorkspaceAction::NewWorktree => "New worktree",
+            WorkspaceAction::DeleteWorktree => "Delete worktree checkout",
+        };
+        let submit = match action {
+            WorkspaceAction::Rename => "Rename",
+            WorkspaceAction::Close => target.close_label(),
+            WorkspaceAction::NewWorktree if waiting => "Creating...",
+            WorkspaceAction::NewWorktree => "Create",
+            WorkspaceAction::DeleteWorktree if force => "Force delete",
+            WorkspaceAction::DeleteWorktree => "Delete checkout",
+        };
+        let verb = match action {
+            WorkspaceAction::Rename => "rename",
+            WorkspaceAction::Close => "close",
+            WorkspaceAction::NewWorktree => "create",
+            WorkspaceAction::DeleteWorktree => "confirm",
+        };
+        let caption = |text: String| {
+            div()
+                .text_color(rgb(theme.muted))
+                .text_size(px(font.size * 0.9))
+                .child(text)
+        };
+        let note = |text: String| div().text_color(rgb(theme.muted)).child(text);
+        // A captioned section, as the pickers label theirs. The proposed checkout
+        // is secondary to the branch that derives it; the one being deleted is not.
+        let checkout = |value: String, color: Rgba| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(caption("Checkout".to_owned()))
+                .child(
+                    div()
+                        .debug_selector(|| "dialog-checkout".into())
+                        .text_color(color)
+                        .child(value),
+                )
+                .into_any_element()
+        };
+        let mut body: Vec<AnyElement> = Vec::new();
+        match action {
+            WorkspaceAction::Rename => {
+                body.push(caption("Label".to_owned()).into_any_element());
+                body.push(self.render_dialog_input(cx).into_any_element());
+            }
+            WorkspaceAction::Close => body.push(
+                note(format!(
+                    "Close {} workspace(s) and terminate their running terminals? Checkout files and branches are not deleted.",
+                    target.close_members.len()
+                ))
+                .into_any_element(),
+            ),
+            WorkspaceAction::NewWorktree => {
+                body.push(caption("Branch".to_owned()).into_any_element());
+                body.push(self.render_dialog_input(cx).into_any_element());
+                body.push(checkout(self.checkout_preview(), rgb(theme.muted)));
+                body.push(
+                    note(
+                        "Base: HEAD. A blank branch uses the daemon default. Repository trust is not granted."
+                            .to_owned(),
+                    )
+                    .into_any_element(),
+                );
+            }
+            WorkspaceAction::DeleteWorktree => {
+                body.push(checkout(
+                    deletion
+                        .and_then(|deletion| deletion.path.clone())
+                        .unwrap_or_else(|| "Waiting for daemon checkout lookup...".to_owned()),
+                    rgb(theme.foreground),
+                ));
+                body.push(
+                    note(
+                        "Deletes checkout files and closes its workspace and terminals. Branches are preserved. The daemon does not check for unpushed commits. Detached commits may become unreachable."
+                            .to_owned(),
+                    )
+                    .into_any_element(),
+                );
+                body.push(if force {
+                    div()
+                        .text_color(rgb(theme.palette[1]))
+                        .child("Force deletion discards modified and untracked files, including submodule contents.")
+                        .into_any_element()
+                } else {
+                    note("Git may reject modified/untracked files or submodules. Ignored files are not protected.".to_owned())
+                        .into_any_element()
+                });
+                body.push(
+                    caption(format!(
+                        "Type {} to confirm",
+                        if force { "FORCE DELETE" } else { "DELETE" }
+                    ))
+                    .into_any_element(),
+                );
+                body.push(self.render_dialog_input(cx).into_any_element());
+            }
+        }
+        div()
+            .p(px(12.))
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_size(px(font.size * 1.35))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_color(rgb(theme.muted))
+                            .child(target.label.clone()),
+                    ),
+            )
+            .children(body)
+            .when(waiting, |dialog| {
+                dialog.child(
+                    div()
+                        .debug_selector(|| "dialog-waiting".into())
+                        .text_color(accent(theme))
+                        .child(
+                            "Waiting for daemon. Dismissing does not cancel a queued operation.",
+                        ),
+                )
+            })
+            .when_some(self.menu.error.clone(), |dialog, error| {
+                dialog.child(
+                    div()
+                        .debug_selector(|| "dialog-error".into())
+                        .rounded(px(4.))
+                        .bg(rgb(theme.active))
+                        .p(px(8.))
+                        .text_color(rgb(theme.palette[1]))
+                        .child(error),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .id("dialog-cancel")
+                            .debug_selector(|| "dialog-cancel".into())
+                            .px(px(12.))
+                            .py(px(6.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(rgb(theme.active))
+                            .cursor_pointer()
+                            .hover(|button| button.bg(rgb(theme.active)))
+                            .child("Cancel")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.dismiss_menu(window, cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("dialog-submit")
+                            .debug_selector(|| "dialog-submit".into())
+                            .px(px(12.))
+                            .py(px(6.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(rgb(theme.active))
+                            .bg(rgb(theme.active))
+                            .cursor_pointer()
+                            .hover(|button| button.border_color(rgb(theme.foreground)))
+                            .when(destructive, |button| {
+                                button.text_color(rgb(theme.palette[1]))
+                            })
+                            .when(waiting, |button| button.text_color(rgb(theme.muted)))
+                            .child(submit)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.submit_workspace_dialog(window, cx);
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .text_color(rgb(theme.muted))
+                    .text_size(px(font.size * 0.9))
+                    .child(format!("Enter to {verb}. Escape to cancel.")),
+            )
+    }
+
     pub(super) fn render_menu(&self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let page = self.menu.page.unwrap_or(Page::Menu);
         let font = &self.config.ui;
@@ -980,17 +1192,11 @@ impl HerdrWindow {
                         420.
                     })
                     .min((viewport.width - px(24.)).max(px(0.))))
-                    .max_h(
-                        (if matches!(
-                            page,
-                            Page::Workspace | Page::Dialog(WorkspaceAction::DeleteWorktree)
-                        ) {
-                            viewport.height - px(24.)
-                        } else {
-                            viewport.height / 2. - px(12.)
-                        })
-                        .max(px(0.)),
-                    )
+                    // Every dialog may use the window's height: a captioned form
+                    // whose buttons need scrolling into view reads as clipped.
+                    .max_h((viewport.height - px(24.)).max(px(0.)))
+                    // Lift the popup off the terminal behind it, as the pickers do.
+                    .shadow_lg()
             })
             .when(page == Page::Menu, |panel| {
                 // Open on whichever side of the anchor has room, and keep a
@@ -1162,125 +1368,7 @@ impl HerdrWindow {
                 ));
             }
         } else if let Page::Dialog(action) = page {
-            if let Some(target) = &self.menu.target {
-                let (title, detail, submit) = match action {
-                    WorkspaceAction::Rename => (
-                        "Rename workspace",
-                        "Edit the workspace label.".to_owned(),
-                        "Rename",
-                    ),
-                    WorkspaceAction::Close => (
-                        target.close_label(),
-                        format!(
-                            "Close {} workspace(s) and terminate their running terminals? Checkout files and branches are not deleted.",
-                            target.close_members.len()
-                        ),
-                        target.close_label(),
-                    ),
-                    WorkspaceAction::NewWorktree => {
-                        let creating = self.menu.creation.is_some();
-                        (
-                            "New worktree",
-                            format!(
-                                "Branch. Blank uses the daemon default. Base: HEAD. Repository trust is not granted.{}",
-                                if creating {
-                                    "\n\nWaiting for daemon. Dismissing does not cancel a queued operation."
-                                } else {
-                                    ""
-                                }
-                            ),
-                            if creating { "Creating..." } else { "Create" },
-                        )
-                    }
-                    WorkspaceAction::DeleteWorktree => {
-                        let deletion = self.menu.deletion.as_ref();
-                        let path = deletion
-                            .and_then(|d| d.path.as_deref())
-                            .unwrap_or("Waiting for daemon checkout lookup...");
-                        let force = deletion.is_some_and(|d| d.force);
-                        (
-                            "Delete worktree checkout",
-                            format!(
-                                "Checkout: {path}\n\nDeletes checkout files and closes its workspace and terminals. Branches are preserved. The daemon does not check for unpushed commits. Detached commits may become unreachable.\n\n{}\n\n{}",
-                                if force {
-                                    "WARNING: Force deletion discards modified and untracked files, including submodule contents. Type FORCE DELETE to confirm."
-                                } else {
-                                    "Git may reject modified/untracked files or submodules. Ignored files are not protected. Type DELETE to confirm."
-                                },
-                                if deletion.is_some_and(|d| d.pending.is_some()) {
-                                    "Waiting for daemon. Dismissing does not cancel a queued operation."
-                                } else {
-                                    ""
-                                }
-                            ),
-                            if force {
-                                "Force delete"
-                            } else {
-                                "Delete checkout"
-                            },
-                        )
-                    }
-                };
-                panel = panel
-                    .child(div().p(px(8.)).child(title))
-                    .child(div().p(px(8.)).truncate().child(target.label.clone()))
-                    .child(div().p(px(8.)).child(detail));
-                if self.menu.input.is_some() {
-                    panel = panel.child(self.render_dialog_input(cx));
-                }
-                if action == WorkspaceAction::NewWorktree {
-                    panel = panel.child(
-                        div()
-                            .debug_selector(|| "dialog-checkout".into())
-                            .p(px(8.))
-                            .text_color(rgb(theme.muted))
-                            .child(self.checkout_preview()),
-                    );
-                }
-                if let Some(error) = &self.menu.error {
-                    panel = panel.child(
-                        div()
-                            .debug_selector(|| "dialog-error".into())
-                            .p(px(8.))
-                            .text_color(rgb(theme.palette[1]))
-                            .child(error.clone()),
-                    );
-                }
-                panel = panel.child(
-                    div()
-                        .flex()
-                        .gap(px(16.))
-                        .p(px(8.))
-                        .child(
-                            div()
-                                .id("dialog-cancel")
-                                .cursor_pointer()
-                                .child("Cancel (Escape)")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.dismiss_menu(window, cx);
-                                })),
-                        )
-                        .child(
-                            div()
-                                .id("dialog-submit")
-                                .debug_selector(|| "dialog-submit".into())
-                                .cursor_pointer()
-                                .when(
-                                    matches!(
-                                        action,
-                                        WorkspaceAction::Close | WorkspaceAction::DeleteWorktree
-                                    ),
-                                    |button| button.text_color(rgb(theme.palette[1])),
-                                )
-                                .child(submit)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.submit_workspace_dialog(window, cx);
-                                })),
-                        ),
-                );
-            }
+            panel = panel.child(self.render_workspace_dialog(action, cx));
         } else if matches!(page, Page::Tab | Page::RenameTab) {
             panel = panel.child(self.render_tab_menu(cx));
         } else if page == Page::Keybinds {
@@ -1894,6 +1982,91 @@ pub(crate) mod workspace_tests {
         });
     }
 
+    /// The dialog chrome matches the other modals: sections stacked in reading
+    /// order inside the panel, and a right-aligned Cancel/submit row.
+    #[gpui::test]
+    fn workspace_dialog_sections_and_buttons_stay_inside_the_panel(cx: &mut gpui::TestAppContext) {
+        use gpui::px;
+        let (view, cx) = cx.add_window_view(sidebar::layout_tests::fixture_window);
+        for (width, height) in [(640., 400.), (1200., 780.)] {
+            cx.simulate_resize(gpui::size(px(width), px(height)));
+            for action in [
+                WorkspaceAction::NewWorktree,
+                WorkspaceAction::DeleteWorktree,
+            ] {
+                cx.update(|window, cx| {
+                    view.update(cx, |view, cx| {
+                        let snapshot =
+                            std::sync::Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+                        snapshot.workspaces = sidebar::layout_tests::snapshot(7).workspaces;
+                        snapshot.worktree_directory = "/endpoint/.herdr/worktrees".into();
+                        view.live.status = crate::state::ConnectionStatus::Connected;
+                        view.menu.reset();
+                        let id = if action == WorkspaceAction::NewWorktree {
+                            "w3"
+                        } else {
+                            "w4"
+                        };
+                        view.open_workspace_menu(id, Default::default(), window, cx);
+                        view.open_workspace_dialog(action, cx);
+                        if action == WorkspaceAction::DeleteWorktree {
+                            view.menu.deletion = Some(super::Deletion {
+                                pending: Some("remove".into()),
+                                path: Some(
+                                    "/endpoint/.herdr/worktrees/agent-launcher/child".into(),
+                                ),
+                                force: true,
+                            });
+                        } else {
+                            // Both dialogs wait on the daemon here, so every
+                            // section measured below belongs to this frame.
+                            view.menu.creation = Some("create".into());
+                        }
+                        view.menu.error = Some("fixture error".into());
+                    });
+                    window.draw(cx).clear();
+                });
+                let panel = cx.debug_bounds("menu-panel").unwrap();
+                let input = cx.debug_bounds("dialog-input").unwrap();
+                let cancel = cx.debug_bounds("dialog-cancel").unwrap();
+                let submit = cx.debug_bounds("dialog-submit").unwrap();
+                let error = cx.debug_bounds("dialog-error").unwrap();
+                let waiting = cx.debug_bounds("dialog-waiting").unwrap();
+                let mut parts = vec![input, cancel, submit, error, waiting];
+                if action == WorkspaceAction::NewWorktree {
+                    parts.push(cx.debug_bounds("dialog-checkout").unwrap());
+                }
+                for part in &parts {
+                    assert!(
+                        part.left() >= panel.left() && part.right() <= panel.right(),
+                        "{action:?} at {width}: {part:?} escapes {panel:?}"
+                    );
+                    assert!(part.right() <= px(width));
+                    // A roomy window must not make any dialog scroll to its buttons.
+                    if height > 400. {
+                        assert!(
+                            part.top() >= panel.top() && part.bottom() <= panel.bottom(),
+                            "{action:?} at {height}: {part:?} needs scrolling in {panel:?}"
+                        );
+                        assert!(part.bottom() <= px(height));
+                    }
+                }
+                // One gutter on both sides, and a trailing button row.
+                assert_eq!(input.left() - panel.left(), panel.right() - input.right());
+                assert!(cancel.right() <= submit.left());
+                assert!(submit.right() < panel.right());
+                assert!(error.bottom() <= cancel.top());
+                // The checkout follows the branch it is derived from.
+                if action == WorkspaceAction::NewWorktree {
+                    assert!(input.bottom() <= cx.debug_bounds("dialog-checkout").unwrap().top());
+                } else {
+                    // The confirmation field comes after the text it confirms.
+                    assert!(input.bottom() <= error.top());
+                }
+            }
+        }
+    }
+
     /// Opening the dialog prepares the same branch and checkout the terminal
     /// client proposes, rather than an empty field.
     #[gpui::test]
@@ -1916,23 +2089,23 @@ pub(crate) mod workspace_tests {
                 assert_eq!(
                     view.checkout_preview(),
                     format!(
-                        "Checkout: /endpoint/.herdr/worktrees/agent-launcher/{}",
+                        "/endpoint/.herdr/worktrees/agent-launcher/{}",
                         crate::worktree::branch_to_path_slug(&branch)
                     )
                 );
                 // A blank field defers to the daemon instead of guessing a path.
                 view.menu.input = Some(super::DialogInput::new("  ".into()));
-                assert_eq!(view.checkout_preview(), "Checkout: named by the daemon");
+                assert_eq!(view.checkout_preview(), "Named by the daemon");
                 view.menu.input = Some(super::DialogInput::new("feature/Login v2".into()));
                 assert_eq!(
                     view.checkout_preview(),
-                    "Checkout: /endpoint/.herdr/worktrees/agent-launcher/feature-login-v2"
+                    "/endpoint/.herdr/worktrees/agent-launcher/feature-login-v2"
                 );
                 // Without a reported worktree directory no path is invented.
                 std::sync::Arc::make_mut(view.live.snapshot.as_mut().unwrap())
                     .worktree_directory
                     .clear();
-                assert_eq!(view.checkout_preview(), "Checkout: chosen by the daemon");
+                assert_eq!(view.checkout_preview(), "Chosen by the daemon");
             });
         });
     }
