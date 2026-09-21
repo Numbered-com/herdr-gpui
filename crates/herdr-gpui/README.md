@@ -164,7 +164,12 @@ native-frame appearance also remains unverified by these macOS tests.
 
 - Workspace/worktree sidebar with main-checkout parents, indented linked
   workspaces, local collapse arrows, branch details, and daemon-driven
-  filled/hollow activity indicators with client-local unseen-completion tracking.
+  filled/hollow activity indicators taken from the daemon's own status, so the
+  GUI and the terminal client always show the same dot. Each worktree row also
+  carries its cached pull request number and diff counts.
+- Agents panel header ends with its sort, `grouped` or `priority`, which a
+  click flips; an active agent view names itself there instead. Client-local
+  and persisted beside the sidebar width, as in the terminal client.
 - Resizable sidebar with width persisted per local daemon socket, shared across
   host groups. Local workspace titles show repository owner avatars; remote
   workspaces use the GitHub fallback mark without resolving remote paths locally.

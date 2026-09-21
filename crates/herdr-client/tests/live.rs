@@ -327,8 +327,8 @@ fn stable_endpoint_live() {
 
 #[test]
 #[ignore = "requires explicit HERDR_TEST_BINARY; spawns an isolated live daemon"]
-fn client_local_completion_status_live() {
-    use herdr_client::{presentation::AgentPresentation, protocol::AgentStatus};
+fn daemon_completion_status_live() {
+    use herdr_client::protocol::AgentStatus;
     use std::{
         io::{BufRead, BufReader, Write},
         os::unix::net::UnixStream,
@@ -338,13 +338,8 @@ fn client_local_completion_status_live() {
     let initial = session.snapshot.as_ref().unwrap();
     let boot = initial.boot_id.clone();
     let pane = initial.focused_pane_id.clone().unwrap();
-    let mut presentation = AgentPresentation::default();
     let mut previous_sequence = None;
-    for (seq, wire_status, expected) in [
-        (1, "working", AgentStatus::Working),
-        (2, "blocked", AgentStatus::Blocked),
-        (3, "idle", AgentStatus::Done),
-    ] {
+    for (seq, wire_status) in [(1, "working"), (2, "blocked"), (3, "idle")] {
         // Agent hooks use the JSON API, not the shell's UI-only command allowlist.
         let mut api = UnixStream::connect(daemon.sandbox.dir.join("a.sock")).unwrap();
         api.set_read_timeout(Some(TIMEOUT)).unwrap();
@@ -369,6 +364,8 @@ fn client_local_completion_status_live() {
                     && match wire_status {
                         "working" => agent.agent_status == AgentStatus::Working,
                         "blocked" => agent.agent_status == AgentStatus::Blocked,
+                        // The daemon decides whether a finished agent is still
+                        // unseen; the client reports whichever it sends.
                         _ => matches!(agent.agent_status, AgentStatus::Idle | AgentStatus::Done),
                     }
             })
@@ -379,34 +376,21 @@ fn client_local_completion_status_live() {
                 ClientEvent::Snapshot(snapshot) if matches(snapshot))
             });
         }
-        let raw = session.snapshot.as_ref().unwrap();
-        assert_eq!(raw.boot_id, boot);
-        let mut projected = (**raw).clone();
-        presentation.project_snapshot(&mut projected);
-        let agent = projected
+        let snapshot = session.snapshot.as_ref().unwrap();
+        assert_eq!(snapshot.boot_id, boot);
+        let agent = snapshot
             .agents
             .iter()
             .find(|agent| agent.pane_id == pane)
             .unwrap();
         previous_sequence = Some(agent.state_change_seq);
-        assert_eq!(agent.agent_status, expected);
-        assert_eq!(projected.workspaces[0].agent_status, expected);
+        // No client-side rewrite: the workspace row carries the daemon's own
+        // aggregate, so every client of this daemon shows the same dot.
+        assert_eq!(snapshot.workspaces[0].agent_status, agent.agent_status);
         eprintln!(
-            "live status: raw={:?} seq={} effective={:?}",
-            raw.agents[0].agent_status, agent.state_change_seq, expected
+            "live status: wire={wire_status} status={:?} seq={}",
+            agent.agent_status, agent.state_change_seq
         );
-        if expected == AgentStatus::Done {
-            session.until("completion surface", |event| {
-                if let ClientEvent::Surface(surface) = event
-                    && presentation.acknowledge_surface(&mut projected, surface, true)
-                {
-                    assert_eq!(projected.agents[0].agent_status, AgentStatus::Idle);
-                    assert_eq!(projected.workspaces[0].agent_status, AgentStatus::Idle);
-                    return true;
-                }
-                false
-            });
-        }
     }
     session.detach();
 }

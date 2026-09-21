@@ -190,7 +190,8 @@ impl HerdrWindow {
                         workspace.number,
                         workspace.branch.as_deref().unwrap_or("")
                     ),
-                    badge: "Workspace",
+                    // Every row here is a workspace; a badge saying so is noise.
+                    badge: "",
                     action: Action::Workspace(workspace.workspace_id.clone()),
                 }));
             } else {
@@ -441,6 +442,10 @@ impl HerdrWindow {
                                     let entry = palette.entries[palette.filtered[index]].clone();
                                     div()
                                         .id(index)
+                                        .debug_selector(move || format!("palette-row-{index}"))
+                                        // Selection and hover read as rows, not as
+                                        // labels, so the fill spans the whole list.
+                                        .w_full()
                                         .h(px(this.config.ui.line_height() * 2. + 20.))
                                         .px(px(16.))
                                         .flex()
@@ -465,12 +470,14 @@ impl HerdrWindow {
                                                         .child(entry.detail),
                                                 ),
                                         )
-                                        .child(
-                                            div()
-                                                .flex_none()
-                                                .text_color(rgb(this.theme.muted))
-                                                .child(entry.badge),
-                                        )
+                                        .when(!entry.badge.is_empty(), |row| {
+                                            row.child(
+                                                div()
+                                                    .flex_none()
+                                                    .text_color(rgb(this.theme.muted))
+                                                    .child(entry.badge),
+                                            )
+                                        })
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.activate_palette(entry.action.clone(), window, cx)
                                         }))
@@ -485,6 +492,7 @@ impl HerdrWindow {
             })
             .child(
                 div()
+                    .debug_selector(|| "palette-status".into())
                     .flex_none()
                     .px(px(16.))
                     .py(px(10.))
@@ -501,6 +509,7 @@ impl HerdrWindow {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+    use gpui::TestAppContext;
     use herdr_client::protocol::ClientShellCommand;
 
     fn snapshot() -> ClientShellSnapshot {
@@ -508,6 +517,42 @@ mod tests {
             "../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json"
         ))
         .unwrap()
+    }
+
+    #[gpui::test]
+    fn only_mixed_palettes_carry_badges(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        cx.update(|_, cx| {
+            view.update(cx, |view, _| {
+                let snapshot = std::sync::Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+                snapshot.commands = vec![ClientShellCommand {
+                    command_id: "build".into(),
+                    action: ClientShellCommandAction::Shell,
+                    description: None,
+                    binding_label: String::new(),
+                    binding_labels: Vec::new(),
+                }];
+            })
+        });
+        for workspaces_only in [true, false] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.open_palette(workspaces_only, window, cx)
+                })
+            });
+            cx.run_until_parked();
+            view.read_with(cx, |view, _| {
+                let entries = &view.menu.palette.as_ref().unwrap().entries;
+                assert!(!entries.is_empty());
+                // The workspace switcher lists nothing else, so it needs no badges;
+                // the command palette still separates daemon commands from native ones.
+                assert_eq!(
+                    entries.iter().all(|entry| entry.badge.is_empty()),
+                    workspaces_only
+                );
+            });
+            cx.update(|window, cx| view.update(cx, |view, cx| view.dismiss_menu(window, cx)));
+        }
     }
 
     #[test]

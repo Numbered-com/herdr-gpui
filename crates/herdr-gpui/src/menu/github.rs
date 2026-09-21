@@ -27,6 +27,12 @@ mod tests {
             assert!(cx.debug_bounds("github-status").is_none());
             assert!(cx.debug_bounds("github-close").is_none());
             assert!(cx.debug_bounds("github-header-close").is_some());
+            // The mark is vector, so it is sharp at the header's own size, and
+            // the avatar slot beside it stays square for a round crop.
+            let mark = cx.debug_bounds("github-mark").unwrap();
+            let avatar = cx.debug_bounds("github-avatar").unwrap();
+            assert_eq!(mark.size, gpui::size(gpui::px(28.), gpui::px(28.)));
+            assert_eq!(avatar.size, gpui::size(gpui::px(40.), gpui::px(40.)));
             cx.simulate_keystrokes("tab tab enter");
             cx.update(|window, cx| {
                 assert!(view.read(cx).menu.page.is_none());
@@ -280,9 +286,15 @@ impl HerdrWindow {
                             .flex_none()
                             .rounded_full()
                             .overflow_hidden()
+                            // Round the image itself: GPUI 0.2.2 clips overflow
+                            // to the box, not to its corner radii.
+                            .debug_selector(|| "github-avatar".into())
                             .child(match &profile.avatar {
-                                Some(image) => img(image.clone()).size_full().into_any_element(),
-                                None => img(crate::sidebar::GITHUB_ICON.clone())
+                                Some(image) => img(image.clone())
+                                    .size_full()
+                                    .rounded_full()
+                                    .into_any_element(),
+                                None => crate::sidebar::github_mark(theme.muted)
                                     .size_full()
                                     .into_any_element(),
                             }),
@@ -411,9 +423,9 @@ impl HerdrWindow {
                     .border_b_1()
                     .border_color(rgb(theme.active))
                     .child(
-                        img(crate::sidebar::GITHUB_ICON.clone())
-                            .size(px(28.))
-                            .flex_none(),
+                        crate::sidebar::github_mark(theme.foreground)
+                            .debug_selector(|| "github-mark".into())
+                            .size(px(28.)),
                     )
                     .child(
                         div().flex_1().min_w_0().child(

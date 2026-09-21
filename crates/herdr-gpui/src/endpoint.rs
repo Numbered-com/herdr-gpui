@@ -287,21 +287,6 @@ impl Catalog {
 }
 
 impl HerdrWindow {
-    pub(super) fn owns_paint(
-        &self,
-        epoch: u64,
-        generation: u64,
-        inbox: &Arc<Mutex<LiveState>>,
-    ) -> bool {
-        self.active
-            && self.selection_epoch == epoch
-            && self.endpoints[self.selected_endpoint].generation == generation
-            && Arc::ptr_eq(
-                &self.endpoints[self.selected_endpoint].connection.inbox,
-                inbox,
-            )
-    }
-
     pub(super) fn reconnect(&mut self) {
         let index = self.selected_endpoint;
         if !self.endpoints[index].enabled {
@@ -892,13 +877,23 @@ mod tests {
                 .clone();
             let epoch = view.selection_epoch;
             let generation = view.endpoints[0].generation;
-            assert!(view.owns_paint(epoch, generation, &painted));
+            // Selection epoch, connection generation and inbox identity together
+            // decide whether deferred work still belongs to the current endpoint.
+            let current = |view: &HerdrWindow| {
+                view.selection_epoch == epoch
+                    && view.endpoints[view.selected_endpoint].generation == generation
+                    && Arc::ptr_eq(
+                        &view.endpoints[view.selected_endpoint].connection.inbox,
+                        &painted,
+                    )
+            };
+            assert!(current(view));
             view.reconcile_catalog(vec![host("remote", true)], cx);
             for endpoint in &mut view.endpoints {
                 endpoint.detached = true;
             }
             view.select_endpoint("ssh:remote", cx);
-            assert!(!view.owns_paint(epoch, generation, &painted));
+            assert!(!current(view));
             view.pending_releases.push(Release {
                 inbox: view.endpoints[view.selected_endpoint]
                     .connection
@@ -911,7 +906,7 @@ mod tests {
             view.activation_deadline = Some(Instant::now());
             view.poll_endpoints(cx);
             assert_eq!(view.selected_endpoint, 0);
-            assert!(!view.owns_paint(epoch, generation, &painted));
+            assert!(!current(view));
             assert!(view.pending_releases.is_empty());
             assert!(view.local_error.as_ref().unwrap().contains("timed out"));
             view.select_endpoint("ssh:remote", cx);
