@@ -88,11 +88,30 @@ security find-identity -p codesigning "$keychain" 2>&1
 echo
 
 echo "=============== codesign a stub (line 75 equivalent) ==============="
-cp /bin/echo "$tmp/stub"
+echo "--- CASE A: signing keychain NOT in the search list (current behaviour) ---"
+security list-keychains -d user
+cp /bin/echo "$tmp/stubA"
 codesign --force --sign "${MACOS_SIGNING_IDENTITY:-}" --keychain "$keychain" \
-    --options runtime --timestamp "$tmp/stub" 2>"$tmp/e"
-report $? "codesign stub with --keychain" "$(cat "$tmp/e")"
-codesign --verify --strict --verbose=2 "$tmp/stub" 2>"$tmp/e"
-report $? "codesign --verify stub" "$(cat "$tmp/e")"
+    --options runtime --timestamp "$tmp/stubA" 2>"$tmp/e"
+report $? "CASE A codesign with --keychain only" "$(cat "$tmp/e")"
+
+echo "--- CASE B: signing keychain ADDED to the search list (proposed fix) ---"
+if [[ ${#original_keychains[@]} -gt 0 ]]; then
+    security list-keychains -d user -s "${original_keychains[@]}" "$keychain"
+else
+    security list-keychains -d user -s "$keychain"
+fi
+security list-keychains -d user
+cp /bin/echo "$tmp/stubB"
+codesign --force --sign "${MACOS_SIGNING_IDENTITY:-}" --keychain "$keychain" \
+    --options runtime --timestamp "$tmp/stubB" 2>"$tmp/e"
+report $? "CASE B codesign with keychain in search list" "$(cat "$tmp/e")"
+codesign --verify --strict --verbose=2 "$tmp/stubB" 2>"$tmp/e"
+report $? "CASE B codesign --verify" "$(cat "$tmp/e")"
+
+# Leave the runner's search list as we found it.
+if [[ ${#original_keychains[@]} -gt 0 ]]; then
+    security list-keychains -d user -s "${original_keychains[@]}"
+fi
 echo
 echo "=============== done ==============="
