@@ -159,9 +159,14 @@ impl HerdrWindow {
             } else {
                 &endpoint.collapsed_repos
             };
-            for (index, indented, group) in
-                visible_workspace_entries(&snapshot.workspaces, collapsed_repos)
-            {
+            let entries = visible_workspace_entries(&snapshot.workspaces, collapsed_repos);
+            // A child closes the group when no child follows it.
+            let closes: Vec<bool> = (0..entries.len())
+                .map(|position| {
+                    entries[position].1 && !entries.get(position + 1).is_some_and(|next| next.1)
+                })
+                .collect();
+            for (position, (index, indented, group)) in entries.into_iter().enumerate() {
                 if multi && endpoint.collapsed {
                     break;
                 }
@@ -176,6 +181,11 @@ impl HerdrWindow {
                 let navigate_endpoint = endpoint_id.clone();
                 let collapse_endpoint = endpoint_id.clone();
                 let reserve_arrow = group.is_some() || indented;
+                let tree = match (indented, closes[position]) {
+                    (false, _) => RowTree::None,
+                    (true, false) => RowTree::Child,
+                    (true, true) => RowTree::LastChild,
+                };
                 let arrow = group.map(|key| {
                     let collapsed = collapsed_repos.contains(&key);
                     div()
@@ -213,7 +223,7 @@ impl HerdrWindow {
                         first_text([workspace.branch.as_deref()], ""),
                         workspace.agent_status,
                         selected && workspace.focused,
-                        indented,
+                        tree,
                         reserve_arrow,
                         width,
                         (!indented).then(|| {
@@ -271,7 +281,7 @@ impl HerdrWindow {
                         &detail,
                         agent.agent_status,
                         selected && agent.focused,
-                        false,
+                        RowTree::None,
                         false,
                         width,
                         None,
@@ -480,6 +490,15 @@ fn header(label: &'static str, font: &FontConfig, theme: &Theme) -> Div {
         .child(label)
 }
 
+/// Where a row sits in its worktree group, which decides whether the gutter
+/// carries a trunk through the row or ends in an elbow.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowTree {
+    None,
+    Child,
+    LastChild,
+}
+
 /// Cached pull request state for a worktree row: the number carries the
 /// lifecycle color, the counts sit under it.
 struct PrBadge {
@@ -527,7 +546,7 @@ fn row(
     detail: &str,
     status: AgentStatus,
     focused: bool,
-    indented: bool,
+    tree: RowTree,
     reserve_arrow: bool,
     width: f32,
     workspace_icon: Option<Arc<Image>>,
@@ -541,7 +560,13 @@ fn row(
     } else {
         0.
     };
-    let indent = if indented { CHILD_INDENT } else { 0. };
+    let indent = if tree == RowTree::None {
+        0.
+    } else {
+        CHILD_INDENT
+    };
+    // Tick and trunk meet on the first text line, level with the status dot.
+    let tick = 4. + line_height(font) / 2.;
     let pr_reserve = pr
         .as_ref()
         .map(|badge| badge.width(font) + LABEL_GAP)
@@ -563,6 +588,7 @@ fn row(
         .w_full()
         .min_w_0()
         .flex_none()
+        .relative()
         .pl(px(ROW_PADDING + indent))
         .pr(px(ROW_PADDING))
         .flex()
@@ -572,6 +598,35 @@ fn row(
         .cursor_pointer()
         .when(focused, |s| s.bg(rgb(theme.active)))
         .hover(|s| s.bg(rgb(theme.active)))
+        // Tree lines run in the indent the row already reserves, so a child is
+        // tied to its parent without box-drawing glyphs in the label.
+        .when(tree != RowTree::None, |row| {
+            row.child(
+                div()
+                    .debug_selector(|| format!("tree-{name}"))
+                    .absolute()
+                    .left(px(ROW_PADDING + CHILD_INDENT / 2.))
+                    .top_0()
+                    .w(px(CHILD_INDENT / 2.))
+                    .h(px(tick))
+                    .border_l_1()
+                    .border_b_1()
+                    .border_color(rgb(theme.muted)),
+            )
+        })
+        .when(tree == RowTree::Child, |row| {
+            row.child(
+                div()
+                    .debug_selector(|| format!("trunk-{name}"))
+                    .absolute()
+                    .left(px(ROW_PADDING + CHILD_INDENT / 2.))
+                    .top(px(tick))
+                    .bottom_0()
+                    .w(px(0.))
+                    .border_l_1()
+                    .border_color(rgb(theme.muted)),
+            )
+        })
         .child(status_indicator(status, font))
         .child(
             div()

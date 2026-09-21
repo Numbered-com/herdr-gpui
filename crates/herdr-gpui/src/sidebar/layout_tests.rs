@@ -1673,3 +1673,72 @@ fn the_workspace_menu_folds_and_unfolds_a_worktree_group(cx: &mut gpui::TestAppC
         });
     }
 }
+
+#[gpui::test]
+fn child_rows_are_tied_to_their_parent_with_gutter_lines(cx: &mut gpui::TestAppContext) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| fixture_window(window, cx));
+        cx.observe(&view, |_, _, cx| cx.notify()).detach();
+        SidebarFixture(view)
+    });
+    let view = cx.update(|_, cx| fixture.read(cx).0.clone());
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear());
+    let parent = cx.debug_bounds("row-agent-launcher").unwrap();
+    for (name, row_id, tree_id, column_id, trunk_id, trunk) in [
+        (
+            "sidebar-child",
+            "row-sidebar-child",
+            "tree-sidebar-child",
+            "column-sidebar-child",
+            "trunk-sidebar-child",
+            true,
+        ),
+        (
+            "last child",
+            "row-sidebar-child-with-a-long-readable-branch-name",
+            "tree-sidebar-child-with-a-long-readable-branch-name",
+            "column-sidebar-child-with-a-long-readable-branch-name",
+            "trunk-sidebar-child-with-a-long-readable-branch-name",
+            false,
+        ),
+    ] {
+        let row = cx.debug_bounds(row_id).unwrap();
+        let elbow = cx.debug_bounds(tree_id).unwrap();
+        let column = cx.debug_bounds(column_id).unwrap();
+        // The elbow hangs from the row's top edge and turns in level with the
+        // status dot, inside the indent the child already reserves.
+        assert_eq!(elbow.top(), row.top(), "{name}");
+        assert_eq!(elbow.bottom(), row.top() + px(12.), "{name}");
+        assert!(elbow.left() > parent.left(), "{name}");
+        assert!(elbow.right() <= column.left(), "{name}");
+        // Only a row with a sibling below it carries the trunk onward.
+        match cx.debug_bounds(trunk_id) {
+            Some(bounds) => {
+                assert!(trunk, "{name} closes the group but drew a trunk");
+                assert_eq!(bounds.top(), elbow.bottom(), "{name}");
+                assert_eq!(bounds.bottom(), row.bottom(), "{name}");
+                assert_eq!(bounds.left(), elbow.left(), "{name}");
+            }
+            None => assert!(!trunk, "{name} has a sibling below but no trunk"),
+        }
+    }
+    // Parents and ungrouped workspaces keep a clean gutter.
+    assert!(cx.debug_bounds("tree-agent-launcher").is_none());
+    assert!(cx.debug_bounds("tree-herdr").is_none());
+    // Folding the group takes its children and their lines away.
+    cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            view.collapsed_repos
+                .insert("/fixture/agent-launcher/.git".into());
+            cx.notify();
+        })
+    });
+    cx.update(|window, cx| {
+        cx.default_global::<TextProbes>().0.clear();
+        window.refresh();
+        window.draw(cx).clear();
+        assert!(!cx.global::<TextProbes>().0.contains_key("sidebar-child"));
+    });
+}
