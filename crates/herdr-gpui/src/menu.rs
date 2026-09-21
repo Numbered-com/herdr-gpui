@@ -228,10 +228,11 @@ struct Deletion {
 }
 
 impl Deletion {
-    fn confirmed(&self, text: &str) -> bool {
-        self.pending.is_none()
-            && self.path.is_some()
-            && text == if self.force { "FORCE DELETE" } else { "DELETE" }
+    /// Confirming is a single keypress, so the dialog may only submit once the
+    /// daemon has named the checkout and no earlier request is still in flight.
+    /// A force escalation re-arms the same confirmation rather than adding one.
+    fn ready(&self) -> bool {
+        self.pending.is_none() && self.path.is_some()
     }
 }
 
@@ -267,7 +268,6 @@ impl MenuState {
                 && error["code"] == "dirty_worktree_requires_force"
             {
                 deletion.force = true;
-                self.input = Some(DialogInput::default());
             }
             return;
         }
@@ -579,8 +579,7 @@ impl HerdrWindow {
         self.menu.input = match action {
             WorkspaceAction::Rename => Some(DialogInput::new(target.label.clone())),
             WorkspaceAction::NewWorktree => Some(DialogInput::default()),
-            WorkspaceAction::Close => None,
-            WorkspaceAction::DeleteWorktree => Some(DialogInput::default()),
+            WorkspaceAction::Close | WorkspaceAction::DeleteWorktree => None,
         };
         self.menu.page = Some(Page::Dialog(action));
         self.menu.pr.clear();
@@ -693,16 +692,8 @@ impl HerdrWindow {
                 if deletion.pending.is_some() {
                     return Ok(false);
                 }
-                if deletion.path.is_none() {
+                if !deletion.ready() {
                     return Err(crate::Error::DeletionLookup);
-                }
-                let confirmation = if deletion.force {
-                    "FORCE DELETE"
-                } else {
-                    "DELETE"
-                };
-                if !deletion.confirmed(text) {
-                    return Err(crate::Error::DeletionConfirmation(confirmation));
                 }
                 params["force"] = deletion.force.into();
                 let id = self.endpoints[self.selected_endpoint]
@@ -1042,9 +1033,18 @@ impl HerdrWindow {
                     WorkspaceAction::NewWorktree => ("New worktree", "Branch (optional). Blank uses the daemon default. Base: HEAD. Repository trust is not granted.".to_owned(), "Create"),
                     WorkspaceAction::DeleteWorktree => {
                         let deletion = self.menu.deletion.as_ref();
-                        let path = deletion.and_then(|d| d.path.as_deref()).unwrap_or("Waiting for daemon checkout lookup...");
+                        let path = deletion.and_then(|d| d.path.as_deref()).unwrap_or("Waiting for the daemon to name the checkout...");
                         let force = deletion.is_some_and(|d| d.force);
-                        ("Delete worktree checkout", format!("Checkout: {path}\n\nDeletes checkout files and closes its workspace and terminals. Branches are preserved. The daemon does not check for unpushed commits. Detached commits may become unreachable.\n\n{}\n\n{}", if force { "WARNING: Force deletion discards modified and untracked files, including submodule contents. Type FORCE DELETE to confirm." } else { "Git may reject modified/untracked files or submodules. Ignored files are not protected. Type DELETE to confirm." }, if deletion.is_some_and(|d| d.pending.is_some()) { "Waiting for daemon. Dismissing does not cancel a queued operation." } else { "" }), if force { "Force delete" } else { "Delete checkout" })
+                        let mut detail = if force {
+                            format!("This force removes the checkout folder:\n{path}\nModified and untracked files, including submodule contents, are discarded. The branch is not deleted. The Herdr workspace will close.")
+                        } else {
+                            format!("This removes the checkout folder:\n{path}\nThe branch is not deleted. The Herdr workspace will close.")
+                        };
+                        if deletion.is_some_and(|d| d.pending.is_some() && d.path.is_some()) {
+                            // Dismissing only closes the panel; the daemon keeps the queued removal.
+                            detail.push_str("\nWaiting for the daemon. Dismissing does not cancel it.");
+                        }
+                        ("Delete worktree checkout?", detail, if force { "Force remove" } else { "Remove" })
                     }
                 };
                 panel = panel
@@ -1392,7 +1392,6 @@ pub(crate) mod workspace_tests {
         view.menu.target = Some(target);
         view.menu.page = Some(super::Page::Dialog(action));
         if action == WorkspaceAction::DeleteWorktree {
-            view.menu.input = Some(super::DialogInput::new("DELETE".into()));
             view.menu.deletion = Some(super::Deletion {
                 pending: None,
                 path: Some("/fixture/checkout".into()),
@@ -1761,18 +1760,16 @@ pub(crate) mod workspace_tests {
             menu.apply_deletion_response("list", Ok(lookup));
             let deletion = menu.deletion.as_mut().unwrap();
             assert_eq!(deletion.path.as_deref(), Some("/daemon/checkout"));
-            for text in ["", "delete", " DELETE", "FORCE DELETE"] { assert!(!deletion.confirmed(text)); }
-            assert!(deletion.confirmed("DELETE"));
+            assert!(deletion.ready());
             deletion.pending = Some("remove".into());
-            assert!(!deletion.confirmed("DELETE"));
-            menu.input = Some(super::DialogInput::new("DELETE".into()));
+            assert!(!deletion.ready());
             menu.apply_deletion_response("remove", Ok(serde_json::json!({"error":{"code":"dirty_worktree_requires_force", "message":"modified or untracked files"}})));
             assert!(menu.error.as_ref().unwrap().contains("modified or untracked files"));
-            assert_eq!(menu.input.as_ref().unwrap().text, "");
+            // The escalation re-arms the same single confirmation; no text field appears.
+            assert!(menu.input.is_none());
             let deletion = menu.deletion.as_mut().unwrap();
             assert!(deletion.force);
-            assert!(!deletion.confirmed("DELETE"));
-            assert!(deletion.confirmed("FORCE DELETE"));
+            assert!(deletion.ready());
             deletion.pending = Some("forced".into());
             menu.apply_deletion_response("forced", Err(std::sync::Arc::new(crate::Error::Client(herdr_client::Error::UnsupportedMethod))));
             assert_eq!(menu.error.as_deref(), Some("method not advertised by endpoint"));
@@ -1785,6 +1782,32 @@ pub(crate) mod workspace_tests {
             assert!(menu.deletion.is_none());
             assert!(menu.error.is_none());
         });
+    }
+
+    /// The confirmation matches the Herdr TUI: one modal, no typed phrase. The
+    /// queued removal itself is exercised by the connected endpoint fixture.
+    #[gpui::test]
+    fn deletion_dialog_confirms_without_a_text_field(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(sidebar::layout_tests::fixture_window);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.live.status = crate::state::ConnectionStatus::Connected;
+                view.open_workspace_menu("w4", Default::default(), window, cx);
+                view.open_workspace_dialog(WorkspaceAction::DeleteWorktree, cx);
+                assert!(view.menu.input.is_none());
+                view.menu.error = None;
+                view.menu.deletion = Some(super::Deletion {
+                    pending: None,
+                    path: Some("/daemon/checkout".into()),
+                    force: false,
+                });
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("dialog-input").is_none());
+        assert!(cx.debug_bounds("dialog-submit").is_some());
+        assert!(cx.debug_bounds("dialog-error").is_none());
     }
 
     #[gpui::test]
@@ -1805,7 +1828,7 @@ pub(crate) mod workspace_tests {
                 assert!(menu.error.is_some());
                 let deletion = menu.deletion.as_ref().unwrap();
                 assert!(!deletion.force);
-                assert!(!deletion.confirmed("DELETE"));
+                assert!(!deletion.ready());
             }
         });
     }
