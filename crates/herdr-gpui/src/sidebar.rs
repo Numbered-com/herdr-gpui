@@ -357,6 +357,8 @@ impl HerdrWindow {
                             .px(px(12.))
                             .flex()
                             .items_center()
+                            // Menu hugs the sidebar's edge, as in the terminal client.
+                            .justify_between()
                             .text_color(rgb(theme.muted))
                             .gap(px(20.))
                             .child(
@@ -565,8 +567,11 @@ fn row(
     } else {
         CHILD_INDENT
     };
-    // Tick and trunk meet on the first text line, level with the status dot.
-    let tick = 4. + line_height(font) / 2.;
+    // Borders paint inside their box, so offset by half a pixel to put the line
+    // itself, not the box edge, on the parent's dot column and the child's dot
+    // row: the trunk drops from x, the tick arrives at the dot's vertical middle.
+    let trunk_x = ROW_PADDING + STATUS_WIDTH / 2. - 0.5;
+    let tick_y = 4. + line_height(font) / 2. + 0.5;
     let pr_reserve = pr
         .as_ref()
         .map(|badge| badge.width(font) + LABEL_GAP)
@@ -605,10 +610,11 @@ fn row(
                 div()
                     .debug_selector(|| format!("tree-{name}"))
                     .absolute()
-                    .left(px(ROW_PADDING + CHILD_INDENT / 2.))
+                    .left(px(trunk_x))
                     .top_0()
-                    .w(px(CHILD_INDENT / 2.))
-                    .h(px(tick))
+                    // Ends on the dot's leading edge, where the indent runs out.
+                    .w(px(ROW_PADDING + CHILD_INDENT - trunk_x))
+                    .h(px(tick_y))
                     .border_l_1()
                     .border_b_1()
                     .border_color(rgb(theme.muted)),
@@ -619,10 +625,10 @@ fn row(
                 div()
                     .debug_selector(|| format!("trunk-{name}"))
                     .absolute()
-                    .left(px(ROW_PADDING + CHILD_INDENT / 2.))
-                    .top(px(tick))
+                    .left(px(trunk_x))
+                    .top(px(tick_y))
                     .bottom_0()
-                    .w(px(0.))
+                    .w(px(1.))
                     .border_l_1()
                     .border_color(rgb(theme.muted)),
             )

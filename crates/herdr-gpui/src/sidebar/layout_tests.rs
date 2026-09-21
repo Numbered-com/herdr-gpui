@@ -1707,11 +1707,13 @@ fn child_rows_are_tied_to_their_parent_with_gutter_lines(cx: &mut gpui::TestAppC
         let row = cx.debug_bounds(row_id).unwrap();
         let elbow = cx.debug_bounds(tree_id).unwrap();
         let column = cx.debug_bounds(column_id).unwrap();
-        // The elbow hangs from the row's top edge and turns in level with the
-        // status dot, inside the indent the child already reserves.
+        // The elbow hangs from the row's top edge and turns in on the status
+        // dot's middle row, its trunk on the parent dot's own column: the line
+        // centers, not the box edges, are what must land on those pixels.
         assert_eq!(elbow.top(), row.top(), "{name}");
-        assert_eq!(elbow.bottom(), row.top() + px(12.), "{name}");
-        assert!(elbow.left() > parent.left(), "{name}");
+        assert_eq!(elbow.bottom() - px(0.5), row.top() + px(12.), "{name}");
+        assert_eq!(elbow.left() + px(0.5), parent.left() + px(16.), "{name}");
+        assert_eq!(elbow.right(), row.left() + px(28.), "{name}");
         assert!(elbow.right() <= column.left(), "{name}");
         // Only a row with a sibling below it carries the trunk onward.
         match cx.debug_bounds(trunk_id) {
@@ -1724,6 +1726,12 @@ fn child_rows_are_tied_to_their_parent_with_gutter_lines(cx: &mut gpui::TestAppC
             None => assert!(!trunk, "{name} has a sibling below but no trunk"),
         }
     }
+    // The footer's menu hugs the sidebar edge; new stays at the leading one.
+    let sidebar = cx.debug_bounds("sidebar").unwrap();
+    let menu = cx.debug_bounds("sidebar-menu").unwrap();
+    // Twelve pixels of padding inside the sidebar's one-pixel divider.
+    assert_eq!(menu.right(), sidebar.right() - px(13.));
+    assert!(menu.left() > sidebar.center().x);
     // Parents and ungrouped workspaces keep a clean gutter.
     assert!(cx.debug_bounds("tree-agent-launcher").is_none());
     assert!(cx.debug_bounds("tree-herdr").is_none());
