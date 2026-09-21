@@ -27,6 +27,30 @@ ignore = [
     { id = "RUSTSEC-2025-0141", reason = "bincode 2 is the daemon wire format; unmaintained, not vulnerable" },
 ]
 
+# GHSA-38c5-483c-4qqp / CVE-2026-42199: integer overflow in grid's
+# `Grid::expand_rows` can desynchronise logical dimensions from the backing
+# `Vec`, after which the safe `get()` reaches `get_unchecked()` with an invalid
+# index. Affects grid >= 0.17.0, <= 1.0.0; fixed in 1.0.1.
+#
+# Not ignored here, because RustSec has not filed it and `cargo deny check
+# advisories` does not flag it. Recorded so the GitHub Dependabot alert has a
+# tracked rationale in-tree.
+#
+# No upgrade path exists from this workspace:
+#   herdr-gpui -> gpui =0.2.2 -> taffy =0.9.0 -> grid ^0.18.0
+# gpui 0.2.2 is the newest release and pins taffy to an exact version; taffy
+# only moved to grid ^1.0.0 in 0.9.2. `cargo update -p grid --precise 1.0.1`
+# therefore fails, and `[patch.crates-io]` cannot help because no taffy source
+# revision carries both version 0.9.0 and the grid 1.0 requirement.
+#
+# The vulnerable code is also unreachable. taffy 0.9.0 uses the grid crate from
+# exactly one module, `src/compute/grid/types/cell_occupancy.rs`, and calls only
+# `Grid::new`, `Grid::from_vec`, `get`, `get_mut`, `iter_row`, `iter_col`,
+# `rows`, and `cols`. It never calls `expand_rows` or any other resizing API, so
+# the overflowing length computation is never executed.
+#
+# Revisit when gpui ships a release that depends on taffy >= 0.9.2.
+
 [licenses]
 version = 2
 confidence-threshold = 0.9
