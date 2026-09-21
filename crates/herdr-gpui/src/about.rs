@@ -57,7 +57,7 @@ impl HerdrWindow {
                 div()
                     .debug_selector(|| "about-version".into())
                     .text_color(muted)
-                    .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+                    .child(format!("Version {}", crate::APP_VERSION)),
             )
             .child(
                 div()

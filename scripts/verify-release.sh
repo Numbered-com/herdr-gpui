@@ -65,9 +65,7 @@ if [[ -n $gpg_key ]]; then
     mkdir -m 700 "$tmp/keyring"
     gpg --homedir "$tmp/keyring" --batch --import "$gpg_key"
 fi
-for name in "Herdr-$version-universal-apple-darwin.dmg" \
-    "Herdr-$version-x86_64-unknown-linux-gnu.tar.gz" \
-    "Herdr-$version-aarch64-unknown-linux-gnu.tar.gz" "Herdr-$version.cdx.json"; do
+while IFS= read -r name; do
     file=$tmp/assets-to-check/$name
     cosign verify-blob --signature "$file.sig" --certificate "$file.crt" \
         --certificate-identity "$identity" \
@@ -90,5 +88,5 @@ for name in "Herdr-$version-universal-apple-darwin.dmg" \
             END { exit !(count == 1 && valid == 1) }
         ' "$tmp/gpg-status"
     fi
-done
+done < <(python3 "$scripts/release/artifact-manifest.py" base-names "$version" "$directory")
 echo "Verified v$version at $sha (checksums, Sigstore, provenance)."

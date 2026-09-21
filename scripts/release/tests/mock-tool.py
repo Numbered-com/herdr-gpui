@@ -46,6 +46,12 @@ elif tool == "ditto":
         shutil.copytree(args[0], args[1])
 elif tool == "xcrun" and args[:2] == ["notarytool", "submit"]:
     print(os.environ.get("MOCK_NOTARY_JSON", '{"status":"Accepted"}'))
+elif tool == "xcrun" and args[:2] == ["stapler", "staple"] and Path(args[-1]).is_dir():
+    (Path(args[-1]) / "Contents/CodeResources").write_bytes(b"mock stapled ticket")
+elif tool == "codesign" and args[0] == "--force" and Path(args[-1]).is_dir():
+    signature = Path(args[-1]) / "Contents/_CodeSignature"
+    signature.mkdir()
+    (signature / "CodeResources").write_bytes(b"mock code signature")
 elif tool == "hdiutil":
     image = Path(args[args.index("-srcfolder") + 1])
     assert (image / "Applications").is_symlink()

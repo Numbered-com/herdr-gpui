@@ -34,6 +34,8 @@ mod terminal;
 mod terminal_painter;
 mod theme_picker;
 mod titlebar;
+mod update_panel;
+mod updater;
 mod worktree_banner;
 
 use connection::ConnectionBridge;
@@ -46,7 +48,22 @@ use std::sync::Arc;
 use std::time::Duration;
 use terminal::*;
 
-actions!(herdr, [Quit, ShowHerdrNotDetected, ShowLogs]);
+// Release builds embed the same tag used for the bundle and downloadable artifacts.
+const APP_VERSION: &str = match option_env!("HERDR_RELEASE_VERSION") {
+    Some(version) => version,
+    None => concat!("v", env!("CARGO_PKG_VERSION")),
+};
+
+actions!(
+    herdr,
+    [
+        Quit,
+        ShowHerdrNotDetected,
+        ShowLogs,
+        CheckForUpdates,
+        ShowUpdatePreview
+    ]
+);
 
 #[derive(Clone, PartialEq, serde::Deserialize, Action)]
 #[action(no_json)]
@@ -100,6 +117,8 @@ impl<T: AsRef<str>> NavigationTarget<T> {
 }
 
 struct HerdrWindow {
+    updater: updater::Updater,
+    update_preview: Option<updater::State>,
     config: config::Config,
     theme: config::Theme,
     config_load: Option<Task<()>>,
@@ -161,6 +180,17 @@ impl HerdrWindow {
                 timer.timer(Duration::from_millis(16)).await;
                 if this
                     .update_in(cx, |this, window, cx| {
+                        if this.updater.poll() {
+                            match this.updater.commit_restart() {
+                                Ok(true) => {
+                                    cx.quit();
+                                    return;
+                                }
+                                Ok(false) => {}
+                                Err(error) => eprintln!("App update restart failed: {error}"),
+                            }
+                            cx.notify();
+                        }
                         if this.avatars.as_mut().is_some_and(|avatars| avatars.poll()) {
                             cx.notify();
                         }
@@ -205,6 +235,8 @@ impl HerdrWindow {
             }
         });
         let mut this = Self {
+            updater: updater::Updater::default(),
+            update_preview: None,
             config: config::Config::default(),
             theme: config::Theme::default(),
             config_load: None,
@@ -826,6 +858,13 @@ impl Render for HerdrWindow {
             .on_action(cx.listener(|this, _: &ShowHerdrNotDetected, window, cx| {
                 this.show_install_modal(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &CheckForUpdates, window, cx| {
+                this.open_app_update(false, window, cx);
+                this.updater.check();
+            }))
+            .on_action(cx.listener(|this, _: &ShowUpdatePreview, window, cx| {
+                this.open_app_update(true, window, cx);
+            }))
             .size_full()
             .relative()
             .flex()
@@ -1004,10 +1043,29 @@ impl Render for HerdrWindow {
                             )
                             .child("Report issue")
                             .on_click(|_, _, cx| {
-                                cx.open_url(
-                                    "https://github.com/penso/herdr-gpui/issues/new/choose",
-                                );
+                                cx.open_url(&format!(
+                                    "https://github.com/penso/herdr-gpui/issues/new?template=bug_report.yml&version={}",
+                                    APP_VERSION.replace('+', "%2B"),
+                                ));
                             }),
+                    )
+                    .child(
+                        div()
+                            .id("status-version")
+                            .debug_selector(|| "status-version".into())
+                            .flex_none()
+                            .whitespace_nowrap()
+                            .text_color(rgb(self.theme.muted))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgb(self.theme.active)))
+                            .child(if matches!(self.updater.state(), updater::State::Available { .. } | updater::State::Ready { .. }) {
+                                "Update available"
+                            } else {
+                                APP_VERSION
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_app_update(false, window, cx);
+                            })),
                     ),
             )
             .when(self.menu.page.is_some(), |root| {
@@ -1047,6 +1105,7 @@ fn menus() -> Vec<Menu> {
                         command: Command::Keybinds,
                     },
                 ),
+                MenuItem::action("Check for Updates...", CheckForUpdates),
                 MenuItem::separator(),
                 MenuItem::action("Quit Herdr", Quit),
             ],
@@ -1142,10 +1201,10 @@ fn menus() -> Vec<Menu> {
         },
         Menu {
             name: "QA".into(),
-            items: vec![MenuItem::action(
-                "Show herdr non-detected modal",
-                ShowHerdrNotDetected,
-            )],
+            items: vec![
+                MenuItem::action("Show herdr non-detected modal", ShowHerdrNotDetected),
+                MenuItem::action("Show app update available", ShowUpdatePreview),
+            ],
         },
     ]
 }
@@ -1165,7 +1224,11 @@ fn main() -> std::process::ExitCode {
 
 fn run() -> std::process::ExitCode {
     use cli::{LaunchMode, LaunchOptions};
-    let LaunchOptions { target, mode } = match LaunchOptions::parse(std::env::args_os().skip(1)) {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if let Some(exit) = updater::run_helper(&args) {
+        return exit;
+    }
+    let LaunchOptions { target, mode } = match LaunchOptions::parse(args) {
         Ok(options) => options,
         Err(error) => {
             eprintln!(
@@ -1207,7 +1270,7 @@ fn run() -> std::process::ExitCode {
         return std::process::ExitCode::FAILURE;
     }
     tracing::info!(
-        version = env!("CARGO_PKG_VERSION"),
+        version = APP_VERSION,
         os = std::env::consts::OS,
         arch = std::env::consts::ARCH,
         "GPUI client starting"
@@ -1240,7 +1303,7 @@ fn run() -> std::process::ExitCode {
             },
             |window, cx| {
                 cx.new(|cx| {
-                    HerdrWindow::new(
+                    let mut view = HerdrWindow::new(
                         target,
                         window,
                         cx,
@@ -1248,7 +1311,12 @@ fn run() -> std::process::ExitCode {
                         {
                             sidebar_test || performance_test
                         },
-                    )
+                    );
+                    // Native test modes and CLI invocations never start an updater worker.
+                    if mode == LaunchMode::Normal {
+                        view.updater = updater::Updater::start();
+                    }
+                    view
                 })
             },
         );

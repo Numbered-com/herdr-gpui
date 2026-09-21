@@ -100,6 +100,11 @@ stapled and validated. The DMG contains `Herdr.app` and an `/Applications` symli
 it is signed, separately notarized, stapled, and checked with codesign and
 Gatekeeper before publishing the local output filename:
 `Herdr-VERSION-universal-apple-darwin.dmg`. Any failed operation aborts.
+The signer also emits `herdr-gpui-VERSION-macos-universal.app.tar.gz` using the
+updater's bounded USTAR packager. It archives the complete **signed, stapled copy**
+used for the DMG, including signature, ticket, resources and notices, before the
+temporary directory is removed. The caller's unsigned app is never repackaged
+as an update. Existing DMG or updater outputs are refused before loading credentials.
 
 Linux targets are `x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-gnu`.
 The release workflow builds both natively on Ubuntu 24.04 architecture runners,
@@ -112,6 +117,35 @@ or resolve shared libraries. Output is `Herdr-VERSION-TARGET.tar.gz`, with a
 same-named root containing `bin/herdr-gpui`, a PNG icon, desktop entry, license and
 notice under `share/`. Install that tree into a chosen prefix with its `bin` on
 PATH. Archives are not promised to be bit-for-bit reproducible.
+
+The workflow separately packages `herdr-gpui-VERSION-TARGET-update.tar.gz` with
+`scripts/update-manifest.py package-linux`. This bounded USTAR contains exactly
+one regular executable named `herdr-gpui-VERSION-TARGET`, mode 0755; it does not
+replace or alter the manual archive's desktop/icon/license tree. Both native
+Linux builds and both macOS builds embed `HERDR_UPDATE_PUBLIC_KEY` and the
+validated `HERDR_RELEASE_VERSION` before packaging.
+
+## Updater Signing
+
+Configure `HERDR_UPDATE_PUBLIC_KEY` as a repository Actions variable (64 lowercase
+hex characters). Store the Ed25519 PEM `HERDR_UPDATE_SIGNING_KEY` only in the
+protected `release` environment, not in repository secrets. Only the manifest
+signing step of `sign` receives it; builds, tests, metadata, OIDC and publication
+never do. The public key is validated before builds and matched against the
+private key before signing exact JSON bytes. See [updater setup](../../docs/updating.md).
+
+The exact release base set is nine files: the DMG, two manual Linux archives,
+SBOM, three updater archives, `update-manifest.json`, and its raw 64-byte Ed25519
+`update-manifest.sig`. All nine receive checksum and Sigstore sidecars and GitHub
+provenance in the separate protected OIDC job. The raw signature is not overwritten:
+its Sigstore sidecar is `update-manifest.sig.sig`; the JSON's is
+`update-manifest.json.sig`. `SHA256SUMS` covers all 45 base/sidecar files; the
+immutable release has exactly 46 assets. Missing or additional files fail closed.
+`artifact-manifest.py base-names VERSION DIRECTORY` lists the nine base names.
+The publication job verifies downloaded draft bytes and the complete exact asset
+set before making it public; Homebrew still verifies and uses only the final DMG.
+
+## Homebrew
 
 `homebrew/Casks/herdr-gpui.rb` is deliberately a template, not an installable
 unverified release. Render with the final stapled DMG's SHA-256 (64 hex digits).
@@ -212,12 +246,16 @@ signing prerequisites above. Install both targets explicitly first:
 
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
+# Public key only, obtained from the reviewed repository Actions variable:
+export HERDR_UPDATE_PUBLIC_KEY=YOUR_64_LOWERCASE_HEX_PUBLIC_KEY
 just dmg 0.1.0
 ```
 
 The version must match the `herdr-gpui` manifest version inherited from
 `[workspace.package].version`. Builds use `--locked`, `--target-dir target`, and
-`MACOSX_DEPLOYMENT_TARGET=15.0`. All six signing variables listed above are removed
+`MACOSX_DEPLOYMENT_TARGET=15.0` and `HERDR_RELEASE_VERSION=VERSION` on both targets.
+The caller must supply a valid `HERDR_UPDATE_PUBLIC_KEY` before building. All six
+Apple signing variables listed above and `HERDR_UPDATE_SIGNING_KEY` are removed
 from Cargo's environment, including metadata queries. No local `.envrc` is sourced
 until both builds and unsigned assembly succeed.
 Host build dependencies use `CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP=none`:
@@ -242,7 +280,10 @@ helper.
 
 Output is an unsigned assembly at `target/distribution/VERSION/Herdr.app` and the
 signed, notarized
-`Herdr-VERSION-universal-apple-darwin.dmg` in the same directory. An existing version
+`Herdr-VERSION-universal-apple-darwin.dmg` and
+`herdr-gpui-VERSION-macos-universal.app.tar.gz` in the same directory when using
+`sign-macos.sh`. Local packaging does not sign an Ed25519 update manifest or
+publish anything. An existing version
 directory (including a symlink) is refused before building and checked again before
 promotion. Notices, assembly, and signing use a temporary directory under
 `target/distribution`, cleaned on failure so the command can be retried directly.
@@ -255,6 +296,11 @@ printed on stdout after promotion. Existing version artifacts are never overwrit
 ```sh
 for script in scripts/release/*.sh; do bash -n "$script" || exit; done
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/release/tests -v
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/release/test-release-security.py
+OPENSSL="$(brew --prefix openssl@3)/bin/openssl" \
+  python3 -m unittest discover -s scripts -p 'test_update_manifest.py' -v
+actionlint .github/workflows/release.yml
+zizmor --offline .github/workflows/release.yml
 ```
 
 Tests run on macOS and Linux with Python 3, Git and `jq`. They use dummy credentials

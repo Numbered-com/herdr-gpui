@@ -48,8 +48,10 @@ open a normal issue for those rather than a private advisory.
 
 ## Verifying a Release
 
-Each base artifact (universal DMG, experimental x86_64 and ARM64 Linux archives,
-and CycloneDX SBOM) has checksums, a Sigstore signature/certificate, and GitHub provenance.
+Each of the nine base artifacts (universal DMG, experimental x86_64 and ARM64
+manual Linux archives, CycloneDX SBOM, three updater archives, updater manifest
+JSON, and its raw Ed25519 signature) has checksums, a Sigstore
+signature/certificate, and GitHub provenance.
 Checksums alone are not authentication:
 
 | Files | Claim |
@@ -77,11 +79,19 @@ than trusting the current tag mapping. These are manual **main-branch** runs;
 the certificate identity is not a tag ref. Verification requires network access
 to GitHub and Sigstore; no transparency-log checks are disabled.
 
-`SHA256SUMS` contains exactly 20 entries: the four base files and each file's
+`SHA256SUMS` contains exactly 45 entries: the nine base files and each file's
 `.sha256`, `.sha512`, `.sig`, and `.crt` sidecars. The immutable release has those
-20 files plus `SHA256SUMS`. Publication checks the complete set and downloaded
-draft bytes before making it public. Enable GitHub immutable releases before
+45 files plus `SHA256SUMS`, for 46 published assets. Publication checks the complete
+set and downloaded draft bytes before making it public. Enable GitHub immutable releases before
 dispatch; the workflow never replaces a tag, release, or published asset.
+
+The in-app updater separately authenticates `update-manifest.json` with the
+embedded Ed25519 public key and raw `update-manifest.sig`. Sigstore sidecars
+`update-manifest.json.sig` and `update-manifest.sig.sig` are separate signatures,
+not the updater's trust anchor. Linux manual `Herdr-VERSION-TARGET.tar.gz` archives
+include desktop files and notices; `herdr-gpui-VERSION-TARGET-update.tar.gz`
+contains only the replacement executable. See [App Updates](docs/updating.md)
+for key configuration, archive validation, and native QA requirements.
 
 ### Optional GPG Approval
 
@@ -129,9 +139,15 @@ for every base artifact, and checks the full actual signing fingerprint from
   component fields must match, including identities, hashes, and licenses.
   This is a Cargo dependency inventory, not an inventory
   of OS libraries or proof of exact linked code.
-- Apple secrets are signing-step-only; temporary keys and keychain are removed
-  before later steps. A separate owner-approved `release` environment job signs
-  with OIDC and attests the final bytes, with no Apple secrets or build execution.
+- Apple secrets are Apple-signing-step-only; temporary keys and keychain are removed
+  before later steps. `HERDR_UPDATE_SIGNING_KEY` is a protected `release`
+  environment secret exposed only to the manifest-signing step of `sign`, with
+  temporary-key cleanup. The required repository variable `HERDR_UPDATE_PUBLIC_KEY`
+  is format-validated before builds and embedded in both macOS and both Linux
+  architectures; signing verifies that the private key matches it.
+  A separate owner-approved `release` environment job signs with OIDC and attests
+  the final bytes, with no Apple secrets, updater private key, or build execution.
+  Private signing credentials are unavailable to tests, builds, metadata, or publication.
   Publication and Homebrew updates require protected environment approval too.
   These controls depend on configuring GitHub environment reviewers/branch rules;
   see [Release Operations](README.md#release-operations).

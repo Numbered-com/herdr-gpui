@@ -72,6 +72,14 @@ class ReleaseTests(unittest.TestCase):
                     self.assertEqual(archive.extractfile(base + "share/licenses/herdr-gpui/THIRD-PARTY-NOTICES.txt").read(), self.notices.read_bytes())
                     for source in ("LICENSE", "NOTICE", "assets/icons/LICENSE-octicons", "crates/herdr-protocol/NOTICE.md"):
                         self.assertEqual(archive.extractfile(base + "share/licenses/herdr-gpui/" + Path(source).name).read(), (ROOT / source).read_bytes())
+                # The updater ships the same binary, without changing the manual tree.
+                update = self.work / f"herdr-gpui-1.2.3-{target}-update.tar.gz"
+                subprocess.run(["python3", str(ROOT / "scripts/update-manifest.py"), "package-linux",
+                                str(binary), target, "1.2.3", str(update)], check=True,
+                               env=self.env, capture_output=True)
+                with tarfile.open(update) as archive:
+                    self.assertEqual(archive.getnames(), [f"herdr-gpui-1.2.3-{target}"])
+                    self.assertEqual(archive.extractfile(archive.getmembers()[0]).read(), binary.read_bytes())
                 self.run_script("package-linux.sh", "1.2.3", target, binary, self.work, self.notices, success=False)
         self.run_script("package-linux.sh", "1.2.3", "bad-target", binary, self.work, self.notices, success=False)
 
@@ -169,12 +177,15 @@ class ReleaseTests(unittest.TestCase):
         app = self.work / "unsigned.app"
         (app / "Contents/MacOS").mkdir(parents=True)
         (app / "Contents/MacOS/Herdr").write_text("never run")
+        (app / "Contents/Resources").mkdir()
+        (app / "Contents/Resources/THIRD-PARTY-NOTICES.txt").write_bytes(self.notices.read_bytes())
         self.env.update(
             MACOS_CERTIFICATE_P12_BASE64="ZHVtbXk=", MACOS_CERTIFICATE_PASSWORD="dummy",
             APPLE_API_PRIVATE_KEY="dummy p8", APPLE_API_KEY_ID="dummy",
             APPLE_API_ISSUER_ID="dummy", MACOS_SIGNING_IDENTITY="Developer ID Application: Dummy",
         )
         output = self.work / "Herdr-1.2.3-universal-apple-darwin.dmg"
+        update = self.work / "herdr-gpui-1.2.3-macos-universal.app.tar.gz"
         for response in ['{"status":"Invalid"}', '{"status":"In Progress"}', '{}', 'not json',
                          '{"status":"Invalid"}\n{"status":"Accepted"}', '{"status":"Accepted"}']:
             with self.subTest(response=response):
@@ -182,13 +193,34 @@ class ReleaseTests(unittest.TestCase):
                 accepted = response == '{"status":"Accepted"}'
                 self.run_script("sign-macos.sh", "1.2.3", app, self.work, success=accepted)
                 self.assertEqual(output.exists(), accepted)
+                self.assertEqual(update.exists(), accepted)
                 self.assertFalse(list(self.work.glob(".herdr-sign.*")))
+        with tarfile.open(update) as archive:
+            self.assertEqual(archive.extractfile("Herdr.app/Contents/MacOS/Herdr").read(), b"never run")
+            self.assertEqual(archive.extractfile("Herdr.app/Contents/_CodeSignature/CodeResources").read(), b"mock code signature")
+            self.assertEqual(archive.extractfile("Herdr.app/Contents/CodeResources").read(), b"mock stapled ticket")
+            self.assertEqual(archive.extractfile("Herdr.app/Contents/Resources/THIRD-PARTY-NOTICES.txt").read(), self.notices.read_bytes())
+        self.assertFalse((app / "Contents/_CodeSignature").exists())
+        self.assertFalse((app / "Contents/CodeResources").exists())
         output.unlink()
+        # Existing updater outputs also fail before creating credentials.
+        before = (self.work / "log").read_text()
+        self.run_script("sign-macos.sh", "1.2.3", app, self.work, success=False)
+        self.assertEqual((self.work / "log").read_text(), before)
+        update.unlink()
         for tool in ["codesign", "spctl", "hdiutil", "xcrun"]:
             self.env["MOCK_FAIL"] = tool
             self.run_script("sign-macos.sh", "1.2.3", app, self.work, success=False)
             self.assertFalse(output.exists())
+            self.assertFalse(update.exists())
             self.assertFalse(list(self.work.glob(".herdr-sign.*")))
+        del self.env["MOCK_FAIL"]
+        # A USTAR packaging failure must not promote the already signed DMG.
+        (app / ("x" * 101)).write_bytes(b"unsupported USTAR name")
+        self.run_script("sign-macos.sh", "1.2.3", app, self.work, success=False)
+        self.assertFalse(output.exists())
+        self.assertFalse(update.exists())
+        self.assertFalse(list(self.work.glob(".herdr-sign.*")))
         calls = [json.loads(line) for line in (self.work / "log").read_text().splitlines()]
         restores = [c for c in calls if c[:5] == ["security", "list-keychains", "-d", "user", "-s"]]
         self.assertTrue(restores)

@@ -13,7 +13,9 @@ done
 [[ $MACOS_SIGNING_IDENTITY == 'Developer ID Application: '* ]] || fail 'A Developer ID Application identity is required'
 command -v jq >/dev/null || fail 'jq required'
 out=$(cd -- "$3" && pwd)/Herdr-$1-universal-apple-darwin.dmg
+update=${out%/*}/herdr-gpui-$1-macos-universal.app.tar.gz
 new_output "$out"
+new_output "$update"
 umask 077
 tmp=$(mktemp -d "${out%/*}/.herdr-sign.XXXXXX")
 keychain=$tmp/signing.keychain-db
@@ -90,8 +92,12 @@ xcrun stapler staple "$tmp/Herdr.dmg"
 xcrun stapler validate "$tmp/Herdr.dmg"
 codesign --verify --strict --verbose=2 "$tmp/Herdr.dmg"
 spctl --assess --type open --context context:primary-signature --verbose=2 "$tmp/Herdr.dmg"
+# Package the signed, stapled copy, never the caller's unsigned assembly.
+python3 "$release_root/scripts/update-manifest.py" package-macos "$app" "$tmp/update.tar.gz"
 chmod 644 "$tmp/Herdr.dmg"
+chmod 644 "$tmp/update.tar.gz"
 cleanup_keychain
 search_list_touched=0
 mv "$tmp/Herdr.dmg" "$out"
+mv "$tmp/update.tar.gz" "$update"
 printf '%s\n' "$out"

@@ -13,6 +13,7 @@ SECRETS = (
     "MACOS_CERTIFICATE_P12_BASE64", "MACOS_CERTIFICATE_PASSWORD",
     "MACOS_SIGNING_IDENTITY", "APPLE_API_PRIVATE_KEY",
     "APPLE_API_KEY_ID", "APPLE_API_ISSUER_ID",
+    "HERDR_UPDATE_SIGNING_KEY",
 )
 
 
@@ -25,6 +26,7 @@ class BuildMacosTests(unittest.TestCase):
         scripts.mkdir(parents=True)
         for name in ("build-macos.sh", "common.sh"):
             shutil.copyfile(SCRIPTS / name, scripts / name)
+        shutil.copyfile(SCRIPTS.parent / "update-manifest.py", scripts.parent / "update-manifest.py")
         (scripts / "package-macos.sh").write_text(
             'set -eu\n[[ ! -e sourced && $# == 5 && -s $5 ]]\nprintf "package\\n" >> calls\nmkdir "$4/Herdr.app"\n'
             '[[ ${FAIL_PACKAGE:-0} == 0 ]]\n'
@@ -45,6 +47,8 @@ class BuildMacosTests(unittest.TestCase):
                 *(f'[[ ${{{name}+present}} != present ]]' for name in SECRETS),
                 '[[ $MACOSX_DEPLOYMENT_TARGET == 15.0 ]]',
                 '[[ $CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP == none ]]',
+                '[[ $HERDR_RELEASE_VERSION == 1.2.3 || $HERDR_RELEASE_VERSION == 1.2.4 ]]',
+                '[[ $HERDR_UPDATE_PUBLIC_KEY == ' + 'ab' * 32 + ' ]]',
                 '[[ ! -e sourced ]]',
                 'if [[ $1 == metadata ]]; then',
                 "printf '%s\\n' '" + json.dumps({"packages": [{"name": "herdr-gpui", "version": "1.2.3"}]}) + "'",
@@ -58,7 +62,8 @@ class BuildMacosTests(unittest.TestCase):
             tool.write_text("#!/bin/bash\n" + body + "\n")
             tool.chmod(0o755)
         self.env = {"PATH": str(tools) + os.pathsep + os.environ["PATH"],
-                    "HOME": str(self.root), **dict.fromkeys(SECRETS, "dummy")}
+                    "HOME": str(self.root), "HERDR_UPDATE_PUBLIC_KEY": "ab" * 32,
+                    **dict.fromkeys(SECRETS, "dummy")}
 
     def config(self):
         (self.root / ".envrc").write_text(
@@ -120,6 +125,13 @@ class BuildMacosTests(unittest.TestCase):
         ])
         self.assertIn("Output already exists", self.run_build())
         self.assertEqual((self.root / "calls").read_text().splitlines(), calls)
+
+    def test_public_key_required_before_building(self):
+        self.config()
+        del self.env["HERDR_UPDATE_PUBLIC_KEY"]
+        self.assertIn("HERDR_UPDATE_PUBLIC_KEY", self.run_build())
+        self.assertFalse((self.root / "calls").exists())
+        self.assertFalse((self.root / "sourced").exists())
 
     def test_notice_failure_prevents_packaging_and_signing(self):
         self.config()

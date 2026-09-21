@@ -32,6 +32,10 @@ toml = "0.8"
 config_loader = { package = "config", version = "0.15.25", default-features = false, features = ["toml"] }
 toml_edit = "0.22"
 ureq = "3"
+ed25519-dalek = { version = "2.2", default-features = false, features = ["std"] }
+tempfile = "3"
+tar = "0.4"
+flate2 = "1"
 security-framework = "=3.7.0"
 secrecy = { version = "=0.10.3", features = ["serde"] }
 zeroize = "=1.9.0"

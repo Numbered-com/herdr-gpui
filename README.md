@@ -347,7 +347,9 @@ not static or broadly portable binaries. Download
 `Herdr-VERSION-x86_64-unknown-linux-gnu.tar.gz` or
 `Herdr-VERSION-aarch64-unknown-linux-gnu.tar.gz` and `SHA256SUMS`, verify the archive
 against its checksum entry, and extract its tree into a chosen prefix with `bin`
-on `PATH`. The archive includes a desktop entry, icon, license and attribution.
+on `PATH`. The archive includes a desktop entry, icon, licenses, attribution, and
+third-party notices. It is distinct from the single-binary updater archive
+`herdr-gpui-VERSION-TARGET-update.tar.gz`; see [App Updates](docs/updating.md).
 An active X11 or Wayland desktop, Vulkan-capable driver, system fonts, glibc 2.39+
 and the usual XCB/xkbcommon, Wayland, fontconfig, FreeType and OpenSSL runtime
 libraries are required. On Ubuntu 24.04 a starting runtime set is:
@@ -400,7 +402,39 @@ Failed connections retry automatically; Terminal > Reconnect retries the selecte
 host immediately. Closing the app leaves daemon sessions running.
 
 Use **Report issue** on the right of the status bar to open this repository's
-GitHub issue forms. Redact secrets and private terminal content before submitting.
+GitHub bug report form with the running GUI version prefilled. Redact secrets and
+private terminal content before submitting.
+The adjacent version label shows the running GUI's embedded numeric release version
+(`X.Y.Z`, published as tag `vX.Y.Z`), or Cargo package version for local builds.
+Release CI sets
+`HERDR_RELEASE_VERSION` at compile time for both the app bundle and standalone
+executables from the validated workspace version in the manual main-branch workflow.
+
+### App Updates
+
+The Rust GitHub updater uses signed archive manifests and a shared in-app GPUI
+panel. Open **app updates** in the sidebar menu or choose **Herdr > Check for
+Updates...** to check on demand. Background offers do not steal focus: the version
+label becomes **Update available**. Choose **Download**, then explicitly approve
+**Install and Restart** after verification. Closing the panel does not cancel a
+download or an approved restart; use **Cancel** to request cancellation. Updating
+the GUI leaves the daemon and its terminal sessions running.
+
+The updater requires an embedded release version and public signing key. Local
+builds and test modes do not start an update worker. Supported update targets are
+macOS app bundles and user-owned Linux executables under `HOME` on x86_64/aarch64
+GNU systems. This Linux updater scope does not imply full Linux app support or
+package-manager integration. Disabled installations offer a manual releases link.
+The first updater-enabled release must be installed manually.
+
+**QA > Show app update available**, or **preview app update** in the sidebar menu,
+opens the same panel with synthetic release `9999.0.0`. **Download** simulates
+the verified/ready state; **Install and Restart** only dismisses the preview.
+Preview actions never check, download, install, quit, or change real updater state.
+No framework, signing key, or special bundle is needed: use `just run`.
+
+Release maintainers must configure the update signing keys before publishing;
+see [App Updates](docs/updating.md) for setup and required native update testing.
 
 ### Saved Hosts
 
@@ -938,7 +972,12 @@ in YAML alone do **not** enforce approval; do not dispatch until protection is s
    and `MACOS_SIGNING_IDENTITY` in **release environment variables**, using the full
    Developer ID Application signing identity. Do not put signing credentials in
    repository-wide secrets. See the [script interfaces](scripts/release/README.md)
-   for credential formats and temporary-keychain cleanup constraints.
+   for credential formats and temporary-keychain cleanup constraints. Also store
+   `HERDR_UPDATE_SIGNING_KEY` only in the **release environment secrets**; it is
+   exposed only to the manifest-signing step of the protected `sign` job. Set the
+   required repository Actions variable `HERDR_UPDATE_PUBLIC_KEY`; validation
+   checks its format before all four architecture builds embed it alongside the
+   release version. See [updater key setup](docs/updating.md#repository-configuration).
 4. Create a separate `homebrew` environment with the same owner review, main-only
    branch policy, self-review allowance, and no administrator bypass. Create the
     public `penso/homebrew-herdr-gpui` tap with an initialized default branch.
@@ -999,26 +1038,32 @@ run the same Rust gates and release CLI tests before packaging; Windows tests on
 `herdr-protocol`.
 No opt-in live-daemon or desktop tests are enabled. Signing downloads only the
 current run's two macOS binaries into separate paths and calls the existing
-packaging/signing scripts without launching either executable. Signing secrets
-are scoped only to the signing step, not tests or builds.
+packaging/signing scripts without launching either executable. It also downloads
+both Linux artifact pairs to generate the signed updater manifest without
+executing their contents. Apple secrets are scoped only to the Apple signing
+step; the updater private key is scoped only to the manifest-signing step, never
+tests or builds.
 
 The distinct `Release Workflow Security` audit gates validation and all subsequent
 jobs without replacing CI's required `Workflow Security` check. A secret-free
 metadata job generates a locked CycloneDX SBOM covering the four release targets
 and their build dependencies. A separate owner-approved OIDC job signs the final
-DMG, both Linux archives, and SBOM with Sigstore and attests their provenance. Builds
-restore no caches; Apple credentials are unavailable to metadata/OIDC jobs.
+DMG, both manual Linux archives, SBOM, three updater archives, and the updater
+manifest JSON/raw Ed25519 signature with Sigstore and attests their provenance.
+Builds restore no caches; Apple credentials and the updater private key are
+unavailable to metadata/OIDC/publication jobs.
 
-Publication requires exactly those four base files and their `.sha256`, `.sha512`,
-`.sig`, and `.crt` sidecars, plus `SHA256SUMS` covering all 20 files. It refuses any
+Publication requires exactly those nine base files and their `.sha256`, `.sha512`,
+`.sig`, and `.crt` sidecars, plus `SHA256SUMS` covering all 45 files. It refuses any
 existing `vVERSION` tag or release, creates a tag at the validated SHA, and uploads
-all 21 assets into a draft. Enable GitHub immutable releases before dispatch.
+all 46 assets into a draft. Enable GitHub immutable releases before dispatch.
 It checks the exact
 draft asset set and downloads it again to verify checksums before making it
 public. The separately approved Homebrew job runs only after publication and
 renders its cask using the checksum of the **downloaded published DMG**, verified
 against the published checksum manifest. No draft or unsigned artifact is used
-by the tap.
+by the tap. See the [updater release pipeline](docs/updating.md#release-pipeline)
+for archive contracts and the distinction between Ed25519 and Sigstore signatures.
 
 Do not blindly redispatch after a timeout or partial failure. The helper prints
 its unique request ID; inspect Actions for that request before trying again.
@@ -1072,7 +1117,8 @@ default/all-feature tests, release linking and all six release CLI checks on
 macOS and native Ubuntu 24.04 ARM64 (isolated container). These checks do not
 validate native Linux desktop behavior or hosted release publication.
 Hosted publication, Sigstore/provenance verification of published artifacts,
-Homebrew install/upgrade/uninstall, and native Linux UI QA remain pending.
+Homebrew install/upgrade/uninstall, native Linux UI QA, and native two-version
+updater installation/restart QA remain pending.
 No release is triggered by adding these files.
 
 Release trust/manifest regression tests run without credentials or signing:

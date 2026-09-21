@@ -13,7 +13,11 @@ def base_names(version):
     return [f"Herdr-{version}-universal-apple-darwin.dmg",
             f"Herdr-{version}-x86_64-unknown-linux-gnu.tar.gz",
             f"Herdr-{version}-aarch64-unknown-linux-gnu.tar.gz",
-            f"Herdr-{version}.cdx.json"]
+            f"Herdr-{version}.cdx.json",
+            f"herdr-gpui-{version}-macos-universal.app.tar.gz",
+            f"herdr-gpui-{version}-x86_64-unknown-linux-gnu-update.tar.gz",
+            f"herdr-gpui-{version}-aarch64-unknown-linux-gnu-update.tar.gz",
+            "update-manifest.json", "update-manifest.sig"]
 
 
 def asset_names(version):
@@ -27,6 +31,8 @@ def check_files(directory, names):
         p.is_symlink() or not p.is_file() or not p.stat().st_size for p in files
     ):
         raise ValueError("Missing, empty, symlink, or unexpected release artifact")
+    if "update-manifest.sig" in names and (directory / "update-manifest.sig").stat().st_size != 64:
+        raise ValueError("Updater signature must be raw 64-byte Ed25519")
 
 
 def digest(path, algorithm):
@@ -48,12 +54,15 @@ def verify_manifest(directory, version):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("base", "create", "verify", "dmg", "names"))
+    parser.add_argument("mode", choices=("base", "create", "verify", "dmg", "names", "base-names"))
     parser.add_argument("version")
     parser.add_argument("directory", type=pathlib.Path)
     args = parser.parse_args()
     directory, version = args.directory, args.version
     names = asset_names(version)
+    if args.mode == "base-names":
+        print("\n".join(base_names(version)))
+        return
     if args.mode == "names":
         print("\n".join(names + ["SHA256SUMS"]))
         return

@@ -236,7 +236,8 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
         cx.observe(&view, |_, _, cx| cx.notify()).detach();
         SidebarFixture(view)
     });
-    check_sidebar(fixture, cx);
+    let result = check_sidebar(fixture, cx);
+    assert!(result.is_ok(), "sidebar layout failed: {result:#?}");
 }
 
 #[gpui::test]
@@ -320,6 +321,8 @@ fn multi_host_rows_scope_duplicate_ids_and_keep_agents_when_host_collapses(
 #[cfg(test)]
 pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>) -> HerdrWindow {
     HerdrWindow {
+        updater: crate::updater::Updater::default(),
+        update_preview: None,
         config: Default::default(),
         theme: Default::default(),
         config_load: None,
@@ -404,7 +407,11 @@ fn palette_rejects_changed_endpoint_epoch_or_generation(cx: &mut gpui::TestAppCo
 }
 
 #[cfg(test)]
-fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestContext) {
+fn check_sidebar(
+    fixture: Entity<SidebarFixture>,
+    cx: &mut gpui::VisualTestContext,
+) -> anyhow::Result<()> {
+    use anyhow::Context as _;
     use gpui::{Modifiers, MouseButton, MouseDownEvent, point};
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.run_until_parked();
@@ -1231,6 +1238,131 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     cx.simulate_keystrokes("escape");
     cx.update(|_, cx| assert!(view.read(cx).menu.page.is_none()));
 
+    // Fixtures have no updater worker, and unavailable updates use the shared panel.
+    let updater_before = cx.update(|_, cx| view.read(cx).updater.state().clone());
+    assert!(matches!(updater_before, crate::updater::State::Disabled(_)));
+    cx.update(|window, cx| window.dispatch_action(Box::new(crate::CheckForUpdates), cx));
+    assert!(cx.pending_prompt().is_none());
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        assert!(view.read(cx).menu.page == Some(crate::menu::Page::AppUpdate));
+        assert_eq!(view.read(cx).live.snapshot, before_install);
+    });
+    assert!(cx.debug_bounds("app-update-action").is_none());
+    let releases = cx
+        .debug_bounds("app-update-releases")
+        .context("update releases bounds")?;
+    cx.simulate_click(releases.center(), Default::default());
+    assert_eq!(
+        cx.opened_url().as_deref(),
+        Some("https://github.com/penso/herdr-gpui/releases")
+    );
+    let close = cx
+        .debug_bounds("app-update-close")
+        .context("update close bounds")?;
+    cx.simulate_click(close.center(), Default::default());
+    cx.update(|window, cx| {
+        let view = view.read(cx);
+        assert!(view.menu.page.is_none());
+        assert!(view.focus.is_focused(window));
+        assert_eq!(view.updater.state(), &updater_before);
+    });
+    for (width, height) in [(320., 360.), (320., 600.), (480., 600.), (800., 600.)] {
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.update(|window, cx| window.dispatch_action(Box::new(crate::ShowUpdatePreview), cx));
+        for ready in [false, true] {
+            cx.update(|window, cx| {
+                window.draw(cx).clear();
+                let view = view.read(cx);
+                assert_eq!(view.updater.state(), &updater_before);
+                assert_eq!(view.live.snapshot, before_install);
+                assert_eq!(
+                    view.update_preview,
+                    Some(if ready {
+                        crate::updater::State::Ready {
+                            version: "9999.0.0".into(),
+                        }
+                    } else {
+                        crate::updater::State::Available {
+                            version: "9999.0.0".into(),
+                        }
+                    })
+                );
+            });
+            let panel = cx
+                .debug_bounds("app-update-panel")
+                .context("update panel bounds")?;
+            let action = cx
+                .debug_bounds("app-update-action")
+                .context("update action bounds")?;
+            let header = cx
+                .debug_bounds("app-update-header")
+                .context("update header bounds")?;
+            let close = cx
+                .debug_bounds("app-update-close")
+                .context("update close bounds")?;
+            assert_eq!(close.right(), header.right() - px(16.));
+            assert!(close.left() > header.center().x);
+            assert!(close.top() >= header.top() && close.bottom() <= header.bottom());
+            assert!(header.bottom() < action.top());
+            let body = cx
+                .debug_bounds("app-update-body")
+                .context("update body bounds")?;
+            let footer = cx
+                .debug_bounds("app-update-footer")
+                .context("update footer bounds")?;
+            let current = cx
+                .debug_bounds("app-update-current-version")
+                .context("current version bounds")?;
+            let latest = cx
+                .debug_bounds("app-update-latest-version")
+                .context("latest version bounds")?;
+            assert_eq!(current.left(), latest.left());
+            assert_eq!(current.right(), latest.right());
+            assert!(current.bottom() < latest.top());
+            assert_eq!(header.left(), panel.left());
+            assert_eq!(header.right(), panel.right());
+            assert!(body.top() >= header.bottom());
+            assert!((footer.top() - body.bottom()).abs() <= px(1.));
+            assert!(panel.top() >= px(0.) && panel.bottom() <= px(height));
+            assert!(action.top() >= footer.top() && action.bottom() <= footer.bottom());
+            assert!(panel.left() >= px(0.) && panel.right() <= px(width));
+            assert!(action.left() >= panel.left() && action.right() <= panel.right());
+            assert!(action.top() >= panel.top() && action.bottom() <= panel.bottom());
+            cx.simulate_click(action.center(), Default::default());
+        }
+        cx.update(|_, cx| {
+            let view = view.read(cx);
+            assert!(view.menu.page.is_none());
+            assert!(view.update_preview.is_none());
+            assert_eq!(view.updater.state(), &updater_before);
+        });
+        assert!(cx.pending_prompt().is_none());
+    }
+    // The same panel is reachable without native menus, including on Linux.
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| view.open_menu(window, cx));
+        window.draw(cx).clear();
+    });
+    let updates = cx
+        .debug_bounds("menu-app updates")
+        .context("app updates menu bounds")?;
+    assert!(cx.debug_bounds("menu-preview app update").is_some());
+    cx.simulate_click(updates.center(), Default::default());
+    cx.update(|_, cx| {
+        assert!(view.read(cx).menu.page == Some(crate::menu::Page::AppUpdate));
+        assert!(view.read(cx).update_preview.is_none());
+    });
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.dispatch_action(Box::new(crate::ShowUpdatePreview), cx));
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| {
+        let view = view.read(cx);
+        assert!(view.menu.page.is_none());
+        assert!(view.update_preview.is_none());
+        assert!(view.focus.is_focused(window));
+        assert_eq!(view.updater.state(), &updater_before);
+    });
     // Exercise the real status bar without starting a daemon connection.
     view.update(cx, |view, cx| {
         view.marked = "composition ".repeat(100);
@@ -1247,6 +1379,14 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
         assert!(report.right() <= status.right());
         assert!(report.top() >= status.top());
         assert!(report.bottom() <= status.bottom());
+        let version = cx
+            .debug_bounds("status-version")
+            .context("status version bounds")?;
+        assert!(version.size.width > px(0.));
+        assert!(version.left() >= report.right());
+        assert!(version.right() <= status.right());
+        assert!(version.top() >= status.top());
+        assert!(version.bottom() <= status.bottom());
         let theme = cx.debug_bounds("status-theme").unwrap();
         let keybinds = cx.debug_bounds("status-keybinds").unwrap();
         assert!(theme.left() >= status.left());
@@ -1260,7 +1400,14 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
         cx.simulate_click(report.center(), Default::default());
         assert_eq!(
             cx.opened_url().as_deref(),
-            Some("https://github.com/penso/herdr-gpui/issues/new/choose")
+            Some(
+                format!(
+                    "https://github.com/penso/herdr-gpui/issues/new?template=bug_report.yml&version={}",
+                    crate::APP_VERSION.replace('+', "%2B"),
+                )
+                .as_str()
+            )
         );
     }
+    Ok(())
 }

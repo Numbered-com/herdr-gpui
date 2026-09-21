@@ -22,10 +22,8 @@ mkdir -m 700 -- "$output"
 gh release download "v$version" --repo penso/herdr-gpui --dir "$output"
 bash "$scripts/verify-release.sh" --version "$version" --directory "$output"
 mkdir -m 700 "$output/gpg"
-for name in "Herdr-$version-universal-apple-darwin.dmg" \
-    "Herdr-$version-x86_64-unknown-linux-gnu.tar.gz" \
-    "Herdr-$version-aarch64-unknown-linux-gnu.tar.gz" "Herdr-$version.cdx.json"; do
+while IFS= read -r name; do
     gpg --batch --local-user "$fingerprint!" --armor --detach-sign \
         --output "$output/gpg/$name.asc" "$output/$name"
-done
+done < <(python3 "$scripts/release/artifact-manifest.py" base-names "$version" "$output")
 echo "Supplemental signatures saved in $output/gpg; no remote changes made."

@@ -80,9 +80,13 @@ class ReleaseTargets(unittest.TestCase):
         self.assertEqual(sorted(signed), sorted(MANIFEST.base_names(VERSION)))
         self.assertEqual(sorted(subjects), sorted(MANIFEST.base_names(VERSION)))
         for script in ("verify-release.sh", "gpg-sign-release.sh"):
-            text = (ROOT / "scripts" / script).read_text().replace("$version", VERSION)
-            loop = text.split("for name in ", 1)[1].split("; do", 1)[0]
-            self.assertEqual(re.findall(r'"(Herdr-[^"]+)"', loop), MANIFEST.base_names(VERSION))
+            text = (ROOT / "scripts" / script).read_text()
+            self.assertIn("while IFS= read -r name; do", text)
+            directory = "$directory" if script == "verify-release.sh" else "$output"
+            self.assertIn(
+                f'done < <(python3 "$scripts/release/artifact-manifest.py" base-names "$version" "{directory}")',
+                text,
+            )
         self.assertEqual(workflow.count('artifact-manifest.py create "$VERSION" dist'), 1)
         self.assertNotIn("scripts/package-linux.sh", workflow)
         self.assertNotIn("uses: actions/cache", workflow)
@@ -103,6 +107,27 @@ class ReleaseTargets(unittest.TestCase):
         self.assertIn("    environment: homebrew\n", jobs["homebrew"])
         self.assertEqual(re.findall(r"^  (\w+):", workflow.split("permissions:", 1)[0], re.M),
                          ["workflow_dispatch"])
+
+    def test_updater_signing_boundary(self):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        sections = re.split(r"^  ([a-z-]+):\n", workflow.split("\njobs:\n", 1)[1], flags=re.M)
+        jobs = dict(zip(sections[1::2], sections[2::2]))
+        self.assertIn("scripts/update-manifest.py validate-public-key", jobs["validate"])
+        for name in ("macos-build", "linux"):
+            self.assertIn("HERDR_RELEASE_VERSION: ${{ needs.validate.outputs.version }}", jobs[name])
+            self.assertIn("HERDR_UPDATE_PUBLIC_KEY: ${{ vars.HERDR_UPDATE_PUBLIC_KEY }}", jobs[name])
+        for name, job in jobs.items():
+            if name != "sign":
+                self.assertNotIn("secrets.HERDR_UPDATE_SIGNING_KEY", job)
+        sign = jobs["sign"]
+        self.assertEqual(sign.count("secrets.HERDR_UPDATE_SIGNING_KEY"), 1)
+        self.assertIn('create dist "$VERSION" --require-all-targets', sign)
+        self.assertIn("unset HERDR_UPDATE_SIGNING_KEY", sign)
+        for target in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"):
+            self.assertIn(f"name: linux-package-{target}\n", sign)
+        for name in ("update-manifest.json", "update-manifest.sig"):
+            self.assertIn(f"            dist/{name}\n", sign)
+        self.assertIn('test "$(wc -c < dist/update-manifest.sig | tr -d \' \')" = 64', sign)
 
 
 class SbomMerge(unittest.TestCase):
@@ -168,7 +193,7 @@ class ReleaseSecurity(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name)
         for name in MANIFEST.base_names(VERSION):
-            data = name.encode()
+            data = b"s" * 64 if name == "update-manifest.sig" else name.encode()
             (self.path / name).write_bytes(data)
             for algorithm in ("sha256", "sha512"):
                 checksum = hashlib.new(algorithm, data).hexdigest()
@@ -188,9 +213,14 @@ class ReleaseSecurity(unittest.TestCase):
         self.assertEqual(set(MANIFEST.base_names(VERSION)), {
             "Herdr-0.1.0-universal-apple-darwin.dmg", "Herdr-0.1.0.cdx.json",
             "Herdr-0.1.0-x86_64-unknown-linux-gnu.tar.gz",
-            "Herdr-0.1.0-aarch64-unknown-linux-gnu.tar.gz"})
-        self.assertEqual(len((self.path / "SHA256SUMS").read_text().splitlines()), 20)
-        self.assertEqual(len(self.run_manifest("names").splitlines()), 21)
+            "Herdr-0.1.0-aarch64-unknown-linux-gnu.tar.gz",
+            "herdr-gpui-0.1.0-macos-universal.app.tar.gz",
+            "herdr-gpui-0.1.0-x86_64-unknown-linux-gnu-update.tar.gz",
+            "herdr-gpui-0.1.0-aarch64-unknown-linux-gnu-update.tar.gz",
+            "update-manifest.json", "update-manifest.sig"})
+        self.assertEqual(len((self.path / "SHA256SUMS").read_text().splitlines()), 45)
+        self.assertEqual(len(self.run_manifest("names").splitlines()), 46)
+        self.assertEqual(self.run_manifest("base-names").splitlines(), MANIFEST.base_names(VERSION))
         with tempfile.TemporaryDirectory() as temp:
             name = MANIFEST.base_names(VERSION)[0]
             for file in (name, "SHA256SUMS"):
@@ -210,6 +240,13 @@ class ReleaseSecurity(unittest.TestCase):
     def test_extra_asset(self):
         (self.path / "unexpected").write_text("extra")
         self.run_manifest("verify", False)
+
+    def test_raw_updater_signature_length(self):
+        path = self.path / "update-manifest.sig"
+        for size in (1, 63, 65, 128):
+            path.write_bytes(b"s" * size)
+            with self.subTest(size=size), self.assertRaisesRegex(ValueError, "raw 64-byte"):
+                MANIFEST.check_files(self.path, MANIFEST.asset_names(VERSION) + ["SHA256SUMS"])
 
     def test_corrupt_sidecar(self):
         (self.path / (MANIFEST.base_names(VERSION)[0] + ".sha512")).write_text("invalid")
@@ -243,6 +280,33 @@ class ReleaseSecurity(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b"missing, empty, or symlink", result.stdout)
         self.assertNotIn(b"Signing:", result.stdout)
+
+    def test_sign_action_preserves_raw_updater_signature(self):
+        raw = (self.path / "update-manifest.sig").read_bytes()
+        for path in self.path.iterdir():
+            if path.name not in MANIFEST.base_names(VERSION):
+                path.unlink()
+        self.run_manifest("base")
+        text = (ROOT / ".github/actions/sign-artifacts/action.yml").read_text()
+        code = "\n".join(line[8:] for line in text.split("      run: |\n", 1)[1].splitlines())
+        with tempfile.TemporaryDirectory() as temp:
+            tool = Path(temp) / "cosign"
+            tool.write_text('''#!/usr/bin/env bash
+set -eu
+[[ $1 == sign-blob && $2 == --yes && $3 == --output-signature && $5 == --output-certificate ]]
+[[ $4 == "$7.sig" && $6 == "$7.crt" && -s $7 ]]
+printf 'mock Sigstore signature\\n' > "$4"
+printf 'mock Sigstore certificate\\n' > "$6"
+''')
+            tool.chmod(0o755)
+            subprocess.run(["bash", "-c", code], cwd=self.path, check=True, capture_output=True,
+                           env=dict(os.environ, PATH=f"{temp}:{os.environ['PATH']}",
+                                    FILES_PATTERN=" ".join(MANIFEST.base_names(VERSION))))
+        self.assertEqual((self.path / "update-manifest.sig").read_bytes(), raw)
+        for name in ("update-manifest.json.sig", "update-manifest.sig.sig"):
+            self.assertEqual((self.path / name).read_text(), "mock Sigstore signature\n")
+        self.run_manifest("create")
+        self.run_manifest("verify")
 
     def test_verifier_trust_policy_and_failures(self):
         with tempfile.TemporaryDirectory() as temp:

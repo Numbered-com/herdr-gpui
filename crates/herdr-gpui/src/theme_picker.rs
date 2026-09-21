@@ -595,6 +595,9 @@ mod tests {
                     view.open_theme_picker(window, cx);
                     view.open_palette(false, window, cx);
                     view.show_install_modal(window, cx);
+                    view.open_app_update(false, window, cx);
+                    view.open_app_update(true, window, cx);
+                    assert!(view.update_preview.is_none());
                     let snapshot: herdr_client::protocol::ClientShellSnapshot =
                         serde_json::from_str(include_str!(
                             "../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json"

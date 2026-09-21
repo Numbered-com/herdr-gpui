@@ -1,4 +1,5 @@
 //! Internal failures retain their categories and sources until presentation.
+pub use crate::updater::UpdateError;
 use std::{
     io,
     path::{Path, PathBuf},
@@ -146,6 +147,8 @@ pub enum Error {
         "{0} must be 1..256 ASCII letters, digits, '.', '_' or '-' (public client ID, not a secret)"
     )]
     InvalidClientId(&'static str),
+    #[error("{0}")]
+    Update(#[from] UpdateError),
     #[error("{0}")]
     Io(#[from] io::Error),
     #[error("{0}")]
@@ -307,6 +310,20 @@ pub enum ThemeParseError {
 mod tests {
     use super::*;
     use std::error::Error as _;
+
+    #[test]
+    fn updater_wrapper_preserves_source_chain() {
+        let error = Error::from(UpdateError::Io(io::Error::from(io::ErrorKind::BrokenPipe)));
+        assert!(matches!(error, Error::Update(_)));
+        assert_eq!(
+            error
+                .source()
+                .and_then(|source| source.source())
+                .and_then(|source| source.downcast_ref::<io::Error>())
+                .map(io::Error::kind),
+            Some(io::ErrorKind::BrokenPipe)
+        );
+    }
 
     #[test]
     fn github_failures_keep_typed_sources_and_redact_parser_diagnostics() -> anyhow::Result<()> {

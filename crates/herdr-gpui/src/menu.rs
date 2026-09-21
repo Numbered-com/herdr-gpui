@@ -17,6 +17,7 @@ pub(super) enum Page {
     Palette,
     ConfirmClose,
     Update,
+    AppUpdate,
     Install,
     Tab,
     RenameTab,
@@ -436,6 +437,7 @@ impl HerdrWindow {
         if !self.cancel_theme_preview(cx) {
             return;
         }
+        self.update_preview = None;
         self.menu.reset();
         window.focus(&self.focus);
         cx.notify();
@@ -678,6 +680,8 @@ impl HerdrWindow {
             "commands",
             "workspaces",
             "reload GUI config",
+            "app updates",
+            "preview app update",
             "GitHub sign-in",
             "about",
         ];
@@ -716,6 +720,8 @@ impl HerdrWindow {
             "commands" => self.open_palette(false, window, cx),
             "workspaces" => self.open_palette(true, window, cx),
             "update ready" => self.menu.page = Some(Page::Update),
+            "app updates" => self.open_app_update(false, window, cx),
+            "preview app update" => self.open_app_update(true, window, cx),
             "reload GUI config" => self.reload_gui_config(window, cx),
             "reload daemon config" => {
                 if let (Some(handle), Some(snapshot)) = (
@@ -807,6 +813,7 @@ impl HerdrWindow {
                         | Page::Themes
                         | Page::Palette
                         | Page::Preferences
+                        | Page::AppUpdate
                         | Page::GitHub
                 ),
                 |panel| panel.overflow_y_scroll().p(px(6.)),
@@ -838,6 +845,9 @@ impl HerdrWindow {
                 panel
                     .w((viewport.width - px(24.)).max(px(0.)).min(px(420.)))
                     .max_h((viewport.height - px(24.)).max(px(0.)))
+            })
+            .when(page == Page::AppUpdate, |panel| {
+                panel.flex().flex_col().overflow_hidden().shadow_lg()
             })
             .when(page == Page::About, |panel| {
                 panel.w((viewport.width - px(24.)).max(px(0.)).min(px(340.)))
@@ -998,6 +1008,8 @@ impl HerdrWindow {
             panel = panel.child(self.render_close_confirmation(cx));
         } else if page == Page::Preferences {
             panel = panel.child(self.render_preferences(cx));
+        } else if page == Page::AppUpdate {
+            panel = panel.child(self.render_app_update(window, cx));
         } else if page == Page::About {
             panel = panel.child(self.render_about(cx));
         } else if page == Page::Install {

@@ -15,9 +15,13 @@ build_env=(env
     -u MACOS_CERTIFICATE_P12_BASE64 -u MACOS_CERTIFICATE_PASSWORD
     -u MACOS_SIGNING_IDENTITY -u APPLE_API_PRIVATE_KEY
     -u APPLE_API_KEY_ID -u APPLE_API_ISSUER_ID
+    -u HERDR_UPDATE_SIGNING_KEY
+    HERDR_RELEASE_VERSION="$version"
     MACOSX_DEPLOYMENT_TARGET=15.0
     # Apple strip can misalign host proc-macro dylibs during cross-compilation.
     CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP=none)
+# Public configuration must be supplied before loading any local signing helper.
+"${build_env[@]}" python3 scripts/update-manifest.py validate-public-key
 manifest_version=$("${build_env[@]}" cargo metadata --locked --offline --no-deps --format-version 1 |
     jq -er '.packages[] | select(.name == "herdr-gpui") | .version')
 [[ $version == "$manifest_version" ]] || fail "Version must match manifest version $manifest_version"

@@ -93,6 +93,10 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"version={version}\nsha={os.environ['EXPECTED_SHA']}\n")
           PY
+      - name: Validate embedded updater public key
+        env:
+          HERDR_UPDATE_PUBLIC_KEY: ${{ vars.HERDR_UPDATE_PUBLIC_KEY }}
+        run: python3 scripts/update-manifest.py validate-public-key
 
   macos-checks:
     needs: validate
@@ -115,6 +119,7 @@ jobs:
           jq --version
           python3 -m unittest discover -s scripts/release/tests -v
           python3 scripts/release/test-release-security.py
+          OPENSSL="$(brew --prefix openssl@3)/bin/openssl" python3 -m unittest discover -s scripts -p 'test_update_manifest.py' -v
       - run: rustup show
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
@@ -140,6 +145,8 @@ jobs:
     env:
       MACOSX_DEPLOYMENT_TARGET: '15.0'
       TARGET: ${{ matrix.target }}
+      HERDR_RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      HERDR_UPDATE_PUBLIC_KEY: ${{ vars.HERDR_UPDATE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -177,6 +184,8 @@ jobs:
     env:
       VERSION: ${{ needs.validate.outputs.version }}
       TARGET: ${{ matrix.target }}
+      HERDR_RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      HERDR_UPDATE_PUBLIC_KEY: ${{ vars.HERDR_UPDATE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -200,10 +209,14 @@ jobs:
         run: |
           mkdir dist
           bash scripts/release/package-linux.sh "$VERSION" "$TARGET" "target/$TARGET/release/herdr-gpui" dist "target/$TARGET/release/THIRD-PARTY-NOTICES.txt"
+          python3 scripts/update-manifest.py package-linux "target/$TARGET/release/herdr-gpui" "$TARGET" "$VERSION" \
+            "dist/herdr-gpui-$VERSION-$TARGET-update.tar.gz"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux-package-${{ matrix.target }}
-          path: dist/Herdr-${{ needs.validate.outputs.version }}-${{ matrix.target }}.tar.gz
+          path: |
+            dist/Herdr-${{ needs.validate.outputs.version }}-${{ matrix.target }}.tar.gz
+            dist/herdr-gpui-${{ needs.validate.outputs.version }}-${{ matrix.target }}-update.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -289,10 +302,45 @@ jobs:
           APPLE_API_ISSUER_ID: ${{ vars.APPLE_API_ISSUER_ID }}
           MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
         run: bash scripts/release/sign-macos.sh "$VERSION" dist/Herdr.app dist
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: linux-package-x86_64-unknown-linux-gnu
+          path: dist
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: linux-package-aarch64-unknown-linux-gnu
+          path: dist
+      - name: Generate and verify signed update manifest
+        env:
+          HERDR_UPDATE_PUBLIC_KEY: ${{ vars.HERDR_UPDATE_PUBLIC_KEY }}
+          HERDR_UPDATE_SIGNING_KEY: ${{ secrets.HERDR_UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          set +x
+          OPENSSL="$(brew --prefix openssl@3)/bin/openssl"
+          "$OPENSSL" version | grep -q '^OpenSSL 3\.'
+          umask 077
+          KEY_DIR="$(mktemp -d "$RUNNER_TEMP/update-key.XXXXXX")"
+          trap 'rm -rf "$KEY_DIR"' EXIT
+          test -n "$HERDR_UPDATE_SIGNING_KEY"
+          printf '%s' "$HERDR_UPDATE_SIGNING_KEY" > "$KEY_DIR/private.pem"
+          unset HERDR_UPDATE_SIGNING_KEY
+          python3 scripts/update-manifest.py check-key "$OPENSSL" "$KEY_DIR/private.pem"
+          python3 scripts/update-manifest.py create dist "$VERSION" --require-all-targets
+          "$OPENSSL" pkeyutl -sign -rawin -inkey "$KEY_DIR/private.pem" -passin pass: \
+            -in dist/update-manifest.json -out dist/update-manifest.sig
+          "$OPENSSL" pkey -in "$KEY_DIR/private.pem" -passin pass: -pubout -out "$KEY_DIR/public.pem"
+          "$OPENSSL" pkeyutl -verify -rawin -pubin -inkey "$KEY_DIR/public.pem" \
+            -in dist/update-manifest.json -sigfile dist/update-manifest.sig
+          test "$(wc -c < dist/update-manifest.sig | tr -d ' ')" = 64
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: macos-signed
-          path: dist/Herdr-${{ needs.validate.outputs.version }}-universal-apple-darwin.dmg
+          path: |
+            dist/Herdr-${{ needs.validate.outputs.version }}-universal-apple-darwin.dmg
+            dist/herdr-gpui-${{ needs.validate.outputs.version }}-macos-universal.app.tar.gz
+            dist/update-manifest.json
+            dist/update-manifest.sig
           if-no-files-found: error
           retention-days: 7
 
@@ -337,7 +385,7 @@ jobs:
       - uses: ./.github/actions/sign-artifacts # zizmor: ignore[self-repository]
         with:
           working-directory: dist
-          files: Herdr-${{ needs.validate.outputs.version }}-universal-apple-darwin.dmg Herdr-${{ needs.validate.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz Herdr-${{ needs.validate.outputs.version }}-aarch64-unknown-linux-gnu.tar.gz Herdr-${{ needs.validate.outputs.version }}.cdx.json
+          files: Herdr-${{ needs.validate.outputs.version }}-universal-apple-darwin.dmg Herdr-${{ needs.validate.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz Herdr-${{ needs.validate.outputs.version }}-aarch64-unknown-linux-gnu.tar.gz Herdr-${{ needs.validate.outputs.version }}.cdx.json herdr-gpui-${{ needs.validate.outputs.version }}-macos-universal.app.tar.gz herdr-gpui-${{ needs.validate.outputs.version }}-x86_64-unknown-linux-gnu-update.tar.gz herdr-gpui-${{ needs.validate.outputs.version }}-aarch64-unknown-linux-gnu-update.tar.gz update-manifest.json update-manifest.sig
       - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: |
@@ -345,6 +393,11 @@ jobs:
             dist/Herdr-${{ needs.validate.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz
             dist/Herdr-${{ needs.validate.outputs.version }}-aarch64-unknown-linux-gnu.tar.gz
             dist/Herdr-${{ needs.validate.outputs.version }}.cdx.json
+            dist/herdr-gpui-${{ needs.validate.outputs.version }}-macos-universal.app.tar.gz
+            dist/herdr-gpui-${{ needs.validate.outputs.version }}-x86_64-unknown-linux-gnu-update.tar.gz
+            dist/herdr-gpui-${{ needs.validate.outputs.version }}-aarch64-unknown-linux-gnu-update.tar.gz
+            dist/update-manifest.json
+            dist/update-manifest.sig
       - run: python3 scripts/release/artifact-manifest.py create "$VERSION" dist
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

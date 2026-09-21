@@ -28,6 +28,29 @@ without input replay. Detach pauses retries for that endpoint until Reconnect.
 The status dot pulses amber during local daemon startup, is green when connected,
 and red otherwise.
 
+The Rust GitHub updater verifies signed archive manifests and presents a shared
+GPUI panel through **app updates** in the sidebar menu or **Herdr > Check for
+Updates...**. Background offers change the status version label without taking
+focus. Download and **Install and Restart** are separate approvals; closing the
+panel does not cancel work. Explicit **Cancel** requests cancellation.
+The existing UI timer polls the updater mailbox; workers own blocking work, and
+the restart helper is dispatched before CLI parsing or GPUI startup.
+
+Only normal launches with a numeric `X.Y.Z` release version (tag `vX.Y.Z`) and
+embedded public signing key start the service. Test fixtures use a disabled,
+worker-free updater. Update targets are
+macOS app bundles and user-owned Linux executables under `HOME` on x86_64/aarch64
+GNU systems, not arbitrary packages or a claim of full Linux app support.
+**QA > Show app update available** and the sidebar's **preview app update** use
+independent synthetic version `9999.0.0`: Download becomes Ready and Install and
+Restart only dismisses the panel. No preview action reaches the updater service or quits.
+See [update setup and QA](../../docs/updating.md).
+The protected release workflow builds both macOS and both Linux architectures
+with the required public key. Linux manual `Herdr-VERSION-TARGET.tar.gz` archives
+include desktop integration and notices; updater-only
+`herdr-gpui-VERSION-TARGET-update.tar.gz` archives contain one executable.
+Native two-version update/restart QA remains pending.
+
 Spaces lists Local first, then saved hosts in the upstream catalog's order.
 Enabled hosts connect in the background with inactive terminal surfaces; disabled
 hosts remain visible. Host and repository collapse state is endpoint-scoped, and
@@ -90,6 +113,10 @@ Catalog channels retain typed errors, and rename results share errors with `Arc`
 across cloned UI snapshots. Strings are produced at presentation boundaries, not
 as internal error transport. `anyhow` is reserved for framework boundaries and
 test harnesses, not internal catch-all errors.
+Updater workers and the restart helper use typed `UpdateError` variants, preserving
+sources and recovery context while keeping remote diagnostics out of display text.
+Active regression tests cover typed sources, redaction, and recovery failures;
+the standalone updater harness includes these tests without GPUI dependencies.
 
 ## Title Bar
 
