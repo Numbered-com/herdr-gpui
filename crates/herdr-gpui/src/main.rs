@@ -50,7 +50,9 @@ use terminal::*;
 
 // Release builds embed the same tag used for the bundle and downloadable artifacts.
 // Even tab cells, as on herdr.dev, so short labels do not collapse to a sliver.
-const TAB_WIDTH: f32 = 74.;
+const TAB_WIDTH: f32 = 64.;
+// The reference strip is a shallow band: chrome, not a toolbar.
+const TAB_HEIGHT: f32 = 24.;
 
 const APP_VERSION: &str = match option_env!("HERDR_RELEASE_VERSION") {
     Some(version) => version,
@@ -634,7 +636,7 @@ impl Render for HerdrWindow {
             .id("tabs")
             .flex()
             .flex_none()
-            .h(px((self.config.tabs.size * 1.5 + 8.).max(32.)))
+            .h(px((self.config.tabs.size * 1.6 + 4.).max(TAB_HEIGHT)))
             .font_family(self.config.tabs.family.clone())
             .text_size(px(self.config.tabs.size))
             .overflow_x_scroll()
@@ -666,11 +668,11 @@ impl Render for HerdrWindow {
                             let id = id.clone();
                             move || format!("tab-{id}")
                         })
-                        .pl(px(16.))
+                        .pl(px(12.))
                         // The close button hugs the tab's inner right edge, well
                         // clear of the label it would otherwise crowd.
-                        .pr(px(4.))
-                        .py(px(4.))
+                        .pr(px(3.))
+                        .py(px(2.))
                         // Even cells divided by a single rule, as in the reference UI.
                         .min_w(px(TAB_WIDTH))
                         .border_r_1()
@@ -678,7 +680,7 @@ impl Render for HerdrWindow {
                         .flex_none()
                         .flex()
                         .items_center()
-                        .gap(px(16.))
+                        .gap(px(10.))
                         .cursor_pointer()
                         .bg(rgb(background))
                         .text_color(rgb(text))
@@ -691,12 +693,12 @@ impl Render for HerdrWindow {
                                     let id = id.clone();
                                     move || format!("close-tab-{id}")
                                 })
-                                .size(px(24.))
+                                .size(px(18.))
                                 .flex_none()
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .rounded(px(4.))
+                                .rounded(px(3.))
                                 .hover(move |s| s.bg(rgba((text << 8) | 0x24)))
                                 .child(
                                     svg()
@@ -705,7 +707,7 @@ impl Render for HerdrWindow {
                                             let id = id.clone();
                                             move || format!("close-tab-icon-{id}")
                                         })
-                                        .size(px(16.))
+                                        .size(px(12.))
                                         .text_color(rgb(text)),
                                 )
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
@@ -926,8 +928,8 @@ impl Render for HerdrWindow {
                                         div()
                                             .id("new-tab")
                                             .debug_selector(|| "new-tab".into())
-                                            .w(px(44.))
-                                            .min_h(px(32.))
+                                            .w(px(34.))
+                                            .min_h(px(TAB_HEIGHT))
                                             .border_r_1()
                                             .border_color(rgb(self.theme.active))
                                             .flex_none()
@@ -940,7 +942,7 @@ impl Render for HerdrWindow {
                                                 svg()
                                                     .path("icons/plus.svg")
                                                     .debug_selector(|| "new-tab-icon".into())
-                                                    .size(px(18.))
+                                                    .size(px(14.))
                                                     // Quiet like the unselected tabs beside it.
                                                     .text_color(rgb(self.theme.muted)),
                                             )

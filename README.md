@@ -607,7 +607,7 @@ size = 14
 | Section | macOS Font Family | Linux Font Family | Default Size |
 | --- | --- | --- | --- |
 | `sidebar` | `Menlo` | `DejaVu Sans Mono` | 12 |
-| `tabs` | `.SystemUIFont` | `DejaVu Sans` | 14 |
+| `tabs` | `.SystemUIFont` | `DejaVu Sans` | 12 |
 | `terminal` | `Menlo` | `DejaVu Sans Mono` | 14 |
 | `ui` | `.SystemUIFont` | `DejaVu Sans` | 12 |
 

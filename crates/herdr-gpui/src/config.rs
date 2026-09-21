@@ -87,7 +87,7 @@ impl Default for Config {
             theme: "Default".into(),
             github: GitHubConfig::default(),
             sidebar: font(monospace, 12.0),
-            tabs: font(ui, 14.0),
+            tabs: font(ui, 12.0),
             terminal: font(monospace, 14.0),
             ui: font(ui, 12.0),
         }
@@ -883,7 +883,7 @@ mod tests {
             for ((font, family), size) in [config.sidebar, config.tabs, config.terminal, config.ui]
                 .into_iter()
                 .zip(families)
-                .zip([12.0, 14.0, 14.0, 12.0])
+                .zip([12.0, 12.0, 14.0, 12.0])
             {
                 assert_eq!(font.family, family);
                 assert_eq!(font.size, size);
@@ -898,7 +898,7 @@ mod tests {
             for ((font, family), size) in [config.sidebar, config.tabs, config.terminal, config.ui]
                 .into_iter()
                 .zip(families)
-                .zip([12.0, 14.0, 14.0, 12.0])
+                .zip([12.0, 12.0, 14.0, 12.0])
             {
                 assert_eq!(
                     font.family,
