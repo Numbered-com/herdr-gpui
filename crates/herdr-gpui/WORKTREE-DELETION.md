@@ -11,12 +11,14 @@ build dependency and has not been modified.
 2. Send `worktree.list` with `workspace_id` and `trust_repository: false`.
    Require a unique linked, non-bare entry whose `open_workspace_id` matches the
    clicked workspace; show its daemon-supplied path, not the terminal's cwd.
-3. Require typing `DELETE`. Revalidate the clicked workspace ID, boot and worktree
-   metadata against the latest snapshot before sending `worktree.remove` with
-   `workspace_id`, `force: false`, `trust_repository: false`.
+3. Require one explicit confirmation of the modal, matching the Herdr TUI.
+   Revalidate the clicked workspace ID, boot and worktree metadata against the
+   latest snapshot before sending `worktree.remove` with `workspace_id`,
+   `force: false`, `trust_repository: false`.
 4. Wait for the matching request ID. Display daemon error code/message inline.
-   Only `dirty_worktree_requires_force` enables force; clear the previous text and
-   require `FORCE DELETE` before sending the same method with `force: true`.
+   Only `dirty_worktree_requires_force` enables force; the dialog restates the
+   discarded-files warning and requires a new confirmation before sending the
+   same method with `force: true`.
 5. Dismiss on a matching `worktree_removed` result (workspace, path and force).
    Pushed snapshots, not optimistic client mutations, update the sidebar.
 
@@ -45,7 +47,7 @@ Source references below are relative to the inspected `/Users/penso/code/herdr`.
 | Transport | `src/server/headless/endpoint_requests.rs:79-128`: dispatches endpoint requests into the daemon API and bridges deferred responses. The native client reassembles `ClientShellEndpointResponseChunk` and emits the preserved JSON as `ClientEvent::Response` (`crates/herdr-client/src/lib.rs`). No new binary protocol variants are needed. |
 | TUI policy | `src/client/shell/worktrees.rs:210-228,341-365,439-462,499-515` fetches a path, asks confirmation, and escalates dirty or certain generic recovery errors. `worktree_overlays.rs:329-395` renders warnings/buttons locally. These confirmation UI decisions are client-owned, not daemon-rendered alerts. |
 
-The GUI owns presentation, typed confirmation, input isolation, request
+The GUI owns presentation, confirmation, input isolation, request
 correlation, and snapshot target validation only. Git safety and removal stay in
 Herdr. There is no daemon transaction binding the displayed path to a later
 remove request: the API accepts only `workspace_id`, not an expected path or
@@ -56,8 +58,8 @@ not local Git checks.
 
 ## Verification Scope
 
-Deterministic tests cover request schema, linked-target/boot validation, typed
-confirmation, dirty escalation, generic errors, cancellation, response correlation,
+Deterministic tests cover request schema, linked-target/boot validation,
+confirmation readiness, dirty escalation, generic errors, cancellation, response correlation,
 coalescing and reconnect isolation. The native sidebar fixture opens the deletion
 dialog and checks editing/input isolation at narrow and wide sizes without a
 daemon. These checks do not perform live checkout removal or establish OS-level

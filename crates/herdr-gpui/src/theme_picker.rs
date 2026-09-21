@@ -542,8 +542,7 @@ impl HerdrWindow {
                     } else if picker.accepting {
                         "Loading theme... Esc to cancel.".to_owned()
                     } else {
-                        "Hover or Up / Down to preview. Enter or click to save. Esc to cancel."
-                            .to_owned()
+                        "Hover or Up / Down to preview. Enter or click a theme to save.".to_owned()
                     }),
             )
     }
