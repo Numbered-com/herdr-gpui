@@ -3,7 +3,7 @@
 //! test can catch GPUI's stale truncation runs. Keep headless checks for geometry.
 #![allow(clippy::unwrap_used)]
 #[cfg(test)]
-use super::HerdrWindow;
+use crate::HerdrWindow;
 #[cfg(test)]
 use crate::{LiveState, WheelAccumulator};
 use gpui::{
@@ -1771,9 +1771,9 @@ fn the_workspace_menu_folds_and_unfolds_a_worktree_group(cx: &mut gpui::TestAppC
 
 #[test]
 fn child_gutter_lines_land_on_whole_device_pixels() {
-    use crate::sidebar::{RowTree, tree_lines};
+    use crate::sidebar::row::{RowTree, tree_lines};
     use gpui::{Bounds, point, size};
-    let font = super::FontConfig {
+    let font = crate::config::FontConfig {
         family: "Menlo".into(),
         size: 12.,
     };

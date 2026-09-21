@@ -1,7 +1,12 @@
 //! The titlebar's Git actions popup: commit, push, and pull request creation
 //! for the focused local checkout.
-use super::*;
-use crate::git::{Action, Status};
+use super::{Page, accent, danger};
+use crate::{
+    HerdrWindow,
+    dialog_input::DialogInput,
+    git::{Action, Status},
+};
+use gpui::{prelude::*, *};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Row {
