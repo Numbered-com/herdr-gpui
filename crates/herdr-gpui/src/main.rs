@@ -153,8 +153,11 @@ struct HerdrWindow {
     avatars: Option<avatars::Avatars>,
     #[cfg(feature = "integration-test")]
     input_probe: smoke::InputProbe,
-    #[cfg(feature = "integration-test")]
+    /// Spaces and agents lists, in that order.
     sidebar_scroll: [ScrollHandle; 2],
+    /// Each list reveals its highlighted row once, so startup opens on the
+    /// selection without fighting the user's own scrolling afterwards.
+    sidebar_revealed: [std::cell::Cell<bool>; 2],
     _poll: Task<()>,
     _activation: Subscription,
 }
@@ -276,8 +279,8 @@ impl HerdrWindow {
             avatars: None,
             #[cfg(feature = "integration-test")]
             input_probe: smoke::InputProbe::default(),
-            #[cfg(feature = "integration-test")]
             sidebar_scroll: Default::default(),
+            sidebar_revealed: Default::default(),
             _poll: poll,
             _activation: cx.observe_window_activation(window, |this, window, cx| {
                 this.active = window.is_window_active();

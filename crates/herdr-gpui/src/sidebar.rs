@@ -68,13 +68,14 @@ impl HerdrWindow {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll();
-        #[cfg(feature = "integration-test")]
-        {
-            spaces = spaces.track_scroll(&self.sidebar_scroll[0]);
-            agents = agents.track_scroll(&self.sidebar_scroll[1]);
-        }
+        spaces = spaces.track_scroll(&self.sidebar_scroll[0]);
+        agents = agents.track_scroll(&self.sidebar_scroll[1]);
         let multi = self.endpoints.len() > 1;
         let mut agent_count = 0;
+        // Child positions of the highlighted rows, for the one-time reveal below.
+        // Agent rows are counted by `agent_count`, which indexes that list.
+        let mut space_rows = 0usize;
+        let mut highlighted = [None; 2];
         for (endpoint_index, endpoint) in self.endpoints.iter().enumerate() {
             let selected = endpoint_index == self.selected_endpoint;
             let endpoint_id = endpoint.id.clone();
@@ -147,6 +148,7 @@ impl HerdrWindow {
                             window.focus(&this.focus);
                         })),
                 );
+                space_rows += 1;
             }
             let live = if selected { &self.live } else { &endpoint.live };
             let Some(snapshot) = &live.snapshot else {
@@ -164,6 +166,10 @@ impl HerdrWindow {
                     break;
                 }
                 let workspace = &snapshot.workspaces[index];
+                if selected && workspace.focused {
+                    highlighted[0] = Some(space_rows);
+                }
+                space_rows += 1;
                 let id = workspace.workspace_id.clone();
                 let context_id = id.clone();
                 let context_endpoint = endpoint_id.clone();
@@ -246,6 +252,9 @@ impl HerdrWindow {
                 );
             }
             for agent in &snapshot.agents {
+                if selected && agent.focused {
+                    highlighted[1] = Some(agent_count);
+                }
                 agent_count += 1;
                 let id = agent.pane_id.clone();
                 let navigate_endpoint = endpoint_id.clone();
@@ -276,6 +285,18 @@ impl HerdrWindow {
                         window.focus(&this.focus);
                     })),
                 );
+            }
+        }
+        // Reveal once, and only after a frame has measured the viewport: the handle
+        // resolves the request against the previous frame's bounds, so an unmeasured
+        // list would scroll to a meaningless offset.
+        for (list, row) in highlighted.iter().enumerate() {
+            if let Some(row) = *row
+                && !self.sidebar_revealed[list].get()
+                && self.sidebar_scroll[list].bounds().size.height > px(0.)
+            {
+                self.sidebar_scroll[list].scroll_to_item(row);
+                self.sidebar_revealed[list].set(true);
             }
         }
         if agent_count == 0 {

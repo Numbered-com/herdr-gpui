@@ -368,8 +368,8 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         avatars: None,
         #[cfg(feature = "integration-test")]
         input_probe: crate::smoke::InputProbe::default(),
-        #[cfg(feature = "integration-test")]
         sidebar_scroll: Default::default(),
+        sidebar_revealed: Default::default(),
         _poll: Task::ready(()),
         _activation: cx.observe_window_activation(window, |_, _, _| {}),
     }
@@ -1410,4 +1410,62 @@ fn check_sidebar(
         );
     }
     Ok(())
+}
+
+#[gpui::test]
+fn startup_reveals_the_focused_workspace_then_leaves_scrolling_alone(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| fixture_window(window, cx));
+        cx.observe(&view, |_, _, cx| cx.notify()).detach();
+        SidebarFixture(view)
+    });
+    let view = cx.update(|_, cx| fixture.read(cx).0.clone());
+    // The window paints while the connection is still awaiting its first snapshot.
+    let mut snapshot = cx
+        .update(|_, cx| view.update(cx, |view, _| view.live.snapshot.take()))
+        .unwrap();
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear());
+    // The fixture's grouped worktrees stay contiguous, so w30 is the 31st row.
+    const ROW: usize = 30;
+    {
+        let snapshot = Arc::make_mut(&mut snapshot);
+        snapshot.focused_workspace_id = Some("w30".into());
+        for workspace in &mut snapshot.workspaces {
+            workspace.focused = workspace.workspace_id == "w30";
+        }
+    }
+    cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            view.live.snapshot = Some(snapshot);
+            cx.notify();
+        })
+    });
+    cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear();
+    });
+    cx.update(|_, cx| {
+        let view = view.read(cx);
+        let spaces = &view.sidebar_scroll[0];
+        let offset = spaces.offset().y;
+        let row = spaces.bounds_for_item(ROW).unwrap();
+        assert!(offset < px(0.), "focused workspace must scroll into view");
+        assert!(row.top() + offset >= spaces.bounds().top(), "{row:?}");
+        assert!(row.bottom() + offset <= spaces.bounds().bottom(), "{row:?}");
+        // The fixture focuses no agent, so that list must stay where it was.
+        assert_eq!(view.sidebar_scroll[1].offset().y, px(0.));
+    });
+    // The reveal is one-shot: later frames must not fight the user's scrolling.
+    cx.update(|window, cx| {
+        view.read(cx).sidebar_scroll[0].set_offset(gpui::point(px(0.), px(0.)));
+        window.refresh();
+        window.draw(cx).clear();
+    });
+    cx.update(|_, cx| {
+        assert_eq!(view.read(cx).sidebar_scroll[0].offset().y, px(0.));
+    });
 }
