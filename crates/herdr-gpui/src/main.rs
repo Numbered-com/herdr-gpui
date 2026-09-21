@@ -1062,10 +1062,17 @@ impl Render for HerdrWindow {
                             .debug_selector(|| "status-version".into())
                             .flex_none()
                             .whitespace_nowrap()
-                            .text_color(rgb(self.theme.muted))
                             .cursor_pointer()
                             .hover(|s| s.bg(rgb(self.theme.active)))
-                            .child(if matches!(self.updater.state(), updater::State::Available { .. } | updater::State::Ready { .. }) {
+                            // A waiting update is the one status here worth
+                            // interrupting for, so it takes the accent color
+                            // the rest of the chrome reserves for chosen rows.
+                            .text_color(rgb(if self.updater.update_available() {
+                                self.theme.primary()
+                            } else {
+                                self.theme.muted
+                            }))
+                            .child(if self.updater.update_available() {
                                 "Update available"
                             } else {
                                 APP_VERSION
