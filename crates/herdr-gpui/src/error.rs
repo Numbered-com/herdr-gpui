@@ -8,6 +8,144 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error(
+        "PR lookup requires your owned local session socket. Select Local using its standard socket; SSH and other socket locations are unsupported."
+    )]
+    PrUntrustedEndpoint,
+    #[error("Checkout lookup failed. Dismiss and reopen the menu.")]
+    DeletionLookup,
+    #[error("Reopen the deletion dialog.")]
+    MissingDeletion,
+    #[error("Type {0} to confirm.")]
+    DeletionConfirmation(&'static str),
+    #[error("{method}: {source}")]
+    Request {
+        method: &'static str,
+        #[source]
+        source: herdr_client::Error,
+    },
+    #[error("Workspace is no longer available. Dismiss and reopen the menu.")]
+    StaleWorkspace,
+    #[error("Workspace label must not be empty.")]
+    EmptyWorkspaceLabel,
+    #[error("Workspace group changed. Dismiss and review the group again.")]
+    WorkspaceGroupChanged,
+    #[error("Repository changed. Dismiss and reopen the menu.")]
+    WorkspaceRepositoryChanged,
+    #[error("Checkout changed. Dismiss and reopen the menu.")]
+    WorkspaceCheckoutChanged,
+    #[error("Daemon did not provide an absolute checkout and repository key.")]
+    PrAbsolutePath,
+    #[error("No supported branch available.")]
+    PrBranch,
+    #[error("Local repository unavailable for worktree lookup.")]
+    PrWorktreeLookup,
+    #[error("Local checkout unavailable or not a trusted Git repository.")]
+    PrCheckout,
+    #[error("Local repository does not match daemon metadata.")]
+    PrRepositoryMismatch,
+    #[error("Checkout branch changed. Waiting for daemon metadata.")]
+    PrBranchChanged,
+    #[error("PR lookup supports GitHub.com origins only.")]
+    PrOrigin,
+    #[error("No local worktree matches the daemon branch.")]
+    PrMissingWorktree,
+    #[error("Multiple local worktrees match the daemon branch.")]
+    PrAmbiguousWorktree,
+    #[error("GitHub repository unavailable. Check repository access and token permissions.")]
+    PrRepository,
+    #[error("PR response exceeded the size limit.")]
+    PrSize,
+    #[error("Multiple PRs match this branch; no PR selected.")]
+    PrAmbiguous,
+    #[error("PR identity does not match the repository and branch.")]
+    PrIdentity,
+    #[error("Could not {operation} for Git PR lookup.")]
+    PrProcess {
+        operation: &'static str,
+        #[source]
+        source: io::Error,
+    },
+    #[error("Invalid process text.")]
+    PrEncoding(#[source] std::str::Utf8Error),
+    #[error("No repository metadata.")]
+    PrMetadata,
+    #[error(
+        "GitHub authentication required. Use menu > GitHub sign-in or set GH_TOKEN / GITHUB_TOKEN."
+    )]
+    GitHubAuthentication,
+    #[error("GitHub denied access: check token permissions, SSO authorization, or rate limits.")]
+    GitHubForbidden,
+    #[error("GitHub rate limit reached. Retry later.")]
+    GitHubRateLimit,
+    #[error("GitHub request failed (HTTP {0}). Check network and repository access.")]
+    GitHubStatus(u16),
+    #[error("GitHub response could not be read within the size/time limit.")]
+    GitHubRead(#[source] io::Error),
+    #[error("GitHub response exceeded the size limit.")]
+    GitHubSize,
+    #[error("Invalid GitHub JSON response.")]
+    GitHubJson(#[source] GitHubJsonError),
+    #[error("Invalid GitHub token. Replace the configured credential.")]
+    GitHubToken,
+    #[error("Invalid GitHub credential encoding.")]
+    GitHubEncoding(#[source] std::str::Utf8Error),
+    #[cfg(target_os = "macos")]
+    #[error("Cannot read GitHub Keychain entry. Unlock your login Keychain or set GH_TOKEN.")]
+    KeychainRead(#[source] security_framework::base::Error),
+    #[cfg(target_os = "macos")]
+    #[error("GitHub Keychain update failed. Unlock your login Keychain and try again.")]
+    KeychainWrite(#[source] security_framework::base::Error),
+    #[error("Missing credential directory.")]
+    CredentialDirectory,
+    #[error(
+        "Cannot access private GitHub credential file. Require an owned directory and regular 0600 file; symlinks are rejected."
+    )]
+    CredentialPermissions,
+    #[error("Cannot access private GitHub credential file.")]
+    CredentialIo(#[source] io::Error),
+    #[error(
+        "No secure credential store configured. Explicitly opt in with [github] allow_plaintext_credentials = true, or use GH_TOKEN / GITHUB_TOKEN."
+    )]
+    CredentialPolicy,
+    #[error("PR lookup cancelled.")]
+    PrCancelled,
+    #[error("PR lookup timed out (15 seconds).")]
+    PrTimeout,
+    #[error("GitHub network request failed or timed out.")]
+    GitHubNetwork(#[source] ureq::Error),
+    #[error("GitHub query failed. Check token repository permissions and rate limits.")]
+    GitHubQuery,
+    #[error("Invalid GitHub authorization header.")]
+    GitHubHeader(#[source] ureq::http::header::InvalidHeaderValue),
+    #[error("Invalid GitHub device authorization response.")]
+    GitHubDevice,
+    #[error("Invalid GitHub profile response.")]
+    GitHubProfile,
+    #[error("GitHub code expired. Sign in again.")]
+    GitHubExpired,
+    #[error("GitHub authorization denied.")]
+    GitHubDenied,
+    #[error("GitHub authorization failed. Check OAuth application settings.")]
+    GitHubAuthorization,
+    #[error("Unsupported GitHub token type.")]
+    GitHubTokenType,
+    #[error("GitHub {0} worker stopped.")]
+    GitHubWorker(&'static str),
+    #[error("{0}")]
+    Config(#[source] config_loader::ConfigError),
+    #[error("{source}")]
+    ConfigFile {
+        uri: Option<String>,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    #[error("HERDR_GITHUB_OAUTH_CLIENT_ID must be UTF-8")]
+    ClientIdEncoding,
+    #[error(
+        "{0} must be 1..256 ASCII letters, digits, '.', '_' or '-' (public client ID, not a secret)"
+    )]
+    InvalidClientId(&'static str),
     #[error("{0}")]
     Io(#[from] io::Error),
     #[error("{0}")]
@@ -115,10 +253,38 @@ pub enum Error {
 }
 
 impl Error {
+    pub(crate) fn github_json(source: serde_json::Error) -> Self {
+        Self::GitHubJson(GitHubJsonError(source))
+    }
+
     pub(crate) fn at_path(self, path: &Path) -> Self {
         Self::Path {
             path: path.to_owned(),
             source: Box::new(self),
+        }
+    }
+}
+
+/// Parser diagnostics can quote credential-bearing fields; expose the cause only
+/// to explicit source inspection, never ordinary Display or Debug formatting.
+#[derive(thiserror::Error)]
+#[error("Invalid GitHub JSON response.")]
+pub struct GitHubJsonError(#[source] serde_json::Error);
+
+impl std::fmt::Debug for GitHubJsonError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GitHubJsonError([REDACTED])")
+    }
+}
+
+impl From<config_loader::ConfigError> for Error {
+    fn from(error: config_loader::ConfigError) -> Self {
+        // config preserves this cause but does not expose it through Error::source.
+        match error {
+            config_loader::ConfigError::FileParse { uri, cause } => {
+                Self::ConfigFile { uri, source: cause }
+            }
+            error => Self::Config(error),
         }
     }
 }
@@ -141,6 +307,35 @@ pub enum ThemeParseError {
 mod tests {
     use super::*;
     use std::error::Error as _;
+
+    #[test]
+    fn github_failures_keep_typed_sources_and_redact_parser_diagnostics() -> anyhow::Result<()> {
+        let source = serde_json::from_str::<u64>("\"fixture-private-value\"")
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("expected JSON type error"))?;
+        let error = Error::github_json(source);
+        assert!(matches!(error, Error::GitHubJson(_)));
+        assert!(!format!("{error} {error:?}").contains("fixture-private-value"));
+        assert!(
+            error
+                .source()
+                .and_then(|source| source.source())
+                .is_some_and(|source| source.is::<serde_json::Error>())
+        );
+
+        let error = Error::CredentialIo(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert!(
+            error
+                .source()
+                .and_then(|source| source.downcast_ref::<io::Error>())
+                .is_some_and(|source| source.kind() == io::ErrorKind::PermissionDenied)
+        );
+        let error = Error::GitHubRead(io::Error::from(io::ErrorKind::TimedOut));
+        assert!(
+            matches!(&error, Error::GitHubRead(source) if source.kind() == io::ErrorKind::TimedOut)
+        );
+        Ok(())
+    }
 
     #[test]
     fn io_context_retains_source_kind_and_cleanup_failure() {

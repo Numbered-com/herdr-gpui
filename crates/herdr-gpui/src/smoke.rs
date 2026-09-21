@@ -187,7 +187,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         }
                         let before = state.input_probe;
                         window.dispatch_action(Box::new(RunCommand { command: Command::Tab }), cx);
-                        for key in ["down", "enter", "x", "escape"] {
+                        for key in ["down", "down", "enter", "x", "escape"] {
                             window.dispatch_keystroke(
                                 Keystroke {
                                     key: key.into(),
@@ -217,12 +217,160 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
             }
         }
         #[cfg(target_os = "macos")]
+        for (width, height) in [(640., 400.), (1200., 780.)] {
+            let _ = handle.update(cx, |_, window, _| window.resize(size(px(width), px(height))));
+            timer.timer(Duration::from_millis(100)).await;
+            for (keys, action) in [
+                ("down enter", menu::WorkspaceAction::Rename),
+                ("down down enter", menu::WorkspaceAction::Close),
+                ("down down down enter", menu::WorkspaceAction::NewWorktree),
+                ("down down down enter", menu::WorkspaceAction::DeleteWorktree),
+            ] {
+                let point = handle.update(cx, |view, window, cx| {
+                    view.live.status = ConnectionStatus::Connected;
+                    // Keep the clicked row inside the scroll viewport below the native titlebar.
+                    view.sidebar_scroll[0].set_offset(point(px(0.), px(if action == menu::WorkspaceAction::DeleteWorktree { -140. } else { -80. })));
+                    cx.default_global::<sidebar::layout_tests::PaintedProbes>().0.clear();
+                    cx.notify();
+                    window.refresh();
+                });
+                if let Err(error) = point {
+                    eprintln!("SIDEBAR native dialog setup FAIL: {error}");
+                    let _ = cx.update(|cx| cx.quit());
+                    return;
+                }
+                let point = AnyWindowHandle::from(handle).update(cx, |_, window, cx| {
+                    window.draw(cx).clear();
+                    cx.global::<sidebar::layout_tests::PaintedProbes>().0.get(if action == menu::WorkspaceAction::DeleteWorktree { "sidebar-child" } else { "agent-launcher" }).map(|probe| {
+                        eprintln!("DIALOG native {action:?} viewport={:?}", window.viewport_size());
+                         probe.bounds.center()
+                    })
+                });
+                let target = handle.update(cx, |_, window, _| sidebar::native_tests::Target::acquire(window));
+                let clicked = match (point, target) {
+                    (Ok(Some(point)), Ok(Ok(target))) => target.right_click(point.x.to_f64(), point.y.to_f64()),
+                    _ => Err(anyhow!("missing native workspace")),
+                };
+                timer.timer(Duration::from_millis(50)).await;
+                let verified = AnyWindowHandle::from(handle).update(cx, |root, window, cx| -> Result<()> {
+                    clicked?;
+                    let view = root.downcast::<HerdrWindow>().map_err(|_| anyhow!("unexpected root"))?;
+                    if view.read(cx).menu.page != Some(menu::Page::Workspace) { bail!("right click did not open workspace menu"); }
+                    view.update(cx, |view, _| -> Result<()> {
+                        let mut pr = pull_request::fixture()?;
+                        pr.head_ref_name = "feature/a-deliberately-long-branch-name-for-the-compact-popover".repeat(3);
+                        view.workspace_pr_fixture(pr)?;
+                        Ok(())
+                    })?;
+                    cx.default_global::<sidebar::layout_tests::PaintedProbes>().0.clear();
+                    window.draw(cx).clear();
+                    let probes = &cx.global::<sidebar::layout_tests::PaintedProbes>().0;
+                    for (text, probe) in probes.iter().filter(|(text, _)| text.starts_with("#8 ") || matches!(text.as_str(), "+1730" | "-31")) {
+                        if probe.glyph_text != probe.cached || probe.clipped || probe.glyph_text.is_empty() {
+                            bail!("native PR glyphs clipped: {text} {probe:?}");
+                        }
+                        if text.starts_with("#8 ") && (!probe.glyph_text.starts_with("#8 Improve") || !probe.glyph_text.ends_with('\u{2026}')) {
+                            bail!("native PR title did not truncate correctly: {probe:?}");
+                        }
+                    }
+                    if !probes.contains_key("+1730") || !probes.contains_key("-31") || !probes.keys().any(|text| text.starts_with("#8 ")) {
+                        bail!("native PR summary was not painted");
+                    }
+                    let title = probes.iter().find(|(text, _)| text.starts_with("#8 ")).map(|(_, probe)| probe).context("missing PR title")?;
+                    let additions = probes.get("+1730").context("missing PR additions")?;
+                    if additions.bounds.bottom() - title.bounds.top() > px(160.)
+                        || additions.bounds.bottom() > window.viewport_size().height
+                        || title.bounds.right() > window.viewport_size().width
+                    {
+                        bail!("native PR summary is oversized or outside the viewport");
+                    }
+                    let before = view.read(cx).input_probe;
+                    for key in keys.split(' ') {
+                        window.dispatch_keystroke(Keystroke::parse(key)?, cx);
+                    }
+                    window.draw(cx).clear();
+                    if view.read(cx).menu.page != Some(menu::Page::Dialog(action)) { bail!("workspace menu opened wrong dialog"); }
+                    window.dispatch_action(Box::new(RunCommand { command: Command::Tab }), cx);
+                    if action != menu::WorkspaceAction::Close {
+                        window.dispatch_keystroke(Keystroke::parse("cmd-a")?, cx);
+                        for ch in "long-label-\u{65e5}\u{672c}-\u{1f600}".repeat(4).chars() {
+                            window.dispatch_keystroke(Keystroke::parse(&ch.to_string())?, cx);
+                        }
+                        window.draw(cx).clear();
+                        view.update(cx, |view, cx| -> Result<()> {
+                            let input = view.menu.input.as_ref().context("missing native editor")?;
+                            if input.text != "long-label-\u{65e5}\u{672c}-\u{1f600}".repeat(4) { bail!("native editor lost Unicode text"); }
+                            let end = input.text.encode_utf16().count();
+                            let field = input.bounds;
+                            let caret = view.bounds_for_range(end..end, Bounds::default(), window, cx).context("missing native IME bounds")?;
+                            if !field.contains(&caret.origin) || field.right() > window.viewport_size().width || field.bottom() > window.viewport_size().height { bail!("native dialog caret/field out of bounds"); }
+                            Ok(())
+                        })?;
+                    }
+                    window.dispatch_keystroke(Keystroke::parse("escape")?, cx);
+                    let state = view.read(cx);
+                    if state.menu.page.is_some() || state.input_probe.text != before.text || state.input_probe.keys != before.keys || state.input_probe.actions != before.actions || !state.focus.is_focused(window) { bail!("workspace dialog leaked input or lost focus"); }
+                    Ok(())
+                });
+                if !matches!(verified, Ok(Ok(()))) {
+                    eprintln!("SIDEBAR native dialog FAIL: {verified:?}");
+                    let _ = cx.update(|cx| cx.quit());
+                    return;
+                }
+            }
+        }
+        for (width, height) in [(640., 400.), (1200., 780.)] {
+            let _ = handle.update(cx, |_, window, _| window.resize(size(px(width), px(height))));
+            timer.timer(Duration::from_millis(100)).await;
+            for state in 0..5 {
+                let result = AnyWindowHandle::from(handle).update(cx, |root, window, cx| -> Result<()> {
+                    let view = root.downcast::<HerdrWindow>().map_err(|_| anyhow!("unexpected root"))?;
+                    view.update(cx, |view, cx| {
+                        view.github_fixture(state == 1, window, cx);
+                        if state == 2 {
+                            view.menu.github.failed = true;
+                            view.menu.github.message = Some("GitHub code expired. Sign in again. ".repeat(40));
+                        } else if state == 3 {
+                            view.menu.github = github::Auth::connected_fixture();
+                        } else if state == 4 {
+                            view.menu.github = github::Auth::requesting_fixture();
+                        }
+                    });
+                    cx.default_global::<sidebar::layout_tests::PaintedProbes>().0.clear();
+                    window.draw(cx).clear();
+                    if state == 1 {
+                        let probe = cx.global::<sidebar::layout_tests::PaintedProbes>().0.get("ABCD-1234").context("GitHub device code not painted")?;
+                        if probe.clipped || probe.glyph_text != "ABCD-1234" { bail!("GitHub device code clipped"); }
+                    }
+                    let probes = &cx.global::<sidebar::layout_tests::PaintedProbes>().0;
+                    if probes.contains_key("Cancel (Esc)") || probes.contains_key("Close (Esc)") { bail!("redundant GitHub footer close"); }
+                    let close = probes.get("Close").context("missing GitHub header close")?;
+                    if close.clipped || close.glyph_text != "Close" || close.bounds.bottom() > window.viewport_size().height { bail!("GitHub header close clipped"); }
+                    if state == 3 {
+                        let signout = probes.get("Sign out (D)").context("missing signout action")?;
+                        if signout.bounds.bottom() - close.bounds.top() > px(230.) { bail!("connected GitHub panel is oversized"); }
+                    }
+                    let before = view.read(cx).input_probe;
+                    window.dispatch_keystroke(Keystroke::parse("c")?, cx);
+                    window.dispatch_keystroke(Keystroke::parse("escape")?, cx);
+                    let state = view.read(cx);
+                    if state.menu.page.is_some() || state.input_probe.text != before.text || state.input_probe.keys != before.keys || !state.focus.is_focused(window) { bail!("GitHub sign-in leaked input or lost focus"); }
+                    Ok(())
+                });
+                if !matches!(result, Ok(Ok(()))) {
+                    eprintln!("SIDEBAR native GitHub auth FAIL: {result:?}");
+                    let _ = cx.update(|cx| cx.quit());
+                    return;
+                }
+            }
+        }
+        #[cfg(target_os = "macos")]
         if let Err(error) = sidebar_hosts(handle, cx).await {
             eprintln!("SIDEBAR native hosts FAIL: {error:#}");
             let _ = cx.update(|cx| cx.quit());
             return;
         }
-        eprintln!("SIDEBAR native PASS: 12 Menlo draws, 4 sizes, collapse/expand, menu keyboard isolation and outside dismissal; host routing, disabled selection, scoped repositories, resized host/agent glyphs, independent scroll and decoy key window");
+        eprintln!("SIDEBAR native PASS: 12 Menlo draws, 4 sizes, collapse/expand, menu isolation, PR title/stats glyphs, GitHub auth fixtures, right-click dialogs and Unicode fields at 2 sizes; host routing, disabled selection, scoped repositories, resized host/agent glyphs, independent scroll and decoy key window");
         EXIT_CODE.store(0, Ordering::SeqCst);
         let _ = cx.update(|cx| cx.quit());
     })
@@ -287,14 +435,44 @@ async fn sidebar_hosts(handle: WindowHandle<HerdrWindow>, cx: &mut AsyncApp) -> 
         .context("preparing sidebar host fixtures")?;
     cx.update(|cx| cx.activate(true))
         .context("activating sidebar fixture")?;
-    cx.background_executor()
-        .timer(Duration::from_millis(100))
-        .await;
+    decoy
+        .update(cx, |_, window, _| window.activate_window())
+        .context("activating decoy window")?;
+    // GPUI schedules AppKit activation. Wait for its result, not a guessed delay
+    // followed by a synchronous makeKeyWindow call on a possibly unordered window.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let target = decoy
+            .update(cx, |_, window, _| Target::acquire(window))
+            .context("acquiring decoy target")??;
+        let key = target.is_key();
+        drop(target);
+        let resized = handle
+            .update(cx, |_, window, _| {
+                window.viewport_size() == fixture_size(480., 780.)
+            })
+            .context("checking sidebar resize")?;
+        if key && resized {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let mtm = objc2::MainThreadMarker::new()
+                .context("fixture activation requires main thread")?;
+            let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+            bail!(
+                "decoy activation/resize deadline: key={key}, resized={resized}, app_active={}, app_hidden={}",
+                app.isActive(),
+                app.isHidden()
+            );
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(10))
+            .await;
+    }
     // The decoy is deliberately key. Neither acquisition nor delivery may use it.
     let target = decoy
         .update(cx, |_, window, _| Target::acquire(window))
         .context("acquiring decoy target")??;
-    target.make_key();
     if !target.is_key() {
         bail!("decoy did not become key");
     }

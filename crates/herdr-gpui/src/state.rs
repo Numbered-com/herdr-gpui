@@ -5,6 +5,8 @@ use herdr_client::{
 };
 use std::sync::Arc;
 
+pub(crate) type DialogResponse = Result<serde_json::Value, Arc<crate::Error>>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectionStatus {
     Connecting,
@@ -41,7 +43,11 @@ pub struct LiveState {
     pub status: ConnectionStatus,
     pub error: Option<String>,
     pub missing_installation: bool,
+    /// Same-user peer at the owned standard socket, not executable attestation.
+    pub(crate) local_daemon_peer: bool,
+    pub(crate) supports_workspace_get: bool,
     pub dirty: bool,
+    pub(crate) dialog_response: Option<(String, Option<DialogResponse>)>,
     agent_presentation: AgentPresentation,
     outer_focused: Option<bool>,
     pub activation: Option<SurfaceActivation>,
@@ -74,7 +80,10 @@ impl Default for LiveState {
             status: ConnectionStatus::Connecting,
             error: None,
             missing_installation: false,
+            local_daemon_peer: false,
+            supports_workspace_get: false,
             dirty: true,
+            dialog_response: None,
             agent_presentation: AgentPresentation::default(),
             outer_focused: None,
             activation: None,
@@ -176,6 +185,10 @@ impl LiveState {
     pub fn apply(&mut self, event: ClientEvent) {
         match event {
             ClientEvent::Connected(welcome) => {
+                self.supports_workspace_get = welcome
+                    .methods
+                    .iter()
+                    .any(|method| method == "workspace.get");
                 self.supports_surface = welcome
                     .methods
                     .iter()
@@ -226,10 +239,16 @@ impl LiveState {
             }
             ClientEvent::CommandRejected { request_id, reason } => {
                 self.error = Some(reason.to_string());
+                let reason = Arc::new(crate::Error::Client(reason));
+                if let Some((id, result)) = &mut self.dialog_response
+                    && request_id.as_ref() == Some(id)
+                {
+                    *result = Some(Err(reason.clone()));
+                }
                 if let Some(rename) = &mut self.tab_rename
                     && request_id.as_ref() == Some(&rename.request)
                 {
-                    rename.result = Some(Err(Arc::new(crate::Error::Client(reason))));
+                    rename.result = Some(Err(reason));
                 }
                 if let Some(activation) = &mut self.activation
                     && request_id.as_ref() == Some(&activation.request)
@@ -272,6 +291,11 @@ impl LiveState {
                 {
                     self.error = Some(error.to_string());
                 }
+                if let Some((id, result)) = &mut self.dialog_response
+                    && *id == request_id
+                {
+                    *result = Some(Ok(response));
+                }
             }
             ClientEvent::Message(ServerMessage::ClientShellError { message }) => {
                 self.error = Some(message)
@@ -300,6 +324,40 @@ mod tests {
     use super::*;
     use herdr_client::protocol::AgentStatus;
     use herdr_client::protocol::FrameData;
+
+    #[test]
+    fn dialog_response_is_correlated_and_survives_coalescing() {
+        let mut state = LiveState {
+            dialog_response: Some(("remove".into(), None)),
+            ..LiveState::default()
+        };
+        let response = serde_json::json!({"error":{"code":"dirty_worktree_requires_force", "message":"dirty"}});
+        state.apply(ClientEvent::Response {
+            request_id: "remove".into(),
+            response: response.clone(),
+        });
+        state.apply(ClientEvent::Response {
+            request_id: "other".into(),
+            response: serde_json::json!({"result":{}}),
+        });
+        state.apply(ClientEvent::Snapshot(snapshot()));
+        assert!(
+            matches!(&state.dialog_response, Some((id, Some(Ok(value)))) if id == "remove" && value == &response)
+        );
+        state.dialog_response = Some(("next".into(), None));
+        state.apply(ClientEvent::CommandRejected {
+            request_id: Some("other".into()),
+            reason: herdr_client::Error::Disconnected,
+        });
+        assert!(matches!(&state.dialog_response, Some((id, None)) if id == "next"));
+        state.apply(ClientEvent::CommandRejected {
+            request_id: Some("next".into()),
+            reason: herdr_client::Error::CommandBoot,
+        });
+        assert!(
+            matches!(&state.dialog_response, Some((id, Some(Err(error)))) if id == "next" && matches!(error.as_ref(), crate::Error::Client(herdr_client::Error::CommandBoot)))
+        );
+    }
 
     #[test]
     fn rename_failures_stay_typed_and_shared_across_mailbox_clones() {

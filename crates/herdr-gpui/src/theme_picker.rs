@@ -44,6 +44,8 @@ impl HerdrWindow {
         if !self.open_menu(window, cx) {
             return;
         }
+        // A pending reload must not replace this newer interactive appearance.
+        self.config_load = None;
         self.menu.page = Some(Page::Themes);
         let mut picker = if let Some(picker) = self.menu.themes.take() {
             picker.search.update(cx, |input, cx| input.clear(cx));
@@ -578,6 +580,8 @@ mod tests {
             cx.simulate_keystrokes("escape");
             let close = cx.debug_bounds("theme-close").unwrap();
             cx.simulate_click(close.center(), Modifiers::default());
+            let avatar = cx.debug_bounds("titlebar-avatar").unwrap();
+            cx.simulate_click(avatar.center(), Modifiers::default());
             cx.simulate_mouse_down(
                 point(px(5.), px(5.)),
                 MouseButton::Left,

@@ -74,6 +74,13 @@ impl ConnectionBridge {
                     {
                         state.daemon_starting();
                     }
+                })
+                .map(|(stream, local)| {
+                    if let Ok(mut state) = startup_inbox.lock() {
+                        state.local_daemon_peer = local;
+                        state.dirty = true;
+                    }
+                    stream
                 });
                 if let Err(error) = &result {
                     let category = if crate::daemon::is_missing_installation(error) {
@@ -139,7 +146,37 @@ impl ConnectionBridge {
             return None;
         }
         state.dirty = false;
-        Some(state.clone())
+        // Deliver the single response once rather than cloning a potentially large
+        // checkout list into every subsequent surface update.
+        let response = state
+            .dialog_response
+            .as_mut()
+            .and_then(|(_, result)| result.take());
+        let mut update = state.clone();
+        if let Some((_, result)) = &mut update.dialog_response {
+            *result = response;
+        }
+        Some(update)
+    }
+
+    pub fn request_dialog(
+        &self,
+        boot_id: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> crate::Result<String> {
+        // Register while holding the mailbox so even an immediate rejection is retained.
+        let mut state = self
+            .inbox
+            .try_lock()
+            .map_err(|_| crate::Error::ConnectionBusy)?;
+        let id = self
+            .handle
+            .as_ref()
+            .ok_or(crate::Error::NotConnected)?
+            .request(boot_id, method, params)?;
+        state.dialog_response = Some((id.clone(), None));
+        Ok(id)
     }
 
     pub fn send_input(
@@ -212,7 +249,13 @@ mod tests {
     fn detach_and_reconnect_fence_old_inboxes() {
         let mut bridge = bridge();
         let old = bridge.inbox.clone();
+        old.lock().unwrap().local_daemon_peer = true;
+        old.lock().unwrap().dialog_response = Some(("remove".into(), None));
         bridge.detach(true);
+        old.lock().unwrap().apply(ClientEvent::Response {
+            request_id: "remove".into(),
+            response: serde_json::json!({"error":{"code":"dirty_worktree_requires_force"}}),
+        });
         old.lock().unwrap().missing_installation = true;
         old.lock().unwrap().apply(ClientEvent::Disconnected {
             reason: "old connection".into(),
@@ -220,9 +263,12 @@ mod tests {
         let detached = bridge.take_update().unwrap();
         assert_eq!(detached.status, ConnectionStatus::Detached);
         assert!(!detached.missing_installation);
+        assert!(!detached.local_daemon_peer);
         assert!(detached.error.is_none());
+        assert!(detached.dialog_response.is_none());
         assert!(detached.snapshot.is_none() && detached.surface.is_none());
         let old = bridge.inbox.clone();
+        old.lock().unwrap().local_daemon_peer = true;
         let mut options = ConnectOptions::default();
         options.surface_size.cols = 0;
         bridge.reconnect(options, false, true);
@@ -231,7 +277,36 @@ mod tests {
         });
         let failed = bridge.take_update().unwrap();
         assert_eq!(failed.status, ConnectionStatus::Disconnected);
+        assert!(!failed.local_daemon_peer);
         assert_ne!(failed.error.as_deref(), Some("detached connection"));
         assert!(!Arc::ptr_eq(&old, &bridge.inbox));
+    }
+
+    #[test]
+    fn dialog_result_moves_out_once_without_losing_pending_registration() {
+        let bridge = bridge();
+        bridge.inbox.lock().unwrap().dialog_response = Some(("list".into(), None));
+        assert!(matches!(
+            bridge.take_update().unwrap().dialog_response,
+            Some((id, None)) if id == "list"
+        ));
+        bridge.inbox.lock().unwrap().apply(ClientEvent::Response {
+            request_id: "list".into(),
+            response: serde_json::json!({"result":{}}),
+        });
+        assert!(
+            bridge
+                .take_update()
+                .unwrap()
+                .dialog_response
+                .unwrap()
+                .1
+                .is_some()
+        );
+        bridge.inbox.lock().unwrap().set_outer_focus(true);
+        assert!(matches!(
+            bridge.take_update().unwrap().dialog_response,
+            Some((id, None)) if id == "list"
+        ));
     }
 }

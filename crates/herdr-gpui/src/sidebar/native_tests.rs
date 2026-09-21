@@ -5,6 +5,12 @@ use cocoa::{
     base::{id, nil},
     foundation::{NSPoint, NSRect},
 };
+use core_graphics::{
+    event::{CGEvent, CGEventType, CGMouseButton},
+    event_source::{CGEventSource, CGEventSourceStateID},
+    geometry::CGPoint,
+};
+use foreign_types::ForeignType;
 use objc::{class, msg_send, sel, sel_impl};
 use std::{marker::PhantomData, rc::Rc};
 
@@ -50,12 +56,6 @@ impl Target {
         }
     }
 
-    pub(crate) fn make_key(&self) {
-        unsafe {
-            let _: () = msg_send![self.window, makeKeyWindow];
-        }
-    }
-
     pub(crate) fn is_key(&self) -> bool {
         unsafe { msg_send![self.window, isKeyWindow] }
     }
@@ -82,6 +82,44 @@ impl Target {
                     let _: () = msg_send![self.view, mouseDown: event];
                 } else {
                     let _: () = msg_send![self.view, mouseUp: event];
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn right_click(&self, x: f64, y: f64) -> Result<()> {
+        // CGEvent supplies the right-button number that mouseEventWithType omits.
+        // Dispatch directly to the retained fixture view, never the key window.
+        unsafe {
+            let bounds: NSRect = msg_send![self.view, bounds];
+            let flipped: bool = msg_send![self.view, isFlipped];
+            let point = NSPoint::new(
+                bounds.origin.x + x,
+                bounds.origin.y + if flipped { y } else { bounds.size.height - y },
+            );
+            let location: NSPoint = msg_send![self.view, convertPoint: point toView: nil];
+            let screens: id = msg_send![class!(NSScreen), screens];
+            let screen: id = msg_send![screens, objectAtIndex: 0_usize];
+            let frame: NSRect = msg_send![screen, frame];
+            for kind in [CGEventType::RightMouseDown, CGEventType::RightMouseUp] {
+                let source = CGEventSource::new(CGEventSourceStateID::Private)
+                    .map_err(|_| anyhow::anyhow!("event source"))?;
+                let event = CGEvent::new_mouse_event(
+                    source,
+                    kind,
+                    CGPoint::new(location.x, frame.size.height - location.y),
+                    CGMouseButton::Right,
+                )
+                .map_err(|_| anyhow::anyhow!("right mouse event"))?;
+                let native: id = msg_send![class!(NSEvent), eventWithCGEvent: event.as_ptr()];
+                if native == nil {
+                    bail!("cannot create native right mouse event");
+                }
+                if matches!(kind, CGEventType::RightMouseDown) {
+                    let _: () = msg_send![self.view, rightMouseDown: native];
+                } else {
+                    let _: () = msg_send![self.view, rightMouseUp: native];
                 }
             }
         }
