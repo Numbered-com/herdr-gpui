@@ -1,0 +1,42 @@
+# TEMPORARY. Reproduces the release signing keychain setup on a runner without a
+# build, so signing failures can be iterated on in about a minute instead of the
+# twelve a full release run costs. It signs a stub binary, never a real artifact,
+# and publishes nothing. Delete this file and scripts/release/diagnose-signing.sh
+# once macOS signing works.
+name: Signing Diagnostics
+run-name: Signing diagnostics @ ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  diagnose:
+    name: Diagnose macOS signing
+    # Identical guards to release.yml: this job reaches the signing certificate.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'penso/herdr-gpui' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'penso' && github.triggering_actor == 'penso'
+    runs-on: macos-15
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Reproduce the signing keychain setup and report every step
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+        run: bash scripts/release/diagnose-signing.sh
