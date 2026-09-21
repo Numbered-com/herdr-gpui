@@ -434,6 +434,28 @@ impl Theme {
         "Catppuccin Latte",
     ];
 
+    /// The theme's primary accent, used for the selected tab and other
+    /// selection fills that must read as chosen rather than merely hovered.
+    pub fn primary(&self) -> u32 {
+        self.palette[5]
+    }
+
+    /// Whichever of the theme's two text colors contrasts more with `fill`.
+    /// A fixed light-or-dark rule breaks on light themes, where the accent and
+    /// the background sit on the same side of any threshold.
+    pub fn text_on(&self, fill: u32) -> u32 {
+        let luminance = |color: u32| {
+            let channel = |shift: u32| ((color >> shift) & 255) as f32 / 255.;
+            0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+        };
+        let fill = luminance(fill);
+        if (luminance(self.background) - fill).abs() >= (luminance(self.foreground) - fill).abs() {
+            self.background
+        } else {
+            self.foreground
+        }
+    }
+
     fn derive_chrome(&mut self) {
         let blend = |percent: u32| {
             let channel = |shift: u32| {
@@ -556,6 +578,38 @@ impl Theme {
 mod tests {
     use super::*;
     use anyhow::Context as _;
+
+    #[test]
+    fn primary_selection_text_contrasts_in_every_builtin_theme() {
+        let luminance = |color: u32| {
+            let channel = |shift: u32| ((color >> shift) & 255) as f32 / 255.;
+            0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+        };
+        for name in Theme::BUILTIN_NAMES {
+            let theme = Theme::builtin(name).unwrap_or_else(|| panic!("missing theme {name}"));
+            let primary = theme.primary();
+            let text = theme.text_on(primary);
+            assert_eq!(
+                primary, theme.palette[5],
+                "{name}: accent comes from ANSI 5"
+            );
+            assert!(
+                text == theme.background || text == theme.foreground,
+                "{name}: text must be one of the theme's own colors"
+            );
+            let gap = (luminance(text) - luminance(primary)).abs();
+            let other = if text == theme.background {
+                theme.foreground
+            } else {
+                theme.background
+            };
+            assert!(gap >= 0.3, "{name}: unreadable selection, gap {gap}");
+            assert!(
+                gap >= (luminance(other) - luminance(primary)).abs(),
+                "{name}: the other text color contrasts more"
+            );
+        }
+    }
 
     #[test]
     fn errors_retain_paths_categories_and_parser_sources() -> anyhow::Result<()> {

@@ -647,6 +647,14 @@ impl Render for HerdrWindow {
                 let id = tab.tab_id.clone();
                 let context_id = id.clone();
                 let close_id = id.clone();
+                // Selected tabs carry the theme's accent, so the choice reads as
+                // primary rather than as the hover tint used elsewhere.
+                let (background, text) = if tab.focused {
+                    let background = self.theme.primary();
+                    (background, self.theme.text_on(background))
+                } else {
+                    (self.theme.surface, self.theme.foreground)
+                };
                 tabs = tabs.child(
                     div()
                         .id(SharedString::from(format!("tab-{id}")))
@@ -654,18 +662,18 @@ impl Render for HerdrWindow {
                             let id = id.clone();
                             move || format!("tab-{id}")
                         })
-                        .px_4()
+                        .pl(px(16.))
+                        // The close button hugs the tab's inner right edge, well
+                        // clear of the label it would otherwise crowd.
+                        .pr(px(4.))
                         .py(px(4.))
                         .flex_none()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(px(16.))
                         .cursor_pointer()
-                        .bg(rgb(if tab.focused {
-                            self.theme.active
-                        } else {
-                            self.theme.surface
-                        }))
+                        .bg(rgb(background))
+                        .text_color(rgb(text))
                         .child(tab.label.clone())
                         .child(
                             div()
@@ -680,7 +688,7 @@ impl Render for HerdrWindow {
                                 .items_center()
                                 .justify_center()
                                 .rounded(px(4.))
-                                .hover(|s| s.bg(rgba((self.theme.foreground << 8) | 0x24)))
+                                .hover(move |s| s.bg(rgba((text << 8) | 0x24)))
                                 .child(
                                     svg()
                                         .path("icons/close.svg")
@@ -689,7 +697,7 @@ impl Render for HerdrWindow {
                                             move || format!("close-tab-icon-{id}")
                                         })
                                         .size(px(16.))
-                                        .text_color(rgb(self.theme.foreground)),
+                                        .text_color(rgb(text)),
                                 )
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                     cx.stop_propagation();
@@ -901,7 +909,10 @@ impl Render for HerdrWindow {
                                     .flex_none()
                                     .bg(rgb(self.theme.surface))
                                     .text_color(rgb(self.theme.foreground))
-                                    .child(tabs.flex_1().min_w_0())
+                                    // Tabs size to their content and shrink when the
+                                    // row is full, so the button sits after the last
+                                    // tab instead of at the far right of the window.
+                                    .child(tabs.flex_shrink().min_w_0())
                                     .child(
                                         div()
                                             .id("new-tab")

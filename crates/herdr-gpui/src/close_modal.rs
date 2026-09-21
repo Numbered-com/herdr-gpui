@@ -247,6 +247,9 @@ mod tests {
             assert_eq!(icon.size, size(px(18.), px(18.)));
             assert_eq!(button.center(), icon.center());
             assert!(button.right() <= px(width));
+            // The button follows the last tab rather than the window's right edge.
+            let last = cx.debug_bounds("tab-inactive").unwrap();
+            assert_eq!(button.left(), last.right());
         }
         cx.simulate_resize(size(px(800.), px(600.)));
         cx.update(|window, cx| window.draw(cx).clear());
@@ -258,6 +261,10 @@ mod tests {
         assert_eq!(button.size, size(px(24.), px(24.)));
         assert_eq!(icon.size, size(px(16.), px(16.)));
         assert_eq!(button.center(), icon.center());
+        // Hugging the tab's inner right edge, clear of the label beside it.
+        let tab = cx.debug_bounds("tab-inactive").unwrap();
+        assert_eq!(tab.right() - button.right(), px(4.));
+        assert!(button.left() - tab.left() >= px(32.));
         for fence in ["cancel", "selection", "generation", "boot"] {
             cx.simulate_mouse_down(button.center(), MouseButton::Left, Modifiers::default());
             cx.simulate_mouse_up(button.center(), MouseButton::Left, Modifiers::default());
