@@ -1,6 +1,6 @@
 //! Embedded development icon; app bundles use their native Info.plist icon.
-#[cfg(any(target_os = "macos", test))]
-const PNG: &[u8] = if env!("HERDR_BUILD_WORKTREE").as_bytes()[0] == b'1' {
+//! The same artwork identifies the build in the About box on every platform.
+pub(super) const PNG: &[u8] = if env!("HERDR_BUILD_WORKTREE").as_bytes()[0] == b'1' {
     include_bytes!("../../../assets/icons/herdr-worktree-1024.png")
 } else {
     include_bytes!("../../../assets/icons/herdr-ui-icon-clean.png")

@@ -1,5 +1,9 @@
 use gpui::{prelude::*, *};
 
+pub(super) fn pull_request_url(pr: &str) -> String {
+    format!("{}/pull/{pr}", crate::about::REPOSITORY)
+}
+
 pub(super) fn render(worktree: bool, branch: &str, pr: &str) -> Option<Div> {
     worktree.then(|| {
         div()
@@ -24,7 +28,7 @@ pub(super) fn render(worktree: bool, branch: &str, pr: &str) -> Option<Div> {
                     .child(branch.to_owned()),
             )
             .when(!pr.is_empty(), |row| {
-                let url = format!("https://github.com/penso/herdr-gpui/pull/{pr}");
+                let url = pull_request_url(pr);
                 row.child(
                     div()
                         .id("worktree-pr")

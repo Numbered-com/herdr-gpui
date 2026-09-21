@@ -12,7 +12,7 @@ impl HerdrWindow {
     pub(super) fn render_preferences(&self, cx: &mut Context<Self>) -> Div {
         let theme = &self.theme;
         let font = &self.config.ui;
-        let accent = rgb(theme.foreground).blend(rgba((theme.palette[4] << 8) | 0x70));
+        let accent = crate::menu::accent(theme);
         let section = |title: &'static str| {
             div()
                 .pt(px(12.))

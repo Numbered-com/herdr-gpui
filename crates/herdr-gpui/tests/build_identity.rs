@@ -282,15 +282,32 @@ fn missing_git_is_stable() {
 #[test]
 fn mock_gh_is_anchored_explicit_validated_and_bounded() {
     use std::os::unix::fs::PermissionsExt;
+    // A sibling test thread that forks while a mock is being written keeps a
+    // write descriptor on it until its own exec, and Linux then refuses to run
+    // the mock with ETXTBSY; lookup_pr reports that unusable command as None.
+    // Run the checks where nothing else forks between writing and running.
+    if std::env::var_os("HERDR_TEST_MOCK_GH").is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "mock_gh_is_anchored_explicit_validated_and_bounded",
+                "--nocapture",
+            ])
+            .env("HERDR_TEST_MOCK_GH", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    }
     let repo = Sandbox::new();
     let gh = repo.0.join("gh");
     fs::write(&gh, format!("#!/bin/sh\n[ \"$PWD\" = '{}' ] || exit 1\n[ \"$#\" = 12 ] || exit 2\n[ \"$1 $2 $3\" = 'pr list --head' ] || exit 3\ncase \"$4\" in feature/test|123|'#123') ;; *) exit 4 ;; esac\nshift 4\n[ \"$*\" = '--state open --limit 1 --json number --jq .[0].number' ] || exit 5\nprintf '42\\n'\n", repo.0.canonicalize().unwrap().display())).unwrap();
     fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+    // These cases assert argument anchoring, validation, and output bounds, not
+    // how fast a loaded runner spawns /bin/sh; the deadline is exercised below.
+    let ample = Duration::from_secs(30);
     for branch in ["feature/test", "123", "#123"] {
-        assert_eq!(
-            lookup_pr(&repo.0, branch, &gh, Duration::from_secs(1)),
-            Some("42".into())
-        );
+        assert_eq!(lookup_pr(&repo.0, branch, &gh, ample), Some("42".into()));
     }
     for body in [
         "printf 'null\\n'",
@@ -300,10 +317,7 @@ fn mock_gh_is_anchored_explicit_validated_and_bounded() {
         "printf '42\\n99\\n'",
     ] {
         fs::write(&gh, format!("#!/bin/sh\n{body}\n")).unwrap();
-        assert_eq!(
-            lookup_pr(&repo.0, "feature/test", &gh, Duration::from_secs(1)),
-            None
-        );
+        assert_eq!(lookup_pr(&repo.0, "feature/test", &gh, ample), None);
     }
     fs::write(&gh, "#!/bin/sh\nexec sleep 30\n").unwrap();
     let start = Instant::now();
@@ -313,12 +327,7 @@ fn mock_gh_is_anchored_explicit_validated_and_bounded() {
     );
     assert!(start.elapsed() < Duration::from_secs(2));
     assert_eq!(
-        lookup_pr(
-            &repo.0,
-            "feature/test",
-            &repo.0.join("missing"),
-            Duration::from_secs(1)
-        ),
+        lookup_pr(&repo.0, "feature/test", &repo.0.join("missing"), ample),
         None
     );
 }
