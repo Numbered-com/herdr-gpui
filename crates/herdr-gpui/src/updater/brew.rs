@@ -398,6 +398,45 @@ mod tests {
         Ok(())
     }
 
+    // Actually upgrades the installed app, so it is opt-in twice over: past
+    // `--ignored` and past an explicit request. `just test-update` must not
+    // sweep it up; `just test-brew-upgrade` runs it on purpose.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "upgrades the installed app; set HERDR_TEST_BREW_UPGRADE and HERDR_TEST_BUNDLE"]
+    fn homebrew_really_installs_a_newer_release() -> anyhow::Result<()> {
+        let bundle = PathBuf::from(
+            env::var_os("HERDR_TEST_BUNDLE")
+                .context("set HERDR_TEST_BUNDLE to an explicit absolute Herdr.app")?,
+        );
+        env::var_os("HERDR_TEST_BREW_UPGRADE")
+            .context("set HERDR_TEST_BREW_UPGRADE=1 to really upgrade this installation")?;
+        let uid = super::super::install::effective_uid()?;
+        let cask = detect(&bundle, uid).context("Homebrew does not own this bundle")?;
+        let before = installed(&cask)?;
+        let cancel = AtomicBool::new(false);
+        let mut lines = 0;
+        let after = upgrade(&cask, &before, &cancel, |line| {
+            lines += 1;
+            println!("{line}");
+        })?;
+        assert!(lines > 1, "the upgrade reported progress");
+        assert!(
+            release::parse_version(&after) > release::parse_version(&before),
+            "{before} -> {after}"
+        );
+        assert_eq!(installed(&cask)?, after, "Homebrew records the new version");
+        // Homebrew owns the same bundle afterwards, so the next check still
+        // delegates instead of falling back to replacing a managed install.
+        assert!(detect(&bundle, uid).is_some());
+        // Running it again cannot claim a second update.
+        assert!(matches!(
+            upgrade(&cask, &after, &cancel, |_| ()),
+            Err(Error::BrewStale(version)) if version == after
+        ));
+        Ok(())
+    }
+
     #[test]
     fn progress_is_bounded_and_failures_keep_the_last_line() -> anyhow::Result<()> {
         let root = tempfile::tempdir()?;
