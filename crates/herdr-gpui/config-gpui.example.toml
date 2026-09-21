@@ -35,7 +35,9 @@ size = 12
 # HERDR_GITHUB_OAUTH_CLIENT_ID overrides this field when set.
 # [github]
 # oauth_client_id = "YOUR_REGISTERED_PUBLIC_CLIENT_ID"
-# Linux only: explicit opt-in when an OS credential store is not available.
+# Explicit opt-in when an OS credential store is not available, which on macOS
+# means every unsigned development build; signed release builds use the Keychain
+# and ignore this field. macOS development builds always use the file store.
 # WARNING: saves an UNENCRYPTED token in the separate 0600 github-credentials file.
 # Other software running as you and backups can read it. Default is false.
 # allow_plaintext_credentials = false
