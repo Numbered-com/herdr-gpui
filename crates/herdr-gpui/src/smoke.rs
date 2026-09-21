@@ -1,10 +1,16 @@
 //! Native opt-in smoke driver. No test platform or blocking waits on the UI thread.
 use crate::{
-    Command, ConnectionStatus, HerdrWindow, LiveState, NavigationTarget, RunCommand, app_icon,
-    endpoint, github, menu, open_window, pull_request, sidebar, updater,
+    Command, HerdrWindow, LiveState, NavigationTarget, RunCommand, github, open_window, sidebar,
+    updater,
 };
+// The window, menu, and icon checks below need an active desktop, so they and
+// everything only they reach are built for macOS alone.
+#[cfg(target_os = "macos")]
+use crate::{ConnectionStatus, app_icon, endpoint, menu, pull_request};
 use anyhow::{Context as _, Result, anyhow, bail};
-use gpui::{prelude::*, *};
+#[cfg(target_os = "macos")]
+use gpui::prelude::*;
+use gpui::*;
 use herdr_client::{ConnectOptions, ConnectTarget, Method, protocol::*};
 use std::{sync::Arc, time::Duration};
 use std::{
