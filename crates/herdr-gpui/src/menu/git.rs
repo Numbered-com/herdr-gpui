@@ -408,72 +408,140 @@ impl HerdrWindow {
         panel
     }
 
+    /// The commit dialog wears the workspace dialogs' chrome: a titled header
+    /// naming the branch, the body, then right-aligned actions. Its primary
+    /// action stays unarmed until there is a message to commit.
     pub(super) fn render_git_commit(&self, cx: &mut Context<Self>) -> Div {
         let theme = &self.theme;
-        let mut panel = div()
+        let font = &self.config.ui;
+        let armed = self
+            .menu
+            .input
+            .as_ref()
+            .is_some_and(|input| !input.text.trim().is_empty());
+        let mut body = div()
             .flex()
             .flex_col()
-            .child(div().p(px(8.)).child("Commit"))
-            .child(div().px(px(8.)).text_color(rgb(theme.muted)).child(format!(
-                "Stages every change in the checkout, then commits. {}",
-                summary(self.git.status())
-            )));
+            .gap(px(10.))
+            .px(px(16.))
+            .py(px(12.))
+            .child(
+                div()
+                    .text_color(rgb(theme.muted))
+                    .child("Stages every change in the checkout, then commits."),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "git-commit-summary".into())
+                    .rounded(px(4.))
+                    .bg(rgb(theme.active))
+                    .px(px(10.))
+                    .py(px(6.))
+                    .child(summary(self.git.status())),
+            );
         if self.menu.input.is_some() {
-            panel = panel.child(self.render_dialog_input(cx));
+            body = body.child(self.render_dialog_input(cx));
         }
         if let Some(error) = &self.menu.error {
-            panel = panel.child(
+            body = body.child(
                 div()
                     .debug_selector(|| "git-commit-error".into())
-                    .p(px(8.))
-                    .text_color(rgb(theme.palette[1]))
+                    .rounded(px(4.))
+                    .bg(rgb(theme.active))
+                    .px(px(10.))
+                    .py(px(6.))
+                    .text_color(danger(theme))
                     .child(error.clone()),
             );
         }
-        // Same button row as the close confirmation: right aligned, the
-        // default action carrying the fill and the foreground border Enter
-        // activates.
-        panel.child(
+        let button = |id: &'static str| {
             div()
-                .flex()
-                .justify_end()
-                .gap(px(8.))
-                .p(px(8.))
-                .child(
-                    div()
-                        .id("git-commit-cancel")
-                        .debug_selector(|| "git-commit-cancel".into())
-                        .px(px(12.))
-                        .py(px(6.))
-                        .rounded(px(4.))
-                        .border_1()
-                        .border_color(rgb(theme.active))
-                        .cursor_pointer()
-                        .hover(|button| button.bg(rgb(theme.active)))
-                        .child("Cancel")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.dismiss_menu(window, cx);
-                        })),
-                )
-                .child(
-                    div()
-                        .id("git-commit-submit")
-                        .debug_selector(|| "git-commit-submit".into())
-                        .px(px(12.))
-                        .py(px(6.))
-                        .rounded(px(4.))
-                        .border_1()
-                        .border_color(rgb(theme.foreground))
-                        .bg(rgb(theme.active))
-                        .cursor_pointer()
-                        .child("Commit")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.submit_git_commit(cx);
-                        })),
-                ),
-        )
+                .id(id)
+                .debug_selector(move || id.into())
+                .px(px(12.))
+                .py(px(6.))
+                .rounded(px(4.))
+                .border_1()
+                .cursor_pointer()
+        };
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .px(px(16.))
+                    .py(px(12.))
+                    .border_b_1()
+                    .border_color(rgb(theme.active))
+                    .child(
+                        svg()
+                            .path(Row::Commit.icon())
+                            .size(px(16.))
+                            .flex_none()
+                            .text_color(rgb(theme.muted)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_size(px(font.size * 1.35))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Commit"),
+                            )
+                            .when_some(self.git.tracked(), |header, input| {
+                                header.child(
+                                    div()
+                                        .truncate()
+                                        .text_color(rgb(theme.muted))
+                                        .child(input.branch.clone()),
+                                )
+                            }),
+                    ),
+            )
+            .child(body)
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .px(px(16.))
+                    .py(px(12.))
+                    .border_t_1()
+                    .border_color(rgb(theme.active))
+                    .child(
+                        button("git-commit-cancel")
+                            .border_color(rgb(theme.active))
+                            .hover(|button| button.bg(rgb(theme.active)))
+                            .child("Cancel")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.dismiss_menu(window, cx);
+                            })),
+                    )
+                    .child(
+                        button("git-commit-submit")
+                            .border_color(rgb(if armed {
+                                theme.foreground
+                            } else {
+                                theme.active
+                            }))
+                            .when(armed, |button| button.bg(rgb(theme.active)))
+                            .text_color(rgb(if armed { theme.foreground } else { theme.muted }))
+                            .hover(|button| button.bg(rgb(theme.active)))
+                            .child("Commit")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.submit_git_commit(cx);
+                            })),
+                    ),
+            )
     }
 }
 
@@ -619,6 +687,10 @@ mod tests {
         let cancel = cx.debug_bounds("git-commit-cancel").unwrap();
         let commit = cx.debug_bounds("git-commit-submit").unwrap();
         let field = cx.debug_bounds("dialog-input").unwrap();
+        // The workspace dialogs' chrome: what will be staged, then the message
+        // field, then the actions.
+        let staged = cx.debug_bounds("git-commit-summary").unwrap();
+        assert!(staged.bottom() <= field.top());
         // Two real buttons, not bare text: padded boxes on one row, the
         // default action last, under the message field.
         assert_eq!(cancel.size.height, commit.size.height);
