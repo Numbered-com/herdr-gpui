@@ -43,7 +43,7 @@ rustix = { version = "=1.1.5", features = ["fs", "process"] }
 nix = { version = "=0.31.3", default-features = false, features = ["socket", "user"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
-cocoa = "0.26"
+cocoa = "0.27"
 objc = "0.2"
 core-graphics = "0.24"
 foreign-types = "0.5"
