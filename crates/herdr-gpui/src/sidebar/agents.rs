@@ -16,7 +16,7 @@ pub(super) fn agents_sort(window: &HerdrWindow, cx: &mut Context<HerdrWindow>) -
         .and_then(|snapshot| snapshot.agent_view_label.clone());
     let label = view
         .clone()
-        .unwrap_or_else(|| window.agent_sort.label().into());
+        .unwrap_or_else(|| window.agent_sort.to_string());
     div()
         .id("agents-sort")
         .debug_selector(|| "agents-sort".into())

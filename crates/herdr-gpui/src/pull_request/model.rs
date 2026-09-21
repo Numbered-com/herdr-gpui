@@ -81,6 +81,21 @@ pub(crate) enum MergeState {
     Unknown,
 }
 
+impl MergeState {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Clean => "No merge conflicts",
+            Self::Dirty => "Merge conflicts",
+            Self::Behind => "Branch behind base",
+            Self::Blocked => "Merge blocked",
+            Self::Unstable => "Checks need attention",
+            Self::Draft => "Not ready for review",
+            Self::HasHooks => "Merge hooks required",
+            Self::Unknown => "Merge status unavailable",
+        }
+    }
+}
+
 impl From<String> for MergeState {
     fn from(value: String) -> Self {
         match value.as_str() {
@@ -107,6 +122,17 @@ pub(crate) enum ReviewDecision {
     ReviewRequired,
     #[default]
     None,
+}
+
+impl ReviewDecision {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Approved => "Approved",
+            Self::ChangesRequested => "Changes requested",
+            Self::ReviewRequired => "Review required",
+            Self::None => "No review decision",
+        }
+    }
 }
 
 impl From<Option<String>> for ReviewDecision {
@@ -198,14 +224,16 @@ pub(super) enum Outcome {
 
 impl Outcome {
     pub(super) const ALL: [Self; 4] = [Self::Passed, Self::Failed, Self::Pending, Self::Skipped];
+}
 
-    fn label(self) -> &'static str {
-        match self {
+impl std::fmt::Display for Outcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
             Self::Passed => "passed",
             Self::Failed => "failed",
             Self::Pending => "pending",
             Self::Skipped => "skipped",
-        }
+        })
     }
 }
 
@@ -254,7 +282,7 @@ impl PullRequest {
         }
         Outcome::ALL
             .into_iter()
-            .map(|outcome| (counts[outcome as usize], outcome.label()))
+            .map(|outcome| (counts[outcome as usize], outcome))
             .filter(|(count, _)| *count > 0)
             .map(|(count, label)| format!("{count} {label}"))
             .collect::<Vec<_>>()
@@ -262,25 +290,11 @@ impl PullRequest {
     }
 
     pub fn merge_status(&self) -> &'static str {
-        match self.merge_state_status {
-            MergeState::Clean => "No merge conflicts",
-            MergeState::Dirty => "Merge conflicts",
-            MergeState::Behind => "Branch behind base",
-            MergeState::Blocked => "Merge blocked",
-            MergeState::Unstable => "Checks need attention",
-            MergeState::Draft => "Not ready for review",
-            MergeState::HasHooks => "Merge hooks required",
-            MergeState::Unknown => "Merge status unavailable",
-        }
+        self.merge_state_status.label()
     }
 
     pub fn review(&self) -> &'static str {
-        match self.review_decision {
-            ReviewDecision::Approved => "Approved",
-            ReviewDecision::ChangesRequested => "Changes requested",
-            ReviewDecision::ReviewRequired => "Review required",
-            ReviewDecision::None => "No review decision",
-        }
+        self.review_decision.label()
     }
 }
 

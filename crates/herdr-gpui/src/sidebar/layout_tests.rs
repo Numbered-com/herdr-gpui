@@ -1887,7 +1887,11 @@ fn the_agents_header_toggles_between_grouped_and_priority(cx: &mut gpui::TestApp
         cx.update(|_, cx| {
             assert_eq!(view.read(cx).agent_sort, expected);
             let probes = &cx.global::<TextProbes>().0;
-            assert!(probes.contains_key(expected.label()), "{:?}", probes.keys());
+            assert!(
+                probes.contains_key(expected.to_string().as_str()),
+                "{:?}",
+                probes.keys()
+            );
         });
         let (a, b) = (
             cx.debug_bounds(first).unwrap(),

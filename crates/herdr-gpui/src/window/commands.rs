@@ -19,7 +19,7 @@ impl HerdrWindow {
         }
         self.request_focus_change(
             "Navigate",
-            Some(target.to_owned()),
+            Some((&target).into()),
             |handle, boot| match target {
                 NavigationTarget::Workspace(id) => handle.focus_workspace(boot, id),
                 NavigationTarget::Tab(id) => handle.focus_tab(boot, id),
