@@ -224,7 +224,20 @@ class ReleaseTests(unittest.TestCase):
         calls = [json.loads(line) for line in (self.work / "log").read_text().splitlines()]
         restores = [c for c in calls if c[:5] == ["security", "list-keychains", "-d", "user", "-s"]]
         self.assertTrue(restores)
-        self.assertTrue(all(c[5:] == ["/mock/login keychain-db", "/mock/system.keychain"] for c in restores))
+        originals = ["/mock/login keychain-db", "/mock/system.keychain"]
+        # Setup must add the signing keychain, because codesign looks the identity
+        # up through the search list rather than --keychain, but it must never drop
+        # an existing keychain, and the final call must restore exactly the original
+        # list so the machine is left as found even when signing fails.
+        self.assertTrue(all(c[5 : 5 + len(originals)] == originals for c in restores))
+        self.assertTrue(all(len(c[5:]) in (len(originals), len(originals) + 1) for c in restores))
+        self.assertEqual(restores[-1][5:], originals)
+        self.assertTrue(
+            any(
+                len(c[5:]) == len(originals) + 1 and c[-1].endswith("signing.keychain-db")
+                for c in restores
+            )
+        )
         signs = [c for c in calls if c[:2] == ["codesign", "--force"]]
         self.assertTrue(any(c[-1].endswith("/Contents/MacOS/Herdr") for c in signs))
         self.assertTrue(any(c[-1].endswith("/Herdr.app") for c in signs))
