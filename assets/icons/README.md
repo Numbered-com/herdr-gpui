@@ -31,8 +31,10 @@ the normal artwork remains unchanged. macOS development runs select the embedded
 PNG at compile time, while macOS/Linux packaging reads the executable's build
 identity to select the matching icon, even when packaging in another checkout.
 
-`plus.svg` and `close.svg` are original tab-control artwork; `user.svg` is an
+`plus.svg` and `close.svg` are original tab-control artwork, reused by the
+workspace menu alongside the original `pencil.svg` (rename) and `trash.svg`
+(delete checkout); `user.svg` is an
 original generic silhouette for the future account placeholder, not a personal
-identity or GitHub logo. All three are embedded through a
+identity or GitHub logo. All of them are embedded through a
 minimal GPUI asset source. GPUI renders them as SVG masks tinted with the current
 theme foreground, rather than fixed-color cached images.

@@ -34,6 +34,18 @@ pub(super) enum WorkspaceAction {
     DeleteWorktree,
 }
 
+impl WorkspaceAction {
+    /// Embedded icon for the row, so each action is recognizable before reading.
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Rename => "icons/pencil.svg",
+            Self::Close => "icons/close.svg",
+            Self::NewWorktree => "icons/plus.svg",
+            Self::DeleteWorktree => "icons/trash.svg",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WorkspaceMenuAction {
     Dialog(WorkspaceAction),
@@ -896,8 +908,8 @@ impl HerdrWindow {
         } else if page == Page::GitHub {
             panel = panel.child(self.render_github_auth(cx));
         } else if page == Page::Workspace {
-            for (action, label) in self.workspace_items() {
-                let action = WorkspaceMenuAction::Dialog(action);
+            for (item, label) in self.workspace_items() {
+                let action = WorkspaceMenuAction::Dialog(item);
                 panel = panel.child(
                     div()
                         .id(label)
@@ -906,6 +918,7 @@ impl HerdrWindow {
                         .px(px(8.))
                         .flex()
                         .items_center()
+                        .gap(px(8.))
                         .cursor_pointer()
                         .rounded(px(3.))
                         .when(Some(action) == self.menu.workspace_selected, |row| {
@@ -919,6 +932,14 @@ impl HerdrWindow {
                             }
                             cx.notify();
                         }))
+                        .child(
+                            svg()
+                                .path(item.icon())
+                                .debug_selector(move || format!("workspace-menu-icon-{label}"))
+                                .size(px(14.))
+                                .flex_none()
+                                .text_color(rgb(theme.muted)),
+                        )
                         .child(label)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();

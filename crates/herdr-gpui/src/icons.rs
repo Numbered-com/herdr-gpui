@@ -10,6 +10,8 @@ impl AssetSource for Icons {
             "icons/close.svg" => include_bytes!("../../../assets/icons/close.svg"),
             "icons/user.svg" => include_bytes!("../../../assets/icons/user.svg"),
             "icons/x.svg" => include_bytes!("../../../assets/icons/x.svg"),
+            "icons/pencil.svg" => include_bytes!("../../../assets/icons/pencil.svg"),
+            "icons/trash.svg" => include_bytes!("../../../assets/icons/trash.svg"),
             _ => return Ok(None),
         };
         Ok(Some(Cow::Borrowed(bytes)))
@@ -21,6 +23,8 @@ impl AssetSource for Icons {
             "icons/close.svg",
             "icons/user.svg",
             "icons/x.svg",
+            "icons/pencil.svg",
+            "icons/trash.svg",
         ]
         .into_iter()
         .filter(|name| name.starts_with(path))
@@ -43,6 +47,8 @@ mod tests {
             "icons/close.svg",
             "icons/user.svg",
             "icons/x.svg",
+            "icons/pencil.svg",
+            "icons/trash.svg",
         ] {
             let bytes = Icons.load(path).unwrap().unwrap();
             // Decode through GPUI's SVG renderer; production uses svg() for tinting.
@@ -55,6 +61,6 @@ mod tests {
             assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == 0));
         }
         assert!(Icons.load("unknown.svg").unwrap().is_none());
-        assert_eq!(Icons.list("icons/").unwrap().len(), 4);
+        assert_eq!(Icons.list("icons/").unwrap().len(), 6);
     }
 }

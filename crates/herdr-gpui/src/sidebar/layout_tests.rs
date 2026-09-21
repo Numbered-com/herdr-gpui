@@ -737,6 +737,29 @@ fn check_sidebar(
     });
     assert!(cx.debug_bounds("workspace-menu-Close group").is_some());
     assert!(cx.debug_bounds("workspace-menu-New worktree").is_some());
+    // Every action is labelled and pictured, with the icon left of its label.
+    for (row, icon) in [
+        ("workspace-menu-Rename", "workspace-menu-icon-Rename"),
+        (
+            "workspace-menu-Close group",
+            "workspace-menu-icon-Close group",
+        ),
+        (
+            "workspace-menu-New worktree",
+            "workspace-menu-icon-New worktree",
+        ),
+    ] {
+        let label = row;
+        let row = cx.debug_bounds(row).unwrap();
+        let icon = cx.debug_bounds(icon).unwrap();
+        assert_eq!(icon.size, size(px(14.), px(14.)), "{label}");
+        assert!(icon.left() >= row.left(), "{label}");
+        assert!(icon.right() <= row.right(), "{label}");
+        assert!(
+            (icon.center().y - row.center().y).abs() <= px(1.),
+            "{label}"
+        );
+    }
     crate::menu::workspace_tests::check_menu_interactions(&view, cx);
     // PR data is fixture-only: no daemon, local Git, or GitHub calls in layout tests.
     crate::menu::workspace_tests::check_pr_fences(&view, cx);
