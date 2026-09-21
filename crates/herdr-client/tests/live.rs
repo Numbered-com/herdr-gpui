@@ -6,7 +6,8 @@ mod sandbox;
 use herdr_client::{
     Client, ClientEvent, ConnectOptions, ConnectTarget, connect,
     protocol::{
-        ClientKeyCode, ClientKeyKind, ClientPaneInputEvent, ClientShellSnapshot, ClientSurfaceSize,
+        ClientClipboardImageTarget, ClientKeyCode, ClientKeyKind, ClientPaneInputEvent,
+        ClientShellSnapshot, ClientSurfaceSize,
     },
 };
 use sandbox::{Sandbox, daemon_binary, stop_children};
@@ -184,6 +185,81 @@ impl Session {
             }
         }
     }
+}
+
+/// The remote image drop path: bytes leave this machine and the daemon stages
+/// them under its own TMPDIR, then pastes the path it owns into the pane. Only a
+/// real daemon proves the staging and paste, so this is an opt-in live test.
+#[test]
+#[ignore = "requires explicit HERDR_TEST_BINARY; spawns an isolated live daemon"]
+fn clipboard_image_bridge_live() {
+    let daemon = Daemon::start();
+    let mut session = Session::open(&daemon);
+    let snapshot = session.snapshot.as_ref().unwrap();
+    let boot = snapshot.boot_id.clone();
+    let pane = snapshot.focused_pane_id.clone().unwrap();
+
+    // A minimal but genuine PNG: the daemon stores bytes verbatim, unexamined.
+    let image: Vec<u8> = b"\x89PNG\r\n\x1a\n"
+        .iter()
+        .copied()
+        .chain((0u8..=255).cycle().take(4096))
+        .collect();
+    session
+        .client
+        .handle
+        .send_clipboard_image(
+            &boot,
+            ClientClipboardImageTarget::Pane(pane.clone()),
+            "png".into(),
+            image.clone(),
+        )
+        .unwrap();
+
+    // TMPDIR is the sandbox, so the staged file is the daemon's, not this host's.
+    // The directory carries the daemon's own uid, so it is matched by prefix.
+    let sandbox_dir = daemon.sandbox.dir.clone();
+    let staged_image = |image: &[u8]| {
+        let staging = fs::read_dir(&sandbox_dir).ok()?.flatten().find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("herdr-clipboard-images-")
+        })?;
+        fs::read_dir(staging.path())
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| fs::read(path).is_ok_and(|bytes| bytes == image))
+    };
+    let deadline = Instant::now() + TIMEOUT;
+    let staged = loop {
+        if let Some(path) = staged_image(&image) {
+            break path;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon never staged the bridged image under {}",
+            sandbox_dir.display()
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(staged.extension().and_then(|e| e.to_str()), Some("png"));
+
+    // The pane is given the daemon's path, never this machine's. Rows are joined
+    // because an 80-column pane wraps the path without inserting characters.
+    let name = staged.file_name().unwrap().to_string_lossy().into_owned();
+    session.until("staged path pasted into the pane", |event| {
+        matches!(event, ClientEvent::Surface(s) if s
+            .frame
+            .cells
+            .iter()
+            .map(|cell| cell.symbol.as_str())
+            .collect::<String>()
+            .contains(&name))
+    });
+    eprintln!("clipboard image bridged and pasted as {}", staged.display());
+    session.detach();
 }
 
 #[test]

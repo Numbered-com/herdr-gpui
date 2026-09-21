@@ -594,6 +594,118 @@ fn malformed_handshake_and_patch_fail_closed() {
 }
 
 #[test]
+fn clipboard_image_bridges_past_the_ordinary_frame_limit_but_not_the_payload_limit() {
+    let (client, mut server, worker) = test_client();
+    handshake(&mut server);
+    let handle = &client.handle;
+
+    assert!(matches!(
+        handle.send_clipboard_image(
+            "boot",
+            ClientClipboardImageTarget::Pane("p".into()),
+            "png".into(),
+            Vec::new()
+        ),
+        Err(Error::ClipboardImageLimit)
+    ));
+    assert!(matches!(
+        handle.send_clipboard_image(
+            "boot",
+            ClientClipboardImageTarget::Pane("p".into()),
+            "png".into(),
+            vec![0; MAX_CLIPBOARD_IMAGE_PAYLOAD + 1],
+        ),
+        Err(Error::ClipboardImageLimit)
+    ));
+    assert!(matches!(
+        handle.send_clipboard_image(
+            "",
+            ClientClipboardImageTarget::Pane("p".into()),
+            "png".into(),
+            vec![0; 4]
+        ),
+        Err(Error::MissingBootId)
+    ));
+
+    // Larger than a command frame, so it proves the image-only budget applies.
+    let data = vec![7u8; MAX_FRAME_SIZE + 4096];
+    // The frame exceeds the socket buffer, so the peer must drain it concurrently.
+    server
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let peer = thread::spawn(move || read_message(&mut server, MAX_GRAPHICS_FRAME_SIZE));
+    handle
+        .send_clipboard_image(
+            "boot-v1",
+            ClientClipboardImageTarget::Popup("t".into()),
+            "webp".into(),
+            data.clone(),
+        )
+        .unwrap();
+    let received: ClientMessage = peer.join().unwrap().unwrap();
+    assert_eq!(
+        received,
+        ClientMessage::ClipboardImage {
+            target: ClientClipboardImageTarget::Popup("t".into()),
+            extension: "webp".into(),
+            data,
+        }
+    );
+    client.handle.disconnect();
+    let _ = worker.join().unwrap();
+}
+
+#[test]
+fn a_frame_larger_than_the_socket_buffer_survives_repeated_write_timeouts() {
+    let (mut writer, mut reader) = UnixStream::pair().unwrap();
+    // Far below any send buffer, so the writer must wait for the reader to drain.
+    writer
+        .set_write_timeout(Some(Duration::from_millis(5)))
+        .unwrap();
+    let bytes = vec![3u8; 4 * 1024 * 1024];
+    let expected = bytes.len();
+    let (ready, drained) = bounded::<usize>(1);
+    let consumer = thread::spawn(move || {
+        let mut buffer = vec![0u8; 64 * 1024];
+        let mut total = 0;
+        while total < expected {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => total += count,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => panic!("read failed: {error}"),
+            }
+        }
+        ready.send(total).unwrap();
+    });
+    let stop = AtomicBool::new(false);
+    write_frame(&mut writer, &bytes, &stop).unwrap();
+    assert_eq!(
+        drained.recv_timeout(Duration::from_secs(30)).unwrap(),
+        expected
+    );
+    consumer.join().unwrap();
+}
+
+#[test]
+fn a_stalled_peer_fails_the_frame_instead_of_leaking_a_prefix() {
+    let (mut writer, reader) = UnixStream::pair().unwrap();
+    writer
+        .set_write_timeout(Some(Duration::from_millis(5)))
+        .unwrap();
+    let stop = AtomicBool::new(false);
+    // Nothing ever reads, so the budget is the only thing that ends the write.
+    let error = write_frame(&mut writer, &vec![3u8; 4 * 1024 * 1024], &stop).unwrap_err();
+    assert!(matches!(error, Error::WriteStalled));
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+
+    let stopped = AtomicBool::new(true);
+    let error = write_frame(&mut writer, &vec![3u8; 4 * 1024 * 1024], &stopped).unwrap_err();
+    assert!(matches!(error, Error::Cancelled));
+    drop(reader);
+}
+
+#[test]
 fn bounded_command_queue_and_outbound_limit_are_explicit() {
     let (commands, _rx) = bounded(1);
     let handle = ClientHandle {

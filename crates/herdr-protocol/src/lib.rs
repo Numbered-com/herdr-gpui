@@ -10,6 +10,9 @@ pub use wire::*;
 
 pub const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 pub const MAX_GRAPHICS_FRAME_SIZE: usize = 32 * 1024 * 1024;
+/// Upstream disconnects a client whose `ClipboardImage` payload exceeds this,
+/// so a bridged image is rejected locally rather than costing the connection.
+pub const MAX_CLIPBOARD_IMAGE_PAYLOAD: usize = 16 * 1024 * 1024;
 
 /// Bincode 2 standard configuration, framed by a u32 little-endian byte length.
 pub fn encode_message<M: Serialize>(message: &M, limit: usize) -> Result<Vec<u8>> {

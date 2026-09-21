@@ -4,10 +4,11 @@ use gpui::{
     TouchPhase, point, px, size,
 };
 use herdr_client::protocol::{
-    CellData, ClientKeyCode, ClientKeyKind, ClientMouseGeometry, ClientMouseKind,
-    ClientMousePosition, ClientPaneInputEvent, ClientSurfaceSize, CursorState, FrameData,
-    PaneSurfaceFrame, SurfaceRect,
+    CellData, ClientClipboardImageTarget, ClientKeyCode, ClientKeyKind, ClientMouseGeometry,
+    ClientMouseKind, ClientMousePosition, ClientPaneInputEvent, ClientSurfaceSize, CursorState,
+    FrameData, PaneSurfaceFrame, SurfaceRect,
 };
+use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 pub const BACKGROUND: u32 = 0x101419;
@@ -72,6 +73,15 @@ pub(crate) fn input_cursor_bounds(
 pub(crate) enum InputTarget {
     Pane(String),
     Popup(String),
+}
+
+impl From<InputTarget> for ClientClipboardImageTarget {
+    fn from(target: InputTarget) -> Self {
+        match target {
+            InputTarget::Pane(id) => Self::Pane(id),
+            InputTarget::Popup(id) => Self::Popup(id),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -280,6 +290,82 @@ pub fn key_input(event: &KeyDownEvent) -> Option<ClientPaneInputEvent> {
     })
 }
 
+// Shell metacharacters a terminal emulator escapes before inserting a dropped
+// path into the live line editor. Without them a path containing a space or a
+// glob character is split or expanded by whatever program owns the pane.
+const SHELL_ESCAPED: &[char] = &[
+    '\\', ' ', '\t', '(', ')', '[', ']', '{', '}', '<', '>', '"', '\'', '`', '!', '#', '$', '&',
+    ';', '|', '*', '?',
+];
+
+/// Paste payload for files dropped on the terminal, mirroring how a terminal
+/// emulator inserts a drop: shell-escaped paths joined by spaces. The daemon
+/// decides whether the pane wants bracketed paste, so this stays plain text.
+///
+/// The wire `Paste` payload is UTF-8, so paths that are not are skipped rather
+/// than lossily mangled into a path that does not exist. Paths carrying control
+/// characters are skipped too: a newline would submit the line, and no backslash
+/// escape makes one inert.
+pub fn dropped_paths_input<P: AsRef<Path>>(
+    paths: impl IntoIterator<Item = P>,
+) -> Option<ClientPaneInputEvent> {
+    let text = paths
+        .into_iter()
+        .filter_map(|path| Some(shell_escape(path.as_ref().to_str().filter(insertable)?)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!text.is_empty()).then_some(ClientPaneInputEvent::Paste(text))
+}
+
+/// The lone dropped image a remote daemon can be given as bytes, with the
+/// extension it will be staged under. Upstream bridges only a single absolute
+/// image path and leaves every other drop as typed text, because a multi-path
+/// drop has no unambiguous staged replacement; this keeps that rule.
+pub fn dropped_image(paths: &[PathBuf]) -> Option<(&Path, &'static str)> {
+    let [path] = paths else {
+        return None;
+    };
+    let path = path.as_path();
+    if !path.is_absolute() {
+        return None;
+    }
+    Some((
+        path,
+        recognized_image_extension(path.extension()?.to_str()?)?,
+    ))
+}
+
+/// Extensions the daemon stages; it rewrites anything else to `png`, so sending
+/// an unrecognized one would stage a file whose name lies about its contents.
+fn recognized_image_extension(extension: &str) -> Option<&'static str> {
+    [
+        ("png", "png"),
+        ("jpg", "jpg"),
+        ("jpeg", "jpg"),
+        ("gif", "gif"),
+        ("webp", "webp"),
+        ("bmp", "bmp"),
+    ]
+    .into_iter()
+    .find_map(|(name, staged)| extension.eq_ignore_ascii_case(name).then_some(staged))
+}
+
+fn insertable(path: &&str) -> bool {
+    // A tab is escaped like any other separator; the rest cannot be neutralized.
+    !path.is_empty() && !path.chars().any(|c| c.is_control() && c != '\t')
+}
+
+fn shell_escape(path: &str) -> String {
+    let mut escaped = String::with_capacity(path.len());
+    for character in path.chars() {
+        if SHELL_ESCAPED.contains(&character) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
+}
+
 fn key_code(key: &Keystroke) -> Option<ClientKeyCode> {
     use ClientKeyCode::*;
     if key.modifiers.platform {
@@ -316,6 +402,88 @@ fn key_code(key: &Keystroke) -> Option<ClientKeyCode> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropped_paths_are_escaped_like_a_terminal_emulator_insertion() {
+        let paths = [
+            Path::new("/tmp/plain.png"),
+            Path::new("/tmp/two words(1).png"),
+            Path::new("/tmp/od'd $HOME *.png"),
+        ];
+        assert_eq!(
+            dropped_paths_input(paths),
+            Some(ClientPaneInputEvent::Paste(
+                r"/tmp/plain.png /tmp/two\ words\(1\).png /tmp/od\'d\ \$HOME\ \*.png".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn dropped_paths_skip_payloads_no_escape_can_neutralize() {
+        let newline = Path::new("/tmp/submit\nrm -rf .png");
+        assert_eq!(dropped_paths_input([newline]), None);
+        assert_eq!(dropped_paths_input([Path::new("")]), None);
+        assert_eq!(
+            dropped_paths_input([newline, Path::new("/tmp/kept.png")]),
+            Some(ClientPaneInputEvent::Paste("/tmp/kept.png".into()))
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt as _;
+            let invalid = Path::new(std::ffi::OsStr::from_bytes(b"/tmp/\xff\xfe.png")).to_owned();
+            assert_eq!(dropped_paths_input([invalid]), None);
+        }
+    }
+
+    #[test]
+    fn only_a_lone_absolute_image_path_is_bridged_to_a_remote_daemon() {
+        let image = PathBuf::from("/tmp/shot.PNG");
+        assert_eq!(
+            dropped_image(std::slice::from_ref(&image)),
+            Some((image.as_path(), "png"))
+        );
+        for (path, staged) in [
+            ("/tmp/a.jpg", "jpg"),
+            ("/tmp/a.jpeg", "jpg"),
+            ("/tmp/a.gif", "gif"),
+            ("/tmp/a.webp", "webp"),
+            ("/tmp/a.bmp", "bmp"),
+        ] {
+            let path = PathBuf::from(path);
+            assert_eq!(dropped_image(&[path]).map(|image| image.1), Some(staged));
+        }
+        // Text, extensionless, relative, and multi-file drops stay typed text.
+        for path in [
+            "/tmp/notes.txt",
+            "/tmp/archive.png.gz",
+            "/tmp/plain",
+            "a.png",
+        ] {
+            assert_eq!(dropped_image(&[PathBuf::from(path)]), None, "{path}");
+        }
+        assert_eq!(dropped_image(&[]), None);
+        assert_eq!(
+            dropped_image(&[PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/b.png")]),
+            None
+        );
+    }
+
+    #[test]
+    fn a_bridged_image_targets_the_same_destination_as_input() {
+        assert_eq!(
+            ClientClipboardImageTarget::from(InputTarget::Pane("w1:p2".into())),
+            ClientClipboardImageTarget::Pane("w1:p2".into())
+        );
+        assert_eq!(
+            ClientClipboardImageTarget::from(InputTarget::Popup("t7".into())),
+            ClientClipboardImageTarget::Popup("t7".into())
+        );
+    }
+
+    #[test]
+    fn dropped_paths_input_is_empty_without_paths() {
+        assert_eq!(dropped_paths_input(Vec::<PathBuf>::new()), None);
+    }
 
     #[test]
     fn wheel_preserves_fractions_and_resets_on_target_direction_or_gesture_change() {

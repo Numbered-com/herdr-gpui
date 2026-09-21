@@ -366,6 +366,7 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         sidebar_preferences: None,
         sidebar_modified: false,
         avatars: None,
+        image_bridge: None,
         #[cfg(feature = "integration-test")]
         input_probe: crate::smoke::InputProbe::default(),
         #[cfg(feature = "integration-test")]

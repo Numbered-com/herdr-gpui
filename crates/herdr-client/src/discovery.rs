@@ -20,6 +20,14 @@ pub enum ConnectTarget {
     Ssh { target: String, session: String },
 }
 
+impl ConnectTarget {
+    /// Whether the daemon runs on another machine, so local filesystem paths are
+    /// meaningless to it. The other variants all address a socket on this host.
+    pub fn is_remote(&self) -> bool {
+        matches!(self, Self::Ssh { .. })
+    }
+}
+
 pub fn session_socket(config_dir: &Path, name: &str) -> Result<PathBuf> {
     if name.is_empty()
         || name.len() > 64

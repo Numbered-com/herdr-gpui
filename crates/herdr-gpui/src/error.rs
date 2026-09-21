@@ -71,6 +71,14 @@ pub enum Error {
     PrEncoding(#[source] std::str::Utf8Error),
     #[error("No repository metadata.")]
     PrMetadata,
+    #[error("Dropped image could not be read.")]
+    DroppedImageRead(#[source] io::Error),
+    #[error("Dropped image is not a regular file.")]
+    DroppedImageNotFile,
+    #[error("Dropped image is empty or larger than the daemon accepts.")]
+    DroppedImageSize,
+    #[error("Dropped image was not sent: {0}")]
+    DroppedImageSend(#[source] herdr_client::SendError),
     #[error(
         "GitHub authentication required. Use menu > GitHub sign-in or set GH_TOKEN / GITHUB_TOKEN."
     )]

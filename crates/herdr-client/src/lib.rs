@@ -38,6 +38,10 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 // Completed API round trips over 250 ms are noteworthy; queue wait is excluded.
 const SLOW_REQUEST: Duration = Duration::from_millis(250);
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+// The socket's write timeout bounds a single `write`, not a whole frame. A frame
+// larger than the peer's receive buffer needs several windows, so allow one per
+// this many bytes; a peer slower than that has stalled and the frame is failed.
+const WRITE_THROUGHPUT_FLOOR: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConnectOptions {
@@ -216,13 +220,25 @@ impl ClientHandle {
         message: ClientMessage,
         request: Option<(String, String)>,
     ) -> Result<()> {
+        self.enqueue_within(boot_id, message, request, MAX_FRAME_SIZE)
+    }
+
+    /// `limit` is the frame budget for this message alone. Only the image bridge
+    /// exceeds `MAX_FRAME_SIZE`, and only up to what the daemon already accepts.
+    fn enqueue_within(
+        &self,
+        boot_id: &str,
+        message: ClientMessage,
+        request: Option<(String, String)>,
+        limit: usize,
+    ) -> Result<()> {
         if self.is_disconnected() {
             return Err(SendError::Disconnected);
         }
         if boot_id.is_empty() {
             return Err(Error::MissingBootId);
         }
-        let bytes = encode_message(&message, MAX_FRAME_SIZE)?;
+        let bytes = encode_message(&message, limit)?;
         self.inner
             .commands
             .try_send(Command {
@@ -266,6 +282,30 @@ impl ClientHandle {
                 events: events.into_iter().collect(),
             },
             None,
+        )
+    }
+    /// Stage an image on the daemon's host and let it paste the staged path.
+    /// This is how a file dropped on this machine reaches a pane whose daemon
+    /// cannot read local paths; a local daemon should be sent the path instead.
+    pub fn send_clipboard_image(
+        &self,
+        boot_id: &str,
+        target: ClientClipboardImageTarget,
+        extension: String,
+        data: Vec<u8>,
+    ) -> Result<()> {
+        if data.is_empty() || data.len() > MAX_CLIPBOARD_IMAGE_PAYLOAD {
+            return Err(Error::ClipboardImageLimit);
+        }
+        self.enqueue_within(
+            boot_id,
+            ClientMessage::ClipboardImage {
+                target,
+                extension,
+                data,
+            },
+            None,
+            MAX_GRAPHICS_FRAME_SIZE,
         )
     }
     pub fn resize(&self, boot_id: &str, options: ConnectOptions) -> Result<()> {
@@ -627,7 +667,7 @@ fn run_connection(
                 queued = Some(command);
                 break;
             }
-            stream.write_all(&command.bytes)?;
+            write_frame(&mut stream, &command.bytes, stop)?;
             if let Some((id, _)) = command.request {
                 tracing::trace!(category = "api", "request sent");
                 session.pending = Some(Pending {
@@ -643,6 +683,41 @@ fn run_connection(
         session.handle_message(message, |event| deliver(tx, event, stop))?;
     }
     // No queued commands are flushed on cancellation and nothing is replayed.
+    Ok(())
+}
+
+/// `write_all` abandons the frame on the first timeout, leaving its prefix on the
+/// wire and desynchronizing the peer. Resume instead for as long as the peer is
+/// still accepting bytes, so a bridged image survives several timeout windows.
+fn write_frame(stream: &mut impl Write, bytes: &[u8], stop: &AtomicBool) -> Result<()> {
+    let budget = Duration::from_secs(1).max(Duration::from_secs(
+        (bytes.len() / WRITE_THROUGHPUT_FLOOR) as u64,
+    ));
+    let deadline = Instant::now() + budget;
+    let mut written = 0;
+    while written < bytes.len() {
+        match stream.write(&bytes[written..]) {
+            Ok(0) => return Err(Error::SocketClosed),
+            Ok(count) => {
+                written += count;
+                continue;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
+        // A cancelled worker drops the stream, so an unfinished frame is moot.
+        if stop.load(Ordering::Acquire) {
+            return Err(Error::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::WriteStalled);
+        }
+    }
     Ok(())
 }
 

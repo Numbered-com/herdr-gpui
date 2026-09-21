@@ -45,6 +45,10 @@ pub enum Error {
     SelectionSchema(#[source] serde_json::Error),
     #[error("client command queue is full")]
     Full,
+    #[error("clipboard image exceeds the endpoint payload limit")]
+    ClipboardImageLimit,
+    #[error("outbound frame stalled; connection desynchronized")]
+    WriteStalled,
     #[error("client is disconnected")]
     Disconnected,
     #[error("invalid client command: snapshot boot ID required")]
@@ -176,7 +180,7 @@ impl Error {
             Self::Cancelled | Self::SshCancelled => io::ErrorKind::Interrupted,
             Self::EventReceiverDropped | Self::Disconnected => io::ErrorKind::BrokenPipe,
             Self::SocketClosed | Self::SshClosed => io::ErrorKind::UnexpectedEof,
-            Self::HealthTimeout | Self::SshTimeout => io::ErrorKind::TimedOut,
+            Self::HealthTimeout | Self::SshTimeout | Self::WriteStalled => io::ErrorKind::TimedOut,
             Self::Full => io::ErrorKind::WouldBlock,
             _ => io::ErrorKind::InvalidData,
         }

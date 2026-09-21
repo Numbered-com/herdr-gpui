@@ -327,6 +327,10 @@ impl HerdrWindow {
     fn reset_selected(&mut self) {
         self.menu.reset();
         self.selection_epoch += 1;
+        // The upload targets the handle it was started with, so dropping the
+        // task here only stops a retired drop from reporting into the new
+        // session and frees the next drop immediately.
+        self.image_bridge = None;
         let endpoint = &self.endpoints[self.selected_endpoint];
         self.selected_generation = endpoint.generation;
         self.live = endpoint.live.clone();

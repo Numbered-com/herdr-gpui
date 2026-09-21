@@ -773,11 +773,28 @@ display latency. Use a release build for meaningful performance measurements.
 | Cmd-/ | Native shortcut reference |
 | Wheel / trackpad | Scroll the hovered terminal through Herdr |
 | Cmd-V | Semantic paste |
+| File drop | Paste the dropped paths into the focused pane |
 | Cmd-Q | Quit the GUI, leaving terminals running |
 
 The native File and Terminal menus expose the creation and navigation actions.
 Terminal keyboard input and committed Unicode text go directly to Herdr's
 semantic input protocol.
+
+Dropping files on the terminal pastes their shell-escaped paths into the focused
+pane or popup, the same text a terminal emulator inserts when you drop a file on
+the TUI; an agent in that pane then opens the file itself.
+
+A saved SSH host cannot read this machine's filesystem, so dropping a single
+image file (png, jpg, jpeg, gif, webp, bmp) on a remote host sends its bytes
+instead, matching `herdr --remote`. The daemon stages the image in its own
+private temporary directory and pastes that remote path. The file is read and
+framed on a background thread, never the UI thread; one upload is in flight at
+a time, an
+image larger than the 16 MiB the daemon accepts is refused locally rather than
+dropping the connection, and reconnecting or switching endpoints discards an
+upload in progress instead of pasting it into the new session. Every other drop,
+including multi-file drops and non-image files, is still inserted as text, which
+a remote daemon cannot open.
 
 The command palette includes native actions (including unbound Themes and
 Reconnect) and configured daemon command entries. Cmd-P opens the workspace
@@ -819,7 +836,9 @@ just test-perf
 
 The live test creates a private temporary HOME/config/socket environment,
 starts its own daemon, tests terminal input/output, creation/navigation, resize,
-and detach/reconnect, and cleans up only that daemon. It is ignored by default.
+detach/reconnect, and the dropped-image bridge (the daemon stages the bytes
+under its own temporary directory and pastes that path into the pane), and
+cleans up only that daemon. It is ignored by default.
 It has been exercised against Herdr 0.9.1. Normal tests use fixtures/mock peers
 and require no running daemon.
 

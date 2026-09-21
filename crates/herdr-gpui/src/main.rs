@@ -156,6 +156,7 @@ struct HerdrWindow {
     sidebar_preferences: Option<preferences::Preferences>,
     sidebar_modified: bool,
     avatars: Option<avatars::Avatars>,
+    image_bridge: Option<Task<()>>,
     #[cfg(feature = "integration-test")]
     input_probe: smoke::InputProbe,
     #[cfg(feature = "integration-test")]
@@ -279,6 +280,7 @@ impl HerdrWindow {
             sidebar_preferences: None,
             sidebar_modified: false,
             avatars: None,
+            image_bridge: None,
             #[cfg(feature = "integration-test")]
             input_probe: smoke::InputProbe::default(),
             #[cfg(feature = "integration-test")]
@@ -350,28 +352,36 @@ impl HerdrWindow {
         }
     }
 
+    /// Where semantic input goes right now: an open popup owns it, otherwise the
+    /// focused pane. Anything targeting the terminal must agree with this.
+    fn input_target(&self) -> Option<InputTarget> {
+        let surface = self.live.surface.as_ref()?;
+        if let Some(popup) = &surface.popup {
+            return Some(InputTarget::Popup(popup.terminal_id.clone()));
+        }
+        let snapshot = self.live.snapshot.as_ref()?;
+        Some(InputTarget::Pane(snapshot.focused_pane_id.clone()?))
+    }
+
     fn send(&mut self, event: ClientPaneInputEvent, cx: &mut Context<Self>) {
         if self.menu.page.is_some() || !self.input_ready() {
             return;
         }
-        if let (Some(handle), Some(snapshot), Some(surface)) = (
-            &self.endpoints[self.selected_endpoint].connection.handle,
-            &self.live.snapshot,
-            &self.live.surface,
-        ) {
-            let target = if let Some(popup) = &surface.popup {
-                InputTarget::Popup(popup.terminal_id.clone())
-            } else if let Some(pane) = &snapshot.focused_pane_id {
-                InputTarget::Pane(pane.clone())
-            } else {
+        let Some(target) = self.input_target() else {
+            return;
+        };
+        let result = {
+            let (Some(handle), Some(snapshot)) = (
+                &self.endpoints[self.selected_endpoint].connection.handle,
+                &self.live.snapshot,
+            ) else {
                 return;
             };
-            if let Err(error) =
-                ConnectionBridge::send_input(handle, &snapshot.boot_id, &target, event)
-            {
-                self.local_error = Some(format!("Input not sent: {error}"));
-                cx.notify();
-            }
+            ConnectionBridge::send_input(handle, &snapshot.boot_id, &target, event)
+        };
+        if let Err(error) = result {
+            self.local_error = Some(format!("Input not sent: {error}"));
+            cx.notify();
         }
     }
 
@@ -550,6 +560,78 @@ impl HerdrWindow {
         }
     }
 
+    // A local daemon opens the dropped path itself, so the drop is inserted as
+    // escaped text exactly as a terminal emulator hands a Finder drop to the TUI.
+    // A remote daemon cannot see this filesystem, so a lone image travels as
+    // bytes it stages and pastes back as its own path, matching `herdr --remote`.
+    fn drop_paths(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.page.is_some() || !self.input_ready() {
+            return;
+        }
+        window.focus(&self.focus);
+        if self.endpoints[self.selected_endpoint]
+            .connection
+            .target
+            .is_remote()
+            && let Some((path, extension)) = dropped_image(paths.paths())
+        {
+            let path = path.to_owned();
+            self.bridge_dropped_image(path, extension, cx);
+            return;
+        }
+        if let Some(input) = dropped_paths_input(paths.paths()) {
+            self.send(input, cx);
+        }
+        cx.notify();
+    }
+
+    /// Read *and* frame the image on the background executor: a 16 MiB frame
+    /// must never be built during a paint. The captured handle belongs to the
+    /// connection the drop happened on, so a reconnect in the meantime can only
+    /// fail the upload, never redirect it into a replacement session.
+    fn bridge_dropped_image(
+        &mut self,
+        path: std::path::PathBuf,
+        extension: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        // One upload at a time bounds both the queued frames and the memory a
+        // burst of drops can hold.
+        if self.image_bridge.is_some() {
+            self.local_error = Some("Dropped image: an upload is already in flight.".into());
+            cx.notify();
+            return;
+        }
+        let (Some(target), Some(snapshot)) = (self.input_target(), &self.live.snapshot) else {
+            return;
+        };
+        let Some(handle) = self.endpoints[self.selected_endpoint]
+            .connection
+            .handle
+            .clone()
+        else {
+            return;
+        };
+        let (boot_id, target) = (snapshot.boot_id.clone(), target.into());
+        let upload = cx.background_executor().spawn(async move {
+            let data = read_dropped_image(&path)?;
+            handle
+                .send_clipboard_image(&boot_id, target, extension.into(), data)
+                .map_err(Error::DroppedImageSend)
+        });
+        self.image_bridge = Some(cx.spawn(async move |this, cx| {
+            let sent = upload.await;
+            let _ = this.update(cx, |this, cx| {
+                this.image_bridge = None;
+                if let Err(error) = sent {
+                    this.local_error = Some(format!("{error}"));
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(feature = "integration-test")]
         {
@@ -568,6 +650,55 @@ impl HerdrWindow {
             cx.stop_propagation();
             window.prevent_default();
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod drop_tests {
+    use super::{Error, read_dropped_image};
+    use herdr_client::protocol::MAX_CLIPBOARD_IMAGE_PAYLOAD;
+    use std::io::Write as _;
+
+    #[test]
+    fn a_bridged_image_is_read_whole_and_refused_past_the_daemon_limit() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let image = dir.path().join("shot.png");
+        std::fs::write(&image, b"\x89PNG fixture").unwrap();
+        assert_eq!(read_dropped_image(&image).unwrap(), b"\x89PNG fixture");
+
+        let missing = dir.path().join("absent.png");
+        assert!(matches!(
+            read_dropped_image(&missing),
+            Err(Error::DroppedImageRead(_))
+        ));
+
+        assert!(matches!(
+            read_dropped_image(dir.path()),
+            Err(Error::DroppedImageNotFile)
+        ));
+
+        let empty = dir.path().join("empty.png");
+        std::fs::write(&empty, b"").unwrap();
+        assert!(matches!(
+            read_dropped_image(&empty),
+            Err(Error::DroppedImageSize)
+        ));
+
+        // Refused locally, because the daemon disconnects an oversized payload.
+        let huge = dir.path().join("huge.png");
+        let mut file = std::fs::File::create(&huge).unwrap();
+        let chunk = vec![0u8; 1024 * 1024];
+        for _ in 0..=(MAX_CLIPBOARD_IMAGE_PAYLOAD / chunk.len()) {
+            file.write_all(&chunk).unwrap();
+        }
+        file.sync_all().unwrap();
+        drop(file);
+        assert!(matches!(
+            read_dropped_image(&huge),
+            Err(Error::DroppedImageSize)
+        ));
     }
 }
 
@@ -615,6 +746,24 @@ mod tests {
             assert!(view.local_error.is_some(), "failed options are retried");
         });
     }
+}
+
+/// Runs on the background executor. The limit is the daemon's own, so an
+/// oversized file is refused here instead of costing the connection.
+fn read_dropped_image(path: &std::path::Path) -> Result<Vec<u8>> {
+    let metadata = std::fs::metadata(path).map_err(Error::DroppedImageRead)?;
+    if !metadata.is_file() {
+        return Err(Error::DroppedImageNotFile);
+    }
+    if metadata.len() > MAX_CLIPBOARD_IMAGE_PAYLOAD as u64 {
+        return Err(Error::DroppedImageSize);
+    }
+    let data = std::fs::read(path).map_err(Error::DroppedImageRead)?;
+    // Metadata can be stale or the file can grow; the wire limit is what counts.
+    if data.is_empty() || data.len() > MAX_CLIPBOARD_IMAGE_PAYLOAD {
+        return Err(Error::DroppedImageSize);
+    }
+    Ok(data)
 }
 
 impl Render for HerdrWindow {
@@ -743,6 +892,7 @@ impl Render for HerdrWindow {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .on_scroll_wheel(cx.listener(Self::scroll_wheel))
+            .on_drop(cx.listener(Self::drop_paths))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
