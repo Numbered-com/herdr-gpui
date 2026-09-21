@@ -13,7 +13,7 @@ pub(crate) use {
     cache::Cache,
     fetch::{local_checkout, origin_repository, run},
     lookup::Lookup,
-    model::{Input, PullRequest, clean, repository_input},
+    model::{Input, PullRequest, State, clean, repository_input},
 };
 
 #[cfg(all(test, feature = "integration-test", target_os = "macos"))]

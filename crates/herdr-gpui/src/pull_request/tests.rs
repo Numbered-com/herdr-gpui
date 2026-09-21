@@ -7,6 +7,7 @@ use super::{
     fetch::{OUTPUT_LIMIT, TIMEOUT, fetch, local_repository, worktree_checkout},
     fixture,
     lookup::Worker,
+    model::{MergeState, State},
     parse::{parse, parse_graphql},
     run,
 };
@@ -246,9 +247,9 @@ fn parses_identity_lifecycle_and_check_categories() {
     assert_eq!(pr.review(), "Review required");
     pr.is_draft = true;
     assert_eq!(pr.lifecycle(), "Draft");
-    pr.state = "MERGED".into();
+    pr.state = State::Merged;
     assert_eq!(pr.lifecycle(), "Merged");
-    pr.state = "CLOSED".into();
+    pr.state = State::Closed;
     assert_eq!(pr.lifecycle(), "Closed");
     pr.status_check_rollup = Some(vec![]);
     assert_eq!(pr.checks(), "No checks reported");
@@ -260,7 +261,7 @@ fn parses_identity_lifecycle_and_check_categories() {
     ]))
     .unwrap();
     assert_eq!(pr.checks(), "1 failed / 1 pending / 2 skipped");
-    for (state, label) in [
+    for (wire, label) in [
         ("CLEAN", "No merge conflicts"),
         ("DIRTY", "Merge conflicts"),
         ("BEHIND", "Branch behind base"),
@@ -269,10 +270,11 @@ fn parses_identity_lifecycle_and_check_categories() {
         ("DRAFT", "Not ready for review"),
         ("HAS_HOOKS", "Merge hooks required"),
         ("UNKNOWN", "Merge status unavailable"),
+        // A status added upstream degrades instead of failing the lookup.
         ("FUTURE_VALUE", "Merge status unavailable"),
     ] {
-        pr.merge_state_status = state.into();
-        assert_eq!(pr.merge_status(), label);
+        pr.merge_state_status = MergeState::from(wire.to_owned());
+        assert_eq!(pr.merge_status(), label, "{wire}");
     }
 }
 

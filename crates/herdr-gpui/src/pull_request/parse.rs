@@ -1,7 +1,7 @@
 //! Turning a GraphQL response into a `PullRequest`, rejecting anything whose
 //! repository or branch does not match what was asked for.
 
-use super::{PullRequest, Result, clean, fetch::OUTPUT_LIMIT};
+use super::{PullRequest, Result, State, clean, fetch::OUTPUT_LIMIT};
 use crate::Error;
 
 pub(super) fn parse_graphql(
@@ -20,9 +20,6 @@ pub(super) fn parse_graphql(
         incomplete |= contexts["pageInfo"]["hasNextPage"] == true;
         let checks = contexts["nodes"].clone();
         pr["statusCheckRollup"] = checks;
-        if pr["reviewDecision"].is_null() {
-            pr["reviewDecision"] = "".into();
-        }
     }
     let mut result = parse(
         &serde_json::to_string(&nodes).map_err(Error::github_json)?,
@@ -53,7 +50,7 @@ pub(super) fn parse(text: &str, owner: &str, repo: &str, branch: &str) -> Result
     };
     let expected = format!("https://github.com/{owner}/{repo}/pull/{}", pr.number);
     if pr.number == 0
-        || !matches!(pr.state.as_str(), "OPEN" | "CLOSED" | "MERGED")
+        || pr.state == State::Unknown
         || !pr.url.eq_ignore_ascii_case(&expected)
         || pr.head_ref_name != branch
         || !pr.head_repository_owner.login.eq_ignore_ascii_case(owner)
@@ -65,7 +62,6 @@ pub(super) fn parse(text: &str, owner: &str, repo: &str, branch: &str) -> Result
     pr.head_ref_name = clean(&pr.head_ref_name);
     pr.base_ref_name = clean(&pr.base_ref_name);
     pr.updated_at = clean(&pr.updated_at);
-    pr.merge_state_status = clean(&pr.merge_state_status);
     pr.checks_summary = pr.checks();
     Ok(Some(pr))
 }

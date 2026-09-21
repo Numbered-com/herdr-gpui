@@ -21,7 +21,7 @@ pub(crate) struct PullRequest {
     pub number: u64,
     pub url: String,
     pub title: String,
-    pub state: String,
+    pub state: State,
     pub is_draft: bool,
     pub head_ref_name: String,
     pub base_ref_name: String,
@@ -29,8 +29,9 @@ pub(crate) struct PullRequest {
     pub deletions: u64,
     pub changed_files: u64,
     pub updated_at: String,
-    pub merge_state_status: String,
-    pub review_decision: String,
+    pub merge_state_status: MergeState,
+    #[serde(default)]
+    pub review_decision: ReviewDecision,
     #[serde(skip)]
     pub checks_summary: String,
     #[serde(default)]
@@ -38,67 +39,222 @@ pub(crate) struct PullRequest {
     pub(super) head_repository_owner: Owner,
 }
 
+/// GitHub's `PullRequestState`. A value this client does not know is not a
+/// lifecycle it can present, so `parse` rejects it as an identity failure
+/// rather than showing the PR as open.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(from = "String")]
+pub(crate) enum State {
+    Open,
+    Closed,
+    Merged,
+    #[default]
+    Unknown,
+}
+
+impl From<String> for State {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "OPEN" => Self::Open,
+            "CLOSED" => Self::Closed,
+            "MERGED" => Self::Merged,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// GitHub's `MergeStateStatus`. Unlike the lifecycle this one is advisory, so
+/// a value added upstream degrades to "unavailable" instead of failing the
+/// lookup. Parsing here is also why the raw field needs no `clean`: an
+/// unrecognized string never reaches a label.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(from = "String")]
+pub(crate) enum MergeState {
+    Clean,
+    Dirty,
+    Behind,
+    Blocked,
+    Unstable,
+    Draft,
+    HasHooks,
+    #[default]
+    Unknown,
+}
+
+impl From<String> for MergeState {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "CLEAN" => Self::Clean,
+            "DIRTY" => Self::Dirty,
+            "BEHIND" => Self::Behind,
+            "BLOCKED" => Self::Blocked,
+            "UNSTABLE" => Self::Unstable,
+            "DRAFT" => Self::Draft,
+            "HAS_HOOKS" => Self::HasHooks,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// GitHub's `PullRequestReviewDecision`, which is null on a PR that needs no
+/// review. Deserializing from `Option<String>` absorbs that null, so the
+/// GraphQL path does not have to rewrite it first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(from = "Option<String>")]
+pub(crate) enum ReviewDecision {
+    Approved,
+    ChangesRequested,
+    ReviewRequired,
+    #[default]
+    None,
+}
+
+impl From<Option<String>> for ReviewDecision {
+    fn from(value: Option<String>) -> Self {
+        match value.as_deref() {
+            Some("APPROVED") => Self::Approved,
+            Some("CHANGES_REQUESTED") => Self::ChangesRequested,
+            Some("REVIEW_REQUIRED") => Self::ReviewRequired,
+            _ => Self::None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub(super) struct Owner {
     pub(super) login: String,
 }
 
+/// One status check. A `StatusContext` reports through `state`; a `CheckRun`
+/// reports through `conclusion`, and only once its `status` says it finished.
 #[derive(Clone, Debug, Deserialize)]
 pub(super) struct Check {
     #[serde(rename = "__typename")]
-    pub(super) kind: String,
-    pub(super) state: Option<String>,
-    pub(super) status: Option<String>,
-    pub(super) conclusion: Option<String>,
+    kind: CheckKind,
+    #[serde(default)]
+    state: Outcome,
+    #[serde(default)]
+    status: CheckStatus,
+    #[serde(default)]
+    conclusion: Outcome,
+}
+
+impl Check {
+    pub(super) fn outcome(&self) -> Outcome {
+        match self.kind {
+            CheckKind::StatusContext => self.state,
+            CheckKind::CheckRun if self.status == CheckStatus::Completed => self.conclusion,
+            CheckKind::CheckRun => Outcome::Pending,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(from = "String")]
+enum CheckKind {
+    StatusContext,
+    /// Every other GraphQL check type reports like a check run.
+    #[default]
+    CheckRun,
+}
+
+impl From<String> for CheckKind {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "StatusContext" => Self::StatusContext,
+            _ => Self::CheckRun,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(from = "Option<String>")]
+enum CheckStatus {
+    Completed,
+    #[default]
+    Running,
+}
+
+impl From<Option<String>> for CheckStatus {
+    fn from(value: Option<String>) -> Self {
+        match value.as_deref() {
+            Some("COMPLETED") => Self::Completed,
+            _ => Self::Running,
+        }
+    }
+}
+
+/// What one check contributes to the summary. Declaration order is the order
+/// the summary reads in, and indexes the tally in `checks`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(from = "Option<String>")]
+pub(super) enum Outcome {
+    Passed,
+    Failed,
+    #[default]
+    Pending,
+    Skipped,
+}
+
+impl Outcome {
+    pub(super) const ALL: [Self; 4] = [Self::Passed, Self::Failed, Self::Pending, Self::Skipped];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::Pending => "pending",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
+impl From<Option<String>> for Outcome {
+    fn from(value: Option<String>) -> Self {
+        match value.as_deref() {
+            Some("SUCCESS") => Self::Passed,
+            Some(
+                "FAILURE" | "ERROR" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED"
+                | "STARTUP_FAILURE" | "STALE",
+            ) => Self::Failed,
+            Some("NEUTRAL" | "SKIPPED") => Self::Skipped,
+            _ => Self::Pending,
+        }
+    }
 }
 
 impl PullRequest {
     /// Lifecycle color, shared by the workspace menu and the sidebar badge so
     /// one legend covers both: merged, closed, draft, open.
     pub fn color(&self, theme: &crate::config::Theme) -> u32 {
-        match self.state.as_str() {
-            "MERGED" => theme.palette[5],
-            "CLOSED" => theme.palette[1],
+        match self.state {
+            State::Merged => theme.palette[5],
+            State::Closed => theme.palette[1],
             _ if self.is_draft => theme.muted,
             _ => theme.palette[2],
         }
     }
 
     pub fn lifecycle(&self) -> &'static str {
-        match self.state.as_str() {
-            "MERGED" => "Merged",
-            "CLOSED" => "Closed",
+        match self.state {
+            State::Merged => "Merged",
+            State::Closed => "Closed",
             _ if self.is_draft => "Draft",
             _ => "Open",
         }
     }
 
     pub fn checks(&self) -> String {
-        let mut counts = [0; 4];
+        let mut counts = [0usize; Outcome::ALL.len()];
         for check in self.status_check_rollup.iter().flatten() {
-            let state = if check.kind == "StatusContext" {
-                check.state.as_deref()
-            } else if check.status.as_deref() == Some("COMPLETED") {
-                check.conclusion.as_deref()
-            } else {
-                None
-            };
-            counts[match state {
-                Some("SUCCESS") => 0,
-                Some(
-                    "FAILURE" | "ERROR" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED"
-                    | "STARTUP_FAILURE" | "STALE",
-                ) => 1,
-                Some("NEUTRAL" | "SKIPPED") => 3,
-                _ => 2,
-            }] += 1;
+            counts[check.outcome() as usize] += 1;
         }
-        if counts == [0; 4] {
+        if counts.iter().all(|count| *count == 0) {
             return "No checks reported".into();
         }
-        counts
+        Outcome::ALL
             .into_iter()
-            .zip(["passed", "failed", "pending", "skipped"])
+            .map(|outcome| (counts[outcome as usize], outcome.label()))
             .filter(|(count, _)| *count > 0)
             .map(|(count, label)| format!("{count} {label}"))
             .collect::<Vec<_>>()
@@ -106,24 +262,24 @@ impl PullRequest {
     }
 
     pub fn merge_status(&self) -> &'static str {
-        match self.merge_state_status.as_str() {
-            "CLEAN" => "No merge conflicts",
-            "DIRTY" => "Merge conflicts",
-            "BEHIND" => "Branch behind base",
-            "BLOCKED" => "Merge blocked",
-            "UNSTABLE" => "Checks need attention",
-            "DRAFT" => "Not ready for review",
-            "HAS_HOOKS" => "Merge hooks required",
-            _ => "Merge status unavailable",
+        match self.merge_state_status {
+            MergeState::Clean => "No merge conflicts",
+            MergeState::Dirty => "Merge conflicts",
+            MergeState::Behind => "Branch behind base",
+            MergeState::Blocked => "Merge blocked",
+            MergeState::Unstable => "Checks need attention",
+            MergeState::Draft => "Not ready for review",
+            MergeState::HasHooks => "Merge hooks required",
+            MergeState::Unknown => "Merge status unavailable",
         }
     }
 
     pub fn review(&self) -> &'static str {
-        match self.review_decision.as_str() {
-            "APPROVED" => "Approved",
-            "CHANGES_REQUESTED" => "Changes requested",
-            "REVIEW_REQUIRED" => "Review required",
-            _ => "No review decision",
+        match self.review_decision {
+            ReviewDecision::Approved => "Approved",
+            ReviewDecision::ChangesRequested => "Changes requested",
+            ReviewDecision::ReviewRequired => "Review required",
+            ReviewDecision::None => "No review decision",
         }
     }
 }

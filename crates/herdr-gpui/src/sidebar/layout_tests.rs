@@ -1584,7 +1584,7 @@ fn worktree_rows_wear_their_cached_pull_request(cx: &mut gpui::TestAppContext) {
             ] {
                 let mut value = crate::pull_request::fixture().unwrap();
                 value.number = number;
-                value.state = state.into();
+                value.state = crate::pull_request::State::from(state.to_owned());
                 value.additions = additions;
                 value.deletions = deletions;
                 view.menu.pr_cache.seed(
