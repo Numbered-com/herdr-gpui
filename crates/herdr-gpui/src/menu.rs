@@ -4,6 +4,7 @@ use crate::config::Config;
 use gpui::{prelude::*, *};
 use herdr_client::protocol::{ClientShellSnapshot, ClientShellWorkspace, ClientShellWorktree};
 
+mod git;
 mod github;
 mod pr;
 
@@ -27,6 +28,9 @@ pub(super) enum Page {
     RenameTab,
     Workspace,
     GitHub,
+    /// Titlebar Git actions for the focused checkout, and its commit dialog.
+    Git,
+    GitCommit,
     Dialog(WorkspaceAction),
 }
 
@@ -198,6 +202,7 @@ pub(super) struct MenuState {
     pub focus: FocusHandle,
     selected: Option<usize>,
     workspace_selected: Option<WorkspaceMenuAction>,
+    git_selected: Option<git::Row>,
     target: Option<WorkspaceTarget>,
     pub input: Option<DialogInput>,
     error: Option<String>,
@@ -329,6 +334,7 @@ impl MenuState {
             focus: cx.focus_handle(),
             selected: None,
             workspace_selected: None,
+            git_selected: None,
             target: None,
             input: None,
             error: None,
@@ -363,6 +369,7 @@ impl MenuState {
         self.page = None;
         self.selected = None;
         self.workspace_selected = None;
+        self.git_selected = None;
         self.target = None;
         self.input = None;
         self.error = None;
@@ -1186,7 +1193,12 @@ impl HerdrWindow {
         let viewport = window.viewport_size();
         let pointer_anchored = matches!(
             page,
-            Page::Workspace | Page::Dialog(_) | Page::Tab | Page::RenameTab
+            Page::Workspace
+                | Page::Dialog(_)
+                | Page::Tab
+                | Page::RenameTab
+                | Page::Git
+                | Page::GitCommit
         );
         let mut panel = div()
             .id("menu-panel")
@@ -1227,6 +1239,13 @@ impl HerdrWindow {
                 } else {
                     panel.top(self.menu.anchor.y + px(12.)).max_h(below)
                 }
+            })
+            .when(matches!(page, Page::Git | Page::GitCommit), |panel| {
+                panel
+                    .w((viewport.width - px(24.))
+                        .max(px(0.))
+                        .min(px(if page == Page::Git { 240. } else { 420. })))
+                    .max_h((viewport.height - px(24.)).max(px(0.)))
             })
             .when(matches!(page, Page::Tab | Page::RenameTab), |panel| {
                 panel
@@ -1394,6 +1413,10 @@ impl HerdrWindow {
             }
         } else if let Page::Dialog(action) = page {
             panel = panel.child(self.render_workspace_dialog(action, cx));
+        } else if page == Page::Git {
+            panel = panel.child(self.render_git_menu(cx));
+        } else if page == Page::GitCommit {
+            panel = panel.child(self.render_git_commit(cx));
         } else if matches!(page, Page::Tab | Page::RenameTab) {
             panel = panel.child(self.render_tab_menu(cx));
         } else if page == Page::Keybinds {
@@ -1531,6 +1554,10 @@ impl HerdrWindow {
                         return;
                     }
                 }
+                if this.menu.page == Some(Page::Git) {
+                    this.git_key(event, window, cx);
+                    return;
+                }
                 if matches!(this.menu.page, Some(Page::Tab | Page::RenameTab)) {
                     this.tab_menu_key(event, window, cx);
                     return;
@@ -1571,6 +1598,9 @@ impl HerdrWindow {
                     "escape" => this.dismiss_menu(window, cx),
                     "enter" if matches!(this.menu.page, Some(Page::Dialog(_))) => {
                         this.submit_workspace_dialog(window, cx)
+                    }
+                    "enter" if this.menu.page == Some(Page::GitCommit) => {
+                        this.submit_git_commit(cx)
                     }
                     "up" | "down" if this.menu.page == Some(Page::Workspace) => {
                         let actions = this.workspace_menu_actions();

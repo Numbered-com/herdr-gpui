@@ -14,6 +14,7 @@ impl AssetSource for Icons {
             "icons/trash.svg" => include_bytes!("../../../assets/icons/trash.svg"),
             "icons/chevron-up.svg" => include_bytes!("../../../assets/icons/chevron-up.svg"),
             "icons/chevron-down.svg" => include_bytes!("../../../assets/icons/chevron-down.svg"),
+            "icons/git-branch.svg" => include_bytes!("../../../assets/icons/git-branch.svg"),
             "icons/github.svg" => include_bytes!("../../../assets/icons/github.svg"),
             _ => return Ok(None),
         };
@@ -30,6 +31,7 @@ impl AssetSource for Icons {
             "icons/trash.svg",
             "icons/chevron-up.svg",
             "icons/chevron-down.svg",
+            "icons/git-branch.svg",
             "icons/github.svg",
         ]
         .into_iter()
@@ -57,6 +59,7 @@ mod tests {
             "icons/trash.svg",
             "icons/chevron-up.svg",
             "icons/chevron-down.svg",
+            "icons/git-branch.svg",
             "icons/github.svg",
         ] {
             let bytes = Icons.load(path).unwrap().unwrap();
@@ -74,6 +77,6 @@ mod tests {
             assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == 0));
         }
         assert!(Icons.load("unknown.svg").unwrap().is_none());
-        assert_eq!(Icons.list("icons/").unwrap().len(), 9);
+        assert_eq!(Icons.list("icons/").unwrap().len(), 10);
     }
 }

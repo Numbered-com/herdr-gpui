@@ -13,6 +13,7 @@ mod diagnostics;
 mod dialog_input;
 mod endpoint;
 mod error;
+mod git;
 mod github;
 pub use error::{Error, Result};
 mod icons;
@@ -164,6 +165,7 @@ struct HerdrWindow {
     hover_menu: Option<sidebar::HoverMenu>,
     local_error: Option<String>,
     menu: menu::MenuState,
+    git: git::Git,
     install_warning_shown: bool,
     collapsed_repos: std::collections::HashSet<String>,
     sidebar_visible: bool,
@@ -254,6 +256,9 @@ impl HerdrWindow {
                         if this.update_workspace_pr() {
                             cx.notify();
                         }
+                        if this.update_git() {
+                            cx.notify();
+                        }
                         if this.live.missing_installation && !this.install_warning_shown {
                             this.install_warning_shown = true;
                             this.show_install_modal(window, cx);
@@ -302,6 +307,7 @@ impl HerdrWindow {
             hover_menu: None,
             local_error: None,
             menu: menu::MenuState::new(cx),
+            git: git::Git::default(),
             install_warning_shown: false,
             collapsed_repos: Default::default(),
             sidebar_visible: true,

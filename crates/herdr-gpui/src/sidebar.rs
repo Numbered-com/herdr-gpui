@@ -392,7 +392,7 @@ impl HerdrWindow {
                                 .map_or(RowIcon::Mark, RowIcon::Avatar)
                         },
                         arrow,
-                        workspace_pr(workspace, &self.menu.pr_cache, theme),
+                        workspace_badge(workspace, &self.menu.pr_cache, &self.git, theme),
                         (font, theme),
                     )
                     .on_mouse_down(
@@ -831,6 +831,31 @@ fn tree_lines(
     ]
 }
 
+/// What a row shows on its right edge: the cached pull request, and whether
+/// the checkout has work that is not committed yet.
+struct RowBadge {
+    pr: Option<PrBadge>,
+    dirty: bool,
+}
+
+impl RowBadge {
+    /// Nothing to draw is nothing to reserve, so a row with neither keeps its
+    /// full label width.
+    fn new(pr: Option<PrBadge>, dirty: bool) -> Option<Self> {
+        (pr.is_some() || dirty).then_some(Self { pr, dirty })
+    }
+
+    fn width(&self, font: &FontConfig) -> f32 {
+        let pr = self.pr.as_ref().map_or(0., |pr| pr.width(font));
+        // The dot sits on the number's line, a glyph of space ahead of it.
+        pr + if self.dirty {
+            2. * glyph_width(font)
+        } else {
+            0.
+        }
+    }
+}
+
 /// Cached pull request state for a worktree row: the number carries the
 /// lifecycle color, the counts sit under it.
 struct PrBadge {
@@ -864,8 +889,9 @@ impl PrBadge {
 }
 
 /// Four digits of churn is already a big diff; abbreviate past that so the
-/// column stays narrow enough to leave the branch readable.
-fn compact(lines: u64) -> String {
+/// column stays narrow enough to leave the branch readable. The titlebar's Git
+/// badge reuses it so one PR reads the same in both places.
+pub(super) fn compact(lines: u64) -> String {
     match lines {
         0..=9999 => lines.to_string(),
         _ => format!("{}k", lines / 1000),
@@ -949,7 +975,7 @@ fn row(
     width: f32,
     workspace_icon: RowIcon,
     arrow: Option<Stateful<Div>>,
-    pr: Option<PrBadge>,
+    badge: Option<RowBadge>,
     appearance: (&FontConfig, &Theme),
 ) -> Div {
     let (font, theme) = appearance;
@@ -964,7 +990,7 @@ fn row(
     } else {
         CHILD_INDENT
     };
-    let pr_reserve = pr
+    let pr_reserve = badge
         .as_ref()
         .map(|badge| badge.width(font) + LABEL_GAP)
         .unwrap_or_default();
@@ -1088,11 +1114,13 @@ fn row(
         .when(arrow_absent && reserve_arrow, |row| {
             row.child(div().w(px(ARROW_RESERVE - LABEL_GAP)).flex_none())
         })
-        .when_some(pr, |row, badge| {
+        .when_some(badge, |row, badge| {
+            let width = badge.width(font);
+            let RowBadge { pr, dirty } = badge;
             row.child(
                 div()
                     .debug_selector(|| format!("pr-{key}"))
-                    .w(px(badge.width(font)))
+                    .w(px(width))
                     .flex_none()
                     .flex()
                     .flex_col()
@@ -1102,34 +1130,58 @@ fn row(
                         div()
                             .h(px(line_height(font)))
                             .flex_none()
-                            .truncate()
-                            .text_color(rgb(badge.color))
-                            .child(label_text(&badge.number)),
-                    )
-                    .child(
-                        div()
                             .flex()
-                            .flex_none()
+                            .items_center()
+                            .gap(px(glyph_width(font)))
                             .overflow_hidden()
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_color(rgb(theme.palette[2]))
-                                    .child(label_text(&badge.additions)),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_color(rgb(theme.muted))
-                                    .child(label_text("/")),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_color(rgb(theme.palette[1]))
-                                    .child(label_text(&badge.deletions)),
-                            ),
-                    ),
+                            // Uncommitted work, marked the way the titlebar
+                            // button marks it: the counts beside it are the
+                            // pull request's, not the working tree's.
+                            .when(dirty, |line| {
+                                line.child(
+                                    div()
+                                        .debug_selector(|| format!("dirty-{key}"))
+                                        .flex_none()
+                                        .text_color(rgb(theme.foreground))
+                                        .child(label_text("\u{2022}")),
+                                )
+                            })
+                            .when_some(pr.as_ref(), |line, badge| {
+                                line.child(
+                                    div()
+                                        .flex_none()
+                                        .truncate()
+                                        .text_color(rgb(badge.color))
+                                        .child(label_text(&badge.number)),
+                                )
+                            }),
+                    )
+                    .when_some(pr, |column, badge| {
+                        column.child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(rgb(theme.palette[2]))
+                                        .child(label_text(&badge.additions)),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(rgb(theme.muted))
+                                        .child(label_text("/")),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(rgb(theme.palette[1]))
+                                        .child(label_text(&badge.deletions)),
+                                ),
+                        )
+                    }),
             )
         })
 }
@@ -1258,16 +1310,21 @@ fn visible_workspace_entries(
         .collect()
 }
 
-/// Cached pull request for a worktree row, if the prefetch already has one.
-/// Rendering only reads: a missing entry simply shows no badge.
-fn workspace_pr(
+/// Cached pull request and dirty mark for a worktree row, if the prefetch and
+/// the Git probe already have them. Rendering only reads: a missing entry
+/// simply shows nothing, never a stale or guessed state.
+fn workspace_badge(
     workspace: &ClientShellWorkspace,
     cache: &crate::pull_request::Cache,
+    git: &crate::git::Git,
     theme: &Theme,
-) -> Option<PrBadge> {
+) -> Option<RowBadge> {
     let key = workspace.worktree.as_ref()?.key.as_str();
     let branch = workspace.branch.as_deref()?;
-    cache.peek(key, branch).map(|pr| PrBadge::new(pr, theme))
+    RowBadge::new(
+        cache.peek(key, branch).map(|pr| PrBadge::new(pr, theme)),
+        git.dirty(key, branch).unwrap_or(false),
+    )
 }
 
 pub(super) fn workspace_label(workspace: &ClientShellWorkspace, indented: bool) -> &str {

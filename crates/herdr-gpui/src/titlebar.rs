@@ -21,6 +21,160 @@ impl HerdrWindow {
         cx.notify();
     }
 
+    /// Git actions for the focused checkout, left of the account slot. Hidden
+    /// when no local checkout is tracked, so remote endpoints show no control
+    /// that cannot act.
+    ///
+    /// One set of counts only, so two "+N -M" pairs can never sit side by side
+    /// meaning different things. A branch with a prefetched pull request shows
+    /// that pull request, exactly as its sidebar row does, and a dot when the
+    /// checkout also has uncommitted work; the popup says how much. A branch
+    /// without one shows what a commit would include right now.
+    fn render_git_button(&self, cx: &mut Context<Self>) -> Option<Div> {
+        self.git.tracked()?;
+        let theme = &self.theme;
+        let font = &self.config.ui;
+        let background = rgb(theme.surface).blend(rgba(0xffffff1a));
+        let status = self.git.status();
+        let running = self.git.running().is_some();
+        let pr = self.git_pull_request().map(|pr| {
+            (
+                format!("#{}", pr.number),
+                pr.color(theme),
+                pr.additions,
+                pr.deletions,
+            )
+        });
+        Some(
+            div()
+                .debug_selector(|| "titlebar-git-slot".into())
+                .flex()
+                .items_center()
+                .flex_none()
+                .h_full()
+                .pr(px(2.))
+                .child(
+                    div()
+                        .id("titlebar-git")
+                        .debug_selector(|| "titlebar-git".into())
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .h(px(24.))
+                        .px(px(6.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .font_family(font.family.clone())
+                        .text_size(px(font.size))
+                        .text_color(rgb(theme.foreground))
+                        .hover(|button| {
+                            button.bg(background.blend(rgba((theme.foreground << 8) | 0x14)))
+                        })
+                        .child(
+                            svg()
+                                .path("icons/git-branch.svg")
+                                .size(px(14.))
+                                .flex_none()
+                                .text_color(rgb(if running {
+                                    theme.palette[3]
+                                } else {
+                                    theme.muted
+                                })),
+                        )
+                        .map(|button| match pr {
+                            Some((number, color, additions, deletions)) => button
+                                .child(
+                                    div()
+                                        .debug_selector(|| "titlebar-git-pr".into())
+                                        .text_color(rgb(color))
+                                        .child(number),
+                                )
+                                .child(
+                                    div()
+                                        .debug_selector(|| "titlebar-git-pr-lines".into())
+                                        .flex()
+                                        .child(
+                                            div()
+                                                .debug_selector(|| {
+                                                    "titlebar-git-pr-additions".into()
+                                                })
+                                                .text_color(rgb(theme.palette[2]))
+                                                .child(format!(
+                                                    "+{}",
+                                                    crate::sidebar::compact(additions)
+                                                )),
+                                        )
+                                        .child(div().text_color(rgb(theme.muted)).child("/"))
+                                        .child(
+                                            div()
+                                                .debug_selector(|| {
+                                                    "titlebar-git-pr-deletions".into()
+                                                })
+                                                .text_color(rgb(theme.palette[1]))
+                                                .child(format!(
+                                                    "-{}",
+                                                    crate::sidebar::compact(deletions)
+                                                )),
+                                        ),
+                                )
+                                // The pull request's churn is history; the dot
+                                // says work is still sitting in the checkout.
+                                .when(status.is_some_and(|status| status.dirty()), |button| {
+                                    button.child(
+                                        div()
+                                            .debug_selector(|| "titlebar-git-dirty".into())
+                                            .child("\u{2022}"),
+                                    )
+                                }),
+                            None => button.when_some(
+                                status.filter(|status| status.dirty()),
+                                |button, status| {
+                                    button
+                                        .child(
+                                            div()
+                                                .debug_selector(|| "titlebar-git-additions".into())
+                                                .text_color(rgb(theme.palette[2]))
+                                                .child(format!("+{}", status.additions)),
+                                        )
+                                        .child(
+                                            div()
+                                                .debug_selector(|| "titlebar-git-deletions".into())
+                                                .text_color(rgb(theme.palette[1]))
+                                                .child(format!("-{}", status.deletions)),
+                                        )
+                                        // Untracked files are staged by a commit
+                                        // too, but have no diff against HEAD.
+                                        .when(status.untracked > 0, |button| {
+                                            button.child(
+                                                div()
+                                                    .debug_selector(|| {
+                                                        "titlebar-git-untracked".into()
+                                                    })
+                                                    .text_color(rgb(theme.muted))
+                                                    .child("*"),
+                                            )
+                                        })
+                                },
+                            ),
+                        })
+                        .child(
+                            svg()
+                                .path("icons/chevron-down.svg")
+                                .size(px(12.))
+                                .flex_none()
+                                .text_color(rgb(theme.muted)),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.open_git_menu(event.position, window, cx);
+                            }),
+                        ),
+                ),
+        )
+    }
+
     pub(super) fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let background = rgb(self.theme.surface).blend(rgba(0xffffff1a));
         let image = self
@@ -29,71 +183,74 @@ impl HerdrWindow {
             .profile
             .as_ref()
             .and_then(|p| p.avatar.clone());
-        render(self.theme.surface).child(
-            div()
-                .debug_selector(|| "titlebar-account-slot".into())
-                .flex()
-                .items_center()
-                .justify_center()
-                .flex_none()
-                .w(px(40.))
-                .h_full()
-                .child(
-                    div()
-                        .id("titlebar-avatar")
-                        .debug_selector(|| "titlebar-avatar".into())
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size(px(28.))
-                        .rounded_full()
-                        .cursor_pointer()
-                        .hover(|s| {
-                            s.bg(background.blend(rgba((self.theme.foreground << 8) | 0x14)))
-                        })
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.open_profile(true, window, cx);
-                        }))
-                        .on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(|this, _, window, cx| {
+        render(self.theme.surface)
+            .children(self.render_git_button(cx))
+            .child(
+                div()
+                    .debug_selector(|| "titlebar-account-slot".into())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .flex_none()
+                    .w(px(40.))
+                    .h_full()
+                    .child(
+                        div()
+                            .id("titlebar-avatar")
+                            .debug_selector(|| "titlebar-avatar".into())
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(28.))
+                            .rounded_full()
+                            .cursor_pointer()
+                            .hover(|s| {
+                                s.bg(background.blend(rgba((self.theme.foreground << 8) | 0x14)))
+                            })
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(|this, _, window, cx| {
                                 cx.stop_propagation();
-                                this.open_profile(false, window, cx);
-                            }),
-                        )
-                        .child(
-                            div()
-                                .debug_selector(|| "titlebar-avatar-circle".into())
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .size(px(if image.is_some() { AVATAR } else { 16. }))
-                                .rounded_full()
-                                .overflow_hidden()
-                                .bg(background.blend(rgba((self.theme.foreground << 8) | 0x26)))
-                                .when(
-                                    self.menu.github.busy() || self.menu.github.loading_profile(),
-                                    |s| s.border_1().border_color(rgb(self.theme.palette[3])),
-                                )
-                                .when(self.menu.github.failed, |s| {
-                                    s.border_1().border_color(rgb(self.theme.palette[1]))
-                                })
-                                .map(|circle| match image {
-                                    Some(image) => {
-                                        circle.child(img(image).size(px(AVATAR)).rounded_full())
-                                    }
-                                    None => circle.child(
-                                        svg()
-                                            .path("icons/user.svg")
-                                            .size(px(12.))
-                                            .text_color(rgb(self.theme.foreground)),
-                                    ),
+                                this.open_profile(true, window, cx);
+                            }))
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.open_profile(false, window, cx);
                                 }),
-                        ),
-                ),
-        )
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(|| "titlebar-avatar-circle".into())
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .size(px(if image.is_some() { AVATAR } else { 16. }))
+                                    .rounded_full()
+                                    .overflow_hidden()
+                                    .bg(background.blend(rgba((self.theme.foreground << 8) | 0x26)))
+                                    .when(
+                                        self.menu.github.busy()
+                                            || self.menu.github.loading_profile(),
+                                        |s| s.border_1().border_color(rgb(self.theme.palette[3])),
+                                    )
+                                    .when(self.menu.github.failed, |s| {
+                                        s.border_1().border_color(rgb(self.theme.palette[1]))
+                                    })
+                                    .map(|circle| match image {
+                                        Some(image) => {
+                                            circle.child(img(image).size(px(AVATAR)).rounded_full())
+                                        }
+                                        None => circle.child(
+                                            svg()
+                                                .path("icons/user.svg")
+                                                .size(px(12.))
+                                                .text_color(rgb(self.theme.foreground)),
+                                        ),
+                                    }),
+                            ),
+                    ),
+            )
     }
 }
 
@@ -187,6 +344,206 @@ mod tests {
                 assert!(!view.menu.github.busy());
             })
         });
+    }
+}
+
+#[cfg(test)]
+mod git_button_tests {
+    #![allow(clippy::unwrap_used)]
+    use crate::{
+        git::{Git, Status},
+        menu::Page,
+        pull_request::Input,
+    };
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, TestAppContext, px, size};
+
+    #[gpui::test]
+    fn git_button_sits_left_of_the_account_slot_and_opens_its_menu(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                window.refresh();
+                let _ = window.draw(cx);
+            });
+        };
+        cx.simulate_resize(size(px(1200.), px(600.)));
+        cx.run_until_parked();
+        draw(cx);
+        assert!(
+            cx.debug_bounds("titlebar-git").is_none(),
+            "no tracked checkout, no Git control"
+        );
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.git = Git::fixture(
+                    Input {
+                        checkout: None,
+                        repo_key: "/fixture/agent-launcher/.git".into(),
+                        branch: "develop".into(),
+                    },
+                    Status {
+                        additions: 239,
+                        deletions: 250,
+                        untracked: 2,
+                    },
+                );
+                cx.notify();
+            })
+        });
+        for width in [1200., 640., 360.] {
+            cx.simulate_resize(size(px(width), px(600.)));
+            cx.run_until_parked();
+            draw(cx);
+            let button = cx.debug_bounds("titlebar-git").unwrap();
+            let avatar = cx.debug_bounds("titlebar-avatar").unwrap();
+            let titlebar = cx.debug_bounds("titlebar").unwrap();
+            assert!(button.right() <= avatar.left(), "width {width}");
+            assert!(button.left() >= titlebar.left());
+            assert!(button.top() >= titlebar.top() && button.bottom() <= titlebar.bottom());
+            for part in [
+                "titlebar-git-additions",
+                "titlebar-git-deletions",
+                "titlebar-git-untracked",
+            ] {
+                assert!(cx.debug_bounds(part).is_some(), "{part} at width {width}");
+            }
+            cx.simulate_event(MouseDownEvent {
+                button: MouseButton::Left,
+                position: button.center(),
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            });
+            cx.update(|_, cx| assert_eq!(view.read(cx).menu.page, Some(Page::Git)));
+            draw(cx);
+            for row in [
+                "git-menu-Commit...",
+                "git-menu-Push",
+                "git-menu-Create pull request",
+            ] {
+                assert!(cx.debug_bounds(row).is_some(), "{row} at width {width}");
+            }
+            assert!(cx.debug_bounds("git-menu-summary").is_some());
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.dismiss_menu(window, cx);
+                    cx.notify();
+                })
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn a_clean_checkout_shows_no_counts(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        cx.simulate_resize(size(px(900.), px(600.)));
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.git = Git::fixture(
+                    Input {
+                        checkout: None,
+                        repo_key: "/fixture/agent-launcher/.git".into(),
+                        branch: "develop".into(),
+                    },
+                    Status::default(),
+                );
+                cx.notify();
+            })
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            let _ = window.draw(cx);
+        });
+        assert!(cx.debug_bounds("titlebar-git").is_some());
+        assert!(cx.debug_bounds("titlebar-git-additions").is_none());
+        assert!(cx.debug_bounds("titlebar-git-untracked").is_none());
+        assert!(
+            cx.debug_bounds("titlebar-git-pr").is_none(),
+            "no cached pull request, no badge"
+        );
+    }
+
+    #[gpui::test]
+    fn a_cached_pull_request_replaces_the_uncommitted_counts(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        let input = Input {
+            checkout: None,
+            repo_key: "/fixture/agent-launcher/.git".into(),
+            branch: "develop".into(),
+        };
+        cx.simulate_resize(size(px(900.), px(600.)));
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.git = Git::fixture(
+                    input.clone(),
+                    Status {
+                        additions: 12,
+                        deletions: 3,
+                        untracked: 0,
+                    },
+                );
+                view.menu.github = crate::github::Auth::connected_fixture();
+                view.menu.pr_cache.seed(
+                    input,
+                    crate::pull_request::fixture().unwrap(),
+                    std::time::Instant::now(),
+                );
+                cx.notify();
+            })
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            let _ = window.draw(cx);
+        });
+        let button = cx.debug_bounds("titlebar-git").unwrap();
+        let number = cx.debug_bounds("titlebar-git-pr").unwrap();
+        let churn = cx.debug_bounds("titlebar-git-pr-lines").unwrap();
+        let dirty = cx.debug_bounds("titlebar-git-dirty").unwrap();
+        // One set of counts only: the pull request's, then a dot for the work
+        // still sitting in the checkout. Two "+N -M" pairs never sit together.
+        assert!(
+            cx.debug_bounds("titlebar-git-additions").is_none(),
+            "uncommitted counts give way to the pull request's"
+        );
+        assert!(number.right() <= churn.left());
+        assert!(churn.right() <= dirty.left());
+        assert!(dirty.right() <= button.right());
+        assert!(button.right() <= cx.debug_bounds("titlebar-avatar").unwrap().left());
+        // Additions and deletions are separate spans so each keeps its own
+        // color, as the sidebar badge paints them.
+        let additions = cx.debug_bounds("titlebar-git-pr-additions").unwrap();
+        let deletions = cx.debug_bounds("titlebar-git-pr-deletions").unwrap();
+        assert!(churn.left() <= additions.left() && additions.right() <= deletions.left());
+        assert!(deletions.right() <= churn.right());
+    }
+
+    #[gpui::test]
+    fn a_clean_checkout_with_a_pull_request_shows_no_dot(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        let input = Input {
+            checkout: None,
+            repo_key: "/fixture/agent-launcher/.git".into(),
+            branch: "develop".into(),
+        };
+        cx.simulate_resize(size(px(900.), px(600.)));
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.git = Git::fixture(input.clone(), Status::default());
+                view.menu.github = crate::github::Auth::connected_fixture();
+                view.menu.pr_cache.seed(
+                    input,
+                    crate::pull_request::fixture().unwrap(),
+                    std::time::Instant::now(),
+                );
+                cx.notify();
+            })
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            let _ = window.draw(cx);
+        });
+        assert!(cx.debug_bounds("titlebar-git-pr-lines").is_some());
+        assert!(cx.debug_bounds("titlebar-git-dirty").is_none());
     }
 }
 
