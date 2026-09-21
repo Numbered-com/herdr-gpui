@@ -340,6 +340,7 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         config: Default::default(),
         theme: Default::default(),
         config_load: None,
+        git: Default::default(),
         sidebar_visible: true,
         endpoints: vec![crate::endpoint::Endpoint::new(
             crate::endpoint::LOCAL.into(),

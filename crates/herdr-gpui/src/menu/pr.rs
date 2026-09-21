@@ -1,5 +1,5 @@
 use super::*;
-use crate::pull_request::Input;
+use crate::pull_request::{Input, repository_input};
 use std::sync::Arc;
 
 impl HerdrWindow {
@@ -407,28 +407,6 @@ fn workspace_pr_inputs<'a>(
         .filter_map(|workspace| {
             repository_input(workspace.worktree.as_ref(), workspace.branch.as_deref()).ok()
         })
-}
-
-fn repository_input(
-    worktree: Option<&ClientShellWorktree>,
-    branch: Option<&str>,
-) -> crate::Result<Input> {
-    let key = worktree
-        .map(|tree| tree.key.as_str())
-        .ok_or(crate::Error::PrMetadata)?;
-    let branch = branch
-        .filter(|branch| {
-            !branch.is_empty() && branch.len() <= 1024 && !branch.chars().any(char::is_control)
-        })
-        .ok_or(crate::Error::PrBranch)?;
-    if !std::path::Path::new(key).is_absolute() {
-        return Err(crate::Error::PrAbsolutePath);
-    }
-    Ok(Input {
-        checkout: None,
-        repo_key: key.into(),
-        branch: branch.into(),
-    })
 }
 
 #[cfg(test)]
