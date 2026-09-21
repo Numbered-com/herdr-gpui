@@ -341,6 +341,7 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         config: Default::default(),
         theme: Default::default(),
         config_load: None,
+        git: Default::default(),
         sidebar_visible: true,
         endpoints: vec![crate::endpoint::Endpoint::new(
             crate::endpoint::LOCAL.into(),
@@ -1637,6 +1638,72 @@ fn worktree_rows_wear_their_cached_pull_request(cx: &mut gpui::TestAppContext) {
             );
         }
     });
+}
+
+#[gpui::test]
+fn worktree_rows_mark_uncommitted_work(cx: &mut gpui::TestAppContext) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| fixture_window(window, cx));
+        cx.observe(&view, |_, _, cx| cx.notify()).detach();
+        SidebarFixture(view)
+    });
+    let view = cx.update(|_, cx| fixture.read(cx).0.clone());
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear());
+    let clean_label = cx.debug_bounds("name-sidebar-child").unwrap();
+    cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            let now = std::time::Instant::now();
+            let input = |branch: &str| crate::pull_request::Input {
+                checkout: None,
+                repo_key: "/fixture/agent-launcher/.git".into(),
+                branch: branch.into(),
+            };
+            // A checkout with a pull request and uncommitted work, and one that
+            // only has uncommitted work.
+            view.menu.pr_cache.seed(
+                input("worktree/sidebar-child"),
+                crate::pull_request::fixture().unwrap(),
+                now,
+            );
+            view.git
+                .seed_probe(input("worktree/sidebar-child"), true, now);
+            view.git.seed_probe(input("develop"), true, now);
+            // Answered and clean: no mark, and no column reserved for one.
+            view.git.seed_probe(
+                input("worktree/sidebar-child-with-a-long-readable-branch-name"),
+                false,
+                now,
+            );
+            cx.notify();
+        })
+    });
+    cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear();
+    });
+    let row = cx.debug_bounds("row-sidebar-child").unwrap();
+    let badge = cx.debug_bounds("pr-sidebar-child").unwrap();
+    let dot = cx.debug_bounds("dirty-sidebar-child").unwrap();
+    // The mark leads the badge column, still flush against the row's edge.
+    assert!(badge.left() <= dot.left() && dot.right() <= badge.right());
+    assert_eq!(badge.right(), row.right() - px(12.));
+    assert!(cx.debug_bounds("name-sidebar-child").unwrap().right() <= badge.left());
+    assert!(clean_label.size.width > cx.debug_bounds("name-sidebar-child").unwrap().size.width);
+    // A dirty checkout without a pull request still earns the column.
+    let head = cx.debug_bounds("pr-agent-launcher").unwrap();
+    let head_dot = cx.debug_bounds("dirty-agent-launcher").unwrap();
+    assert_eq!(
+        head.right(),
+        cx.debug_bounds("row-agent-launcher").unwrap().right() - px(12.)
+    );
+    assert!(head.left() <= head_dot.left() && head_dot.right() <= head.right());
+    assert!(
+        cx.debug_bounds("dirty-sidebar-child-with-a-long-readable-branch-name")
+            .is_none(),
+        "a clean checkout is not marked"
+    );
 }
 
 #[gpui::test]

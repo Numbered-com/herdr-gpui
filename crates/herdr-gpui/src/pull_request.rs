@@ -153,6 +153,30 @@ impl PullRequest {
     }
 }
 
+/// Daemon worktree metadata as a lookup key. The checkout is resolved later,
+/// from Git's own registry, so a workspace never points work at another tree.
+pub(super) fn repository_input(
+    worktree: Option<&herdr_client::protocol::ClientShellWorktree>,
+    branch: Option<&str>,
+) -> crate::Result<Input> {
+    let key = worktree
+        .map(|tree| tree.key.as_str())
+        .ok_or(Error::PrMetadata)?;
+    let branch = branch
+        .filter(|branch| {
+            !branch.is_empty() && branch.len() <= 1024 && !branch.chars().any(char::is_control)
+        })
+        .ok_or(Error::PrBranch)?;
+    if !Path::new(key).is_absolute() {
+        return Err(Error::PrAbsolutePath);
+    }
+    Ok(Input {
+        checkout: None,
+        repo_key: key.into(),
+        branch: branch.into(),
+    })
+}
+
 pub(super) fn clean(text: &str) -> String {
     text.chars()
         .take(512)
@@ -527,6 +551,33 @@ pub(super) fn local_repository(
     deadline: Instant,
     cancelled: &impl Fn() -> bool,
 ) -> crate::Result<(String, String)> {
+    let checkout = local_checkout(input, deadline, cancelled)?;
+    origin_repository(&checkout, deadline, cancelled)
+}
+
+/// The GitHub owner and repository behind a verified checkout's origin remote.
+pub(super) fn origin_repository(
+    checkout: &str,
+    deadline: Instant,
+    cancelled: &impl Fn() -> bool,
+) -> crate::Result<(String, String)> {
+    let remote = git(
+        checkout,
+        &["config", "--get", "remote.origin.url"],
+        deadline,
+        cancelled,
+    )?;
+    crate::avatars::github_repo(&remote).ok_or(Error::PrOrigin)
+}
+
+/// Resolve the checkout a daemon workspace names and verify it still is that
+/// repository on that branch. Every local Git operation starts here, so a
+/// renamed branch or a moved worktree cannot be worked on by mistake.
+pub(super) fn local_checkout(
+    input: &Input,
+    deadline: Instant,
+    cancelled: &impl Fn() -> bool,
+) -> crate::Result<String> {
     if input
         .checkout
         .as_ref()
@@ -564,21 +615,13 @@ pub(super) fn local_repository(
             worktree_checkout(&output, &input.branch)?
         }
     };
-    let git = |args: &[&str]| {
-        let mut command = Command::new("git");
-        command
-            .args(["-c", "core.fsmonitor=false", "-C", &checkout])
-            .args(args);
-        run(&mut command, deadline, cancelled).and_then(|(ok, output)| {
-            if ok {
-                Ok(output.trim_end_matches(['\r', '\n']).to_owned())
-            } else {
-                Err(Error::PrCheckout)
-            }
-        })
-    };
     // A Git registry candidate still must match both repository and live HEAD.
-    let common = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+    let common = git(
+        &checkout,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        deadline,
+        cancelled,
+    )?;
     if Path::new(&common)
         .canonicalize()
         .ok()
@@ -587,11 +630,36 @@ pub(super) fn local_repository(
     {
         return Err(Error::PrRepositoryMismatch);
     }
-    if git(&["symbolic-ref", "--quiet", "--short", "HEAD"])? != input.branch {
+    if git(
+        &checkout,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        deadline,
+        cancelled,
+    )? != input.branch
+    {
         return Err(Error::PrBranchChanged);
     }
-    let remote = git(&["config", "--get", "remote.origin.url"])?;
-    crate::avatars::github_repo(&remote).ok_or(Error::PrOrigin)
+    Ok(checkout)
+}
+
+/// Read-only Git output from a checkout, with the shared process policy.
+fn git(
+    checkout: &str,
+    args: &[&str],
+    deadline: Instant,
+    cancelled: &impl Fn() -> bool,
+) -> crate::Result<String> {
+    let mut command = Command::new("git");
+    command
+        .args(["-c", "core.fsmonitor=false", "-C", checkout])
+        .args(args);
+    run(&mut command, deadline, cancelled).and_then(|(ok, output)| {
+        if ok {
+            Ok(output.trim_end_matches(['\r', '\n']).to_owned())
+        } else {
+            Err(Error::PrCheckout)
+        }
+    })
 }
 
 fn worktree_checkout(output: &str, branch: &str) -> crate::Result<String> {
@@ -671,7 +739,7 @@ fn parse(text: &str, owner: &str, repo: &str, branch: &str) -> Result {
 
 // Nonblocking sockets avoid reader threads that can hang on inherited pipe handles.
 // Kill/wait only the exact child we created, and never on the UI thread.
-fn run(
+pub(super) fn run(
     command: &mut Command,
     deadline: Instant,
     cancelled: &impl Fn() -> bool,

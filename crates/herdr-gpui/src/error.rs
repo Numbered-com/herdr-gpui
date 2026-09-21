@@ -69,6 +69,31 @@ pub enum Error {
     PrEncoding(#[source] std::str::Utf8Error),
     #[error("No repository metadata.")]
     PrMetadata,
+    #[error("git {operation} failed: {details}")]
+    GitFailed {
+        operation: &'static str,
+        details: String,
+    },
+    #[error("A Git operation is already running.")]
+    GitBusy,
+    #[error("No local checkout is focused.")]
+    GitNoCheckout,
+    #[error("Enter a commit message of at most 4096 characters.")]
+    GitCommitMessage,
+    #[error("Nothing to commit: the checkout has no changes.")]
+    GitNothingToCommit,
+    #[error("The branch has no commit to describe. Commit before opening a pull request.")]
+    GitPullRequestTitle,
+    #[error("This branch is the repository default branch; no pull request can be opened from it.")]
+    GitPullRequestBase,
+    #[error("Git worker stopped. Retry the operation.")]
+    GitWorker,
+    #[error("Could not {operation}.")]
+    GitProcess {
+        operation: &'static str,
+        #[source]
+        source: io::Error,
+    },
     #[error(
         "GitHub authentication required. Use menu > GitHub sign-in or set GH_TOKEN / GITHUB_TOKEN."
     )]
