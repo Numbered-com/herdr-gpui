@@ -104,15 +104,21 @@ impl HerdrWindow {
         cx.notify();
     }
 
-    /// The pull request already prefetched for the focused branch, if any.
-    fn git_pull_request(&self) -> Option<&crate::pull_request::PullRequest> {
+    /// The pull request already prefetched for the focused branch, in whatever
+    /// lifecycle it is in. Reading the cache never schedules work.
+    pub(crate) fn git_pull_request(&self) -> Option<&crate::pull_request::PullRequest> {
         let input = self.git.tracked()?;
         self.menu
             .github
             .connected()
             .then(|| self.menu.pr_cache.peek(&input.repo_key, &input.branch))
             .flatten()
-            .filter(|pr| pr.state == "OPEN")
+    }
+
+    /// Only an open pull request can be opened; a merged or closed one leaves
+    /// creating the next one as the action.
+    fn git_open_pull_request(&self) -> Option<&crate::pull_request::PullRequest> {
+        self.git_pull_request().filter(|pr| pr.state == "OPEN")
     }
 
     pub(super) fn git_rows(&self) -> Vec<(Row, String)> {
@@ -122,7 +128,7 @@ impl HerdrWindow {
         vec![
             (Row::Commit, "Commit...".into()),
             (Row::Push, "Push".into()),
-            match self.git_pull_request() {
+            match self.git_open_pull_request() {
                 Some(pr) => (
                     Row::PullRequest,
                     format!("Open pull request #{}", pr.number),
@@ -148,7 +154,7 @@ impl HerdrWindow {
             }
             Row::Push => self.start_git(Action::Push),
             Row::PullRequest => {
-                if let Some(url) = self.git_pull_request().map(|pr| pr.url.clone()) {
+                if let Some(url) = self.git_open_pull_request().map(|pr| pr.url.clone()) {
                     cx.open_url(&url);
                     self.dismiss_menu(window, cx);
                     return;
@@ -244,6 +250,26 @@ impl HerdrWindow {
                     .pt(px(4.))
                     .truncate()
                     .child(input.branch.clone()),
+            );
+        }
+        if let Some(pr) = self.git_pull_request() {
+            panel = panel.child(
+                div()
+                    .debug_selector(|| "git-menu-pr".into())
+                    .px(px(8.))
+                    .flex()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .text_color(rgb(pr.color(theme)))
+                            .child(format!("#{}", pr.number)),
+                    )
+                    .child(div().text_color(rgb(theme.muted)).child(pr.lifecycle()))
+                    .child(div().text_color(rgb(theme.muted)).child(format!(
+                        "+{}/-{}",
+                        crate::sidebar::compact(pr.additions),
+                        crate::sidebar::compact(pr.deletions)
+                    ))),
             );
         }
         panel = panel.child(
@@ -457,6 +483,59 @@ mod tests {
                 view.selected_endpoint = 0;
                 view.live.status = crate::state::ConnectionStatus::Disconnected;
                 assert!(view.git_input().is_none());
+            })
+        });
+    }
+
+    #[gpui::test]
+    fn a_cached_pull_request_is_named_and_only_an_open_one_can_be_opened(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        let input = crate::pull_request::Input {
+            checkout: None,
+            repo_key: "/fixture/agent-launcher/.git".into(),
+            branch: "develop".into(),
+        };
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.git = crate::git::Git::fixture(input.clone(), status(0, 0, 0));
+                assert!(
+                    view.git_pull_request().is_none(),
+                    "a signed-out client shows no pull request"
+                );
+                view.menu.github = crate::github::Auth::connected_fixture();
+                let pr = crate::pull_request::fixture().unwrap();
+                view.menu
+                    .pr_cache
+                    .seed(input.clone(), pr, std::time::Instant::now());
+                assert_eq!(view.git_pull_request().map(|pr| pr.number), Some(8));
+                assert_eq!(
+                    view.git_rows().last().map(|(_, label)| label.clone()),
+                    Some("Open pull request #8".into())
+                );
+                view.open_git_menu(gpui::point(gpui::px(900.), gpui::px(20.)), window, cx);
+            })
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            let _ = window.draw(cx);
+        });
+        assert!(cx.debug_bounds("git-menu-pr").is_some());
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.dismiss_menu(window, cx);
+                // A merged pull request still names the branch's history, but
+                // the next action is creating another one.
+                let mut merged = crate::pull_request::fixture().unwrap();
+                merged.state = "MERGED".into();
+                view.menu
+                    .pr_cache
+                    .seed(input, merged, std::time::Instant::now());
+                assert_eq!(view.git_pull_request().map(|pr| pr.number), Some(8));
+                assert_eq!(
+                    view.git_rows().last().map(|(_, label)| label.clone()),
+                    Some("Create pull request".into())
+                );
+                cx.notify();
             })
         });
     }

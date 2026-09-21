@@ -24,6 +24,11 @@ impl HerdrWindow {
     /// Git actions for the focused checkout, left of the account slot. Hidden
     /// when no local checkout is tracked, so remote endpoints show no control
     /// that cannot act.
+    ///
+    /// Two count groups can appear: what a commit would include right now, and
+    /// the prefetched pull request's own churn behind its number. The number
+    /// separates them, and it carries the same lifecycle color the sidebar
+    /// badge uses, so one pull request reads the same in both places.
     fn render_git_button(&self, cx: &mut Context<Self>) -> Option<Div> {
         self.git.tracked()?;
         let theme = &self.theme;
@@ -31,6 +36,14 @@ impl HerdrWindow {
         let background = rgb(theme.surface).blend(rgba(0xffffff1a));
         let status = self.git.status();
         let running = self.git.running().is_some();
+        let pr = self.git_pull_request().map(|pr| {
+            (
+                format!("#{}", pr.number),
+                pr.color(theme),
+                pr.additions,
+                pr.deletions,
+            )
+        });
         Some(
             div()
                 .debug_selector(|| "titlebar-git-slot".into())
@@ -91,6 +104,25 @@ impl HerdrWindow {
                                             .child("*"),
                                     )
                                 })
+                        })
+                        .when_some(pr, |button, (number, color, additions, deletions)| {
+                            button
+                                .child(
+                                    div()
+                                        .debug_selector(|| "titlebar-git-pr".into())
+                                        .text_color(rgb(color))
+                                        .child(number),
+                                )
+                                .child(
+                                    div()
+                                        .debug_selector(|| "titlebar-git-pr-lines".into())
+                                        .text_color(rgb(theme.muted))
+                                        .child(format!(
+                                            "+{}/-{}",
+                                            crate::sidebar::compact(additions),
+                                            crate::sidebar::compact(deletions)
+                                        )),
+                                )
                         })
                         .child(
                             svg()
@@ -392,6 +424,54 @@ mod git_button_tests {
         assert!(cx.debug_bounds("titlebar-git").is_some());
         assert!(cx.debug_bounds("titlebar-git-additions").is_none());
         assert!(cx.debug_bounds("titlebar-git-untracked").is_none());
+        assert!(
+            cx.debug_bounds("titlebar-git-pr").is_none(),
+            "no cached pull request, no badge"
+        );
+    }
+
+    #[gpui::test]
+    fn a_cached_pull_request_adds_its_number_and_churn(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        let input = Input {
+            checkout: None,
+            repo_key: "/fixture/agent-launcher/.git".into(),
+            branch: "develop".into(),
+        };
+        cx.simulate_resize(size(px(900.), px(600.)));
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.git = Git::fixture(
+                    input.clone(),
+                    Status {
+                        additions: 12,
+                        deletions: 3,
+                        untracked: 0,
+                    },
+                );
+                view.menu.github = crate::github::Auth::connected_fixture();
+                view.menu.pr_cache.seed(
+                    input,
+                    crate::pull_request::fixture().unwrap(),
+                    std::time::Instant::now(),
+                );
+                cx.notify();
+            })
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            let _ = window.draw(cx);
+        });
+        let button = cx.debug_bounds("titlebar-git").unwrap();
+        let uncommitted = cx.debug_bounds("titlebar-git-additions").unwrap();
+        let number = cx.debug_bounds("titlebar-git-pr").unwrap();
+        let churn = cx.debug_bounds("titlebar-git-pr-lines").unwrap();
+        // The number separates the two count groups: what a commit would
+        // include, then the pull request's own churn.
+        assert!(uncommitted.right() <= number.left());
+        assert!(number.right() <= churn.left());
+        assert!(churn.right() <= button.right());
+        assert!(button.right() <= cx.debug_bounds("titlebar-avatar").unwrap().left());
     }
 }
 

@@ -727,8 +727,9 @@ impl PrBadge {
 }
 
 /// Four digits of churn is already a big diff; abbreviate past that so the
-/// column stays narrow enough to leave the branch readable.
-fn compact(lines: u64) -> String {
+/// column stays narrow enough to leave the branch readable. The titlebar's Git
+/// badge reuses it so one PR reads the same in both places.
+pub(super) fn compact(lines: u64) -> String {
     match lines {
         0..=9999 => lines.to_string(),
         _ => format!("{}k", lines / 1000),
