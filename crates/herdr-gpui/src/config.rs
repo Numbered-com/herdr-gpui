@@ -87,7 +87,9 @@ impl Default for Config {
             theme: "Default".into(),
             github: GitHubConfig::default(),
             sidebar: font(monospace, 12.0),
-            tabs: font(ui, 12.0),
+            // Tabs are terminal chrome, so they read in the monospace face the
+            // sidebar and terminal use, as they do in the reference UI.
+            tabs: font(monospace, 12.0),
             terminal: font(monospace, 14.0),
             ui: font(ui, 12.0),
         }
@@ -862,15 +864,16 @@ mod tests {
 
     #[test]
     fn defaults_and_partial_settings() -> anyhow::Result<()> {
+        // Sidebar, tabs, terminal, ui: only the status bar and modals are sans.
         #[cfg(target_os = "linux")]
         let families = [
             "DejaVu Sans Mono",
-            "DejaVu Sans",
+            "DejaVu Sans Mono",
             "DejaVu Sans Mono",
             "DejaVu Sans",
         ];
         #[cfg(not(target_os = "linux"))]
-        let families = ["Menlo", ".SystemUIFont", "Menlo", ".SystemUIFont"];
+        let families = ["Menlo", "Menlo", "Menlo", ".SystemUIFont"];
 
         for config in [
             Config::default(),

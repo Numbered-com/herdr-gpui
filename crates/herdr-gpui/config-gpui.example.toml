@@ -15,8 +15,8 @@ theme = "Default"
 size = 12
 
 [tabs]
-# Default: ".SystemUIFont" on macOS, "DejaVu Sans" on Linux.
-# family = "DejaVu Sans"
+# Default: "Menlo" on macOS, "DejaVu Sans Mono" on Linux.
+# family = "DejaVu Sans Mono"
 size = 12
 
 [terminal]
