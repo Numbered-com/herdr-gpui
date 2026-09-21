@@ -210,7 +210,6 @@ impl HerdrWindow {
                     .border_color(rgb(if close.confirm_selected { theme.foreground } else { theme.active }))
                     .bg(rgb(theme.active)).cursor_pointer().child(format!("Close {kind}"))
                     .on_click(cx.listener(|this, _, window, cx| this.confirm_close(window, cx)))))
-            .child(div().text_color(rgb(theme.muted)).child("Tab to choose, Enter to activate. Escape to cancel."))
     }
 }
 

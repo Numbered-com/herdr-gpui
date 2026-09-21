@@ -288,7 +288,8 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     window.draw(cx).clear();
                     if view.read(cx).menu.page != Some(menu::Page::Dialog(action)) { bail!("workspace menu opened wrong dialog"); }
                     window.dispatch_action(Box::new(RunCommand { command: Command::Tab }), cx);
-                    if action != menu::WorkspaceAction::Close {
+                    // Only the editable dialogs carry a text field; confirmations do not.
+                    if matches!(action, menu::WorkspaceAction::Rename | menu::WorkspaceAction::NewWorktree) {
                         window.dispatch_keystroke(Keystroke::parse("cmd-a")?, cx);
                         for ch in "long-label-\u{65e5}\u{672c}-\u{1f600}".repeat(4).chars() {
                             window.dispatch_keystroke(Keystroke::parse(&ch.to_string())?, cx);

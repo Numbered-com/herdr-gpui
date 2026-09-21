@@ -186,8 +186,14 @@ native-frame appearance also remains unverified by these macOS tests.
   preserving other GUI config settings and comments.
 - Right-click spaces for Rename, Close (Close group on non-linked parents with
   multiple spaces sharing `worktree.key`), and New worktree on non-linked Git
-  parents. Close requires confirmation and terminates terminals, not checkout
-  files or branches. Rename and branch dialogs support Unicode/IME, grapheme
+  parents. Resting the pointer on a space of the selected connection opens the
+  same menu, and moving the pointer anywhere but into that menu closes it again;
+  a menu opened by right-click stays until it is dismissed. Close requires
+  confirmation and terminates terminals, not checkout files or branches. New
+  worktree proposes the branch name the daemon would generate, previews the
+  checkout path derived from it, reports the daemon's own failures, and selects
+  and reveals the created checkout once the daemon reports it. Rename and branch
+  dialogs support Unicode/IME, grapheme
   editing, Shift-arrow selection, Home/End, and Cmd-A/C/X/V. Escape/outside click
   cancels; dialog input never reaches terminals or native creation actions.
   Context menus and dialogs anchor to the pointer and clamp to the viewport.
@@ -243,10 +249,10 @@ native-frame appearance also remains unverified by these macOS tests.
   and reject changed close-group membership. Reconnect clears dialogs. Queue
   errors remain in the dialog; daemon errors appear in the connection status bar.
   Queue acceptance dismisses the dialog, not an optimistic state mutation.
-- Linked spaces offer Delete worktree checkout with a daemon-resolved path and
-  typed confirmation. Unlike other workspace dialogs, deletion stays open until
-  the correlated daemon result arrives. Dirty/untracked refusals and errors are
-  shown inline; force requires a new typed confirmation. All Git/filesystem work
+- Linked spaces offer Delete worktree checkout with a daemon-resolved path and a
+  single confirmation, matching the Herdr TUI. Unlike other workspace dialogs,
+  deletion stays open until the correlated daemon result arrives. Dirty/untracked
+  refusals and errors are shown inline; force requires a new confirmation. All Git/filesystem work
   stays in Herdr. Unpushed commits are not checked by this API. See
   [WORKTREE-DELETION.md](WORKTREE-DELETION.md) for safety limits and sources.
 - Worktree creation sends the clicked `workspace_id`, optional `branch`,

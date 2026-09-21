@@ -28,7 +28,9 @@ run `bash scripts/install-linux-deps.sh` for build libraries and fonts;
 see [Linux builds](README.md#linux-builds) for runtime requirements and limitations.
 The toolchain is pinned in
 `rust-toolchain.toml` and GPUI is pinned to an exact version, so `rustup show`
-is enough — do not upgrade either as a side effect of another change.
+is enough — do not upgrade either as a side effect of another change. `mise.toml`
+mirrors the same Rust version for [mise](https://mise.jdx.dev) users (`mise install`);
+change both files together.
 
 ```sh
 just run          # optimized build; use this for anything interactive
