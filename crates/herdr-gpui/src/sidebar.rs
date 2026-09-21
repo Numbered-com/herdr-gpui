@@ -7,7 +7,9 @@ use std::sync::{Arc, LazyLock};
 
 const SIDEBAR_WIDTH: f32 = 232.;
 const ROW_PADDING: f32 = 12.;
-const STATUS_WIDTH: f32 = 5.;
+const STATUS_WIDTH: f32 = 8.;
+// Unknown stays a smaller dot so it reads as "no reported status" next to the full ones.
+const STATUS_DOT_UNKNOWN: f32 = 3.;
 pub(super) const LABEL_GAP: f32 = 8.;
 const CHILD_INDENT: f32 = 16.;
 pub(super) const ARROW_RESERVE: f32 = 18.;
@@ -688,7 +690,7 @@ fn status_style(status: AgentStatus, theme: &Theme) -> (f32, bool, u32) {
         AgentStatus::Blocked => (STATUS_WIDTH, true, theme.palette[1]),
         AgentStatus::Done => (STATUS_WIDTH, true, theme.palette[6]),
         AgentStatus::Idle => (STATUS_WIDTH, false, theme.palette[2]),
-        AgentStatus::Unknown => (2., true, theme.muted),
+        AgentStatus::Unknown => (STATUS_DOT_UNKNOWN, true, theme.muted),
     }
 }
 
@@ -696,8 +698,8 @@ fn status_style(status: AgentStatus, theme: &Theme) -> (f32, bool, u32) {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::{
-        AgentStatus, ClientShellAgent, ClientShellWorkspace, STATUS_WIDTH, agent_labels,
-        first_text, layout_tests, status_style, workspace_entries, workspace_label,
+        AgentStatus, ClientShellAgent, ClientShellWorkspace, STATUS_DOT_UNKNOWN, STATUS_WIDTH,
+        agent_labels, first_text, layout_tests, status_style, workspace_entries, workspace_label,
     };
 
     #[test]
@@ -897,7 +899,7 @@ mod tests {
             assert_eq!(
                 diameter,
                 if status == AgentStatus::Unknown {
-                    2.
+                    STATUS_DOT_UNKNOWN
                 } else {
                     STATUS_WIDTH
                 }
