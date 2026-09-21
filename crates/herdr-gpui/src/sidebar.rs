@@ -6,8 +6,14 @@ use herdr_client::protocol::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const SIDEBAR_WIDTH: f32 = 232.;
+/// How long the pointer rests on a workspace row before its menu opens, so the
+/// same actions a right click offers are reachable without one.
+const HOVER_MENU_DELAY: Duration = Duration::from_millis(600);
+/// Pointer drift, in pixels, that still counts as resting on the row.
+const HOVER_MENU_SLOP: f32 = 3.;
 const ROW_PADDING: f32 = 12.;
 const STATUS_WIDTH: f32 = 8.;
 // Unknown stays a smaller dot so it reads as "no reported status" next to the full ones.
@@ -21,6 +27,29 @@ pub(super) const ARROW_RESERVE: f32 = 18.;
 pub(super) const HOST_ARROW_WIDTH: f32 = 12.;
 pub(super) const HOST_GAP: f32 = 6.;
 pub(super) const ICON_RESERVE: f32 = 18.;
+/// The workspace row the pointer is resting on, and where it last rested.
+pub(super) struct HoverRest {
+    workspace: String,
+    position: Point<Pixels>,
+    /// Where the list stood when the row was entered. Scrolling slides other
+    /// rows under a still pointer, which reports no hover change of its own.
+    scroll: Point<Pixels>,
+    since: Instant,
+    /// The pointer has moved since it entered the row. Dismissing a menu leaves
+    /// the pointer where it was, so without this the menu would reopen under it.
+    moved: bool,
+}
+
+/// A menu the pointer opened by resting. It closes again as soon as the pointer
+/// moves anywhere but into it, so a menu nobody asked for needs no click to go.
+pub(super) struct HoverMenu {
+    /// Where the pointer stood when the menu opened.
+    position: Point<Pixels>,
+    /// The pointer is over the popup. Only its own hover reports this: the popup
+    /// may be snapped away from the pointer that opened it.
+    pub(super) inside: bool,
+}
+
 /// What a row shows in its leading icon slot: a repository owner's avatar when
 /// one is cached, the GitHub mark while it is not, and nothing for the child
 /// rows that reserve no slot at all.
@@ -56,6 +85,105 @@ impl HerdrWindow {
                 agent_sort: self.agent_sort,
             });
         }
+    }
+
+    /// Track the workspace row under the pointer. Entering a row restarts its
+    /// dwell; leaving the row it recorded abandons it.
+    pub(super) fn hover_workspace(&mut self, workspace: &str, hovered: bool, window: &Window) {
+        if !hovered {
+            if self
+                .hover
+                .as_ref()
+                .is_some_and(|hover| hover.workspace == workspace)
+            {
+                self.hover = None;
+            }
+            return;
+        }
+        self.hover = Some(HoverRest {
+            workspace: workspace.to_owned(),
+            position: window.mouse_position(),
+            scroll: self.sidebar_scroll[0].offset(),
+            since: Instant::now(),
+            moved: false,
+        });
+    }
+
+    /// Open the hovered row's menu once the pointer has settled on it. Called
+    /// from the frame poll with that frame's time, so the dwell is testable
+    /// without waiting for it.
+    pub(super) fn poll_hover_menu(
+        &mut self,
+        now: Instant,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let position = window.mouse_position();
+        if self.close_hover_menu(position, window, cx) {
+            return;
+        }
+        let scroll = self.sidebar_scroll[0].offset();
+        let Some(hover) = &mut self.hover else {
+            return;
+        };
+        if hover.scroll != scroll {
+            self.hover = None;
+            return;
+        }
+        let drift = position - hover.position;
+        if drift.x.abs() > px(HOVER_MENU_SLOP) || drift.y.abs() > px(HOVER_MENU_SLOP) {
+            hover.position = position;
+            hover.since = now;
+            hover.moved = true;
+            return;
+        }
+        if !hover.moved || now.saturating_duration_since(hover.since) < HOVER_MENU_DELAY {
+            return;
+        }
+        // One shot: the pointer must enter a row again before another menu opens,
+        // so dismissing this one under a still pointer cannot reopen it.
+        let Some(hover) = self.hover.take() else {
+            return;
+        };
+        if !self.active || self.menu.page.is_some() || !self.live.status.is_connected() {
+            return;
+        }
+        self.open_workspace_menu(&hover.workspace, position, window, cx);
+        self.hover_menu = Some(HoverMenu {
+            position,
+            inside: false,
+        });
+    }
+
+    /// Close a menu the pointer opened once the pointer leaves it. Reports
+    /// whether it closed one.
+    fn close_hover_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(open) = &self.hover_menu else {
+            return false;
+        };
+        // Choosing an action leaves the pointer's claim behind: a dialog is
+        // dismissed by its own buttons, never by moving the mouse away.
+        if self.menu.page != Some(crate::menu::Page::Workspace) {
+            self.hover_menu = None;
+            return false;
+        }
+        let drift = position - open.position;
+        if open.inside
+            || (drift.x.abs() <= px(HOVER_MENU_SLOP) && drift.y.abs() <= px(HOVER_MENU_SLOP))
+        {
+            return false;
+        }
+        // The row the pointer moved on to keeps its own dwell, so leaving one
+        // menu for the next row still opens that row's menu.
+        let resting = self.hover.take();
+        self.dismiss_menu(window, cx);
+        self.hover = resting;
+        true
     }
 
     pub(super) fn render_sidebar(
@@ -201,6 +329,7 @@ impl HerdrWindow {
                 space_rows += 1;
                 let id = workspace.workspace_id.clone();
                 let context_id = id.clone();
+                let hover_id = id.clone();
                 let context_endpoint = endpoint_id.clone();
                 let navigate_endpoint = endpoint_id.clone();
                 let collapse_endpoint = endpoint_id.clone();
@@ -288,7 +417,15 @@ impl HerdrWindow {
                             cx,
                         );
                         window.focus(&this.focus);
-                    })),
+                    }))
+                    // Only the selected endpoint's rows arm the hover menu:
+                    // another endpoint's menu would have to select it first, and
+                    // resting the pointer must not switch which daemon is shown.
+                    .when(selected, |row| {
+                        row.on_hover(cx.listener(move |this, hovered: &bool, window, _| {
+                            this.hover_workspace(&hover_id, *hovered, window);
+                        }))
+                    }),
                 );
             }
             for agent in sorted_agents(&snapshot.agents, self.agent_sort) {

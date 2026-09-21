@@ -1,5 +1,5 @@
-use super::HerdrWindow;
 use super::dialog_input::DialogInput;
+use super::{HerdrWindow, NavigationTarget};
 use crate::config::Config;
 use gpui::{prelude::*, *};
 use herdr_client::protocol::{ClientShellSnapshot, ClientShellWorkspace, ClientShellWorktree};
@@ -202,6 +202,9 @@ pub(super) struct MenuState {
     pub input: Option<DialogInput>,
     error: Option<String>,
     deletion: Option<Deletion>,
+    /// The correlated `worktree.create` request, so the dialog can report the
+    /// daemon's answer and follow the checkout it actually created.
+    creation: Option<String>,
     keybinds_scroll: ScrollHandle,
     pub(super) keybinds_search: Option<Entity<crate::search_input::SearchInput>>,
     _keybinds_subscription: Option<Subscription>,
@@ -330,6 +333,7 @@ impl MenuState {
             input: None,
             error: None,
             deletion: None,
+            creation: None,
             keybinds_scroll: ScrollHandle::new(),
             keybinds_search: None,
             _keybinds_subscription: None,
@@ -363,6 +367,7 @@ impl MenuState {
         self.input = None;
         self.error = None;
         self.deletion = None;
+        self.creation = None;
         self.close = None;
         self.pr.clear();
         self.pr_connection = None;
@@ -481,6 +486,9 @@ impl HerdrWindow {
         if !self.cancel_theme_preview(cx) {
             return;
         }
+        // Whatever the pointer was resting on, this dismissal ends that intent.
+        self.hover = None;
+        self.hover_menu = None;
         self.update_preview = None;
         self.menu.reset();
         window.focus(&self.focus);
@@ -509,6 +517,8 @@ impl HerdrWindow {
         let Some(workspace) = snapshot.workspaces.iter().find(|w| w.workspace_id == id) else {
             return;
         };
+        self.hover = None;
+        self.hover_menu = None;
         self.menu.reset();
         self.menu.endpoint_target = (
             self.selection_epoch,
@@ -561,6 +571,15 @@ impl HerdrWindow {
         }
     }
 
+    /// The collapsed set the sidebar paints for the selected endpoint.
+    fn collapsed_repos_mut(&mut self) -> &mut std::collections::HashSet<String> {
+        if self.selected_endpoint == 0 {
+            &mut self.collapsed_repos
+        } else {
+            &mut self.endpoints[self.selected_endpoint].collapsed_repos
+        }
+    }
+
     fn toggle_selected_group(&mut self, cx: &mut Context<Self>) {
         let Some(key) = self
             .menu
@@ -571,11 +590,7 @@ impl HerdrWindow {
         else {
             return;
         };
-        let collapsed = if self.selected_endpoint == 0 {
-            &mut self.collapsed_repos
-        } else {
-            &mut self.endpoints[self.selected_endpoint].collapsed_repos
-        };
+        let collapsed = self.collapsed_repos_mut();
         if !collapsed.remove(&key) {
             collapsed.insert(key);
         }
@@ -589,7 +604,10 @@ impl HerdrWindow {
         };
         self.menu.input = match action {
             WorkspaceAction::Rename => Some(DialogInput::new(target.label.clone())),
-            WorkspaceAction::NewWorktree => Some(DialogInput::default()),
+            // Propose the daemon's own branch shape, selected so typing replaces it.
+            WorkspaceAction::NewWorktree => {
+                Some(DialogInput::new(crate::worktree::proposed_branch()))
+            }
             WorkspaceAction::Close | WorkspaceAction::DeleteWorktree => None,
         };
         self.menu.page = Some(Page::Dialog(action));
@@ -636,8 +654,36 @@ impl HerdrWindow {
         }
     }
 
-    pub(super) fn update_deletion_dialog(&mut self) {
-        if self.menu.deletion.is_none() {
+    /// The checkout the daemon would create for the branch currently drafted.
+    /// Only a preview: the daemon derives the path it actually uses.
+    fn checkout_preview(&self) -> String {
+        let repo = self
+            .menu
+            .target
+            .as_ref()
+            .and_then(|target| target.worktree.as_ref())
+            .map(|worktree| worktree.label.as_str());
+        let root = self
+            .live
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.worktree_directory.as_str())
+            .filter(|root| !root.is_empty());
+        let branch = self
+            .menu
+            .input
+            .as_ref()
+            .map_or("", |input| input.text.trim());
+        match (repo, root) {
+            _ if branch.is_empty() => "The daemon names the checkout.".to_owned(),
+            (Some(repo), Some(root)) => crate::worktree::checkout_preview(root, repo, branch),
+            _ => "The daemon chooses the checkout.".to_owned(),
+        }
+    }
+
+    /// Apply the daemon's answer to whichever worktree dialog is waiting for it.
+    pub(super) fn update_workspace_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.deletion.is_none() && self.menu.creation.is_none() {
             return;
         }
         if !self.menu_target_current()
@@ -655,7 +701,73 @@ impl HerdrWindow {
         let Some((id, Some(result))) = &self.live.dialog_response else {
             return;
         };
-        self.menu.apply_deletion_response(id, result.clone());
+        if self.menu.deletion.is_some() {
+            let (id, result) = (id.clone(), result.clone());
+            self.menu.apply_deletion_response(&id, result);
+            return;
+        }
+        if self.menu.creation.as_deref() != Some(id.as_str()) {
+            return;
+        }
+        let result = result.clone();
+        self.menu.creation = None;
+        self.apply_creation_response(result, window, cx);
+    }
+
+    /// Follow the checkout the daemon created. The daemon switches its own
+    /// session, but this client shell keeps its own location, so the new
+    /// workspace is only selected (and revealed in the sidebar) once this
+    /// client focuses it.
+    fn apply_creation_response(
+        &mut self,
+        result: crate::state::DialogResponse,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let response = match result {
+            Ok(response) => response,
+            Err(error) => {
+                self.menu.error = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        if let Some(error) = response.get("error") {
+            self.menu.error = Some(format!(
+                "{}: {}",
+                error["code"].as_str().unwrap_or("endpoint_error"),
+                error["message"].as_str().unwrap_or("Invalid daemon error")
+            ));
+            cx.notify();
+            return;
+        }
+        let result = &response["result"];
+        let created = (result["type"] == "worktree_created")
+            .then(|| result["workspace"]["workspace_id"].as_str())
+            .flatten()
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned);
+        let Some(created) = created else {
+            self.menu.error = Some(
+                "Unexpected daemon response. Review current workspace state before retrying."
+                    .into(),
+            );
+            cx.notify();
+            return;
+        };
+        let endpoint = self.endpoints[self.selected_endpoint].id.clone();
+        // A folded group would hide the new checkout the sidebar is about to select.
+        let group = self
+            .menu
+            .target
+            .as_ref()
+            .and_then(|target| target.worktree.as_ref())
+            .map(|worktree| worktree.key.clone());
+        self.dismiss_menu(window, cx);
+        if let Some(group) = group {
+            self.collapsed_repos_mut().remove(&group);
+        }
+        self.navigate_endpoint(&endpoint, NavigationTarget::Workspace(&created), cx);
     }
 
     fn submit_workspace_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -716,6 +828,19 @@ impl HerdrWindow {
                 self.menu.error = None;
                 return Ok(true);
             }
+            if action == WorkspaceAction::NewWorktree {
+                if self.menu.creation.is_some() {
+                    return Ok(false);
+                }
+                // Correlated, so the daemon's failure reaches the dialog and the
+                // created checkout can be focused once it exists.
+                let id = self.endpoints[self.selected_endpoint]
+                    .connection
+                    .request_dialog(&target.boot_id, method, params)?;
+                self.menu.creation = Some(id);
+                self.menu.error = None;
+                return Ok(true);
+            }
             let handle = self.endpoints[self.selected_endpoint]
                 .connection
                 .handle
@@ -732,10 +857,14 @@ impl HerdrWindow {
                 if focus_changed {
                     self.fence_focus_change(None);
                 }
-                if action != WorkspaceAction::DeleteWorktree {
-                    self.dismiss_menu(window, cx);
-                } else {
+                // Both worktree dialogs stay open until the daemon answers.
+                if matches!(
+                    action,
+                    WorkspaceAction::DeleteWorktree | WorkspaceAction::NewWorktree
+                ) {
                     cx.notify();
+                } else {
+                    self.dismiss_menu(window, cx);
                 }
             }
             Err(error) => {
@@ -846,10 +975,16 @@ impl HerdrWindow {
         let danger = danger(theme);
         let deletion = self.menu.deletion.as_ref();
         let force = deletion.is_some_and(|deletion| deletion.force);
-        let removing = deletion.is_some_and(|deletion| deletion.pending.is_some());
-        // Until the daemon names the checkout there is nothing to confirm.
-        let armed = action != WorkspaceAction::DeleteWorktree
-            || deletion.is_some_and(|deletion| deletion.ready());
+        // The same slot carries the checkout lookup and the removal itself, so
+        // only a request sent after the daemon named the checkout is a removal.
+        let removing =
+            deletion.is_some_and(|deletion| deletion.pending.is_some() && deletion.path.is_some());
+        let creating = self.menu.creation.is_some();
+        // Until the daemon names the checkout there is nothing to confirm, and a
+        // request already in flight leaves nothing to press either.
+        let armed = (action != WorkspaceAction::DeleteWorktree
+            || deletion.is_some_and(|deletion| deletion.ready()))
+            && !creating;
         let destructive = matches!(
             action,
             WorkspaceAction::Close | WorkspaceAction::DeleteWorktree
@@ -870,9 +1005,21 @@ impl HerdrWindow {
                 "Closes {} workspace(s) and terminates their running terminals. Checkout files and branches are not deleted.",
                 target.close_members.len()
             ))),
-            WorkspaceAction::NewWorktree => body.child(div().text_color(rgb(theme.muted)).child(
-                "Branch (optional). Blank uses the daemon default. Base: HEAD. Repository trust is not granted.",
-            )),
+            WorkspaceAction::NewWorktree => body
+                .child(div().text_color(rgb(theme.muted)).child(
+                    "Branch for the new checkout. Base: HEAD. Repository trust is not granted.",
+                ))
+                .child(self.render_dialog_input(cx))
+                .child("This creates the checkout folder:")
+                .child(
+                    div()
+                        .debug_selector(|| "dialog-checkout".into())
+                        .rounded(px(4.))
+                        .bg(rgb(theme.active))
+                        .px(px(10.))
+                        .py(px(6.))
+                        .child(self.checkout_preview()),
+                ),
             WorkspaceAction::DeleteWorktree => body
                 .child(if force {
                     "This force removes the checkout folder:"
@@ -899,7 +1046,7 @@ impl HerdrWindow {
                     "The branch is not deleted. The Herdr workspace will close."
                 })),
         };
-        if self.menu.input.is_some() {
+        if self.menu.input.is_some() && action != WorkspaceAction::NewWorktree {
             body = body.child(self.render_dialog_input(cx));
         }
         if let Some(error) = &self.menu.error {
@@ -914,10 +1061,11 @@ impl HerdrWindow {
                     .child(error.clone()),
             );
         }
-        if armed && removing {
-            // Dismissing only closes the panel; the daemon keeps the queued removal.
+        if creating || removing {
+            // Dismissing only closes the panel; the daemon keeps the queued work.
             body = body.child(
                 div()
+                    .debug_selector(|| "dialog-waiting".into())
                     .text_color(rgb(theme.muted))
                     .child("Waiting for the daemon. Dismissing does not cancel it."),
             );
@@ -1016,7 +1164,9 @@ impl HerdrWindow {
                                 rgb(theme.foreground)
                             })
                             .hover(|button| button.bg(rgb(theme.active)))
-                            .child(if removing && armed {
+                            .child(if creating {
+                                "Creating..."
+                            } else if removing {
                                 "Removing..."
                             } else {
                                 submit
@@ -1051,17 +1201,11 @@ impl HerdrWindow {
                         420.
                     })
                     .min((viewport.width - px(24.)).max(px(0.))))
-                    .max_h(
-                        (if matches!(
-                            page,
-                            Page::Workspace | Page::Dialog(WorkspaceAction::DeleteWorktree)
-                        ) {
-                            viewport.height - px(24.)
-                        } else {
-                            viewport.height / 2. - px(12.)
-                        })
-                        .max(px(0.)),
-                    )
+                    // Every dialog may use the window's height: a captioned form
+                    // whose buttons need scrolling into view reads as clipped.
+                    .max_h((viewport.height - px(24.)).max(px(0.)))
+                    // Lift the popup off the terminal behind it, as the pickers do.
+                    .shadow_lg()
             })
             .when(page == Page::Menu, |panel| {
                 // Open on whichever side of the anchor has room, and keep a
@@ -1159,7 +1303,17 @@ impl HerdrWindow {
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-            .on_click(|_, _, cx| cx.stop_propagation());
+            .on_click(|_, _, cx| cx.stop_propagation())
+            // A menu the pointer opened follows the pointer's own report of
+            // whether it is over the popup, which occlusion and snapping make
+            // impossible to infer from the anchor alone.
+            .when(self.hover_menu.is_some(), |panel| {
+                panel.on_hover(cx.listener(|this, hovered: &bool, _, _| {
+                    if let Some(open) = &mut this.hover_menu {
+                        open.inside = *hovered;
+                    }
+                }))
+            });
         if page == Page::Menu {
             for (index, item) in self.menu_items().into_iter().enumerate() {
                 panel = panel.child(
@@ -1510,6 +1664,11 @@ pub(crate) mod workspace_tests {
     use super::{WorkspaceAction, WorkspaceTarget};
     use crate::sidebar;
 
+    /// The workspace a menu currently targets, for tests outside this module.
+    pub(crate) fn target_id(view: &super::HerdrWindow) -> Option<&str> {
+        view.menu.target.as_ref().map(|target| target.id.as_str())
+    }
+
     pub(crate) fn submit_focus_change(
         view: &mut super::HerdrWindow,
         method: &str,
@@ -1542,7 +1701,13 @@ pub(crate) mod workspace_tests {
         }
         view.submit_workspace_dialog(window, cx);
         assert!(view.menu.error.is_none());
-        if action == WorkspaceAction::DeleteWorktree {
+        // Both worktree operations wait for their own correlated response.
+        let pending = match action {
+            WorkspaceAction::DeleteWorktree => view.menu.deletion.as_ref().unwrap().pending.clone(),
+            WorkspaceAction::NewWorktree => view.menu.creation.clone(),
+            _ => None,
+        };
+        if pending.is_some() {
             let inbox = view.endpoints[view.selected_endpoint]
                 .connection
                 .inbox
@@ -1550,7 +1715,7 @@ pub(crate) mod workspace_tests {
                 .unwrap();
             assert_eq!(
                 inbox.dialog_response.as_ref().map(|(id, _)| id),
-                view.menu.deletion.as_ref().unwrap().pending.as_ref()
+                pending.as_ref()
             );
         }
         view.dismiss_menu(window, cx);
@@ -1843,6 +2008,220 @@ pub(crate) mod workspace_tests {
                 assert_eq!(view.menu.selected, None);
             });
             window.draw(cx).clear();
+        });
+    }
+
+    /// The dialog chrome matches the other modals: sections stacked in reading
+    /// order inside the panel, and a right-aligned Cancel/submit row.
+    #[gpui::test]
+    fn workspace_dialog_sections_and_buttons_stay_inside_the_panel(cx: &mut gpui::TestAppContext) {
+        use gpui::px;
+        let (view, cx) = cx.add_window_view(sidebar::layout_tests::fixture_window);
+        for (width, height) in [(640., 400.), (1200., 780.)] {
+            cx.simulate_resize(gpui::size(px(width), px(height)));
+            for action in [
+                WorkspaceAction::NewWorktree,
+                WorkspaceAction::DeleteWorktree,
+            ] {
+                cx.update(|window, cx| {
+                    view.update(cx, |view, cx| {
+                        let snapshot =
+                            std::sync::Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+                        snapshot.workspaces = sidebar::layout_tests::snapshot(7).workspaces;
+                        snapshot.worktree_directory = "/endpoint/.herdr/worktrees".into();
+                        view.live.status = crate::state::ConnectionStatus::Connected;
+                        view.menu.reset();
+                        let id = if action == WorkspaceAction::NewWorktree {
+                            "w3"
+                        } else {
+                            "w4"
+                        };
+                        view.open_workspace_menu(id, Default::default(), window, cx);
+                        view.open_workspace_dialog(action, cx);
+                        if action == WorkspaceAction::DeleteWorktree {
+                            view.menu.deletion = Some(super::Deletion {
+                                pending: Some("remove".into()),
+                                path: Some(
+                                    "/endpoint/.herdr/worktrees/agent-launcher/child".into(),
+                                ),
+                                force: true,
+                            });
+                        } else {
+                            // Both dialogs wait on the daemon here, so every
+                            // section measured below belongs to this frame.
+                            view.menu.creation = Some("create".into());
+                        }
+                        view.menu.error = Some("fixture error".into());
+                    });
+                    window.draw(cx).clear();
+                });
+                let panel = cx.debug_bounds("menu-panel").unwrap();
+                let cancel = cx.debug_bounds("dialog-cancel").unwrap();
+                let submit = cx.debug_bounds("dialog-submit").unwrap();
+                let error = cx.debug_bounds("dialog-error").unwrap();
+                let waiting = cx.debug_bounds("dialog-waiting").unwrap();
+                // Creation drafts a branch and previews its checkout; deletion
+                // confirms the one the daemon named, with nothing to type.
+                let (field, subject) = if action == WorkspaceAction::NewWorktree {
+                    (
+                        cx.debug_bounds("dialog-input").unwrap(),
+                        cx.debug_bounds("dialog-checkout").unwrap(),
+                    )
+                } else {
+                    // Deletion is confirmed by its button, with nothing to type.
+                    assert!(cx.update(|_, cx| view.read(cx).menu.input.is_none()));
+                    let path = cx.debug_bounds("dialog-path").unwrap();
+                    (path, path)
+                };
+                let parts = vec![field, subject, cancel, submit, error, waiting];
+                for part in &parts {
+                    assert!(
+                        part.left() >= panel.left() && part.right() <= panel.right(),
+                        "{action:?} at {width}: {part:?} escapes {panel:?}"
+                    );
+                    assert!(part.right() <= px(width));
+                    // A roomy window must not make any dialog scroll to its buttons.
+                    if height > 400. {
+                        assert!(
+                            part.top() >= panel.top() && part.bottom() <= panel.bottom(),
+                            "{action:?} at {height}: {part:?} needs scrolling in {panel:?}"
+                        );
+                        assert!(part.bottom() <= px(height));
+                    }
+                }
+                // One gutter on both sides, and a trailing button row.
+                assert_eq!(field.left() - panel.left(), panel.right() - field.right());
+                assert!(cancel.right() <= submit.left());
+                assert!(submit.right() < panel.right());
+                assert!(error.bottom() <= cancel.top());
+                // The checkout follows the branch it is derived from, and the
+                // daemon's answer follows whichever one the dialog is about.
+                assert!(field.bottom() <= subject.top() || field == subject);
+                assert!(subject.bottom() <= error.top());
+            }
+        }
+    }
+
+    /// Opening the dialog prepares the same branch and checkout the terminal
+    /// client proposes, rather than an empty field.
+    #[gpui::test]
+    fn new_worktree_dialog_proposes_a_branch_and_previews_its_checkout(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(sidebar::layout_tests::fixture_window);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                let snapshot = std::sync::Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+                snapshot.workspaces = sidebar::layout_tests::snapshot(7).workspaces;
+                snapshot.worktree_directory = "/endpoint/.herdr/worktrees".into();
+                view.live.status = crate::state::ConnectionStatus::Connected;
+                view.open_workspace_menu("w3", Default::default(), window, cx);
+                view.open_workspace_dialog(WorkspaceAction::NewWorktree, cx);
+                let branch = view.menu.input.as_ref().unwrap().text.clone();
+                assert!(branch.starts_with("worktree/"), "{branch}");
+                // Selected, so the first keystroke replaces the proposal.
+                assert_eq!(view.menu.input.as_ref().unwrap().selection, 0..branch.len());
+                assert_eq!(
+                    view.checkout_preview(),
+                    format!(
+                        "/endpoint/.herdr/worktrees/agent-launcher/{}",
+                        crate::worktree::branch_to_path_slug(&branch)
+                    )
+                );
+                // A blank field defers to the daemon instead of guessing a path.
+                view.menu.input = Some(super::DialogInput::new("  ".into()));
+                assert_eq!(view.checkout_preview(), "The daemon names the checkout.");
+                view.menu.input = Some(super::DialogInput::new("feature/Login v2".into()));
+                assert_eq!(
+                    view.checkout_preview(),
+                    "/endpoint/.herdr/worktrees/agent-launcher/feature-login-v2"
+                );
+                // Without a reported worktree directory no path is invented.
+                std::sync::Arc::make_mut(view.live.snapshot.as_mut().unwrap())
+                    .worktree_directory
+                    .clear();
+                assert_eq!(view.checkout_preview(), "The daemon chooses the checkout.");
+            });
+        });
+    }
+
+    /// The daemon switches only its own session, so the client follows the
+    /// created checkout itself; failures stay visible in the open dialog.
+    #[gpui::test]
+    fn worktree_creation_reports_failures_and_follows_the_created_checkout(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(sidebar::layout_tests::fixture_window);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                let snapshot = std::sync::Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+                snapshot.workspaces = sidebar::layout_tests::snapshot(7).workspaces;
+                view.live.status = crate::state::ConnectionStatus::Connected;
+                view.open_workspace_menu("w3", Default::default(), window, cx);
+                view.open_workspace_dialog(WorkspaceAction::NewWorktree, cx);
+                view.menu.creation = Some("create".into());
+                let dialog = Some(super::Page::Dialog(WorkspaceAction::NewWorktree));
+
+                view.apply_creation_response(
+                    Ok(serde_json::json!({"error":{"code":"worktree_create_failed","message":"branch already checked out"}})),
+                    window,
+                    cx,
+                );
+                assert!(
+                    view.menu
+                        .error
+                        .as_deref()
+                        .unwrap()
+                        .contains("branch already checked out")
+                );
+                assert_eq!(view.menu.page, dialog);
+                assert!(view.pending_navigation.is_none());
+
+                view.apply_creation_response(
+                    Ok(serde_json::json!({"result":{"type":"worktree_list","worktrees":[]}})),
+                    window,
+                    cx,
+                );
+                assert!(
+                    view.menu
+                        .error
+                        .as_deref()
+                        .unwrap()
+                        .starts_with("Unexpected daemon response")
+                );
+                assert_eq!(view.menu.page, dialog);
+
+                view.apply_creation_response(
+                    Err(std::sync::Arc::new(crate::Error::Client(
+                        herdr_client::Error::Disconnected,
+                    ))),
+                    window,
+                    cx,
+                );
+                assert_eq!(view.menu.page, dialog);
+                assert!(view.pending_navigation.is_none());
+
+                // Only the correlated response closes the dialog and navigates.
+                let created = serde_json::json!({"result":{"type":"worktree_created","workspace":{"workspace_id":"w6"},"tab":{"tab_id":"t9"}}});
+                view.collapsed_repos
+                    .insert("/fixture/agent-launcher/.git".to_owned());
+                view.menu.creation = Some("create".into());
+                view.live.dialog_response = Some(("unrelated".into(), Some(Ok(created.clone()))));
+                view.update_workspace_dialog(window, cx);
+                assert_eq!(view.menu.page, dialog);
+                assert_eq!(view.menu.creation.as_deref(), Some("create"));
+
+                view.live.dialog_response = Some(("create".into(), Some(Ok(created))));
+                view.update_workspace_dialog(window, cx);
+                assert!(view.menu.page.is_none());
+                assert!(view.menu.creation.is_none());
+                assert_eq!(
+                    view.pending_navigation,
+                    Some(crate::NavigationTarget::Workspace("w6".into()))
+                );
+                // A folded group cannot hide the checkout that was just created.
+                assert!(view.collapsed_repos.is_empty());
+            });
         });
     }
 

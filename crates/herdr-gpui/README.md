@@ -186,8 +186,14 @@ native-frame appearance also remains unverified by these macOS tests.
   preserving other GUI config settings and comments.
 - Right-click spaces for Rename, Close (Close group on non-linked parents with
   multiple spaces sharing `worktree.key`), and New worktree on non-linked Git
-  parents. Close requires confirmation and terminates terminals, not checkout
-  files or branches. Rename and branch dialogs support Unicode/IME, grapheme
+  parents. Resting the pointer on a space of the selected connection opens the
+  same menu, and moving the pointer anywhere but into that menu closes it again;
+  a menu opened by right-click stays until it is dismissed. Close requires
+  confirmation and terminates terminals, not checkout files or branches. New
+  worktree proposes the branch name the daemon would generate, previews the
+  checkout path derived from it, reports the daemon's own failures, and selects
+  and reveals the created checkout once the daemon reports it. Rename and branch
+  dialogs support Unicode/IME, grapheme
   editing, Shift-arrow selection, Home/End, and Cmd-A/C/X/V. Escape/outside click
   cancels; dialog input never reaches terminals or native creation actions.
   Context menus and dialogs anchor to the pointer and clamp to the viewport.
