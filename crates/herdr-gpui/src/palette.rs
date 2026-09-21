@@ -441,6 +441,10 @@ impl HerdrWindow {
                                     let entry = palette.entries[palette.filtered[index]].clone();
                                     div()
                                         .id(index)
+                                        .debug_selector(move || format!("palette-row-{index}"))
+                                        // Selection and hover read as rows, not as
+                                        // labels, so the fill spans the whole list.
+                                        .w_full()
                                         .h(px(this.config.ui.line_height() * 2. + 20.))
                                         .px(px(16.))
                                         .flex()
@@ -485,6 +489,7 @@ impl HerdrWindow {
             })
             .child(
                 div()
+                    .debug_selector(|| "palette-status".into())
                     .flex_none()
                     .px(px(16.))
                     .py(px(10.))

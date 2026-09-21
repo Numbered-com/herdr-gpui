@@ -388,6 +388,12 @@ fn palette_rejects_changed_endpoint_epoch_or_generation(cx: &mut gpui::TestAppCo
         });
         cx.simulate_input("toggle sidebar");
         cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+        // Selection paints as a row: the fill spans the list, not the label.
+        let row = cx.debug_bounds("palette-row-0").unwrap();
+        let status = cx.debug_bounds("palette-status").unwrap();
+        assert_eq!(row.size.width, status.size.width);
+        assert_eq!(row.left(), status.left());
         view.update(cx, |view, _| {
             assert!(view.menu_target_current());
             if reconnect {

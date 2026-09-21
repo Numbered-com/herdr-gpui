@@ -475,6 +475,8 @@ impl HerdrWindow {
                                     div()
                                         .id(index)
                                         .debug_selector(move || format!("theme-row-{index}"))
+                                        // As in the palette, the fill is the row.
+                                        .w_full()
                                         .h(px(this.config.ui.line_height() + 20.))
                                         .px(px(16.))
                                         .flex()
@@ -672,6 +674,9 @@ mod tests {
             cx.update(|window, cx| window.draw(cx).clear());
             let row = cx.debug_bounds("theme-row-1").unwrap();
             let status = cx.debug_bounds("theme-status").unwrap();
+            // Selection paints as a row: the fill spans the list, not the label.
+            assert_eq!(row.size.width, status.size.width);
+            assert_eq!(row.left(), status.left());
             cx.simulate_mouse_move(row.center(), None, Modifiers::default());
             for (error, accepting, saving) in [
                 (
