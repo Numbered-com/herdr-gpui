@@ -90,6 +90,17 @@ impl Default for Updater {
 }
 
 impl Updater {
+    /// Additional windows never run a second update worker: two workers could
+    /// stage and restart the same installation at once.
+    pub(super) fn secondary() -> Self {
+        let mut updater = Self::default();
+        updater.state = State::Disabled(
+            "another window owns app updates in this process. Use the window that was open first."
+                .into(),
+        );
+        updater
+    }
+
     pub(super) fn start() -> Self {
         let mut updater = Self::default();
         let Some(key) = option_env!("HERDR_UPDATE_PUBLIC_KEY") else {
