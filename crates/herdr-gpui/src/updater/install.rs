@@ -1095,6 +1095,8 @@ pub(super) fn run_helper(args: &[OsString]) -> Option<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the macOS-only opt-in tests below use it.
+    #[cfg(target_os = "macos")]
     use anyhow::Context as _;
     use flate2::{Compression, write::GzEncoder};
 

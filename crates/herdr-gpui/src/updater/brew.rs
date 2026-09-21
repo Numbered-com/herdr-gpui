@@ -302,6 +302,8 @@ pub(super) fn relaunch(cask: &Cask) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the macOS-only opt-in tests below use it.
+    #[cfg(target_os = "macos")]
     use anyhow::Context as _;
     use std::os::unix::fs::{PermissionsExt, symlink};
 
