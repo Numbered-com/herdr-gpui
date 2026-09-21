@@ -31,6 +31,11 @@ use std::{
 use tempfile::TempDir;
 
 const HELPER: &str = "--herdr-apply-update";
+// codesign and csreq read a bare `-R` argument as the path of a compiled
+// requirement file; the leading `=` is what marks the rest as source text.
+// Without it every verification exits 1 with "invalid requirement
+// specification", which fails closed but blocks all updates.
+const REQUIREMENT: &str = "=anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and identifier \"so.pen.herdr-gpui\"";
 const LIMIT: u64 = 1024 * 1024 * 1024;
 const REQUEST_LIMIT: u64 = 256 * 1024;
 const WAIT: Duration = Duration::from_secs(120);
@@ -366,13 +371,7 @@ fn lock_file(installation: &Installation, suffix: &str) -> Result<File> {
 fn identity(bundle: &Path, version: &str, cancel: &AtomicBool) -> Result<(String, String)> {
     output(
         Command::new("/usr/bin/codesign")
-            .args([
-                "--verify",
-                "--deep",
-                "--strict",
-                "-R",
-                "anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and identifier \"so.pen.herdr-gpui\"",
-            ])
+            .args(["--verify", "--deep", "--strict", "-R", REQUIREMENT])
             .arg(bundle),
         cancel,
     )?;
@@ -1581,6 +1580,33 @@ mod tests {
                 assert!(backup.join("old-only").exists());
             }
         }
+        Ok(())
+    }
+
+    // A requirement that does not compile makes `codesign --verify -R` exit 1
+    // for every bundle, so the installed app can never be authenticated.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn designated_requirement_compiles_as_source_text() -> anyhow::Result<()> {
+        let cancel = AtomicBool::new(false);
+        let directory = tempfile::tempdir()?;
+        let compiled = directory.path().join("requirement");
+        output(
+            Command::new("/usr/bin/csreq")
+                .args(["-r", REQUIREMENT, "-b"])
+                .arg(&compiled),
+            &cancel,
+        )?;
+        assert!(fs::metadata(&compiled)?.len() > 0);
+        assert!(matches!(
+            output(
+                Command::new("/usr/bin/csreq")
+                    .args(["-r", &REQUIREMENT[1..], "-b"])
+                    .arg(directory.path().join("unmarked")),
+                &cancel,
+            ),
+            Err(Error::ValidationFailed(_))
+        ));
         Ok(())
     }
 
