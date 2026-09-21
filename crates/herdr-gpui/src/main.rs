@@ -165,6 +165,8 @@ struct HerdrWindow {
     hover_menu: Option<sidebar::HoverMenu>,
     local_error: Option<String>,
     menu: menu::MenuState,
+    /// A `worktree.remove` queued after its dialog closed.
+    removal: Option<menu::Removal>,
     git: git::Git,
     install_warning_shown: bool,
     collapsed_repos: std::collections::HashSet<String>,
@@ -307,6 +309,7 @@ impl HerdrWindow {
             hover_menu: None,
             local_error: None,
             menu: menu::MenuState::new(cx),
+            removal: None,
             git: git::Git::default(),
             install_warning_shown: false,
             collapsed_repos: Default::default(),

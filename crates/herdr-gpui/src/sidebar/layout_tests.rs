@@ -337,6 +337,7 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
     HerdrWindow {
         updater: crate::updater::Updater::default(),
         update_preview: None,
+        removal: None,
         config: Default::default(),
         theme: Default::default(),
         config_load: None,

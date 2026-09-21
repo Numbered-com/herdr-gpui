@@ -237,11 +237,52 @@ struct Deletion {
 
 impl Deletion {
     /// Confirming is a single keypress, so the dialog may only submit once the
-    /// daemon has named the checkout and no earlier request is still in flight.
-    /// A force escalation re-arms the same confirmation rather than adding one.
+    /// daemon has named the checkout and its lookup is no longer in flight.
     fn ready(&self) -> bool {
         self.pending.is_none() && self.path.is_some()
     }
+}
+
+/// A queued `worktree.remove`. The dialog closes as soon as the request is
+/// queued, because the daemon's own snapshot drops the workspace once the
+/// removal lands; holding the popover open adds nothing. What still needs a
+/// home is a refusal, which becomes the window's local error, and a dirty
+/// checkout, which arms the next dialog with force.
+pub(super) struct Removal {
+    /// Same fence as the menu target: a response from a replaced connection is
+    /// not this removal's.
+    endpoint: (u64, u64),
+    boot_id: String,
+    workspace: String,
+    /// The request id, until the daemon answers.
+    pending: Option<String>,
+    /// Set once the daemon refused the checkout as dirty.
+    force: bool,
+}
+
+/// What a submitted dialog did, which decides whether it stays open.
+enum Submission {
+    /// The request is queued and the dialog has nothing left to wait for.
+    Queued { focus_changed: bool },
+    /// The dialog stays open for a daemon answer it still needs: the checkout a
+    /// removal must confirm, or the one a creation produced.
+    Awaiting { focus_changed: bool },
+}
+
+impl Submission {
+    fn focus_changed(&self) -> bool {
+        let (Submission::Queued { focus_changed } | Submission::Awaiting { focus_changed }) = self;
+        *focus_changed
+    }
+}
+
+/// Daemon failures arrive as an open envelope. Keep the code so callers can
+/// classify the refusal, and the message for display.
+fn endpoint_error(error: &serde_json::Value) -> (&str, &str) {
+    (
+        error["code"].as_str().unwrap_or("endpoint_error"),
+        error["message"].as_str().unwrap_or("Invalid daemon error"),
+    )
 }
 
 /// Mix an ANSI color with foreground so it stays readable on dark themes, where
@@ -277,24 +318,15 @@ impl MenuState {
             }
         };
         if let Some(error) = response.get("error") {
-            self.error = Some(format!(
-                "{}: {}",
-                error["code"].as_str().unwrap_or("endpoint_error"),
-                error["message"].as_str().unwrap_or("Invalid daemon error")
-            ));
-            if deletion.path.is_some()
-                && !deletion.force
-                && error["code"] == "dirty_worktree_requires_force"
-            {
-                deletion.force = true;
-            }
+            let (code, message) = endpoint_error(error);
+            self.error = Some(format!("{code}: {message}"));
             return;
         }
         let result = &response["result"];
         let Some(target) = &self.target else {
             return;
         };
-        if deletion.path.is_none() && result["type"] == "worktree_list" {
+        if result["type"] == "worktree_list" {
             let entry = result["worktrees"].as_array().and_then(|entries| {
                 let mut matches = entries
                     .iter()
@@ -312,12 +344,6 @@ impl MenuState {
             if deletion.path.is_none() {
                 self.error = Some("Daemon did not identify a unique linked checkout. Dismiss and reopen the menu.".into());
             }
-        } else if result["type"] == "worktree_removed"
-            && result["workspace_id"] == target.id
-            && result["path"].as_str() == deletion.path.as_deref()
-            && result["forced"] == deletion.force
-        {
-            self.reset();
         } else {
             self.error = Some(
                 "Unexpected daemon response. Review current workspace state before retrying."
@@ -632,7 +658,11 @@ impl HerdrWindow {
             self.menu.deletion = Some(Deletion {
                 pending: result.as_ref().ok().cloned(),
                 path: None,
-                force: false,
+                force: self.removal.as_ref().is_some_and(|removal| {
+                    removal.force
+                        && removal.workspace == target.id
+                        && removal.boot_id == target.boot_id
+                }),
             });
             self.menu.error = result.err().map(|error| error.to_string());
         }
@@ -659,6 +689,64 @@ impl HerdrWindow {
             }
             WorkspaceMenuAction::PullRequest => self.open_workspace_pr(cx),
         }
+    }
+
+    /// The dialog closes as soon as a removal is queued, so its response is
+    /// tracked on the window instead. Only a refusal is reported: success shows
+    /// up as the workspace leaving the daemon's snapshot.
+    fn update_pending_removal(&mut self, cx: &mut Context<Self>) {
+        let Some(removal) = &self.removal else {
+            return;
+        };
+        let current = removal.endpoint
+            == (
+                self.selection_epoch,
+                self.endpoints[self.selected_endpoint].generation,
+            )
+            && self.live.status.is_connected()
+            && self
+                .live
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.boot_id == removal.boot_id);
+        if !current {
+            self.removal = None;
+            return;
+        }
+        let Some((id, Some(result))) = &self.live.dialog_response else {
+            return;
+        };
+        if removal.pending.as_deref() != Some(id.as_str()) {
+            return;
+        }
+        let result = result.clone();
+        let Some(removal) = self.removal.take() else {
+            return;
+        };
+        let (force, error) = match result {
+            Err(error) => (removal.force, error.to_string()),
+            Ok(response) => {
+                let Some(error) = response.get("error") else {
+                    return;
+                };
+                let (code, message) = endpoint_error(error);
+                (
+                    removal.force || code == "dirty_worktree_requires_force",
+                    format!("{code}: {message}"),
+                )
+            }
+        };
+        if force {
+            // Keep the record so reopening the dialog asks for the force removal
+            // rather than repeating the refused one.
+            self.removal = Some(Removal {
+                pending: None,
+                force,
+                ..removal
+            });
+        }
+        self.local_error = Some(format!("Remove worktree: {error}"));
+        cx.notify();
     }
 
     /// The checkout the daemon would create for the branch currently drafted.
@@ -688,8 +776,10 @@ impl HerdrWindow {
         }
     }
 
-    /// Apply the daemon's answer to whichever worktree dialog is waiting for it.
+    /// Apply the daemon's answer to whichever worktree dialog is waiting for it,
+    /// and to a removal whose dialog has already closed.
     pub(super) fn update_workspace_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_pending_removal(cx);
         if self.menu.deletion.is_none() && self.menu.creation.is_none() {
             return;
         }
@@ -820,24 +910,37 @@ impl HerdrWindow {
                     .as_ref()
                     .ok_or(crate::Error::MissingDeletion)?;
                 if deletion.pending.is_some() {
-                    return Ok(false);
+                    return Ok(Submission::Awaiting {
+                        focus_changed: false,
+                    });
                 }
                 if !deletion.ready() {
                     return Err(crate::Error::DeletionLookup);
                 }
-                params["force"] = deletion.force.into();
-                let id = self.endpoints[self.selected_endpoint]
+                let force = deletion.force;
+                params["force"] = force.into();
+                let pending = self.endpoints[self.selected_endpoint]
                     .connection
                     .request_dialog(&target.boot_id, method, params)?;
-                if let Some(deletion) = &mut self.menu.deletion {
-                    deletion.pending = Some(id);
-                }
-                self.menu.error = None;
-                return Ok(true);
+                self.removal = Some(Removal {
+                    endpoint: (
+                        self.selection_epoch,
+                        self.endpoints[self.selected_endpoint].generation,
+                    ),
+                    boot_id: target.boot_id.clone(),
+                    workspace: target.id.clone(),
+                    pending: Some(pending),
+                    force,
+                });
+                return Ok(Submission::Queued {
+                    focus_changed: true,
+                });
             }
             if action == WorkspaceAction::NewWorktree {
                 if self.menu.creation.is_some() {
-                    return Ok(false);
+                    return Ok(Submission::Awaiting {
+                        focus_changed: false,
+                    });
                 }
                 // Correlated, so the daemon's failure reaches the dialog and the
                 // created checkout can be focused once it exists.
@@ -846,7 +949,9 @@ impl HerdrWindow {
                     .request_dialog(&target.boot_id, method, params)?;
                 self.menu.creation = Some(id);
                 self.menu.error = None;
-                return Ok(true);
+                return Ok(Submission::Awaiting {
+                    focus_changed: true,
+                });
             }
             let handle = self.endpoints[self.selected_endpoint]
                 .connection
@@ -855,23 +960,22 @@ impl HerdrWindow {
                 .ok_or(crate::Error::NotConnected)?;
             handle
                 .request(&target.boot_id, method, params)
-                .map(|_| action != WorkspaceAction::Rename)
+                .map(|_| Submission::Queued {
+                    focus_changed: action != WorkspaceAction::Rename,
+                })
                 .map_err(|source| crate::Error::Request { method, source })
         })();
         match result {
-            Ok(focus_changed) => {
+            Ok(submission) => {
                 self.local_error = None;
-                if focus_changed {
+                if submission.focus_changed() {
                     self.fence_focus_change(None);
                 }
-                // Both worktree dialogs stay open until the daemon answers.
-                if matches!(
-                    action,
-                    WorkspaceAction::DeleteWorktree | WorkspaceAction::NewWorktree
-                ) {
-                    cx.notify();
-                } else {
-                    self.dismiss_menu(window, cx);
+                match submission {
+                    // The daemon's snapshot drops the workspace when the removal
+                    // lands, so there is nothing left to wait for here.
+                    Submission::Queued { .. } => self.dismiss_menu(window, cx),
+                    Submission::Awaiting { .. } => cx.notify(),
                 }
             }
             Err(error) => {
@@ -982,10 +1086,6 @@ impl HerdrWindow {
         let danger = danger(theme);
         let deletion = self.menu.deletion.as_ref();
         let force = deletion.is_some_and(|deletion| deletion.force);
-        // The same slot carries the checkout lookup and the removal itself, so
-        // only a request sent after the daemon named the checkout is a removal.
-        let removing =
-            deletion.is_some_and(|deletion| deletion.pending.is_some() && deletion.path.is_some());
         let creating = self.menu.creation.is_some();
         // Until the daemon names the checkout there is nothing to confirm, and a
         // request already in flight leaves nothing to press either.
@@ -1068,7 +1168,7 @@ impl HerdrWindow {
                     .child(error.clone()),
             );
         }
-        if creating || removing {
+        if creating {
             // Dismissing only closes the panel; the daemon keeps the queued work.
             body = body.child(
                 div()
@@ -1171,13 +1271,7 @@ impl HerdrWindow {
                                 rgb(theme.foreground)
                             })
                             .hover(|button| button.bg(rgb(theme.active)))
-                            .child(if creating {
-                                "Creating..."
-                            } else if removing {
-                                "Removing..."
-                            } else {
-                                submit
-                            })
+                            .child(if creating { "Creating..." } else { submit })
                             .on_click(cx.listener(|this, _, window, cx| {
                                 cx.stop_propagation();
                                 this.submit_workspace_dialog(window, cx);
@@ -1730,10 +1824,14 @@ pub(crate) mod workspace_tests {
             });
         }
         view.submit_workspace_dialog(window, cx);
-        assert!(view.menu.error.is_none());
-        // Both worktree operations wait for their own correlated response.
+        assert!(view.menu.error.is_none() && view.local_error.is_none());
+        // A creation waits for its correlated response in the open dialog; a
+        // removal is queued and its dialog closes, leaving the id on the window.
         let pending = match action {
-            WorkspaceAction::DeleteWorktree => view.menu.deletion.as_ref().unwrap().pending.clone(),
+            WorkspaceAction::DeleteWorktree => {
+                assert!(view.menu.page.is_none());
+                view.removal.as_ref().unwrap().pending.clone()
+            }
             WorkspaceAction::NewWorktree => view.menu.creation.clone(),
             _ => None,
         };
@@ -2069,16 +2167,18 @@ pub(crate) mod workspace_tests {
                         view.open_workspace_menu(id, Default::default(), window, cx);
                         view.open_workspace_dialog(action, cx);
                         if action == WorkspaceAction::DeleteWorktree {
+                            // Ready to confirm: the daemon has named the
+                            // checkout and nothing is in flight.
                             view.menu.deletion = Some(super::Deletion {
-                                pending: Some("remove".into()),
+                                pending: None,
                                 path: Some(
                                     "/endpoint/.herdr/worktrees/agent-launcher/child".into(),
                                 ),
                                 force: true,
                             });
                         } else {
-                            // Both dialogs wait on the daemon here, so every
-                            // section measured below belongs to this frame.
+                            // The creation waits on the daemon here, so its
+                            // waiting note belongs to this frame too.
                             view.menu.creation = Some("create".into());
                         }
                         view.menu.error = Some("fixture error".into());
@@ -2089,7 +2189,10 @@ pub(crate) mod workspace_tests {
                 let cancel = cx.debug_bounds("dialog-cancel").unwrap();
                 let submit = cx.debug_bounds("dialog-submit").unwrap();
                 let error = cx.debug_bounds("dialog-error").unwrap();
-                let waiting = cx.debug_bounds("dialog-waiting").unwrap();
+                // Only a creation waits on the daemon: a removal is queued and
+                // its dialog closes rather than reporting progress.
+                let waiting = (action == WorkspaceAction::NewWorktree)
+                    .then(|| cx.debug_bounds("dialog-waiting").unwrap());
                 // Creation drafts a branch and previews its checkout; deletion
                 // confirms the one the daemon named, with nothing to type.
                 let (field, subject) = if action == WorkspaceAction::NewWorktree {
@@ -2103,7 +2206,10 @@ pub(crate) mod workspace_tests {
                     let path = cx.debug_bounds("dialog-path").unwrap();
                     (path, path)
                 };
-                let parts = vec![field, subject, cancel, submit, error, waiting];
+                let parts: Vec<_> = [field, subject, cancel, submit, error]
+                    .into_iter()
+                    .chain(waiting)
+                    .collect();
                 for part in &parts {
                     assert!(
                         part.left() >= panel.left() && part.right() <= panel.right(),
@@ -2298,7 +2404,7 @@ pub(crate) mod workspace_tests {
     }
 
     #[gpui::test]
-    fn deletion_lookup_dirty_force_errors_success_and_cancel(cx: &mut gpui::TestAppContext) {
+    fn deletion_lookup_names_the_checkout_and_reports_errors(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             let snapshot = sidebar::layout_tests::snapshot(7);
             let mut menu = super::MenuState::new(cx);
@@ -2309,29 +2415,78 @@ pub(crate) mod workspace_tests {
             menu.apply_deletion_response("unrelated", Ok(lookup.clone()));
             assert!(menu.deletion.as_ref().unwrap().path.is_none());
             menu.apply_deletion_response("list", Ok(lookup));
-            let deletion = menu.deletion.as_mut().unwrap();
+            let deletion = menu.deletion.as_ref().unwrap();
             assert_eq!(deletion.path.as_deref(), Some("/daemon/checkout"));
             assert!(deletion.ready());
-            deletion.pending = Some("remove".into());
-            assert!(!deletion.ready());
-            menu.apply_deletion_response("remove", Ok(serde_json::json!({"error":{"code":"dirty_worktree_requires_force", "message":"modified or untracked files"}})));
-            assert!(menu.error.as_ref().unwrap().contains("modified or untracked files"));
-            // The escalation re-arms the same single confirmation; no text field appears.
-            assert!(menu.input.is_none());
-            let deletion = menu.deletion.as_mut().unwrap();
-            assert!(deletion.force);
-            assert!(deletion.ready());
-            deletion.pending = Some("forced".into());
-            menu.apply_deletion_response("forced", Err(std::sync::Arc::new(crate::Error::Client(herdr_client::Error::UnsupportedMethod))));
+            // The dialog only ever awaits the lookup, so a removal reply here is
+            // not something it can act on.
+            menu.deletion.as_mut().unwrap().pending = Some("stray".into());
+            menu.apply_deletion_response("stray", Ok(serde_json::json!({"result":{"type":"worktree_removed", "workspace_id":"w4"}})));
+            assert!(menu.error.as_ref().unwrap().starts_with("Unexpected daemon response"));
+            // A refused lookup keeps the daemon's own code and message.
+            menu.deletion.as_mut().unwrap().pending = Some("retry".into());
+            menu.apply_deletion_response("retry", Ok(serde_json::json!({"error":{"code":"worktree_list_failed", "message":"not a repository"}})));
+            assert_eq!(menu.error.as_deref(), Some("worktree_list_failed: not a repository"));
+            menu.deletion.as_mut().unwrap().pending = Some("broken".into());
+            menu.apply_deletion_response("broken", Err(std::sync::Arc::new(crate::Error::Client(herdr_client::Error::UnsupportedMethod))));
             assert_eq!(menu.error.as_deref(), Some("method not advertised by endpoint"));
-            menu.deletion.as_mut().unwrap().pending = Some("success".into());
-            menu.apply_deletion_response("success", Ok(serde_json::json!({"result":{"type":"worktree_removed", "workspace_id":"w4", "path":"/daemon/checkout", "forced":true}})));
-            assert!(menu.page.is_none());
+            // A reply arriving after the menu closed changes nothing.
             menu.deletion = Some(super::Deletion { pending: Some("late".into()), path: None, force: false });
             menu.reset();
             menu.apply_deletion_response("late", Err(std::sync::Arc::new(crate::Error::Client(herdr_client::Error::Disconnected))));
             assert!(menu.deletion.is_none());
             assert!(menu.error.is_none());
+        });
+    }
+
+    /// Confirming a removal closes the popover, because the daemon drops the
+    /// workspace from its own snapshot when the removal lands. A refusal still
+    /// has to reach the user, and a dirty checkout arms the next dialog with
+    /// force instead of repeating the same refusal.
+    #[gpui::test]
+    fn queued_removal_closes_the_dialog_and_reports_refusals(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(sidebar::layout_tests::fixture_window);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.live.status = crate::state::ConnectionStatus::Connected;
+                let boot_id = view.live.snapshot.as_ref().unwrap().boot_id.clone();
+                let endpoint = (
+                    view.selection_epoch,
+                    view.endpoints[view.selected_endpoint].generation,
+                );
+                let removal = move |pending: &str| super::Removal {
+                    endpoint,
+                    boot_id: boot_id.clone(),
+                    workspace: "w4".into(),
+                    pending: Some(pending.into()),
+                    force: false,
+                };
+                view.removal = Some(removal("remove"));
+                // Another dialog's reply leaves the removal in flight.
+                view.live.dialog_response = Some(("other".into(), Some(Ok(serde_json::json!({"result":{}})))));
+                view.update_workspace_dialog(window, cx);
+                assert!(view.removal.as_ref().unwrap().pending.is_some());
+                view.live.dialog_response = Some(("remove".into(), Some(Ok(serde_json::json!({"error":{"code":"dirty_worktree_requires_force", "message":"modified or untracked files"}})))));
+                view.update_workspace_dialog(window, cx);
+                let refused = view.removal.as_ref().unwrap();
+                assert!(refused.force && refused.pending.is_none());
+                assert_eq!(view.local_error.as_deref(), Some("Remove worktree: dirty_worktree_requires_force: modified or untracked files"));
+                view.open_workspace_menu("w4", Default::default(), window, cx);
+                view.open_workspace_dialog(WorkspaceAction::DeleteWorktree, cx);
+                assert!(view.menu.deletion.as_ref().unwrap().force);
+                view.dismiss_menu(window, cx);
+                // An accepted removal leaves nothing behind for the next dialog.
+                view.removal = Some(super::Removal { force: true, ..removal("forced") });
+                view.local_error = None;
+                view.live.dialog_response = Some(("forced".into(), Some(Ok(serde_json::json!({"result":{"type":"worktree_removed", "workspace_id":"w4"}})))));
+                view.update_workspace_dialog(window, cx);
+                assert!(view.removal.is_none() && view.local_error.is_none());
+                // A reply from a replaced connection is not this removal's.
+                view.removal = Some(removal("stale"));
+                view.endpoints[view.selected_endpoint].generation += 1;
+                view.update_workspace_dialog(window, cx);
+                assert!(view.removal.is_none());
+            })
         });
     }
 
