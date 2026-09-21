@@ -373,6 +373,11 @@ fn github_origins_are_strictly_validated() {
         crate::avatars::github_repo("git@github.com:Some-Owner/repo.git"),
         Some(("some-owner".into(), "repo".into()))
     );
+    // Enterprise managed users own repositories under an `_shortcode` login.
+    assert_eq!(
+        crate::avatars::github_repo("https://github.com/fabienpenso_microsoft/repo"),
+        Some(("fabienpenso_microsoft".into(), "repo".into()))
+    );
     for remote in [
         "https://github.com/a/b/c",
         "https://github.com@evil.test/a/b",

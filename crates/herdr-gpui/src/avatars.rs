@@ -10,6 +10,9 @@ use std::{
 
 const MAX_REQUESTS: usize = 128;
 
+/// A bound on each remote path segment, above GitHub's own name limits.
+const MAX_SEGMENT: usize = 100;
+
 /// Memory front end to the shared public-image disk cache.
 pub struct Avatars {
     requests: mpsc::SyncSender<String>,
@@ -111,6 +114,22 @@ fn github_owner(remote: &str) -> Option<String> {
     github_repo(remote).map(|(owner, _)| owner)
 }
 
+/// One segment of a remote's path.
+///
+/// Account and repository names are GitHub's to define, so no name grammar is
+/// reproduced here: a segment is refused only when it names the directory
+/// itself or carries punctuation that would not stay inside its own path
+/// segment in the avatar URL built from it.
+fn segment(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_SEGMENT
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
 pub(crate) fn github_repo(remote: &str) -> Option<(String, String)> {
     let path = [
         "https://github.com/",
@@ -121,26 +140,8 @@ pub(crate) fn github_repo(remote: &str) -> Option<(String, String)> {
     .into_iter()
     .find_map(|prefix| remote.strip_prefix(prefix))?;
     let (owner, repo) = path.split_once('/')?;
-    // GitHub usernames: 1-39 ASCII alphanumerics or single internal hyphens.
-    if owner.is_empty()
-        || owner.len() > 39
-        || owner.starts_with('-')
-        || owner.ends_with('-')
-        || owner.contains("--")
-        || !owner
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    {
-        return None;
-    }
     let repo = repo.strip_suffix(".git").unwrap_or(repo);
-    if repo.is_empty()
-        || repo == "."
-        || repo == ".."
-        || !repo
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
-    {
+    if !segment(owner) || !segment(repo) {
         return None;
     }
     Some((owner.to_ascii_lowercase(), repo.to_owned()))
@@ -395,16 +396,25 @@ mod tests {
         ] {
             assert_eq!(github_owner(remote), None, "{remote}");
         }
-        for owner in [
-            "", "-owner", "owner-", "a--b", "a_b", "a.b", "a@b", "a%2fb", "a b", "\u{e9}",
-        ] {
+        // No account-name grammar is enforced: whatever GitHub names an owner,
+        // an enterprise managed user included, survives the round trip.
+        for owner in ["a_b", "a--b", "owner_shortcode", "-owner", "owner-", "a.b"] {
             assert_eq!(
-                github_owner(&format!("https://github.com/{owner}/repo")),
-                None
+                github_owner(&format!("https://github.com/{owner}/repo")).as_deref(),
+                Some(owner),
+                "{owner}"
             );
         }
-        assert!(github_owner(&format!("https://github.com/{}/repo", "a".repeat(39))).is_some());
-        assert!(github_owner(&format!("https://github.com/{}/repo", "a".repeat(40))).is_none());
+        // Only what would not stay inside its own path segment is refused.
+        for owner in ["", ".", "..", "a@b", "a%2fb", "a b", "a?b", "a#b", "\u{e9}"] {
+            assert_eq!(
+                github_owner(&format!("https://github.com/{owner}/repo")),
+                None,
+                "{owner}"
+            );
+        }
+        assert!(github_owner(&format!("https://github.com/{}/repo", "a".repeat(100))).is_some());
+        assert!(github_owner(&format!("https://github.com/{}/repo", "a".repeat(101))).is_none());
     }
 
     #[test]
