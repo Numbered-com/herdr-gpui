@@ -9,6 +9,12 @@
 # Also accepts a Ghostty theme name, an absolute path, or a ~/ path.
 theme = "Default"
 
+# Ask before closing a tab (closing terminates its terminal processes).
+# Pane close confirmation is independent and remains enabled.
+confirm_close_tab = true
+# Show the Agents section below Spaces in the sidebar.
+show_agents = true
+
 [sidebar]
 # Default: "Menlo" on macOS, "DejaVu Sans Mono" on Linux.
 # family = "DejaVu Sans Mono"

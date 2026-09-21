@@ -13,6 +13,8 @@ const DEFAULT_CONFIG: &str = include_str!("../config-gpui.example.toml");
 #[derive(Clone, Debug)]
 pub struct Config {
     pub theme: String,
+    pub confirm_close_tab: bool,
+    pub show_agents: bool,
     pub sidebar: FontConfig,
     pub tabs: FontConfig,
     pub terminal: FontConfig,
@@ -86,6 +88,8 @@ impl Default for Config {
         Self {
             theme: "Default".into(),
             github: GitHubConfig::default(),
+            confirm_close_tab: true,
+            show_agents: true,
             sidebar: font(monospace, 12.0),
             // Tabs are terminal chrome, so they read in the monospace face the
             // sidebar and terminal use, as they do in the reference UI.
@@ -100,6 +104,8 @@ impl Default for Config {
 #[serde(default, deny_unknown_fields)]
 struct Settings {
     theme: Option<String>,
+    confirm_close_tab: Option<bool>,
+    show_agents: Option<bool>,
     sidebar: FontSettings,
     tabs: FontSettings,
     terminal: FontSettings,
@@ -209,6 +215,8 @@ impl Config {
             }
             config.theme = theme;
         }
+        config.confirm_close_tab = settings.confirm_close_tab.unwrap_or(true);
+        config.show_agents = settings.show_agents.unwrap_or(true);
         for (name, font, settings) in [
             ("sidebar", &mut config.sidebar, settings.sidebar),
             ("tabs", &mut config.tabs, settings.tabs),
@@ -927,6 +935,24 @@ mod tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn appearance_and_close_options_preserve_defaults() -> anyhow::Result<()> {
+        for config in [
+            Config::default(),
+            Config::parse("")?,
+            Config::parse(DEFAULT_CONFIG)?,
+        ] {
+            assert!(config.confirm_close_tab);
+            assert!(config.show_agents);
+        }
+        let config = Config::parse("confirm_close_tab = false\nshow_agents = false")?;
+        assert!(!config.confirm_close_tab);
+        assert!(!config.show_agents);
+        assert!(Config::parse("confirm_close_tab = 'false'").is_err());
+        assert!(Config::parse("show_agents = 0").is_err());
         Ok(())
     }
 

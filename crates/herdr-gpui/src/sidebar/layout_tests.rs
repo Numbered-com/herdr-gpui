@@ -2174,3 +2174,38 @@ fn the_homebrew_update_states_stay_inside_the_panel(cx: &mut gpui::TestAppContex
         }
     }
 }
+
+#[cfg(test)]
+#[gpui::test]
+fn hiding_agents_reclaims_sidebar_height(cx: &mut gpui::TestAppContext) {
+    let (view, cx) = cx.add_window_view(fixture_window);
+    for width in [800., 360.] {
+        cx.simulate_resize(size(px(width), px(600.)));
+        let mut visible_height = px(0.);
+        for show_agents in [true, false, true] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.config.show_agents = show_agents;
+                    cx.notify();
+                });
+                cx.default_global::<TextProbes>().0.clear();
+                window.refresh();
+                window.draw(cx).clear();
+            });
+            cx.update(|_, cx| {
+                assert_eq!(
+                    cx.global::<TextProbes>().0.contains_key("Claude Code"),
+                    show_agents
+                );
+            });
+            let spaces = cx.debug_bounds("spaces-scroll").unwrap();
+            if show_agents {
+                visible_height = spaces.size.height;
+            } else {
+                assert!(spaces.size.height > visible_height + px(100.));
+            }
+            assert!(cx.debug_bounds("sidebar-menu").is_some());
+            assert!(cx.debug_bounds("sidebar-resize").is_some());
+        }
+    }
+}

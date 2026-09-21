@@ -75,6 +75,16 @@ impl HerdrWindow {
             .px(px(16.))
             .py(px(8.))
             .child(section("APPEARANCE"))
+            .child(row(
+                "preferences-show-agents",
+                "Show agents",
+                self.config.show_agents.to_string(),
+            ))
+            .child(row(
+                "preferences-confirm-close-tab",
+                "Confirm tab close",
+                self.config.confirm_close_tab.to_string(),
+            ))
             .child(row("preferences-theme", "Theme", self.config.theme.clone()))
             .child(div().py(px(10.)).child(
                 button("preferences-choose-theme", "Choose theme").on_click(cx.listener(
@@ -129,7 +139,7 @@ impl HerdrWindow {
                     ),
             )
             .child(note(
-                "Edit the GUI config file to change theme or font family and size, then reload GUI config. Invalid configuration leaves the current appearance unchanged.",
+                "Edit the GUI config file to change theme, fonts, confirm_close_tab, or show_agents, then reload GUI config. Invalid configuration leaves the current appearance unchanged.",
             ))
             .child(
                 button("preferences-reload-config", "Reload GUI config").on_click(cx.listener(

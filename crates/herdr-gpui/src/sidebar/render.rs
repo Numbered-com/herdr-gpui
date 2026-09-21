@@ -260,6 +260,9 @@ impl HerdrWindow {
                     }),
                 );
             }
+            if !self.config.show_agents {
+                continue;
+            }
             for agent in sorted_agents(&snapshot.agents, self.agent_sort) {
                 if selected && agent.focused {
                     highlighted[1] = Some(agent_count);
@@ -384,21 +387,24 @@ impl HerdrWindow {
                             ),
                     ),
             )
-            .child(div().h(px(1.)).flex_none().bg(rgb(theme.active)))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_hidden()
+            .when(self.config.show_agents, |sidebar| {
+                sidebar
+                    .child(div().h(px(1.)).flex_none().bg(rgb(theme.active)))
                     .child(
-                        header("agents", font, theme)
-                            .justify_between()
-                            .child(agents_sort(self, cx)),
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_hidden()
+                            .child(
+                                header("agents", font, theme)
+                                    .justify_between()
+                                    .child(agents_sort(self, cx)),
+                            )
+                            .child(agents),
                     )
-                    .child(agents),
-            )
+            })
             .child(
                 div()
                     .id("sidebar-resize")
