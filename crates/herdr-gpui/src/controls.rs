@@ -1,4 +1,4 @@
-use herdr_client::protocol::ClientShellSnapshot;
+use herdr_client::{Method, protocol::ClientShellSnapshot};
 use serde_json::{Value, json};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
@@ -216,7 +216,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     },
 ];
 
-pub fn request(command: Command, snapshot: &ClientShellSnapshot) -> Option<(&'static str, Value)> {
+pub fn request(command: Command, snapshot: &ClientShellSnapshot) -> Option<(Method, Value)> {
     let workspace = snapshot
         .workspaces
         .iter()
@@ -239,14 +239,14 @@ pub fn request(command: Command, snapshot: &ClientShellSnapshot) -> Option<(&'st
             if snapshot.focused_workspace_id.is_some() {
                 params["source_workspace_id"] = json!(workspace?.workspace_id);
             }
-            ("workspace.create", params)
+            (Method::WorkspaceCreate, params)
         }
         Command::Tab => (
-            "tab.create",
+            Method::TabCreate,
             json!({"workspace_id": workspace?.workspace_id, "focus": true}),
         ),
         Command::SplitRight | Command::SplitDown => (
-            "pane.split",
+            Method::PaneSplit,
             json!({
                 "target_pane_id": pane?.pane_id,
                 "direction": if matches!(command, Command::SplitRight) { "right" } else { "down" },
@@ -268,7 +268,7 @@ pub fn request(command: Command, snapshot: &ClientShellSnapshot) -> Option<(&'st
             } else {
                 (index + tabs.len() - 1) % tabs.len()
             };
-            ("tab.focus", json!({"tab_id": tabs[next].tab_id}))
+            (Method::TabFocus, json!({"tab_id": tabs[next].tab_id}))
         }
         Command::FocusLeft | Command::FocusRight | Command::FocusUp | Command::FocusDown => {
             let direction = match command {
@@ -279,7 +279,7 @@ pub fn request(command: Command, snapshot: &ClientShellSnapshot) -> Option<(&'st
                 _ => unreachable!(),
             };
             (
-                "pane.focus_direction",
+                Method::PaneFocusDirection,
                 json!({"pane_id": pane?.pane_id, "direction": direction}),
             )
         }
@@ -297,20 +297,20 @@ pub fn request(command: Command, snapshot: &ClientShellSnapshot) -> Option<(&'st
             } else {
                 (index + panes.len() - 1) % panes.len()
             };
-            ("pane.focus", json!({"pane_id": panes[next].pane_id}))
+            (Method::PaneFocus, json!({"pane_id": panes[next].pane_id}))
         }
         Command::Zoom => (
-            "pane.zoom",
+            Method::PaneZoom,
             json!({"pane_id": pane?.pane_id, "mode": "toggle"}),
         ),
-        Command::ClosePane => ("pane.close", json!({"pane_id": pane?.pane_id})),
-        Command::CloseTab => ("tab.close", json!({"tab_id": tab?.tab_id})),
+        Command::ClosePane => (Method::PaneClose, json!({"pane_id": pane?.pane_id})),
+        Command::CloseTab => (Method::TabClose, json!({"tab_id": tab?.tab_id})),
         Command::TabNumber(number) => {
             let workspace = workspace?;
             let target = snapshot.tabs.iter().find(|t| {
                 t.workspace_id == workspace.workspace_id && t.number == usize::from(number)
             })?;
-            ("tab.focus", json!({"tab_id": target.tab_id}))
+            (Method::TabFocus, json!({"tab_id": target.tab_id}))
         }
         Command::NewWindow
         | Command::ToggleSidebar
@@ -423,7 +423,7 @@ mod tests {
             assert_eq!(
                 request(command, &s),
                 Some((
-                    "pane.focus_direction",
+                    Method::PaneFocusDirection,
                     json!({"pane_id": s.focused_pane_id, "direction": direction})
                 ))
             );
@@ -431,17 +431,17 @@ mod tests {
         assert_eq!(
             request(Command::Zoom, &s),
             Some((
-                "pane.zoom",
+                Method::PaneZoom,
                 json!({"pane_id": s.focused_pane_id, "mode": "toggle"})
             ))
         );
         assert_eq!(
             request(Command::ClosePane, &s),
-            Some(("pane.close", json!({"pane_id": s.focused_pane_id})))
+            Some((Method::PaneClose, json!({"pane_id": s.focused_pane_id})))
         );
         assert_eq!(
             request(Command::CloseTab, &s),
-            Some(("tab.close", json!({"tab_id": s.focused_tab_id})))
+            Some((Method::TabClose, json!({"tab_id": s.focused_tab_id})))
         );
     }
 
@@ -514,7 +514,7 @@ mod tests {
             {
                 assert_eq!(
                     request(command, &s),
-                    Some(("pane.focus", json!({"pane_id": target})))
+                    Some((Method::PaneFocus, json!({"pane_id": target})))
                 );
             }
         }
@@ -523,7 +523,7 @@ mod tests {
         for command in [Command::NextPane, Command::PreviousPane] {
             assert_eq!(
                 request(command, &s),
-                Some(("pane.focus", json!({"pane_id": first.pane_id})))
+                Some((Method::PaneFocus, json!({"pane_id": first.pane_id})))
             );
         }
     }
@@ -542,11 +542,11 @@ mod tests {
         s.tabs = vec![foreign, tab.clone(), second];
         assert_eq!(
             request(Command::TabNumber(7), &s),
-            Some(("tab.focus", json!({"tab_id": tab.tab_id})))
+            Some((Method::TabFocus, json!({"tab_id": tab.tab_id})))
         );
         assert_eq!(
             request(Command::TabNumber(2), &s),
-            Some(("tab.focus", json!({"tab_id": "second"})))
+            Some((Method::TabFocus, json!({"tab_id": "second"})))
         );
         for number in [0, 1, 3, 9, 255] {
             assert!(request(Command::TabNumber(number), &s).is_none());
@@ -567,14 +567,14 @@ mod tests {
         assert_eq!(
             request(Command::Workspace, &s).unwrap(),
             (
-                "workspace.create",
+                Method::WorkspaceCreate,
                 json!({"source_workspace_id": s.focused_workspace_id, "focus": true})
             )
         );
         assert_eq!(
             request(Command::Tab, &s).unwrap(),
             (
-                "tab.create",
+                Method::TabCreate,
                 json!({"workspace_id": s.focused_workspace_id, "focus": true})
             )
         );
@@ -582,7 +582,7 @@ mod tests {
             assert_eq!(
                 request(command, &s).unwrap(),
                 (
-                    "pane.split",
+                    Method::PaneSplit,
                     json!({"target_pane_id": s.focused_pane_id, "direction": direction, "focus": true})
                 )
             );

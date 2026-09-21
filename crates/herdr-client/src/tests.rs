@@ -1,6 +1,28 @@
 use super::*;
-use std::os::unix::net::UnixListener;
-
+use crate::{
+    Error, Result,
+    frame::FrameReader,
+    handle::HandleInner,
+    limits::{
+        COMMAND_CAPACITY, COMMAND_TIMEOUT, EVENT_CAPACITY, MAX_RESPONSE_BYTES, POLL, TIMEOUT,
+    },
+    method::Method,
+    options::validate_options,
+    protocol::{endpoint::*, *},
+    session::{Health, Pending, Session, run_connection},
+};
+use crossbeam_channel::bounded;
+use serde_json::{Value, json};
+use std::{
+    io::{self, Read, Write},
+    os::unix::net::{UnixListener, UnixStream},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
 const SNAPSHOT: &str =
     include_str!("../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json");
 const WELCOME: &str = include_str!("../../herdr-protocol/tests/fixtures/endpoint-welcome-v1.json");
@@ -504,7 +526,7 @@ fn stale_boot_and_unsupported_commands_never_reach_socket() {
     ));
     let unsupported = client
         .handle
-        .request("boot-v1", "not.advertised", json!({}))
+        .request("boot-v1", Method::TabCreate, json!({}))
         .unwrap();
     assert!(
         matches!(event(&client), ClientEvent::CommandRejected { request_id: Some(id), reason: Error::UnsupportedMethod } if id == unsupported)

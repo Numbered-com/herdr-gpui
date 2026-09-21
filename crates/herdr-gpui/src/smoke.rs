@@ -1,6 +1,12 @@
 //! Native opt-in smoke driver. No test platform or blocking waits on the UI thread.
-use super::*;
+use crate::{
+    Command, ConnectionStatus, HerdrWindow, LiveState, NavigationTarget, RunCommand, app_icon,
+    endpoint, github, menu, open_window, pull_request, sidebar, updater,
+};
 use anyhow::{Context as _, Result, anyhow, bail};
+use gpui::{prelude::*, *};
+use herdr_client::{ConnectOptions, ConnectTarget, Method, protocol::*};
+use std::{sync::Arc, time::Duration};
 use std::{
     sync::atomic::{AtomicU8, Ordering},
     time::Instant,
@@ -836,7 +842,7 @@ fn create_external_workspace(
                     .handle
                     .request(
                         &boot,
-                        "workspace.create",
+                        Method::WorkspaceCreate,
                         serde_json::json!({
                             "focus": false, "label": "external-gui-smoke"
                         }),
@@ -1296,8 +1302,9 @@ fn has_output(frame: &FrameData, marker: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientSurfaceSize, ConnectOptions, ConnectTarget, create_external_workspace};
+    use super::create_external_workspace;
     use anyhow::{Context as _, Result};
+    use herdr_client::{ConnectOptions, ConnectTarget, protocol::ClientSurfaceSize};
 
     #[test]
     fn external_workspace_error_retains_client_source() -> Result<()> {

@@ -4,7 +4,7 @@ use crate::{
     menu::Page,
 };
 use gpui::{prelude::*, *};
-use herdr_client::protocol::ClientShellSnapshot;
+use herdr_client::{Method, protocol::ClientShellSnapshot};
 use serde_json::{Value, json};
 
 pub(super) struct CloseConfirmation {
@@ -63,7 +63,7 @@ impl CloseConfirmation {
         })
     }
 
-    fn request(&self, snapshot: &ClientShellSnapshot) -> Result<(&'static str, Value)> {
+    fn request(&self, snapshot: &ClientShellSnapshot) -> Result<(Method, Value)> {
         if snapshot.boot_id != self.boot
             || !snapshot
                 .workspaces
@@ -84,9 +84,9 @@ impl CloseConfirmation {
             return Err(Error::StaleCloseTarget);
         }
         Ok(if let Some(id) = &self.pane {
-            ("pane.close", json!({"pane_id": id}))
+            (Method::PaneClose, json!({"pane_id": id}))
         } else {
-            ("tab.close", json!({"tab_id": self.tab}))
+            (Method::TabClose, json!({"tab_id": self.tab}))
         })
     }
 }
@@ -142,7 +142,7 @@ impl HerdrWindow {
         })();
         match result {
             Ok((method, params)) => {
-                self.request_focus_change(method, None, |handle, boot| {
+                self.request_focus_change(method.as_str(), None, |handle, boot| {
                     handle.request(boot, method, params)
                 });
                 self.dismiss_menu(window, cx);
@@ -278,7 +278,7 @@ mod tests {
                 assert!(!close.confirm_selected);
                 assert_eq!(
                     close.request(view.live.snapshot.as_ref().unwrap()).unwrap(),
-                    ("tab.close", json!({"tab_id": "inactive"}))
+                    (Method::TabClose, json!({"tab_id": "inactive"}))
                 );
                 assert_eq!(
                     view.live.snapshot.as_ref().unwrap().focused_tab_id,
@@ -326,7 +326,7 @@ mod tests {
         assert!(!close.confirm_selected);
         assert_eq!(
             close.request(&snapshot)?,
-            ("tab.close", json!({"tab_id":"inactive"}))
+            (Method::TabClose, json!({"tab_id":"inactive"}))
         );
         snapshot.tabs.retain(|tab| tab.tab_id != "inactive");
         assert!(close.request(&snapshot).is_err());

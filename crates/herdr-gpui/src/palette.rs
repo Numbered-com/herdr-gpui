@@ -5,7 +5,10 @@ use crate::{
     search_input::{Changed, SearchInput},
 };
 use gpui::{prelude::*, *};
-use herdr_client::protocol::{ClientShellCommandAction, ClientShellSnapshot};
+use herdr_client::{
+    Method,
+    protocol::{ClientShellCommandAction, ClientShellSnapshot},
+};
 use serde_json::{Value, json};
 
 #[derive(Clone)]
@@ -289,9 +292,11 @@ impl HerdrWindow {
         match result {
             Ok(params) => {
                 if let Some(params) = params {
-                    self.request_focus_change("command.invoke", None, |handle, boot| {
-                        handle.request(boot, "command.invoke", params)
-                    });
+                    self.request_focus_change(
+                        Method::CommandInvoke.as_str(),
+                        None,
+                        |handle, boot| handle.request(boot, Method::CommandInvoke, params),
+                    );
                 }
                 self.dismiss_menu(window, cx);
                 if let Action::Workspace(id) = action {

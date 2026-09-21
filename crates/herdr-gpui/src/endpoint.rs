@@ -432,7 +432,7 @@ impl HerdrWindow {
         if self.input_ready() {
             self.navigate(target, cx);
         } else {
-            self.pending_navigation = Some(target.to_owned());
+            self.pending_navigation = Some((&target).into());
         }
     }
 
@@ -543,7 +543,7 @@ impl HerdrWindow {
         if self.input_ready() {
             self.activation_deadline = None;
             if let Some(target) = self.pending_navigation.take() {
-                self.navigate(target.as_ref(), cx);
+                self.navigate(target.as_deref(), cx);
             }
         } else if self
             .activation_deadline

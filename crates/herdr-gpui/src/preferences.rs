@@ -249,14 +249,28 @@ pub enum AgentSort {
     Priority,
 }
 
-impl AgentSort {
-    pub fn label(self) -> &'static str {
-        match self {
+impl std::fmt::Display for AgentSort {
+    /// Also the stored spelling, which `From<&str>` reads back.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
             Self::Grouped => "grouped",
             Self::Priority => "priority",
+        })
+    }
+}
+
+/// An unreadable or unknown preference falls back to the default rather than
+/// failing the load, so this is infallible and not `FromStr`.
+impl From<&str> for AgentSort {
+    fn from(value: &str) -> Self {
+        match value {
+            "priority" => Self::Priority,
+            _ => Self::Grouped,
         }
     }
+}
 
+impl AgentSort {
     pub fn toggled(self) -> Self {
         match self {
             Self::Grouped => Self::Priority,
@@ -265,10 +279,9 @@ impl AgentSort {
     }
 
     fn parse(value: Option<&serde_json::Value>) -> Self {
-        match value.and_then(serde_json::Value::as_str) {
-            Some("priority") => Self::Priority,
-            _ => Self::Grouped,
-        }
+        value
+            .and_then(serde_json::Value::as_str)
+            .map_or_else(Self::default, Self::from)
     }
 }
 
@@ -452,7 +465,7 @@ fn write_chrome(path: &Path, chrome: Chrome) -> crate::Result<()> {
             &mut file,
             &serde_json::json!({
                 "sidebar_width_px": width,
-                "agent_sort": chrome.agent_sort.label(),
+                "agent_sort": chrome.agent_sort.to_string(),
             }),
         )?;
         file.write_all(b"\n")?;

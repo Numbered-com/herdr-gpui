@@ -1,6 +1,6 @@
 //! POSIX discovery/stdio bridge adapted from upstream remote/attach.rs.
 //! No installers, daemon restarts, SSH config edits, or trust-on-first-use.
-use crate::{Error, POLL, Result, catalog::validate_target, session_socket};
+use crate::{Error, Result, catalog::validate_target, limits::POLL, session_socket};
 use std::{
     io::{self, Read, Write},
     os::{fd::OwnedFd, unix::net::UnixStream},
@@ -143,7 +143,14 @@ fn compatible_status(output: &[u8]) -> Option<bool> {
         })
 }
 
-fn await_ready(stream: &mut UnixStream, stop: &AtomicBool, started: Instant) -> Result<Vec<u8>> {
+/// Read the bridge's banner until the ready line, returning what preceded it.
+/// Takes only `Read`: the SSH child's pipe is a `UnixStream`, but the limit,
+/// cancellation and timeout rules here are stream-independent and tested so.
+fn await_ready(
+    stream: &mut (impl Read + ?Sized),
+    stop: &AtomicBool,
+    started: Instant,
+) -> Result<Vec<u8>> {
     let mut line = Vec::new();
     let mut output = Vec::new();
     let mut total = 0;
@@ -271,18 +278,6 @@ printf '%s\n' "$hello"
         assert!(await_ready(&mut stream, &AtomicBool::new(true), Instant::now()).is_err());
     }
     #[test]
-    fn startup_output_is_bounded() {
-        let (mut stream, mut remote) = UnixStream::pair().unwrap();
-        let writer = std::thread::spawn(move || remote.write_all(&vec![b'x'; 16385]).unwrap());
-        assert!(
-            await_ready(&mut stream, &AtomicBool::new(false), Instant::now())
-                .unwrap_err()
-                .to_string()
-                .contains("limit")
-        );
-        writer.join().unwrap();
-    }
-    #[test]
     fn child_guard_reaps_on_drop() {
         let child = Command::new("sleep").arg("60").spawn().unwrap();
         let id = child.id();
@@ -303,5 +298,98 @@ printf '%s\n' "$hello"
         status["endpoint_capabilities"] = serde_json::json!(["surface_interest", "health_check"]);
         assert_eq!(compatible_status(status.to_string().as_bytes()), None);
         assert_eq!(compatible_status(b"banner\n{\"wrapper\":true}\n"), None);
+    }
+
+    /// Yields each scripted result once, so a retryable error and a short read
+    /// are exercised without a socket or a timing guess.
+    struct ScriptedReader(std::collections::VecDeque<io::Result<Vec<u8>>>);
+
+    impl Read for ScriptedReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            match self.0.pop_front() {
+                Some(Ok(bytes)) => {
+                    let len = bytes.len().min(buf.len());
+                    buf[..len].copy_from_slice(&bytes[..len]);
+                    Ok(len)
+                }
+                Some(Err(error)) => Err(error),
+                None => Ok(0),
+            }
+        }
+    }
+
+    fn scripted(chunks: Vec<io::Result<Vec<u8>>>) -> ScriptedReader {
+        ScriptedReader(chunks.into())
+    }
+
+    fn bytes(text: &[u8]) -> Vec<io::Result<Vec<u8>>> {
+        text.iter().map(|byte| Ok(vec![*byte])).collect()
+    }
+
+    #[test]
+    fn ready_line_ends_the_banner_and_returns_what_preceded_it() {
+        let mut stream = scripted(
+            bytes(b"one\ntwo\n")
+                .into_iter()
+                .chain(bytes(READY))
+                .collect(),
+        );
+        let output = await_ready(&mut stream, &AtomicBool::new(false), Instant::now()).unwrap();
+        assert_eq!(output, b"one\ntwo\n");
+    }
+
+    #[test]
+    fn banner_output_is_bounded_and_a_closed_stream_is_reported() {
+        let mut flood = scripted(bytes(&b"x".repeat(16385)));
+        assert!(matches!(
+            await_ready(&mut flood, &AtomicBool::new(false), Instant::now()),
+            Err(Error::SshOutputLimit)
+        ));
+        // An exhausted script reads zero bytes, as a closed pipe does.
+        let mut closed = scripted(bytes(b"partial\n"));
+        assert!(matches!(
+            await_ready(&mut closed, &AtomicBool::new(false), Instant::now()),
+            Err(Error::SshClosed)
+        ));
+    }
+
+    #[test]
+    fn cancellation_and_deadline_are_checked_before_reading() {
+        let stop = AtomicBool::new(true);
+        let mut never_read = scripted(vec![Err(io::Error::other("must not be read"))]);
+        assert!(matches!(
+            await_ready(&mut never_read, &stop, Instant::now()),
+            Err(Error::SshCancelled)
+        ));
+        let expired = Instant::now() - Duration::from_secs(16);
+        let mut also_never_read = scripted(vec![Err(io::Error::other("must not be read"))]);
+        assert!(matches!(
+            await_ready(&mut also_never_read, &AtomicBool::new(false), expired),
+            Err(Error::SshTimeout)
+        ));
+    }
+
+    #[test]
+    fn retryable_read_errors_do_not_end_the_banner() {
+        let mut stream = scripted(
+            [
+                io::ErrorKind::WouldBlock,
+                io::ErrorKind::TimedOut,
+                io::ErrorKind::Interrupted,
+            ]
+            .into_iter()
+            .map(|kind| Err(io::Error::from(kind)))
+            .chain(bytes(READY))
+            .collect(),
+        );
+        assert_eq!(
+            await_ready(&mut stream, &AtomicBool::new(false), Instant::now()).unwrap(),
+            Vec::<u8>::new()
+        );
+        let mut fatal = scripted(vec![Err(io::Error::other("broken pipe"))]);
+        assert!(matches!(
+            await_ready(&mut fatal, &AtomicBool::new(false), Instant::now()),
+            Err(Error::Io(_))
+        ));
     }
 }
