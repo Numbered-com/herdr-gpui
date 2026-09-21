@@ -8,6 +8,7 @@ use crate::{
     frame::FrameReader,
     handle::Command,
     limits::{COMMAND_TIMEOUT, MAX_RESPONSE_BYTES, POLL, SLOW_REQUEST, TIMEOUT},
+    method::Method,
     options::ConnectOptions,
     protocol::{endpoint::*, *},
 };
@@ -32,10 +33,7 @@ fn supports_surface_interest(welcome: &EndpointServerWelcome) -> bool {
     ["surface_interest", "presentation_effects_fence"]
         .iter()
         .all(|cap| welcome.capabilities.iter().any(|c| c == cap))
-        && welcome
-            .methods
-            .iter()
-            .any(|m| m == "client_shell.surface.set")
+        && Method::ClientShellSurfaceSet.advertised_in(&welcome.methods)
 }
 
 pub(crate) struct Health {
@@ -113,15 +111,15 @@ impl Session {
             .is_none_or(|s| s.boot_id != command.boot_id)
         {
             Some(Error::CommandBoot)
-        } else if let Some((_, method)) = &command.request
+        } else if let Some(request) = &command.request
             && self
                 .welcome
                 .as_ref()
-                .is_none_or(|w| !w.methods.contains(method))
+                .is_none_or(|w| !request.method.advertised_in(&w.methods))
         {
             Some(Error::UnsupportedMethod)
-        } else if let Some((_, method)) = &command.request
-            && method == "client_shell.surface.set"
+        } else if let Some(request) = &command.request
+            && request.method == Method::ClientShellSurfaceSet
             && self
                 .welcome
                 .as_ref()
@@ -204,7 +202,7 @@ pub(crate) fn run_connection(
                 deliver(
                     tx,
                     ClientEvent::CommandRejected {
-                        request_id: command.request.map(|r| r.0),
+                        request_id: command.request.map(|request| request.id),
                         reason,
                     },
                     stop,
@@ -218,10 +216,10 @@ pub(crate) fn run_connection(
                 break;
             }
             stream.write_all(&command.bytes)?;
-            if let Some((id, _)) = command.request {
+            if let Some(request) = command.request {
                 tracing::trace!(category = "api", "request sent");
                 session.pending = Some(Pending {
-                    id,
+                    id: request.id,
                     bytes: Vec::new(),
                     started: Instant::now(),
                 });

@@ -5,6 +5,7 @@
 use super::{MENU_MARGIN, Page, WorkspaceAction};
 use crate::HerdrWindow;
 use gpui::{prelude::*, *};
+use herdr_client::Method;
 
 impl HerdrWindow {
     pub(crate) fn show_install_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -121,7 +122,7 @@ impl HerdrWindow {
                     self.local_error = handle
                         .request(
                             &snapshot.boot_id,
-                            "server.reload_config",
+                            Method::ServerReloadConfig,
                             serde_json::json!({}),
                         )
                         .err()

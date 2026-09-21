@@ -1,5 +1,5 @@
 use herdr_client::{
-    ClientEvent,
+    ClientEvent, Method,
     protocol::{ClientShellSnapshot, PaneSurfaceFrame, ServerMessage},
 };
 use std::sync::Arc;
@@ -144,14 +144,9 @@ impl LiveState {
     pub fn apply(&mut self, event: ClientEvent) {
         match event {
             ClientEvent::Connected(welcome) => {
-                self.supports_workspace_get = welcome
-                    .methods
-                    .iter()
-                    .any(|method| method == "workspace.get");
-                self.supports_surface = welcome
-                    .methods
-                    .iter()
-                    .any(|method| method == "client_shell.surface.set")
+                self.supports_workspace_get = Method::WorkspaceGet.advertised_in(&welcome.methods);
+                self.supports_surface = Method::ClientShellSurfaceSet
+                    .advertised_in(&welcome.methods)
                     && ["surface_interest", "presentation_effects_fence"]
                         .iter()
                         .all(|capability| {

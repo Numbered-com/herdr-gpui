@@ -5,6 +5,7 @@
 use crate::{
     Error, Result, SendError,
     event::ClientEvent,
+    method::Method,
     options::{ConnectOptions, validate_options},
     protocol::*,
 };
@@ -36,7 +37,14 @@ impl Drop for HandleInner {
 pub(crate) struct Command {
     pub(crate) boot_id: String,
     pub(crate) bytes: Vec<u8>,
-    pub(crate) request: Option<(String, String)>,
+    /// Set when this command is an API request awaiting a correlated response.
+    pub(crate) request: Option<PendingRequest>,
+}
+
+/// A queued API request, waiting on the single in-flight lease.
+pub(crate) struct PendingRequest {
+    pub(crate) id: String,
+    pub(crate) method: Method,
 }
 
 impl ClientHandle {
@@ -52,7 +60,7 @@ impl ClientHandle {
         &self,
         boot_id: &str,
         message: ClientMessage,
-        request: Option<(String, String)>,
+        request: Option<PendingRequest>,
     ) -> Result<()> {
         if self.is_disconnected() {
             return Err(SendError::Disconnected);
@@ -127,38 +135,41 @@ impl ClientHandle {
     pub fn set_surface_active(&self, boot_id: &str, active: bool) -> Result<String> {
         self.request(
             boot_id,
-            "client_shell.surface.set",
+            Method::ClientShellSurfaceSet,
             json!({"active": active}),
         )
     }
     /// Serialize the API envelope, generate an ID, and queue on the ordered writer.
     /// Only methods advertised in Connected are sent. Responses retain API errors.
-    pub fn request(&self, boot_id: &str, method: &str, params: Value) -> Result<String> {
+    pub fn request(&self, boot_id: &str, method: Method, params: Value) -> Result<String> {
         let id = format!(
             "gpui-{}",
             self.inner.next_request.fetch_add(1, Ordering::Relaxed)
         );
-        let request = json!({"id": id, "method": method, "params": params}).to_string();
+        let request = json!({"id": id, "method": method.as_str(), "params": params}).to_string();
         self.enqueue(
             boot_id,
             ClientMessage::ClientShellEndpointRequest {
                 boot_id: boot_id.into(),
                 request,
             },
-            Some((id.clone(), method.into())),
+            Some(PendingRequest {
+                id: id.clone(),
+                method,
+            }),
         )?;
         Ok(id)
     }
     pub fn focus_pane(&self, boot_id: &str, pane_id: &str) -> Result<String> {
-        self.request(boot_id, "pane.focus", json!({"pane_id": pane_id}))
+        self.request(boot_id, Method::PaneFocus, json!({"pane_id": pane_id}))
     }
     pub fn focus_tab(&self, boot_id: &str, tab_id: &str) -> Result<String> {
-        self.request(boot_id, "tab.focus", json!({"tab_id": tab_id}))
+        self.request(boot_id, Method::TabFocus, json!({"tab_id": tab_id}))
     }
     pub fn focus_workspace(&self, boot_id: &str, workspace_id: &str) -> Result<String> {
         self.request(
             boot_id,
-            "workspace.focus",
+            Method::WorkspaceFocus,
             json!({"workspace_id": workspace_id}),
         )
     }

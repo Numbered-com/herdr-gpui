@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{Context as _, Result, anyhow, bail};
 use gpui::{prelude::*, *};
-use herdr_client::{ConnectOptions, ConnectTarget, protocol::*};
+use herdr_client::{ConnectOptions, ConnectTarget, Method, protocol::*};
 use std::{sync::Arc, time::Duration};
 use std::{
     sync::atomic::{AtomicU8, Ordering},
@@ -842,7 +842,7 @@ fn create_external_workspace(
                     .handle
                     .request(
                         &boot,
-                        "workspace.create",
+                        Method::WorkspaceCreate,
                         serde_json::json!({
                             "focus": false, "label": "external-gui-smoke"
                         }),

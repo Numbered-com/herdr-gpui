@@ -8,7 +8,10 @@ use super::{
 };
 use crate::{HerdrWindow, NavigationTarget, dialog_input::DialogInput};
 use gpui::{prelude::*, *};
-use herdr_client::protocol::{ClientShellSnapshot, ClientShellWorkspace, ClientShellWorktree};
+use herdr_client::{
+    Method,
+    protocol::{ClientShellSnapshot, ClientShellWorkspace, ClientShellWorktree},
+};
 
 pub(crate) struct WorkspaceTarget {
     pub(super) boot_id: String,
@@ -64,7 +67,7 @@ impl WorkspaceTarget {
         snapshot: &ClientShellSnapshot,
         action: WorkspaceAction,
         text: &str,
-    ) -> crate::Result<(&'static str, serde_json::Value)> {
+    ) -> crate::Result<(Method, serde_json::Value)> {
         let workspace = snapshot
             .workspaces
             .iter()
@@ -78,7 +81,7 @@ impl WorkspaceTarget {
                     return Err(crate::Error::EmptyWorkspaceLabel);
                 }
                 (
-                    "workspace.rename",
+                    Method::WorkspaceRename,
                     serde_json::json!({"workspace_id": self.id, "label": label}),
                 )
             }
@@ -89,7 +92,7 @@ impl WorkspaceTarget {
                     return Err(crate::Error::WorkspaceGroupChanged);
                 }
                 (
-                    "workspace.close",
+                    Method::WorkspaceClose,
                     serde_json::json!({"workspace_id": self.id, "close_group": true}),
                 )
             }
@@ -101,14 +104,14 @@ impl WorkspaceTarget {
                 if !text.trim().is_empty() {
                     params["branch"] = text.trim().into();
                 }
-                ("worktree.create", params)
+                (Method::WorktreeCreate, params)
             }
             WorkspaceAction::DeleteWorktree => {
                 if !self.can_delete() || self.worktree != workspace.worktree {
                     return Err(crate::Error::WorkspaceCheckoutChanged);
                 }
                 (
-                    "worktree.remove",
+                    Method::WorktreeRemove,
                     serde_json::json!({"workspace_id": self.id, "force": false, "trust_repository": false}),
                 )
             }
@@ -259,7 +262,7 @@ impl HerdrWindow {
                 .connection
                 .request_dialog(
                     &target.boot_id,
-                    "worktree.list",
+                    Method::WorktreeList,
                     serde_json::json!({"workspace_id": target.id, "trust_repository": false}),
                 );
             self.menu.deletion = Some(Deletion {

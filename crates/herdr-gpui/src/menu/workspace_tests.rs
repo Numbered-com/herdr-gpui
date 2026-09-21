@@ -2,6 +2,7 @@
 
 use super::{WorkspaceAction, WorkspaceTarget, state::Deletion};
 use crate::{HerdrWindow, dialog_input::DialogInput, sidebar};
+use herdr_client::Method;
 
 /// The workspace a menu currently targets, for tests outside this module.
 pub(crate) fn target_id(view: &HerdrWindow) -> Option<&str> {
@@ -10,14 +11,14 @@ pub(crate) fn target_id(view: &HerdrWindow) -> Option<&str> {
 
 pub(crate) fn submit_focus_change(
     view: &mut HerdrWindow,
-    method: &str,
+    method: Method,
     window: &mut gpui::Window,
     cx: &mut gpui::Context<HerdrWindow>,
 ) {
     let action = match method {
-        "workspace.close" => WorkspaceAction::Close,
-        "worktree.create" => WorkspaceAction::NewWorktree,
-        "worktree.remove" => WorkspaceAction::DeleteWorktree,
+        Method::WorkspaceClose => WorkspaceAction::Close,
+        Method::WorktreeCreate => WorkspaceAction::NewWorktree,
+        Method::WorktreeRemove => WorkspaceAction::DeleteWorktree,
         _ => panic!("unexpected fixture action"),
     };
     let snapshot = std::sync::Arc::make_mut(view.live.snapshot.as_mut().unwrap());
@@ -577,7 +578,7 @@ fn deletion_schema_and_target_validation() {
             .request(&snapshot, WorkspaceAction::DeleteWorktree, "")
             .unwrap(),
         (
-            "worktree.remove",
+            Method::WorktreeRemove,
             serde_json::json!({"workspace_id":"w4", "force":false, "trust_repository":false})
         )
     );
@@ -788,7 +789,7 @@ fn actions_target_clicked_workspace_and_match_daemon_schemas() {
             .request(&snapshot, WorkspaceAction::Rename, "new label")
             .unwrap(),
         (
-            "workspace.rename",
+            Method::WorkspaceRename,
             serde_json::json!({"workspace_id": "w3", "label": "new label"})
         )
     );
@@ -797,7 +798,7 @@ fn actions_target_clicked_workspace_and_match_daemon_schemas() {
             .request(&snapshot, WorkspaceAction::Close, "")
             .unwrap(),
         (
-            "workspace.close",
+            Method::WorkspaceClose,
             serde_json::json!({"workspace_id": "w3", "close_group": true})
         )
     );
@@ -805,7 +806,7 @@ fn actions_target_clicked_workspace_and_match_daemon_schemas() {
         let (method, params) = target
             .request(&snapshot, WorkspaceAction::NewWorktree, branch)
             .unwrap();
-        assert_eq!(method, "worktree.create");
+        assert_eq!(method, Method::WorktreeCreate);
         let mut expected = serde_json::json!({"workspace_id": "w3", "base": "HEAD", "focus": true, "trust_repository": false});
         if !branch.trim().is_empty() {
             expected["branch"] = branch.trim().into();
@@ -889,7 +890,7 @@ fn rename_trims_unicode_whitespace_and_rejects_blank_labels() {
             )
             .unwrap(),
         (
-            "workspace.rename",
+            Method::WorkspaceRename,
             serde_json::json!({"workspace_id": "w3", "label": "new label"})
         )
     );

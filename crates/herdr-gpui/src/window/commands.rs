@@ -30,9 +30,11 @@ impl HerdrWindow {
         cx.notify();
     }
 
+    /// `label` is what a failure is reported as, not a method name: navigation
+    /// picks its method from the target, so it reports itself by name.
     pub(crate) fn request_focus_change(
         &mut self,
-        method: &str,
+        label: &str,
         focus: Option<OwnedNavigationTarget>,
         enqueue: impl FnOnce(
             &herdr_client::ClientHandle,
@@ -44,7 +46,7 @@ impl HerdrWindow {
             &self.live.snapshot,
         ) {
             if let Err(error) = enqueue(handle, &snapshot.boot_id) {
-                self.local_error = Some(format!("{method}: {error}"));
+                self.local_error = Some(format!("{label}: {error}"));
             } else {
                 self.fence_focus_change(focus);
             }
@@ -158,7 +160,7 @@ impl HerdrWindow {
         if let Some(snapshot) = &self.live.snapshot
             && let Some((method, params)) = controls::request(command, snapshot)
         {
-            self.request_focus_change(method, None, |handle, boot| {
+            self.request_focus_change(method.as_str(), None, |handle, boot| {
                 handle.request(boot, method, params)
             });
             self.marked.clear();
