@@ -2059,3 +2059,114 @@ fn resting_on_a_workspace_opens_its_menu_once(cx: &mut gpui::TestAppContext) {
     settle(&view, cx, super::HOVER_MENU_DELAY);
     assert!(view.read_with(cx, |view, _| view.menu.page.is_none()));
 }
+
+/// Draw one preview state in a freshly opened panel and return its bounds.
+#[cfg(test)]
+fn draw_update_state(
+    cx: &mut gpui::VisualTestContext,
+    view: &Entity<HerdrWindow>,
+    state: &crate::updater::State,
+) -> (Bounds<Pixels>, Option<Bounds<Pixels>>) {
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.open_app_update(false, window, cx);
+            view.update_preview = Some(state.clone());
+            cx.notify();
+        });
+        window.draw(cx).clear();
+    });
+    let panel = cx.debug_bounds("app-update-panel").unwrap();
+    (panel, cx.debug_bounds("app-update-action"))
+}
+
+// `debug_bounds` keeps the last frame that drew an element, so a state that
+// must show no button is only provable before any button has been drawn.
+#[gpui::test]
+fn a_homebrew_upgrade_in_progress_offers_nothing_to_interrupt(cx: &mut gpui::TestAppContext) {
+    use crate::updater::State;
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        crate::bind_keys(cx);
+        let view = cx.new(|cx| fixture_window(window, cx));
+        cx.observe(&view, |_, _, cx| cx.notify()).detach();
+        SidebarFixture(view)
+    });
+    let view = cx.update(|_, cx| fixture.read(cx).0.clone());
+    // Homebrew output is arbitrary length; a long line must not burst the panel.
+    let states = [
+        State::Upgrading {
+            detail: "==> Downloading ".to_owned() + &"herdr".repeat(24),
+        },
+        State::Restarting,
+    ];
+    for (width, height) in [(320., 360.), (800., 600.)] {
+        cx.simulate_resize(size(px(width), px(height)));
+        for state in &states {
+            let (panel, action) = draw_update_state(cx, &view, state);
+            assert!(action.is_none(), "{state:?} cannot be interrupted");
+            assert!(
+                panel.left() >= px(0.) && panel.right() <= px(width),
+                "{state:?}: {panel:?}"
+            );
+            assert!(
+                panel.top() >= px(0.) && panel.bottom() <= px(height),
+                "{state:?}: {panel:?}"
+            );
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| view.dismiss_menu(window, cx));
+                window.draw(cx).clear();
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn the_homebrew_update_states_stay_inside_the_panel(cx: &mut gpui::TestAppContext) {
+    use crate::updater::State;
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        crate::bind_keys(cx);
+        let view = cx.new(|cx| fixture_window(window, cx));
+        cx.observe(&view, |_, _, cx| cx.notify()).detach();
+        SidebarFixture(view)
+    });
+    let view = cx.update(|_, cx| fixture.read(cx).0.clone());
+    let disabled = cx.update(|_, cx| view.read(cx).updater.state().clone());
+    let states = [
+        State::Homebrew {
+            version: "9999.0.0".into(),
+        },
+        State::Restart {
+            version: "9999.0.0".into(),
+        },
+    ];
+    for (width, height) in [(320., 360.), (320., 600.), (800., 600.)] {
+        cx.simulate_resize(size(px(width), px(height)));
+        for state in &states {
+            let (panel, action) = draw_update_state(cx, &view, state);
+            let action = action.unwrap();
+            let footer = cx.debug_bounds("app-update-footer").unwrap();
+            assert!(
+                panel.left() >= px(0.) && panel.right() <= px(width),
+                "{state:?}: {panel:?}"
+            );
+            assert!(
+                panel.top() >= px(0.) && panel.bottom() <= px(height),
+                "{state:?}: {panel:?}"
+            );
+            assert!(
+                action.left() >= panel.left() && action.right() <= panel.right(),
+                "{state:?}: {action:?}"
+            );
+            assert!(
+                action.top() >= footer.top() && action.bottom() <= footer.bottom(),
+                "{state:?}: {action:?}"
+            );
+            cx.simulate_click(action.center(), Default::default());
+            // A preview click must never reach the real update service.
+            cx.update(|_, cx| assert_eq!(view.read(cx).updater.state(), &disabled));
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| view.dismiss_menu(window, cx));
+                window.draw(cx).clear();
+            });
+        }
+    }
+}

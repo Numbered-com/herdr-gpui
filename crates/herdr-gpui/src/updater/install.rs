@@ -225,16 +225,37 @@ fn linux_location(executable: &Path, home: &Path, uid: u32, packaged: bool) -> R
     Ok(())
 }
 
+/// The effective UID of this process, as the system reports it.
+pub(super) fn effective_uid() -> Result<u32> {
+    uid(&AtomicBool::new(false))
+}
+
+fn uid(cancel: &AtomicBool) -> Result<u32> {
+    output(Command::new("/usr/bin/id").arg("-u"), cancel)?
+        .trim()
+        .parse()
+        .map_err(Error::EffectiveUid)
+}
+
+/// The bundle root of a running macOS installation. Defined once: brew
+/// delegation and standalone installation must agree on what "this app" is.
+pub(super) fn mac_bundle(executable: &Path) -> Result<PathBuf> {
+    let root = executable.ancestors().nth(3).ok_or(Error::NotHerdrBundle)?;
+    if root.file_name() != Some("Herdr.app".as_ref())
+        || executable != root.join("Contents/MacOS/Herdr")
+    {
+        return Err(Error::NotHerdrBundle);
+    }
+    Ok(root.to_owned())
+}
+
 fn detect(cancel: &AtomicBool) -> Result<Installation> {
     if release::parse_version(crate::APP_VERSION).is_none()
         || option_env!("HERDR_UPDATE_PUBLIC_KEY").is_none()
     {
         return Err(Error::LocalBuild);
     }
-    let uid: u32 = output(Command::new("/usr/bin/id").arg("-u"), cancel)?
-        .trim()
-        .parse()
-        .map_err(Error::EffectiveUid)?;
+    let uid = uid(cancel)?;
     if uid == 0 {
         return Err(Error::RootUser);
     }
@@ -250,15 +271,7 @@ fn detect(cancel: &AtomicBool) -> Result<Installation> {
         return Err(Error::UnsupportedPlatform);
     };
     let destination = match mode {
-        Mode::Mac => {
-            let root = executable.ancestors().nth(3).ok_or(Error::NotHerdrBundle)?;
-            if root.file_name() != Some("Herdr.app".as_ref())
-                || executable != root.join("Contents/MacOS/Herdr")
-            {
-                return Err(Error::NotHerdrBundle);
-            }
-            root.to_owned()
-        }
+        Mode::Mac => mac_bundle(&executable)?,
         Mode::Linux => {
             let packaged = ["APPIMAGE", "SNAP", "FLATPAK_ID"]
                 .iter()

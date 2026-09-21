@@ -2,6 +2,7 @@
 mod error;
 pub use error::UpdateError;
 use error::{Result, UpdateError as Error};
+mod brew;
 mod install;
 mod release;
 
@@ -25,10 +26,28 @@ pub(super) enum State {
     Idle,
     Checking,
     Current,
-    Available { version: String },
-    Downloading { received: u64, total: u64 },
-    Ready { version: String },
+    Available {
+        version: String,
+    },
+    Downloading {
+        received: u64,
+        total: u64,
+    },
+    Ready {
+        version: String,
+    },
     Installing,
+    /// Homebrew owns this installation, so Homebrew performs the upgrade.
+    Homebrew {
+        version: String,
+    },
+    Upgrading {
+        detail: String,
+    },
+    Restart {
+        version: String,
+    },
+    Restarting,
     Cancelling,
     Error(String),
 }
@@ -37,7 +56,12 @@ impl State {
     fn busy(&self) -> bool {
         matches!(
             self,
-            Self::Checking | Self::Downloading { .. } | Self::Installing | Self::Cancelling
+            Self::Checking
+                | Self::Downloading { .. }
+                | Self::Installing
+                | Self::Upgrading { .. }
+                | Self::Restarting
+                | Self::Cancelling
         )
     }
 }
@@ -47,6 +71,8 @@ enum Operation {
     Check,
     Download,
     Install,
+    Upgrade,
+    Restart,
     Cancel,
 }
 
@@ -59,6 +85,8 @@ struct Mailbox {
     generation: u64,
     state: State,
     restart: Option<install::RestartGuard>,
+    /// The upgraded app is already starting; this one only has to quit.
+    relaunched: bool,
 }
 
 pub(super) struct Updater {
@@ -69,6 +97,7 @@ pub(super) struct Updater {
     mailbox: Arc<Mutex<Option<Mailbox>>>,
     generation: u64,
     restart: Option<install::RestartGuard>,
+    relaunched: bool,
     committed: bool,
     next_check: Instant,
 }
@@ -83,6 +112,7 @@ impl Default for Updater {
             mailbox: Arc::new(Mutex::new(None)),
             generation: 0,
             restart: None,
+            relaunched: false,
             committed: false,
             next_check: Instant::now() + CHECK_INTERVAL,
         }
@@ -141,7 +171,13 @@ impl Updater {
     /// A newer release is waiting for the user, either still to download or
     /// already staged. Transient checking/downloading states are not a result.
     pub(super) fn update_available(&self) -> bool {
-        matches!(self.state, State::Available { .. } | State::Ready { .. })
+        matches!(
+            self.state,
+            State::Available { .. }
+                | State::Ready { .. }
+                | State::Homebrew { .. }
+                | State::Restart { .. }
+        )
     }
 
     fn send(&mut self, operation: Operation, state: State) {
@@ -191,8 +227,35 @@ impl Updater {
         }
     }
 
+    pub(super) fn upgrade(&mut self) {
+        if matches!(self.state, State::Homebrew { .. }) {
+            self.send(
+                Operation::Upgrade,
+                State::Upgrading {
+                    detail: "Starting Homebrew...".into(),
+                },
+            );
+        }
+    }
+
+    pub(super) fn restart(&mut self) {
+        if matches!(self.state, State::Restart { .. }) {
+            self.send(Operation::Restart, State::Restarting);
+        }
+    }
+
+    /// Homebrew is never interrupted: killing it while it moves the bundle can
+    /// leave no installed app at all.
+    fn interruptible(&self) -> bool {
+        self.state.busy()
+            && !matches!(
+                self.state,
+                State::Cancelling | State::Upgrading { .. } | State::Restarting
+            )
+    }
+
     pub(super) fn cancel(&mut self) {
-        if self.state.busy() && !matches!(self.state, State::Cancelling) && !self.committed {
+        if self.interruptible() && !self.committed {
             self.cancelled.store(true, Ordering::Release);
             let Some(sender) = &self.commands else { return };
             let generation = self.generation.wrapping_add(1);
@@ -231,15 +294,23 @@ impl Updater {
         if message.generation != self.generation {
             return scheduled;
         }
-        let changed = self.state != message.state || message.restart.is_some();
+        let changed =
+            self.state != message.state || message.restart.is_some() || message.relaunched;
         self.state = message.state;
         self.restart = message.restart;
+        self.relaunched |= message.relaunched;
         changed || scheduled
     }
 
     pub(super) fn commit_restart(&mut self) -> Result<bool> {
         if self.committed {
             return Ok(false);
+        }
+        // Homebrew installations restart by launching the upgraded bundle, so
+        // there is no staged helper to hand over to: just quit.
+        if self.relaunched {
+            self.committed = true;
+            return Ok(true);
         }
         let Some(guard) = &mut self.restart else {
             return Ok(false);
@@ -274,13 +345,35 @@ fn publish(
     state: State,
     restart: Option<install::RestartGuard>,
 ) {
+    publish_relaunch(mailbox, generation, state, restart, false);
+}
+
+fn publish_relaunch(
+    mailbox: &Mutex<Option<Mailbox>>,
+    generation: u64,
+    state: State,
+    restart: Option<install::RestartGuard>,
+    relaunched: bool,
+) {
     if let Ok(mut slot) = mailbox.lock() {
         *slot = Some(Mailbox {
             generation,
             state,
             restart,
+            relaunched,
         });
     }
+}
+
+/// The Homebrew cask that owns this installation, re-proved on every use: the
+/// user may have moved, reinstalled, or removed it since the last check.
+fn cask() -> Option<brew::Cask> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let executable = std::env::current_exe().ok()?;
+    let bundle = install::mac_bundle(&executable).ok()?;
+    brew::detect(&bundle, install::effective_uid().ok()?)
 }
 
 fn worker(
@@ -302,11 +395,14 @@ fn worker(
                 publish(&mailbox, generation, State::Checking, None);
                 release::check(crate::APP_VERSION, key, &cancelled).map(|found| {
                     offer = found;
-                    match &offer {
-                        Some(offer) => State::Available {
+                    match (&offer, cask().is_some()) {
+                        (Some(offer), true) => State::Homebrew {
                             version: offer.manifest.version.clone(),
                         },
-                        None => State::Current,
+                        (Some(offer), false) => State::Available {
+                            version: offer.manifest.version.clone(),
+                        },
+                        (None, _) => State::Current,
                     }
                 })
             }
@@ -339,6 +435,26 @@ fn worker(
                 },
                 None => Err(Error::MissingPrepared),
             },
+            Operation::Upgrade => match cask() {
+                Some(cask) => brew::upgrade(&cask, crate::APP_VERSION, &cancelled, |detail| {
+                    publish(&mailbox, generation, State::Upgrading { detail }, None);
+                })
+                .map(|version| State::Restart { version }),
+                None => Err(Error::MissingCask),
+            },
+            Operation::Restart => match cask()
+                .ok_or(Error::MissingCask)
+                .and_then(|cask| brew::relaunch(&cask))
+            {
+                Ok(()) => {
+                    // The upgraded app is starting, so this one must quit. The
+                    // mailbox keeps only the latest message: publishing the
+                    // relaunch last is what keeps it from being overwritten.
+                    publish_relaunch(&mailbox, generation, State::Restarting, None, true);
+                    continue;
+                }
+                Err(error) => Err(error),
+            },
             Operation::Cancel => {
                 prepared = None;
                 Ok(State::Idle)
@@ -367,6 +483,37 @@ mod tests {
     use anyhow::Context as _;
 
     #[test]
+    fn homebrew_work_is_never_cancelled_and_a_relaunch_only_quits() -> Result<()> {
+        let mut updater = Updater::default();
+        for state in [
+            State::Upgrading {
+                detail: "==> Downloading".into(),
+            },
+            State::Restarting,
+        ] {
+            updater.state = state.clone();
+            assert!(state.busy(), "{state:?} occupies the worker");
+            assert!(!updater.interruptible(), "{state:?} cannot be interrupted");
+            updater.cancel();
+            assert_eq!(updater.state, state, "{state:?} survives a cancel request");
+            assert!(!updater.cancelled.load(Ordering::Acquire));
+        }
+        updater.state = State::Downloading {
+            received: 0,
+            total: 0,
+        };
+        assert!(updater.interruptible(), "a download still cancels");
+
+        // Homebrew leaves no staged helper to hand over to, so the committed
+        // restart is just a quit, and only ever requested once.
+        assert!(!updater.commit_restart()?);
+        updater.relaunched = true;
+        assert!(updater.commit_restart()?);
+        assert!(!updater.commit_restart()?);
+        Ok(())
+    }
+
+    #[test]
     fn only_a_waiting_release_marks_an_update_available() {
         let mut updater = Updater::default();
         for state in [
@@ -379,6 +526,10 @@ mod tests {
                 total: 2,
             },
             State::Installing,
+            State::Upgrading {
+                detail: String::new(),
+            },
+            State::Restarting,
             State::Cancelling,
             State::Error(String::new()),
         ] {
@@ -390,6 +541,12 @@ mod tests {
                 version: "20260920.2".into(),
             },
             State::Ready {
+                version: "20260920.2".into(),
+            },
+            State::Homebrew {
+                version: "20260920.2".into(),
+            },
+            State::Restart {
                 version: "20260920.2".into(),
             },
         ] {
