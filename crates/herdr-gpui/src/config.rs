@@ -425,6 +425,16 @@ impl Default for Theme {
     }
 }
 
+/// `percent` of `over` blended onto `base`, per channel.
+fn mix(base: u32, over: u32, percent: u32) -> u32 {
+    let channel = |shift: u32| {
+        let base = (base >> shift) & 255;
+        let over = (over >> shift) & 255;
+        (base * (100 - percent) + over * percent) / 100
+    };
+    (channel(16) << 16) | (channel(8) << 8) | channel(0)
+}
+
 impl Theme {
     pub const BUILTIN_NAMES: &'static [&'static str] = &[
         "Default",
@@ -434,10 +444,17 @@ impl Theme {
         "Catppuccin Latte",
     ];
 
-    /// The theme's primary accent, used for the selected tab and other
-    /// selection fills that must read as chosen rather than merely hovered.
+    /// The theme's primary accent, used for selection colors that must read as
+    /// chosen rather than merely hovered.
     pub fn primary(&self) -> u32 {
         self.palette[5]
+    }
+
+    /// A wash of [`Self::primary`] over the chrome, for filled selections such
+    /// as the current tab. Large areas of the full accent shout; this keeps the
+    /// hue while staying quiet enough to sit behind text all day.
+    pub fn primary_wash(&self) -> u32 {
+        mix(self.surface, self.primary(), 22)
     }
 
     /// Whichever of the theme's two text colors contrasts more with `fill`.
@@ -457,14 +474,7 @@ impl Theme {
     }
 
     fn derive_chrome(&mut self) {
-        let blend = |percent: u32| {
-            let channel = |shift: u32| {
-                let bg = (self.background >> shift) & 255;
-                let fg = (self.foreground >> shift) & 255;
-                (bg * (100 - percent) + fg * percent) / 100
-            };
-            (channel(16) << 16) | (channel(8) << 8) | channel(0)
-        };
+        let blend = |percent| mix(self.background, self.foreground, percent);
         self.surface = blend(5);
         self.active = blend(12);
         self.muted = blend(55);
@@ -587,11 +597,18 @@ mod tests {
         };
         for name in Theme::BUILTIN_NAMES {
             let theme = Theme::builtin(name).unwrap_or_else(|| panic!("missing theme {name}"));
-            let primary = theme.primary();
-            let text = theme.text_on(primary);
             assert_eq!(
-                primary, theme.palette[5],
-                "{name}: accent comes from ANSI 5"
+                theme.primary(),
+                theme.palette[5],
+                "{name}: accent is ANSI 5"
+            );
+            // The tab fill is the softened wash, not the raw accent.
+            let primary = theme.primary_wash();
+            let text = theme.text_on(primary);
+            assert_ne!(primary, theme.surface, "{name}: selection must be visible");
+            assert_ne!(
+                primary, theme.active,
+                "{name}: selection must outrank hover"
             );
             assert!(
                 text == theme.background || text == theme.foreground,

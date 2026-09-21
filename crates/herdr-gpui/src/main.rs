@@ -155,9 +155,9 @@ struct HerdrWindow {
     input_probe: smoke::InputProbe,
     /// Spaces and agents lists, in that order.
     sidebar_scroll: [ScrollHandle; 2],
-    /// Each list reveals its highlighted row once, so startup opens on the
-    /// selection without fighting the user's own scrolling afterwards.
-    sidebar_revealed: [std::cell::Cell<bool>; 2],
+    /// The row each list has scrolled into view, so a new selection is revealed
+    /// while the user's own scrolling of an unchanged one is left alone.
+    sidebar_revealed: [std::cell::Cell<Option<usize>>; 2],
     _poll: Task<()>,
     _activation: Subscription,
 }
@@ -650,7 +650,7 @@ impl Render for HerdrWindow {
                 // Selected tabs carry the theme's accent, so the choice reads as
                 // primary rather than as the hover tint used elsewhere.
                 let (background, text) = if tab.focused {
-                    let background = self.theme.primary();
+                    let background = self.theme.primary_wash();
                     (background, self.theme.text_on(background))
                 } else {
                     (self.theme.surface, self.theme.foreground)

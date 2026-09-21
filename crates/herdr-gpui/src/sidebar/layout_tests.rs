@@ -1413,7 +1413,7 @@ fn check_sidebar(
 }
 
 #[gpui::test]
-fn startup_reveals_the_focused_workspace_then_leaves_scrolling_alone(
+fn the_sidebar_follows_the_selection_without_undoing_manual_scrolling(
     cx: &mut gpui::TestAppContext,
 ) {
     let (fixture, cx) = cx.add_window_view(|window, cx| {
@@ -1459,7 +1459,7 @@ fn startup_reveals_the_focused_workspace_then_leaves_scrolling_alone(
         // The fixture focuses no agent, so that list must stay where it was.
         assert_eq!(view.sidebar_scroll[1].offset().y, px(0.));
     });
-    // The reveal is one-shot: later frames must not fight the user's scrolling.
+    // While the selection holds, later frames must not fight manual scrolling.
     cx.update(|window, cx| {
         view.read(cx).sidebar_scroll[0].set_offset(gpui::point(px(0.), px(0.)));
         window.refresh();
@@ -1467,5 +1467,29 @@ fn startup_reveals_the_focused_workspace_then_leaves_scrolling_alone(
     });
     cx.update(|_, cx| {
         assert_eq!(view.read(cx).sidebar_scroll[0].offset().y, px(0.));
+    });
+    // A new selection is revealed in turn, from wherever the list now sits.
+    cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            let snapshot = Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+            snapshot.focused_workspace_id = Some("w20".into());
+            for workspace in &mut snapshot.workspaces {
+                workspace.focused = workspace.workspace_id == "w20";
+            }
+            cx.notify();
+        })
+    });
+    cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear();
+    });
+    cx.update(|_, cx| {
+        let view = view.read(cx);
+        let spaces = &view.sidebar_scroll[0];
+        let offset = spaces.offset().y;
+        let row = spaces.bounds_for_item(20).unwrap();
+        assert!(offset < px(0.), "a new selection must scroll into view");
+        assert!(row.top() + offset >= spaces.bounds().top(), "{row:?}");
+        assert!(row.bottom() + offset <= spaces.bounds().bottom(), "{row:?}");
     });
 }

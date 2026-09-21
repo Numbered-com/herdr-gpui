@@ -287,16 +287,17 @@ impl HerdrWindow {
                 );
             }
         }
-        // Reveal once, and only after a frame has measured the viewport: the handle
-        // resolves the request against the previous frame's bounds, so an unmeasured
-        // list would scroll to a meaningless offset.
+        // Follow the selection, but only once a frame has measured the viewport:
+        // the handle resolves the request against the previous frame's bounds, so
+        // an unmeasured list would scroll to a meaningless offset. Recording what
+        // was revealed keeps later frames from undoing the user's own scrolling.
         for (list, row) in highlighted.iter().enumerate() {
-            if let Some(row) = *row
-                && !self.sidebar_revealed[list].get()
+            let Some(row) = *row else { continue };
+            if self.sidebar_revealed[list].get() != Some(row)
                 && self.sidebar_scroll[list].bounds().size.height > px(0.)
             {
                 self.sidebar_scroll[list].scroll_to_item(row);
-                self.sidebar_revealed[list].set(true);
+                self.sidebar_revealed[list].set(Some(row));
             }
         }
         if agent_count == 0 {
