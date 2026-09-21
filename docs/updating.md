@@ -7,8 +7,10 @@ approval. Updating the GUI must not stop or upgrade the daemon or its terminals.
 
 The protected release pipeline builds macOS on Apple Silicon and Intel, combining
 both executables into a universal app, and Linux on native Ubuntu 24.04 x86_64 and
-ARM64 runners. Linux remains experimental. Homebrew and other package-managed
-installs should use their package manager rather than overwrite managed files.
+ARM64 runners. Linux remains experimental. Package-managed installs are updated
+through their package manager, never by overwriting managed files: a macOS
+Homebrew cask is upgraded by running Homebrew (see [Homebrew Casks](#homebrew-casks)),
+and Linux AppImage, Snap, and Flatpak containers are refused outright.
 
 ## Repository Configuration
 
@@ -291,6 +293,35 @@ in its `install-result.txt`. Rename or relaunch-spawn failures attempt restorati
 There is no post-launch health acknowledgement or automatic rollback if the new
 process starts successfully and later crashes. Retain recovery copies until the
 new version is confirmed working; cleanup is manual.
+
+## Homebrew Casks
+
+A macOS installation is treated as Homebrew-managed only when Homebrew's own
+records point at the running bundle: `<prefix>/Caskroom/herdr-gpui/<version>/Herdr.app`
+must be a symlink to it. `HOMEBREW_PREFIX`, then `/opt/homebrew`, then `/usr/local`
+are consulted; `PATH` is not, so a writable directory earlier in it cannot decide
+what the app executes. The prefix and `brew` itself must be owned by this user or
+root and writable by no one else.
+
+Such an installation replaces download-and-install with `brew upgrade --cask
+herdr-gpui`, run with a minimal environment (`HOME`, a `PATH` rooted at the
+detected prefix, no inherited variables) and no terminal, so anything that wants
+an answer fails instead of hanging. Homebrew keeps its receipts correct and
+verifies the cask's own SHA-256; this path therefore does not perform the signed
+manifest and designated-requirement checks used by standalone installs, and trust
+moves to Homebrew and the tap. Release detection still uses the signed manifest.
+
+Auto-update stays enabled, or Homebrew could not know the release exists. The tap
+is published after the GitHub release, so the cask can briefly lag: the installed
+version is re-read afterwards and an upgrade that did not move past the running
+version is reported as such rather than as a completed update. Homebrew is never
+interrupted once started, because killing it mid-move can leave no installed app
+at all; the 30-minute deadline is the only bound.
+
+Homebrew trashes the running bundle as it upgrades, so bundle resources can be
+gone until restart. Restart is offered as soon as the upgrade lands and launches
+the upgraded bundle with `open -n` before this instance quits. The daemon and its
+terminals are untouched.
 
 ## Native QA
 

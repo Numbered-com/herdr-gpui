@@ -148,6 +148,18 @@ pub enum UpdateError {
     UnsafeMacParent,
     #[error("Package-managed installations cannot self-update")]
     PackageManaged,
+    #[error("Unsafe or non-user-owned Homebrew installation")]
+    UnsafeBrew(PathBuf),
+    #[error("Homebrew upgrade failed ({status}): {detail}")]
+    BrewFailed { status: ExitStatus, detail: String },
+    #[error("Homebrew did not finish in time")]
+    BrewTimeout,
+    #[error("Homebrew did not report an installed cask version")]
+    BrewVersion,
+    #[error("Homebrew still installs {0}; the cask has not been updated yet")]
+    BrewStale(String),
+    #[error("Homebrew is no longer managing this installation")]
+    MissingCask,
     #[error("Standalone Linux updates require installation under HOME")]
     OutsideHome,
     #[error("No executable parent")]

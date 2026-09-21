@@ -6,6 +6,8 @@ enum UpdateAction {
     Check,
     Download,
     Install,
+    Upgrade,
+    Restart,
     Cancel,
 }
 
@@ -65,6 +67,20 @@ impl HerdrWindow {
                     .into(),
                 Some(UpdateAction::Cancel),
             ),
+            State::Homebrew { .. } => (
+                "A new app release is available. Herdr was installed with Homebrew, so Homebrew installs the update and keeps its own records correct.".into(),
+                Some(UpdateAction::Upgrade),
+            ),
+            State::Upgrading { detail } => (
+                format!("Homebrew: {detail}"),
+                // Homebrew is never interrupted mid-upgrade: see updater::cancel.
+                None,
+            ),
+            State::Restart { version } => (
+                format!("Homebrew installed {version}. Restart to finish; your daemon and terminal sessions stay running."),
+                Some(UpdateAction::Restart),
+            ),
+            State::Restarting => ("Starting the updated app...".into(), None),
             State::Cancelling => (
                 "Cancelling update... Waiting for current I/O to finish or time out.".into(),
                 None,
@@ -72,7 +88,10 @@ impl HerdrWindow {
             State::Error(error) => (format!("Update failed: {error}"), Some(UpdateAction::Check)),
         };
         let latest = match state {
-            State::Available { version } | State::Ready { version } => version.as_str(),
+            State::Available { version }
+            | State::Ready { version }
+            | State::Homebrew { version }
+            | State::Restart { version } => version.as_str(),
             State::Current => APP_VERSION,
             _ => "Not yet known",
         };
@@ -205,6 +224,8 @@ impl HerdrWindow {
                 UpdateAction::Check => "Check for Updates",
                 UpdateAction::Download => "Download",
                 UpdateAction::Install => "Install and Restart",
+                UpdateAction::Upgrade => "Update with Homebrew",
+                UpdateAction::Restart => "Restart",
                 UpdateAction::Cancel => "Cancel",
             };
             buttons = buttons.child(
@@ -222,7 +243,7 @@ impl HerdrWindow {
                         // Preview actions must never reach the service, including cancellation.
                         if let Some(state) = this.update_preview.take() {
                             match state {
-                                State::Available { version } => {
+                                State::Available { version } | State::Homebrew { version } => {
                                     this.update_preview = Some(State::Ready { version });
                                 }
                                 State::Ready { .. } => this.dismiss_menu(window, cx),
@@ -240,6 +261,12 @@ impl HerdrWindow {
                                 }
                                 (UpdateAction::Install, State::Ready { .. }) => {
                                     this.updater.install()
+                                }
+                                (UpdateAction::Upgrade, State::Homebrew { .. }) => {
+                                    this.updater.upgrade()
+                                }
+                                (UpdateAction::Restart, State::Restart { .. }) => {
+                                    this.updater.restart()
                                 }
                                 (
                                     UpdateAction::Cancel,

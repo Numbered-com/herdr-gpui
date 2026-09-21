@@ -31,6 +31,11 @@ use std::{
 use tempfile::TempDir;
 
 const HELPER: &str = "--herdr-apply-update";
+// codesign and csreq read a bare `-R` argument as the path of a compiled
+// requirement file; the leading `=` is what marks the rest as source text.
+// Without it every verification exits 1 with "invalid requirement
+// specification", which fails closed but blocks all updates.
+const REQUIREMENT: &str = "=anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and identifier \"so.pen.herdr-gpui\"";
 const LIMIT: u64 = 1024 * 1024 * 1024;
 const REQUEST_LIMIT: u64 = 256 * 1024;
 const WAIT: Duration = Duration::from_secs(120);
@@ -220,16 +225,37 @@ fn linux_location(executable: &Path, home: &Path, uid: u32, packaged: bool) -> R
     Ok(())
 }
 
+/// The effective UID of this process, as the system reports it.
+pub(super) fn effective_uid() -> Result<u32> {
+    uid(&AtomicBool::new(false))
+}
+
+fn uid(cancel: &AtomicBool) -> Result<u32> {
+    output(Command::new("/usr/bin/id").arg("-u"), cancel)?
+        .trim()
+        .parse()
+        .map_err(Error::EffectiveUid)
+}
+
+/// The bundle root of a running macOS installation. Defined once: brew
+/// delegation and standalone installation must agree on what "this app" is.
+pub(super) fn mac_bundle(executable: &Path) -> Result<PathBuf> {
+    let root = executable.ancestors().nth(3).ok_or(Error::NotHerdrBundle)?;
+    if root.file_name() != Some("Herdr.app".as_ref())
+        || executable != root.join("Contents/MacOS/Herdr")
+    {
+        return Err(Error::NotHerdrBundle);
+    }
+    Ok(root.to_owned())
+}
+
 fn detect(cancel: &AtomicBool) -> Result<Installation> {
     if release::parse_version(crate::APP_VERSION).is_none()
         || option_env!("HERDR_UPDATE_PUBLIC_KEY").is_none()
     {
         return Err(Error::LocalBuild);
     }
-    let uid: u32 = output(Command::new("/usr/bin/id").arg("-u"), cancel)?
-        .trim()
-        .parse()
-        .map_err(Error::EffectiveUid)?;
+    let uid = uid(cancel)?;
     if uid == 0 {
         return Err(Error::RootUser);
     }
@@ -245,15 +271,7 @@ fn detect(cancel: &AtomicBool) -> Result<Installation> {
         return Err(Error::UnsupportedPlatform);
     };
     let destination = match mode {
-        Mode::Mac => {
-            let root = executable.ancestors().nth(3).ok_or(Error::NotHerdrBundle)?;
-            if root.file_name() != Some("Herdr.app".as_ref())
-                || executable != root.join("Contents/MacOS/Herdr")
-            {
-                return Err(Error::NotHerdrBundle);
-            }
-            root.to_owned()
-        }
+        Mode::Mac => mac_bundle(&executable)?,
         Mode::Linux => {
             let packaged = ["APPIMAGE", "SNAP", "FLATPAK_ID"]
                 .iter()
@@ -366,13 +384,7 @@ fn lock_file(installation: &Installation, suffix: &str) -> Result<File> {
 fn identity(bundle: &Path, version: &str, cancel: &AtomicBool) -> Result<(String, String)> {
     output(
         Command::new("/usr/bin/codesign")
-            .args([
-                "--verify",
-                "--deep",
-                "--strict",
-                "-R",
-                "anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and identifier \"so.pen.herdr-gpui\"",
-            ])
+            .args(["--verify", "--deep", "--strict", "-R", REQUIREMENT])
             .arg(bundle),
         cancel,
     )?;
@@ -1083,6 +1095,7 @@ pub(super) fn run_helper(args: &[OsString]) -> Option<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context as _;
     use flate2::{Compression, write::GzEncoder};
 
     fn archive(root: &Path, entries: &[(&str, u8, &str)]) -> anyhow::Result<PathBuf> {
@@ -1581,6 +1594,86 @@ mod tests {
                 assert!(backup.join("old-only").exists());
             }
         }
+        Ok(())
+    }
+
+    // A requirement that does not compile makes `codesign --verify -R` exit 1
+    // for every bundle, so the installed app can never be authenticated.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn designated_requirement_compiles_as_source_text() -> anyhow::Result<()> {
+        let cancel = AtomicBool::new(false);
+        let directory = tempfile::tempdir()?;
+        let compiled = directory.path().join("requirement");
+        output(
+            Command::new("/usr/bin/csreq")
+                .args(["-r", REQUIREMENT, "-b"])
+                .arg(&compiled),
+            &cancel,
+        )?;
+        assert!(fs::metadata(&compiled)?.len() > 0);
+        assert!(matches!(
+            output(
+                Command::new("/usr/bin/csreq")
+                    .args(["-r", &REQUIREMENT[1..], "-b"])
+                    .arg(directory.path().join("unmarked")),
+                &cancel,
+            ),
+            Err(Error::ValidationFailed(_))
+        ));
+        Ok(())
+    }
+
+    // csreq proves the text parses; this proves codesign accepts the exact
+    // argument shape `identity()` builds. Apple signs its own platform
+    // binaries, so `anchor apple` matches /bin/ls whenever codesign reads the
+    // argument as source text instead of a requirement file path.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn codesign_accepts_the_inline_requirement_form() -> anyhow::Result<()> {
+        let cancel = AtomicBool::new(false);
+        let verify = |requirement: String| {
+            output(
+                Command::new("/usr/bin/codesign")
+                    .args(["--verify", "--deep", "--strict", "-R"])
+                    .arg(requirement)
+                    .arg("/bin/ls"),
+                &cancel,
+            )
+        };
+        verify(format!("{}anchor apple", &REQUIREMENT[..1]))?;
+        assert!(matches!(
+            verify("anchor apple".to_owned()),
+            Err(Error::ValidationFailed(_))
+        ));
+        Ok(())
+    }
+
+    // End-to-end proof against a real Developer ID bundle: no fixture can
+    // satisfy the production requirement, so the installation is named
+    // explicitly and never discovered.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires an explicit HERDR_TEST_BUNDLE installed Herdr.app"]
+    fn installed_bundle_satisfies_the_designated_requirement() -> anyhow::Result<()> {
+        let cancel = AtomicBool::new(false);
+        let bundle = PathBuf::from(
+            env::var_os("HERDR_TEST_BUNDLE")
+                .context("set HERDR_TEST_BUNDLE to an explicit absolute Herdr.app")?,
+        );
+        let version = output(
+            Command::new("/usr/bin/plutil")
+                .args(["-extract", "CFBundleShortVersionString", "raw", "-o", "-"])
+                .arg(bundle.join("Contents/Info.plist")),
+            &cancel,
+        )?;
+        let (team, identifier) = identity(&bundle, version.trim(), &cancel)?;
+        assert_eq!(identifier, "so.pen.herdr-gpui");
+        assert!(!team.is_empty());
+        assert!(matches!(
+            identity(&bundle, "0.0.0", &cancel),
+            Err(Error::BundleVersion)
+        ));
         Ok(())
     }
 

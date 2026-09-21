@@ -44,7 +44,9 @@ brew install herdr-gpui
 ```
 
 The cask is published from the [tap](https://github.com/penso/homebrew-tap) by the
-release workflow. macOS `.dmg` and experimental Linux tarballs are also published
+release workflow. A cask install updates itself through Homebrew: the in-app
+updater detects that Homebrew owns the bundle and runs `brew upgrade --cask
+herdr-gpui` for you, so Homebrew's records stay correct. macOS `.dmg` and experimental Linux tarballs are also published
 on [Releases](https://github.com/penso/herdr-gpui/releases).
 
 ### From source

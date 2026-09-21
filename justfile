@@ -41,6 +41,16 @@ test-live binary:
 test-gui binary:
     HERDR_TEST_BINARY="{{binary}}" cargo test --locked -p herdr-gpui --features integration-test --test live_gui -- --ignored --nocapture --test-threads=1
 
+# Explicit opt-in: reads the real code signature and Homebrew records of an
+# installed app. Never discovers an installation on its own.
+test-update bundle:
+    HERDR_TEST_BUNDLE="{{bundle}}" cargo test --locked -p herdr-gpui updater::install::tests::installed_bundle -- --ignored --nocapture
+    HERDR_TEST_BUNDLE="{{bundle}}" cargo test --locked -p herdr-gpui updater::brew::tests::the_real_cask -- --ignored --nocapture
+
+# Really upgrades the installed app through Homebrew; restart it afterwards.
+test-brew-upgrade bundle:
+    HERDR_TEST_BUNDLE="{{bundle}}" HERDR_TEST_BREW_UPGRADE=1 cargo test --locked -p herdr-gpui updater::brew::tests::homebrew_really_installs -- --ignored --nocapture
+
 # Native font/glyph regression across repeated frames and sizes; no daemon needed.
 test-sidebar:
     cargo test --locked -p herdr-gpui --features integration-test --test live_gui native_sidebar -- --ignored --nocapture
