@@ -36,6 +36,7 @@ mod theme_picker;
 mod titlebar;
 mod update_panel;
 mod updater;
+mod worktree;
 mod worktree_banner;
 
 use connection::ConnectionBridge;
@@ -157,6 +158,10 @@ struct HerdrWindow {
     cell_width: f32,
     painter: std::rc::Rc<std::cell::RefCell<terminal_painter::TerminalPainter>>,
     marked: String,
+    /// The sidebar row the pointer is resting on, waiting to open its menu.
+    hover: Option<sidebar::HoverRest>,
+    /// The menu that resting opened, which the pointer closes by leaving it.
+    hover_menu: Option<sidebar::HoverMenu>,
     local_error: Option<String>,
     menu: menu::MenuState,
     /// A `worktree.remove` queued after its dialog closed.
@@ -236,7 +241,8 @@ impl HerdrWindow {
                             .as_ref()
                             .and_then(|s| s.focused_pane_id.clone());
                         this.poll_endpoints(cx);
-                        this.update_deletion_dialog(cx);
+                        this.update_workspace_dialog(window, cx);
+                        this.poll_hover_menu(std::time::Instant::now(), window, cx);
                         this.poll_tab_rename(window, cx);
                         if old_pane
                             != this
@@ -294,6 +300,8 @@ impl HerdrWindow {
             cell_width: 9.,
             painter: Default::default(),
             marked: String::new(),
+            hover: None,
+            hover_menu: None,
             local_error: None,
             menu: menu::MenuState::new(cx),
             removal: None,
