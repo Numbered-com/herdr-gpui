@@ -282,6 +282,23 @@ fn missing_git_is_stable() {
 #[test]
 fn mock_gh_is_anchored_explicit_validated_and_bounded() {
     use std::os::unix::fs::PermissionsExt;
+    // A sibling test thread that forks while a mock is being written keeps a
+    // write descriptor on it until its own exec, and Linux then refuses to run
+    // the mock with ETXTBSY; lookup_pr reports that unusable command as None.
+    // Run the checks where nothing else forks between writing and running.
+    if std::env::var_os("HERDR_TEST_MOCK_GH").is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "mock_gh_is_anchored_explicit_validated_and_bounded",
+                "--nocapture",
+            ])
+            .env("HERDR_TEST_MOCK_GH", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    }
     let repo = Sandbox::new();
     let gh = repo.0.join("gh");
     fs::write(&gh, format!("#!/bin/sh\n[ \"$PWD\" = '{}' ] || exit 1\n[ \"$#\" = 12 ] || exit 2\n[ \"$1 $2 $3\" = 'pr list --head' ] || exit 3\ncase \"$4\" in feature/test|123|'#123') ;; *) exit 4 ;; esac\nshift 4\n[ \"$*\" = '--state open --limit 1 --json number --jq .[0].number' ] || exit 5\nprintf '42\\n'\n", repo.0.canonicalize().unwrap().display())).unwrap();
