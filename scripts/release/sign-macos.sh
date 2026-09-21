@@ -46,7 +46,9 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-# Creation may add the keychain to the user search list on some macOS versions.
+# Creation may add the keychain to the user search list on some macOS versions,
+# and may not. Set the list explicitly below so the signing keychain is present
+# exactly once; cleanup_keychain restores the original list.
 search_list=$(security list-keychains -d user)
 while IFS= read -r line; do
     [[ -z $line ]] && continue
@@ -59,7 +61,12 @@ printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$tmp/AuthKey.p8"
 unset MACOS_CERTIFICATE_P12_BASE64 APPLE_API_PRIVATE_KEY
 search_list_touched=1
 security create-keychain -p "$password" "$keychain"
-security list-keychains -d user -s "${original_keychains[@]}"
+# codesign does not honour --keychain for identity lookup on macOS 15: it searches
+# the user keychain search list, so the signing keychain must be in it. Verified on
+# a macos-15 runner, where an identity that `security find-identity` reports as
+# valid is otherwise rejected with "The specified item could not be found in the
+# keychain". cleanup_keychain restores the original list.
+security list-keychains -d user -s "${original_keychains[@]}" "$keychain"
 security set-keychain-settings -lut 21600 "$keychain"
 security unlock-keychain -p "$password" "$keychain"
 security import "$tmp/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign >/dev/null
