@@ -2,6 +2,10 @@
 use crate::{HerdrWindow, menu::Page};
 use gpui::{prelude::*, *};
 
+/// Signed-in avatar. Smaller than the hit target around it, which stays a
+/// comfortable size for the pointer.
+const AVATAR: f32 = 20.;
+
 impl HerdrWindow {
     fn open_profile(&mut self, connect: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.menu.page != Some(Page::GitHub) && !self.open_menu(window, cx) {
@@ -62,7 +66,7 @@ impl HerdrWindow {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .size(px(if image.is_some() { 24. } else { 16. }))
+                                .size(px(if image.is_some() { AVATAR } else { 16. }))
                                 .rounded_full()
                                 .overflow_hidden()
                                 .bg(background.blend(rgba((self.theme.foreground << 8) | 0x26)))
@@ -75,7 +79,7 @@ impl HerdrWindow {
                                 })
                                 .map(|circle| match image {
                                     Some(image) => {
-                                        circle.child(img(image).size(px(24.)).rounded_full())
+                                        circle.child(img(image).size(px(AVATAR)).rounded_full())
                                     }
                                     None => circle.child(
                                         svg()
@@ -220,6 +224,41 @@ mod native_chrome_tests {
                     cx.debug_bounds("titlebar-avatar-circle").unwrap(),
                     Bounds::new(point(px(width - 28.), px(9.)), size(px(16.), px(16.)))
                 );
+                // Signing in swaps the placeholder for the avatar, which sits
+                // inside the same hit target rather than filling it.
+                let view =
+                    cx.update(|window, _| window.root::<crate::HerdrWindow>().unwrap().unwrap());
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.menu.github = crate::github::Auth::connected_fixture();
+                        if let Some(profile) = view.menu.github.profile.as_mut() {
+                            profile.avatar = Some(std::sync::Arc::new(gpui::Image::from_bytes(
+                                gpui::ImageFormat::Svg,
+                                include_bytes!("../../../assets/icons/user.svg").to_vec(),
+                            )));
+                        }
+                        cx.notify();
+                    })
+                });
+                cx.update(|window, cx| {
+                    window.refresh();
+                    let _ = window.draw(cx);
+                });
+                let hit = cx.debug_bounds("titlebar-avatar").unwrap();
+                let circle = cx.debug_bounds("titlebar-avatar-circle").unwrap();
+                assert_eq!(circle.size, size(px(super::AVATAR), px(super::AVATAR)));
+                assert_eq!(circle.center(), hit.center());
+                assert!(circle.size.width < hit.size.width);
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.menu.github = Default::default();
+                        cx.notify();
+                    })
+                });
+                cx.update(|window, cx| {
+                    window.refresh();
+                    let _ = window.draw(cx);
+                });
                 assert_eq!(
                     cx.debug_bounds("titlebar-center").unwrap(),
                     Bounds::new(point(px(80.), px(0.)), size(px(width - 120.), px(34.)))
