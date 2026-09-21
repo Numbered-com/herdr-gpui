@@ -175,6 +175,38 @@ impl HerdrWindow {
                 let context_endpoint = endpoint_id.clone();
                 let navigate_endpoint = endpoint_id.clone();
                 let collapse_endpoint = endpoint_id.clone();
+                let reserve_arrow = group.is_some() || indented;
+                let arrow = group.map(|key| {
+                    let collapsed = collapsed_repos.contains(&key);
+                    div()
+                        .id(SharedString::from(format!("collapse-{endpoint_id}-{id}")))
+                        .debug_selector(move || format!("collapse-{index}"))
+                        .w(px(ARROW_RESERVE - LABEL_GAP))
+                        .h(px(2. * line_height(font)))
+                        .flex_none()
+                        .text_size(px(16.))
+                        .text_color(rgb(theme.muted))
+                        .hover(|s| s.text_color(rgb(theme.foreground)))
+                        .child(label_text(if collapsed { "\u{25b8}" } else { "\u{25be}" }))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            let collapsed = if collapse_endpoint == super::endpoint::LOCAL {
+                                &mut this.collapsed_repos
+                            } else if let Some(endpoint) = this
+                                .endpoints
+                                .iter_mut()
+                                .find(|e| e.id == collapse_endpoint)
+                            {
+                                &mut endpoint.collapsed_repos
+                            } else {
+                                return;
+                            };
+                            if !collapsed.remove(&key) {
+                                collapsed.insert(key.clone());
+                            }
+                            cx.notify();
+                        }))
+                });
                 spaces = spaces.child(
                     row(
                         workspace_label(workspace, indented),
@@ -182,7 +214,7 @@ impl HerdrWindow {
                         workspace.agent_status,
                         selected && workspace.focused,
                         indented,
-                        group.is_some() || indented,
+                        reserve_arrow,
                         width,
                         (!indented).then(|| {
                             self.avatars
@@ -191,42 +223,10 @@ impl HerdrWindow {
                                 .and_then(|avatars| avatars.image(&workspace.new_workspace_cwd))
                                 .unwrap_or_else(|| GITHUB_ICON.clone())
                         }),
+                        arrow,
                         workspace_pr(workspace, &self.menu.pr_cache, theme),
                         (font, theme),
                     )
-                    .when_some(group, |row, key| {
-                        let collapsed = collapsed_repos.contains(&key);
-                        row.child(
-                            div()
-                                .id(SharedString::from(format!("collapse-{endpoint_id}-{id}")))
-                                .debug_selector(move || format!("collapse-{index}"))
-                                .w(px(ARROW_RESERVE - LABEL_GAP))
-                                .h(px(2. * line_height(font)))
-                                .flex_none()
-                                .text_size(px(16.))
-                                .text_color(rgb(theme.muted))
-                                .hover(|s| s.text_color(rgb(theme.foreground)))
-                                .child(label_text(if collapsed { "\u{25b8}" } else { "\u{25be}" }))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    let collapsed = if collapse_endpoint == super::endpoint::LOCAL {
-                                        &mut this.collapsed_repos
-                                    } else if let Some(endpoint) = this
-                                        .endpoints
-                                        .iter_mut()
-                                        .find(|e| e.id == collapse_endpoint)
-                                    {
-                                        &mut endpoint.collapsed_repos
-                                    } else {
-                                        return;
-                                    };
-                                    if !collapsed.remove(&key) {
-                                        collapsed.insert(key.clone());
-                                    }
-                                    cx.notify();
-                                })),
-                        )
-                    })
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -274,6 +274,7 @@ impl HerdrWindow {
                         false,
                         false,
                         width,
+                        None,
                         None,
                         None,
                         (font, theme),
@@ -530,6 +531,7 @@ fn row(
     reserve_arrow: bool,
     width: f32,
     workspace_icon: Option<Arc<Image>>,
+    arrow: Option<Stateful<Div>>,
     pr: Option<PrBadge>,
     appearance: (&FontConfig, &Theme),
 ) -> Div {
@@ -544,13 +546,8 @@ fn row(
         .as_ref()
         .map(|badge| badge.width(font) + LABEL_GAP)
         .unwrap_or_default();
-    // Badges sit inside the collapse column, which every badged row reserves
-    // whether or not it can collapse, so they line up down the whole list.
-    let arrow_reserve = if reserve_arrow || pr.is_some() {
-        ARROW_RESERVE
-    } else {
-        0.
-    };
+    let arrow_reserve = if reserve_arrow { ARROW_RESERVE } else { 0. };
+    let arrow_absent = arrow.is_none();
     let label_width = (width
         - 1.
         - 2. * ROW_PADDING
@@ -639,6 +636,12 @@ fn row(
                         .child(label_text(detail)),
                 ),
         )
+        // The collapse column comes first so the badge can hug the row's edge;
+        // a reserved-but-empty column keeps every badge on the same right edge.
+        .when_some(arrow, |row, arrow| row.child(arrow))
+        .when(arrow_absent && reserve_arrow, |row| {
+            row.child(div().w(px(ARROW_RESERVE - LABEL_GAP)).flex_none())
+        })
         .when_some(pr, |row, badge| {
             row.child(
                 div()

@@ -1557,6 +1557,8 @@ fn worktree_rows_wear_their_cached_pull_request(cx: &mut gpui::TestAppContext) {
                     342,
                 ),
                 ("/fixture/solo/.git", "main", 9, "OPEN", 4, 5),
+                // The group's own head, so a row carries arrow and badge both.
+                ("/fixture/agent-launcher/.git", "develop", 11, "OPEN", 1, 2),
             ] {
                 let mut value = crate::pull_request::fixture().unwrap();
                 value.number = number;
@@ -1588,8 +1590,15 @@ fn worktree_rows_wear_their_cached_pull_request(cx: &mut gpui::TestAppContext) {
     assert!(badge.right() <= row.right());
     assert!(name.right() <= badge.left());
     assert!(name.size.width < bare.size.width);
-    // A row that cannot collapse still lines its badge up with one that can.
-    assert_eq!(cx.debug_bounds("pr-herdr").unwrap().right(), badge.right());
+    // Badges hug the row's inner edge, whether or not the row can collapse and
+    // whether or not an arrow is drawn in front of them.
+    let solo = cx.debug_bounds("pr-herdr").unwrap();
+    let head = cx.debug_bounds("pr-agent-launcher").unwrap();
+    let arrow = cx.debug_bounds("collapse-3").unwrap();
+    for right in [solo.right(), head.right(), badge.right()] {
+        assert_eq!(right, row.right() - px(12.), "badges must be flush right");
+    }
+    assert!(arrow.right() <= head.left(), "{arrow:?} {head:?}");
     cx.update(|_, cx| {
         let probes = &cx.global::<TextProbes>().0;
         for text in ["#7", "+23", "-342", "#9", "+4", "-5"] {
