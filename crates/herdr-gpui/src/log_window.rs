@@ -1,6 +1,7 @@
 use crate::{
     config::{Config, Theme},
     diagnostics::{self, Record},
+    fonts::StyledFont,
     search_input::{Changed, SearchInput},
 };
 use gpui::{prelude::*, *};
@@ -469,7 +470,7 @@ impl Render for LogWindow {
             .flex_col()
             .bg(rgb(theme.background))
             .text_color(rgb(theme.foreground))
-            .font_family(config.ui.family.clone())
+            .text_font(&config.ui)
             .text_size(px(config.ui.size))
             .line_height(px(config.ui.line_height()))
             .map(|root| {
@@ -603,7 +604,7 @@ impl Render for LogWindow {
                                         .py(px(1.))
                                         .px_3()
                                         .text_color(rgb(theme.foreground))
-                                        .font_family(font.family.clone())
+                                        .text_font(font)
                                         .text_size(px(font.size))
                                         .line_height(px(font.line_height()))
                                         .child(
@@ -655,7 +656,7 @@ impl Render for LogWindow {
                         .p_3()
                         .bg(rgb(theme.surface))
                         .text_color(severity_color(theme, record.level))
-                        .font_family(config.terminal.family.clone())
+                        .text_font(&config.terminal)
                         .text_size(px(config.terminal.size))
                         .line_height(px(config.terminal.line_height()))
                         .child(record.line()),

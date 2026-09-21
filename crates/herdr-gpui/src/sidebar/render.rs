@@ -14,6 +14,7 @@ use super::{
 use crate::{
     Command, HerdrWindow, NavigationTarget,
     config::{FontConfig, Theme},
+    fonts::StyledFont,
 };
 use gpui::{prelude::*, *};
 
@@ -334,7 +335,7 @@ impl HerdrWindow {
             .overflow_hidden()
             .flex()
             .flex_col()
-            .font_family(font.family.clone())
+            .text_font(font)
             .text_size(px(font.size))
             .line_height(px(line_height(font)))
             .text_color(rgb(theme.foreground))

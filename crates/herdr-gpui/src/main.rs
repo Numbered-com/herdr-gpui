@@ -17,6 +17,7 @@ mod diagnostics;
 mod dialog_input;
 mod endpoint;
 mod error;
+mod fonts;
 mod git;
 mod github;
 mod icons;

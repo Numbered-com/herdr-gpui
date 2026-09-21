@@ -1,6 +1,7 @@
 use crate::{
     HerdrWindow,
     config::{Config, Features},
+    fonts::StyledFont,
 };
 use gpui::{prelude::*, *};
 use std::env;
@@ -181,7 +182,7 @@ impl HerdrWindow {
             .flex_col()
             .min_h_0()
             .min_w_0()
-            .font_family(font.family.clone())
+            .text_font(font)
             .text_size(px(font.size))
             .line_height(px(font.line_height()))
             .text_color(rgb(theme.foreground))
