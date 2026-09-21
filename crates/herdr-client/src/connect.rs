@@ -1,0 +1,122 @@
+//! Spawning a connection worker. Setup, handshake, and teardown all happen off
+//! the caller's thread; failures arrive as events rather than as a return value.
+
+use crate::{
+    ConnectTarget, Result, catalog,
+    discovery::session_socket,
+    event::{ClientEvent, deliver},
+    handle::{Client, ClientHandle, HandleInner},
+    limits::{COMMAND_CAPACITY, EVENT_CAPACITY},
+    options::{ConnectOptions, validate_options},
+    session::run_connection,
+    ssh,
+};
+use crossbeam_channel::bounded;
+use std::{
+    io,
+    os::unix::net::UnixStream,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    thread,
+};
+
+/// Returns immediately after spawning. Connection/handshake errors arrive as events.
+pub fn connect(target: ConnectTarget, options: ConnectOptions) -> Result<Client> {
+    connect_with_surface_active(target, options, true)
+}
+
+/// Connect without changing `ConnectOptions` literals. Inactive connections require
+/// negotiated surface interest and presentation-effect fencing. SSH additionally
+/// requires endpoint health checks. All transport work runs off the caller thread.
+pub fn connect_with_surface_active(
+    target: ConnectTarget,
+    options: ConnectOptions,
+    surface_active: bool,
+) -> Result<Client> {
+    connect_with_connector(target, options, surface_active, |target, _| {
+        let path = target
+            .socket_path()
+            .map_err(|error| io::Error::new(error.kind(), error))?;
+        UnixStream::connect(path)
+    })
+}
+
+/// Connect using application-specific local socket setup on the I/O worker.
+/// SSH targets always use the remote bridge, never the local connector.
+/// The connector should observe `stop` during waits so detach cancels setup.
+pub fn connect_with_connector(
+    target: ConnectTarget,
+    options: ConnectOptions,
+    surface_active: bool,
+    connector: impl FnOnce(&ConnectTarget, &AtomicBool) -> io::Result<UnixStream> + Send + 'static,
+) -> Result<Client> {
+    validate_options(options)?;
+    if let ConnectTarget::Ssh { target, session } = &target {
+        catalog::validate_target(target)?;
+        session_socket(std::path::Path::new(""), session)?;
+    }
+    let (commands, rx) = bounded(COMMAND_CAPACITY);
+    let (tx, events) = bounded(EVENT_CAPACITY);
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker_stop = stop.clone();
+    thread::Builder::new()
+        .name("herdr-client-io".into())
+        .spawn(move || {
+            let transport = if matches!(target, ConnectTarget::Ssh { .. }) { "ssh" } else { "local" };
+            let span = tracing::info_span!("connection", transport);
+            let _entered = span.enter();
+            tracing::info!(transport, "connection starting");
+            let result = (|| {
+                let (stream, child) = match &target {
+                    ConnectTarget::Ssh { target, session } => {
+                        let (stream, child) = ssh::connect(target, session, &worker_stop)?;
+                        (stream, Some(child))
+                    }
+                    _ => (connector(&target, &worker_stop)?, None),
+                };
+                run_connection(
+                    stream,
+                    options,
+                    surface_active,
+                    child.is_some(),
+                    rx,
+                    &tx,
+                    &worker_stop,
+                )
+                // The child guard is dropped before delivering a disconnect event.
+            })();
+            if worker_stop.load(Ordering::Acquire) {
+                tracing::debug!("connection cancelled");
+            } else if let Err(error) = &result {
+                tracing::warn!(kind = ?error.kind(), "connection ended with transport or protocol failure");
+            } else {
+                tracing::info!("connection ended");
+            }
+            if !worker_stop.load(Ordering::Acquire) {
+                let reason = result
+                    .err()
+                    .map(|e| {
+                        e.to_string()
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .take(1024)
+                            .collect()
+                    })
+                    .unwrap_or_else(|| "server disconnected".into());
+                let _ = deliver(&tx, ClientEvent::Disconnected { reason }, &worker_stop);
+            }
+            worker_stop.store(true, Ordering::Release);
+        })?;
+    Ok(Client {
+        handle: ClientHandle {
+            inner: Arc::new(HandleInner {
+                commands,
+                stop,
+                next_request: AtomicU64::new(1),
+            }),
+        },
+        events,
+    })
+}

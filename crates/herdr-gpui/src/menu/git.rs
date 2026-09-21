@@ -1,7 +1,13 @@
 //! The titlebar's Git actions popup: commit, push, and pull request creation
 //! for the focused local checkout.
-use super::*;
-use crate::git::{Action, Status};
+use super::{Page, accent, danger};
+use crate::{
+    HerdrWindow,
+    dialog_input::DialogInput,
+    git::{Action, Status},
+    pull_request::State as PrState,
+};
+use gpui::{prelude::*, *};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Row {
@@ -144,7 +150,8 @@ impl HerdrWindow {
     /// Only an open pull request can be opened; a merged or closed one leaves
     /// creating the next one as the action.
     fn git_open_pull_request(&self) -> Option<&crate::pull_request::PullRequest> {
-        self.git_pull_request().filter(|pr| pr.state == "OPEN")
+        self.git_pull_request()
+            .filter(|pr| pr.state == PrState::Open)
     }
 
     pub(super) fn git_rows(&self) -> Vec<(Row, String)> {
@@ -548,7 +555,7 @@ impl HerdrWindow {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use super::{Page, Row, summary};
+    use super::{Page, PrState, Row, summary};
     use crate::git::Status;
     use gpui::{TestAppContext, point, px, size};
     use std::sync::Arc;
@@ -647,7 +654,7 @@ mod tests {
                 // A merged pull request still names the branch's history, but
                 // the next action is creating another one.
                 let mut merged = crate::pull_request::fixture().unwrap();
-                merged.state = "MERGED".into();
+                merged.state = PrState::Merged;
                 view.menu
                     .pr_cache
                     .seed(input, merged, std::time::Instant::now());

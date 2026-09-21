@@ -3,7 +3,7 @@
 //! test can catch GPUI's stale truncation runs. Keep headless checks for geometry.
 #![allow(clippy::unwrap_used)]
 #[cfg(test)]
-use super::HerdrWindow;
+use crate::HerdrWindow;
 #[cfg(test)]
 use crate::{LiveState, WheelAccumulator};
 use gpui::{
@@ -1584,7 +1584,7 @@ fn worktree_rows_wear_their_cached_pull_request(cx: &mut gpui::TestAppContext) {
             ] {
                 let mut value = crate::pull_request::fixture().unwrap();
                 value.number = number;
-                value.state = state.into();
+                value.state = crate::pull_request::State::from(state.to_owned());
                 value.additions = additions;
                 value.deletions = deletions;
                 view.menu.pr_cache.seed(
@@ -1771,9 +1771,9 @@ fn the_workspace_menu_folds_and_unfolds_a_worktree_group(cx: &mut gpui::TestAppC
 
 #[test]
 fn child_gutter_lines_land_on_whole_device_pixels() {
-    use crate::sidebar::{RowTree, tree_lines};
+    use crate::sidebar::row::{RowTree, tree_lines};
     use gpui::{Bounds, point, size};
-    let font = super::FontConfig {
+    let font = crate::config::FontConfig {
         family: "Menlo".into(),
         size: 12.,
     };
@@ -1887,7 +1887,11 @@ fn the_agents_header_toggles_between_grouped_and_priority(cx: &mut gpui::TestApp
         cx.update(|_, cx| {
             assert_eq!(view.read(cx).agent_sort, expected);
             let probes = &cx.global::<TextProbes>().0;
-            assert!(probes.contains_key(expected.label()), "{:?}", probes.keys());
+            assert!(
+                probes.contains_key(expected.to_string().as_str()),
+                "{:?}",
+                probes.keys()
+            );
         });
         let (a, b) = (
             cx.debug_bounds(first).unwrap(),

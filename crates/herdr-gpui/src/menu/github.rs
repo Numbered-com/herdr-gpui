@@ -1,4 +1,5 @@
-use super::*;
+use crate::HerdrWindow;
+use gpui::{prelude::*, *};
 
 #[cfg(test)]
 mod tests {
