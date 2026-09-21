@@ -265,11 +265,21 @@ impl HerdrWindow {
                             .child(format!("#{}", pr.number)),
                     )
                     .child(div().text_color(rgb(theme.muted)).child(pr.lifecycle()))
-                    .child(div().text_color(rgb(theme.muted)).child(format!(
-                        "+{}/-{}",
-                        crate::sidebar::compact(pr.additions),
-                        crate::sidebar::compact(pr.deletions)
-                    ))),
+                    .child(
+                        div()
+                            .flex()
+                            .child(
+                                div()
+                                    .text_color(rgb(theme.palette[2]))
+                                    .child(format!("+{}", crate::sidebar::compact(pr.additions))),
+                            )
+                            .child(div().text_color(rgb(theme.muted)).child("/"))
+                            .child(
+                                div()
+                                    .text_color(rgb(theme.palette[1]))
+                                    .child(format!("-{}", crate::sidebar::compact(pr.deletions))),
+                            ),
+                    ),
             );
         }
         panel = panel.child(
@@ -394,16 +404,27 @@ impl HerdrWindow {
                     .child(error.clone()),
             );
         }
+        // Same button row as the close confirmation: right aligned, the
+        // default action carrying the fill and the foreground border Enter
+        // activates.
         panel.child(
             div()
                 .flex()
-                .gap(px(16.))
+                .justify_end()
+                .gap(px(8.))
                 .p(px(8.))
                 .child(
                     div()
                         .id("git-commit-cancel")
+                        .debug_selector(|| "git-commit-cancel".into())
+                        .px(px(12.))
+                        .py(px(6.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(rgb(theme.active))
                         .cursor_pointer()
-                        .child("Cancel (Escape)")
+                        .hover(|button| button.bg(rgb(theme.active)))
+                        .child("Cancel")
                         .on_click(cx.listener(|this, _, window, cx| {
                             cx.stop_propagation();
                             this.dismiss_menu(window, cx);
@@ -413,6 +434,12 @@ impl HerdrWindow {
                     div()
                         .id("git-commit-submit")
                         .debug_selector(|| "git-commit-submit".into())
+                        .px(px(12.))
+                        .py(px(6.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(rgb(theme.foreground))
+                        .bg(rgb(theme.active))
                         .cursor_pointer()
                         .child("Commit")
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -429,7 +456,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::{Page, Row, summary};
     use crate::git::Status;
-    use gpui::TestAppContext;
+    use gpui::{TestAppContext, point, px, size};
     use std::sync::Arc;
 
     fn status(additions: u64, deletions: u64, untracked: u64) -> Status {
@@ -512,7 +539,7 @@ mod tests {
                     view.git_rows().last().map(|(_, label)| label.clone()),
                     Some("Open pull request #8".into())
                 );
-                view.open_git_menu(gpui::point(gpui::px(900.), gpui::px(20.)), window, cx);
+                view.open_git_menu(point(px(900.), px(20.)), window, cx);
             })
         });
         cx.update(|window, cx| {
@@ -541,6 +568,42 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_commit_dialog_ends_in_a_button_row(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        cx.simulate_resize(size(px(900.), px(600.)));
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.git = crate::git::Git::fixture(
+                    crate::pull_request::Input {
+                        checkout: None,
+                        repo_key: "/fixture/agent-launcher/.git".into(),
+                        branch: "develop".into(),
+                    },
+                    status(12, 3, 1),
+                );
+                view.open_git_menu(point(px(860.), px(20.)), window, cx);
+                view.activate_git_row(Row::Commit, window, cx);
+                cx.notify();
+            })
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            let _ = window.draw(cx);
+        });
+        let cancel = cx.debug_bounds("git-commit-cancel").unwrap();
+        let commit = cx.debug_bounds("git-commit-submit").unwrap();
+        let field = cx.debug_bounds("dialog-input").unwrap();
+        // Two real buttons, not bare text: padded boxes on one row, the
+        // default action last, under the message field.
+        assert_eq!(cancel.size.height, commit.size.height);
+        assert!(cancel.size.height >= px(24.));
+        assert!(cancel.size.width >= px(50.) && commit.size.width >= px(50.));
+        assert_eq!(cancel.top(), commit.top());
+        assert!(cancel.right() <= commit.left());
+        assert!(field.bottom() <= cancel.top());
+    }
+
+    #[gpui::test]
     fn the_menu_commits_through_a_dialog_and_refuses_an_empty_message(cx: &mut TestAppContext) {
         let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
         let input = crate::pull_request::Input {
@@ -551,7 +614,7 @@ mod tests {
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 view.git = crate::git::Git::fixture(input.clone(), status(12, 3, 1));
-                view.open_git_menu(gpui::point(gpui::px(900.), gpui::px(20.)), window, cx);
+                view.open_git_menu(point(px(900.), px(20.)), window, cx);
                 assert_eq!(view.menu.page, Some(Page::Git));
                 let rows: Vec<_> = view
                     .git_rows()
@@ -561,6 +624,7 @@ mod tests {
                 assert_eq!(rows, ["Commit...", "Push", "Create pull request"]);
                 view.activate_git_row(Row::Commit, window, cx);
                 assert_eq!(view.menu.page, Some(Page::GitCommit));
+                assert!(view.menu.input.is_some(), "the dialog opens with a field");
                 view.submit_git_commit(cx);
                 assert_eq!(
                     view.menu.error.as_deref(),

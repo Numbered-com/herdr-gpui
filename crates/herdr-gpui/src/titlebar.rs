@@ -116,12 +116,30 @@ impl HerdrWindow {
                                 .child(
                                     div()
                                         .debug_selector(|| "titlebar-git-pr-lines".into())
-                                        .text_color(rgb(theme.muted))
-                                        .child(format!(
-                                            "+{}/-{}",
-                                            crate::sidebar::compact(additions),
-                                            crate::sidebar::compact(deletions)
-                                        )),
+                                        .flex()
+                                        .child(
+                                            div()
+                                                .debug_selector(|| {
+                                                    "titlebar-git-pr-additions".into()
+                                                })
+                                                .text_color(rgb(theme.palette[2]))
+                                                .child(format!(
+                                                    "+{}",
+                                                    crate::sidebar::compact(additions)
+                                                )),
+                                        )
+                                        .child(div().text_color(rgb(theme.muted)).child("/"))
+                                        .child(
+                                            div()
+                                                .debug_selector(|| {
+                                                    "titlebar-git-pr-deletions".into()
+                                                })
+                                                .text_color(rgb(theme.palette[1]))
+                                                .child(format!(
+                                                    "-{}",
+                                                    crate::sidebar::compact(deletions)
+                                                )),
+                                        ),
                                 )
                         })
                         .child(
@@ -472,6 +490,12 @@ mod git_button_tests {
         assert!(number.right() <= churn.left());
         assert!(churn.right() <= button.right());
         assert!(button.right() <= cx.debug_bounds("titlebar-avatar").unwrap().left());
+        // Additions and deletions are separate spans so each keeps its own
+        // color, as the sidebar badge paints them.
+        let additions = cx.debug_bounds("titlebar-git-pr-additions").unwrap();
+        let deletions = cx.debug_bounds("titlebar-git-pr-deletions").unwrap();
+        assert!(churn.left() <= additions.left() && additions.right() <= deletions.left());
+        assert!(deletions.right() <= churn.right());
     }
 }
 
