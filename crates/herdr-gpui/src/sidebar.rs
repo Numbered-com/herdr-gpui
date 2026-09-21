@@ -234,7 +234,7 @@ impl HerdrWindow {
                 spaces = spaces.child(
                     row(
                         label,
-                        label,
+                        &[(label, true)],
                         first_text([workspace.branch.as_deref()], ""),
                         RowKind::Workspace,
                         workspace.agent_status,
@@ -292,7 +292,7 @@ impl HerdrWindow {
                     row(
                         &format!("agent-{id}"),
                         &name,
-                        &detail,
+                        detail,
                         RowKind::Agent,
                         agent.agent_status,
                         selected && agent.focused,
@@ -573,6 +573,40 @@ fn sorted_agents(
     ordered
 }
 
+/// Sidebar labels are monospace by default and digits are near-uniform
+/// elsewhere, so an em-fraction bounds a glyph well enough to divide a line.
+fn glyph_width(font: &FontConfig) -> f32 {
+    font.size * 0.62
+}
+
+/// Widths in glyphs for segments sharing one line, as upstream shares them:
+/// every segment keeps one glyph, then they grow in turn until the line is
+/// full, so a long name cannot crowd a short one out entirely.
+fn segment_budgets(lengths: &[usize], available: usize) -> Vec<usize> {
+    let mut budgets: Vec<usize> = lengths
+        .iter()
+        .map(|length| usize::from(*length > 0))
+        .collect();
+    let mut remaining = available.saturating_sub(budgets.iter().sum());
+    while remaining > 0 {
+        let mut grew = false;
+        for (budget, length) in budgets.iter_mut().zip(lengths) {
+            if *budget > 0 && *budget < *length {
+                *budget += 1;
+                remaining -= 1;
+                grew = true;
+                if remaining == 0 {
+                    break;
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    budgets
+}
+
 /// What a row lists, which decides how its two lines are weighted: upstream
 /// keeps agent names bold throughout and reserves bold workspaces for the
 /// current one, with the branch picking up the accent while it is focused.
@@ -675,7 +709,7 @@ impl PrBadge {
             .chars()
             .count()
             .max(self.additions.chars().count() + self.deletions.chars().count() + 1);
-        (font.size * 0.62 * glyphs as f32).ceil()
+        (glyph_width(font) * glyphs as f32).ceil()
     }
 }
 
@@ -688,12 +722,74 @@ fn compact(lines: u64) -> String {
     }
 }
 
+/// A row's first line: segments joined by upstream's separator, the primary one
+/// carrying the row's weight and color while the rest stay muted. Segments are
+/// placed at measured offsets rather than flexed, because GPUI 0.2.2 only
+/// ellipsizes text whose width its parent already fixed.
+fn name_line(
+    segments: &[(&str, bool)],
+    appearance: (u32, FontWeight, u32),
+    width: f32,
+    font: &FontConfig,
+) -> Div {
+    let (primary, weight, muted) = appearance;
+    let glyph = glyph_width(font);
+    let separator = 3. * glyph;
+    let separators = segments.len().saturating_sub(1);
+    let lengths: Vec<usize> = segments
+        .iter()
+        .map(|(text, _)| text.chars().count())
+        .collect();
+    let available = (width - separators as f32 * separator).max(0.);
+    let budgets = segment_budgets(&lengths, (available / glyph).floor() as usize);
+    // The last segment takes the rounding remainder, so one segment fills the
+    // line exactly as it did before a line could carry several.
+    let used: f32 = budgets.iter().map(|budget| *budget as f32 * glyph).sum();
+    let slack = (available - used).max(0.);
+    let mut line = div()
+        .relative()
+        .w(px(width))
+        .h(px(line_height(font)))
+        .flex_none()
+        .overflow_hidden();
+    let mut x = 0.;
+    for (index, ((text, is_primary), budget)) in segments.iter().zip(budgets).enumerate() {
+        if index > 0 {
+            line = line.child(
+                div()
+                    .absolute()
+                    .left(px(x))
+                    .w(px(separator))
+                    .text_color(rgb(muted))
+                    .child(label_text(" \u{b7} ")),
+            );
+            x += separator;
+        }
+        let last = index + 1 == segments.len();
+        let segment = budget as f32 * glyph + if last { slack } else { 0. };
+        line = line.child(
+            div()
+                .absolute()
+                .left(px(x))
+                .w(px(segment))
+                .truncate()
+                .when(*is_primary, |part| {
+                    part.font_weight(weight).text_color(rgb(primary))
+                })
+                .when(!*is_primary, |part| part.text_color(rgb(muted)))
+                .child(label_text(text)),
+        );
+        x += segment;
+    }
+    line
+}
+
 #[allow(clippy::too_many_arguments)]
 fn row(
     // Rows are probed by key, not by label: an agent names its workspace, which
     // already names a row of its own.
     key: &str,
-    name: &str,
+    name: &[(&str, bool)],
     detail: &str,
     kind: RowKind,
     status: AgentStatus,
@@ -821,15 +917,14 @@ fn row(
                             )
                         })
                         .child(
-                            div()
-                                .debug_selector(|| format!("name-{key}"))
-                                .ml(px(icon_reserve))
-                                .w(px((label_width - icon_reserve).max(0.)))
-                                .flex_none()
-                                .truncate()
-                                .font_weight(weight)
-                                .text_color(rgb(name_color))
-                                .child(label_text(name)),
+                            name_line(
+                                name,
+                                (name_color, weight, theme.muted),
+                                (label_width - icon_reserve).max(0.),
+                                font,
+                            )
+                            .debug_selector(|| format!("name-{key}"))
+                            .ml(px(icon_reserve)),
                         ),
                 )
                 .child(
@@ -921,11 +1016,11 @@ fn first_text<'a>(values: impl IntoIterator<Item = Option<&'a str>>, fallback: &
 /// Upstream's default agent rows: host, workspace and tab on the first line,
 /// the agent itself on the second. The tab only earns its place when the
 /// workspace has more than one or the user named it, as upstream decides.
-fn agent_labels(
-    agent: &ClientShellAgent,
-    snapshot: &ClientShellSnapshot,
-    host: Option<&str>,
-) -> (String, String) {
+fn agent_labels<'a>(
+    agent: &'a ClientShellAgent,
+    snapshot: &'a ClientShellSnapshot,
+    host: Option<&'a str>,
+) -> (Vec<(&'a str, bool)>, &'a str) {
     let name = first_text(
         [
             agent.display_agent.as_deref(),
@@ -942,7 +1037,7 @@ fn agent_labels(
         .find(|workspace| workspace.workspace_id == agent.workspace_id)
         .map(|workspace| workspace.label.as_str())
     else {
-        return (name.to_owned(), String::new());
+        return (vec![(name, true)], "");
     };
     let tabs = snapshot
         .tabs
@@ -955,13 +1050,14 @@ fn agent_labels(
         .find(|tab| tab.tab_id == agent.tab_id)
         .filter(|tab| tabs > 1 || tab.custom_label)
         .map(|tab| tab.label.as_str());
-    let title = [host, Some(workspace), tab]
+    // Only the workspace carries the row's weight: upstream paints the host and
+    // tab around it in its secondary color.
+    let segments = [(host, false), (Some(workspace), true), (tab, false)]
         .into_iter()
-        .flatten()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(" \u{b7} ");
-    (title, name.to_owned())
+        .filter_map(|(text, primary)| Some((text?, primary)))
+        .filter(|(text, _)| !text.is_empty())
+        .collect();
+    (segments, name)
 }
 
 // Match the expanded upstream shell order, including orphaned linked worktrees.
@@ -1203,26 +1299,33 @@ mod tests {
         agent.agent = Some("claude".into());
         agent.title = Some("Fix sidebar".into());
         let agent = snapshot.agents[0].clone();
-        // Host first when there is one, then the workspace, then the tab.
-        let labels = |snapshot: &ClientShellSnapshot, host| {
+        // Host first when there is one, then the workspace, then the tab. Only
+        // the workspace is primary; upstream mutes what sits around it.
+        fn labels<'a>(
+            snapshot: &'a ClientShellSnapshot,
+            host: Option<&'a str>,
+        ) -> (Vec<(&'a str, bool)>, &'a str) {
             agent_labels(&snapshot.agents[0], snapshot, host)
-        };
+        }
         assert_eq!(
             labels(&snapshot, None),
-            ("herdr \u{b7} tab 1".into(), "Claude Code".into())
+            (vec![("herdr", true), ("tab 1", false)], "Claude Code")
         );
         assert_eq!(
             labels(&snapshot, Some("remote")),
             (
-                "remote \u{b7} herdr \u{b7} tab 1".into(),
-                "Claude Code".into()
+                vec![("remote", false), ("herdr", true), ("tab 1", false)],
+                "Claude Code"
             )
         );
         // One unnamed tab is noise, so only its workspace shows.
         snapshot.tabs.retain(|tab| tab.tab_id == "t0");
-        assert_eq!(labels(&snapshot, None).0, "herdr");
+        assert_eq!(labels(&snapshot, None).0, vec![("herdr", true)]);
         snapshot.tabs[0].custom_label = true;
-        assert_eq!(labels(&snapshot, None).0, "herdr \u{b7} tab 1");
+        assert_eq!(
+            labels(&snapshot, None).0,
+            vec![("herdr", true), ("tab 1", false)]
+        );
         // The agent name falls back through the same order as upstream.
         for (display, name, kind, title, expected) in [
             (None, Some("review"), Some("claude"), None, "review"),
@@ -1241,7 +1344,7 @@ mod tests {
         }
         // Without its workspace the agent names the row itself.
         snapshot.workspaces.clear();
-        assert_eq!(labels(&snapshot, None), ("agent".into(), String::new()));
+        assert_eq!(labels(&snapshot, None), (vec![("agent", true)], ""));
     }
 
     #[test]

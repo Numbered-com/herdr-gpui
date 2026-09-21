@@ -267,8 +267,9 @@ fn multi_host_rows_scope_duplicate_ids_and_keep_agents_when_host_collapses(
                 true,
             );
             remote.live.snapshot = view.live.snapshot.clone();
-            Arc::make_mut(remote.live.snapshot.as_mut().unwrap()).workspaces[0].label =
-                "remote workspace".into();
+            let remote_snapshot = Arc::make_mut(remote.live.snapshot.as_mut().unwrap());
+            remote_snapshot.workspaces[0].label = "remote workspace".into();
+            remote_snapshot.workspaces[0].branch = Some("remote branch".into());
             view.endpoints.push(remote);
             view
         });
@@ -316,15 +317,16 @@ fn multi_host_rows_scope_duplicate_ids_and_keep_agents_when_host_collapses(
         cx.default_global::<TextProbes>().0.clear();
         window.refresh();
         let _ = window.draw(cx);
-        // The remote workspace row folds away; its agent keeps naming its host.
-        assert!(!cx.global::<TextProbes>().0.contains_key("remote workspace"));
-        assert!(
-            cx.global::<TextProbes>()
-                .0
-                .contains_key("Remote \u{b7} remote workspace \u{b7} tab 1"),
-            "{:?}",
-            cx.global::<TextProbes>().0.keys()
-        );
+        // The remote workspace row folds away -- its branch goes with it -- while
+        // its agent keeps naming the host it runs on.
+        assert!(!cx.global::<TextProbes>().0.contains_key("remote branch"));
+        for part in ["Remote", "remote workspace", "tab 1"] {
+            assert!(
+                cx.global::<TextProbes>().0.contains_key(part),
+                "{part}: {:?}",
+                cx.global::<TextProbes>().0.keys()
+            );
+        }
     });
     assert!(cx.debug_bounds("workspace-local-w0").is_some());
     assert!(cx.debug_bounds("agent-ssh:test-p0").is_some());
@@ -449,7 +451,9 @@ fn check_sidebar(
                 "glyphs must fit the allocation"
             );
         }
-        for input in ["herdr", "main", "herdr \u{b7} tab 1", "Claude Code"] {
+        // Each part of an agent's line is painted on its own, so the tab can
+        // stay muted beside its workspace.
+        for input in ["herdr", "main", "tab 1", "Claude Code"] {
             let (bounds, rendered, _) = &cx.global::<TextProbes>().0[input];
             assert_eq!(
                 rendered, input,
