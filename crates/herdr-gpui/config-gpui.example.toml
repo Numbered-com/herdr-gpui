@@ -41,3 +41,9 @@ size = 12
 # WARNING: saves an UNENCRYPTED token in the separate 0600 github-credentials file.
 # Other software running as you and backups can read it. Default is false.
 # allow_plaintext_credentials = false
+
+# Optional behaviors, all off unless turned on here. Unknown keys are rejected.
+# [features]
+# Open a space's menu when the pointer rests on its sidebar row, without a
+# right click. Moving the pointer anywhere but into that menu closes it again.
+# sidebar_hover_menu = false

@@ -18,6 +18,16 @@ pub struct Config {
     pub terminal: FontConfig,
     pub ui: FontConfig,
     pub github: GitHubConfig,
+    pub features: Features,
+}
+
+/// Optional behaviors the config file turns on. Every flag is off by default,
+/// so a missing or empty `[features]` table is the shipped experience.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Features {
+    /// Open a space's menu when the pointer rests on its sidebar row.
+    pub sidebar_hover_menu: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -86,6 +96,7 @@ impl Default for Config {
         Self {
             theme: "Default".into(),
             github: GitHubConfig::default(),
+            features: Features::default(),
             sidebar: font(monospace, 12.0),
             // Tabs are terminal chrome, so they read in the monospace face the
             // sidebar and terminal use, as they do in the reference UI.
@@ -105,6 +116,7 @@ struct Settings {
     terminal: FontSettings,
     ui: FontSettings,
     github: GitHubConfig,
+    features: Features,
 }
 
 #[derive(Default, Deserialize)]
@@ -203,6 +215,7 @@ impl Config {
         let mut config = Self::default();
         settings.github.client_id_with_override(None)?;
         config.github = settings.github;
+        config.features = settings.features;
         if let Some(theme) = settings.theme {
             if theme.trim().is_empty() {
                 return Err(Error::EmptyTheme);
@@ -888,6 +901,9 @@ mod tests {
         ] {
             assert_eq!(config.theme()?, Theme::default());
             assert!(config.github.oauth_client_id.is_none());
+            // Every feature ships off, including in the example config.
+            assert_eq!(config.features, Features::default());
+            assert!(!config.features.sidebar_hover_menu);
             assert_eq!(config.terminal.line_height(), 20.0);
             for ((font, family), size) in [config.sidebar, config.tabs, config.terminal, config.ui]
                 .into_iter()
@@ -954,10 +970,28 @@ mod tests {
             "[github]\noauth_client_id = ' bad-id'",
             "[github]\noauth_client_id = 'bad/id'",
             "[github]\noauth_client_id = '\u{e9}'",
+            "[features]\nunknown = true",
+            "[features]\nsidebar_hover_menu = 'true'",
+            "[features]\nsidebar_hover_menu = 1",
         ] {
             assert!(Config::parse(text).is_err(), "accepted {text:?}");
         }
         assert!(Config::parse("[tabs]\nsize = 8\n[ui]\nsize = 48").is_ok());
+    }
+
+    #[test]
+    fn features_are_opt_in_per_flag() -> anyhow::Result<()> {
+        assert!(!Config::parse("[features]")?.features.sidebar_hover_menu);
+        let config = Config::parse("[features]\nsidebar_hover_menu = true")?;
+        assert!(config.features.sidebar_hover_menu);
+        // Turning a flag on leaves the rest of the settings at their defaults.
+        assert_eq!(config.theme, Config::default().theme);
+        assert!(
+            !Config::parse("[features]\nsidebar_hover_menu = false")?
+                .features
+                .sidebar_hover_menu
+        );
+        Ok(())
     }
 
     #[test]
