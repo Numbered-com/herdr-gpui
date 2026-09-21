@@ -741,13 +741,6 @@ impl Render for HerdrWindow {
             .surface
             .clone()
             .filter(|_| self.live.surface_ready());
-        let snapshot = self.live.snapshot.clone();
-        let inbox = self.endpoints[self.selected_endpoint]
-            .connection
-            .inbox
-            .clone();
-        let paint_epoch = self.selection_epoch;
-        let paint_generation = self.endpoints[self.selected_endpoint].generation;
         let entity = cx.entity();
         let paint_entity = entity.clone();
         let focus = self.focus.clone();
@@ -841,35 +834,6 @@ impl Render for HerdrWindow {
                                     window,
                                     cx,
                                 );
-                            }
-                            if window.is_window_active()
-                                && let Some(snapshot) = &snapshot
-                            {
-                                let snapshot = snapshot.clone();
-                                let surface = surface.clone();
-                                // Defer projection/COW work until after paint. On contention,
-                                // retry via another draw, never by acknowledging inbox cells.
-                                cx.defer(move |cx| {
-                                    let owned = paint_entity.read(cx).owns_paint(
-                                        paint_epoch,
-                                        paint_generation,
-                                        &inbox,
-                                    );
-                                    if !owned {
-                                        return;
-                                    }
-                                    match inbox.try_lock() {
-                                        Ok(mut state) => {
-                                            state.acknowledge_presented_surface(
-                                                &snapshot, &surface, true,
-                                            );
-                                        }
-                                        Err(std::sync::TryLockError::WouldBlock) => {
-                                            paint_entity.update(cx, |_, cx| cx.notify());
-                                        }
-                                        Err(std::sync::TryLockError::Poisoned(_)) => {}
-                                    }
-                                });
                             }
                         }
                     },

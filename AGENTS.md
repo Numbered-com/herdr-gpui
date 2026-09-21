@@ -68,7 +68,7 @@ Closing or detaching the GUI must leave the daemon and its terminals running.
 - Use the same geometry for painting, hit testing, and IME placement. Popup input and composition bounds must target the popup, not the underlying pane.
 - Keep glyph visibility separate from decorations: spaces and wide-character continuation cells may still need underline/strikethrough painting.
 - Preserve menu input isolation, focus behavior, Unicode composition, and semantic input routing. Do not synthesize terminal keys for operations with endpoint API methods.
-- Activity indicators come from protocol state-change sequences, not guessed terminal output. Acknowledge completion only for the coherent surface actually presented in an active window, with the existing boot/revision/sequence fences.
+- Activity indicators come from the daemon's snapshot, not guessed terminal output or a client-local seen ledger. Every client shows the same dot; do not reintroduce per-client acknowledgement without asking.
 
 ## Protocol And Safety
 
