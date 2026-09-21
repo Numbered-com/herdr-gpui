@@ -2,6 +2,11 @@
 # Disable tracing before reading credentials, including when invoked with bash -x.
 set +x
 set -euo pipefail
+# This script must never run under `set -x`, so a failure otherwise reports only
+# a tool's message with no indication of which command produced it. Report the
+# line number, which is safe: it reveals no credential material.
+set -E
+trap 'printf "sign-macos.sh: failed at line %d\n" "$LINENO" >&2' ERR
 source "$(dirname -- "$0")/common.sh"
 [[ $# == 3 ]] || fail 'Usage: bash sign-macos.sh VERSION UNSIGNED_APP OUTPUT_DIR'
 version_check "$1"
