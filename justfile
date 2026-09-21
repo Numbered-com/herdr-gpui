@@ -51,6 +51,11 @@ test-update bundle:
 test-brew-upgrade bundle:
     HERDR_TEST_BUNDLE="{{bundle}}" HERDR_TEST_BREW_UPGRADE=1 cargo test --locked -p herdr-gpui updater::brew::tests::homebrew_really_installs -- --ignored --nocapture
 
+# Repeat the Linux suite under CPU pressure in a container, where scheduling
+# races reproduce that a fast machine hides. Needs Docker; nothing else.
+stress-linux iterations="30" cpus="0.5" filter="":
+    bash scripts/stress-linux.sh {{iterations}} {{cpus}} {{filter}}
+
 # Native font/glyph regression across repeated frames and sizes; no daemon needed.
 test-sidebar:
     cargo test --locked -p herdr-gpui --features integration-test --test live_gui native_sidebar -- --ignored --nocapture
