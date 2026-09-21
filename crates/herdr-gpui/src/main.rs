@@ -37,6 +37,7 @@ mod theme_picker;
 mod titlebar;
 mod update_panel;
 mod updater;
+mod worktree;
 mod worktree_banner;
 
 use connection::ConnectionBridge;
@@ -48,6 +49,9 @@ use state::{ConnectionStatus, LiveState};
 use std::sync::Arc;
 use std::time::Duration;
 use terminal::*;
+
+// Every window carries the product name; the focused space follows it.
+const WINDOW_TITLE: &str = "Herdr";
 
 // Even tab cells, as on herdr.dev, so short labels do not collapse to a sliver.
 const TAB_WIDTH: f32 = 64.;
@@ -150,9 +154,15 @@ struct HerdrWindow {
     active: bool,
     sent_focus: Option<bool>,
     bounds: Bounds<Pixels>,
+    /// Last title pushed to the OS, so the window is renamed only when it changes.
+    title: String,
     cell_width: f32,
     painter: std::rc::Rc<std::cell::RefCell<terminal_painter::TerminalPainter>>,
     marked: String,
+    /// The sidebar row the pointer is resting on, waiting to open its menu.
+    hover: Option<sidebar::HoverRest>,
+    /// The menu that resting opened, which the pointer closes by leaving it.
+    hover_menu: Option<sidebar::HoverMenu>,
     local_error: Option<String>,
     menu: menu::MenuState,
     git: git::Git,
@@ -231,7 +241,8 @@ impl HerdrWindow {
                             .as_ref()
                             .and_then(|s| s.focused_pane_id.clone());
                         this.poll_endpoints(cx);
-                        this.update_deletion_dialog();
+                        this.update_workspace_dialog(window, cx);
+                        this.poll_hover_menu(std::time::Instant::now(), window, cx);
                         this.poll_tab_rename(window, cx);
                         if old_pane
                             != this
@@ -254,6 +265,7 @@ impl HerdrWindow {
                         }
                         this.resize();
                         this.report_focus();
+                        this.sync_window_title(window);
                     })
                     .is_err()
                 {
@@ -287,9 +299,12 @@ impl HerdrWindow {
             active: window.is_window_active(),
             sent_focus: None,
             bounds: Bounds::default(),
+            title: WINDOW_TITLE.to_owned(),
             cell_width: 9.,
             painter: Default::default(),
             marked: String::new(),
+            hover: None,
+            hover_menu: None,
             local_error: None,
             menu: menu::MenuState::new(cx),
             git: git::Git::default(),
@@ -350,6 +365,35 @@ impl HerdrWindow {
                 Ok(()) => self.last_queued_options = Some(self.options),
                 Err(error) => self.local_error = Some(format!("Resize: {error}")),
             }
+        }
+    }
+
+    /// macOS lists every window in the Window menu by title. Windows onto the
+    /// same daemon are told apart by the space each one is showing.
+    fn sync_window_title(&mut self, window: &mut Window) {
+        let title = self
+            .live
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| {
+                let focused = snapshot.focused_workspace_id.as_deref()?;
+                snapshot
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace_id == focused)
+            })
+            .map_or_else(
+                || WINDOW_TITLE.to_owned(),
+                |workspace| {
+                    format!(
+                        "{WINDOW_TITLE} \u{2014} {}",
+                        sidebar::workspace_label(workspace, false)
+                    )
+                },
+            );
+        if self.title != title {
+            window.set_window_title(&title);
+            self.title = title;
         }
     }
 
@@ -495,6 +539,11 @@ impl HerdrWindow {
                 log_window::open(cx);
                 return;
             }
+            Command::NewWindow => {
+                // Another client of the same launch target, not another daemon.
+                open_additional_window(self.endpoints[0].connection.target.clone(), cx);
+                return;
+            }
             Command::ClosePane | Command::CloseTab => {
                 self.open_close_confirmation(command, window, cx);
                 return;
@@ -593,6 +642,88 @@ impl HerdrWindow {
             cx.stop_propagation();
             window.prevent_default();
         }
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::{Command, HerdrWindow, WINDOW_TITLE};
+    use crate::sidebar::layout_tests::{fixture_window, snapshot};
+    use std::sync::Arc;
+
+    fn main_windows(cx: &mut gpui::App) -> Vec<gpui::WindowHandle<HerdrWindow>> {
+        cx.windows()
+            .iter()
+            .filter_map(gpui::AnyWindowHandle::downcast::<HerdrWindow>)
+            .collect()
+    }
+
+    #[gpui::test]
+    fn new_window_adds_one_client_of_the_same_target_without_disturbing_the_first(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(fixture_window);
+        let target = view.update(cx, |view, _| view.endpoints[0].connection.target.clone());
+        let before = cx.update(|_, cx| main_windows(cx));
+        assert_eq!(before.len(), 1);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| view.command(Command::NewWindow, window, cx));
+        });
+        cx.run_until_parked();
+        let opened = cx.update(|_, cx| main_windows(cx));
+        assert_eq!(opened.len(), 2, "one more window onto the same daemon");
+        let second = opened
+            .into_iter()
+            .find(|handle| !before.contains(handle))
+            .unwrap();
+        let first_inbox = view.update(cx, |view, _| view.endpoints[0].connection.inbox.clone());
+        cx.update(|_, cx| {
+            // The new window is a separate client: its own endpoint and inbox.
+            second
+                .update(cx, |second, _, _| {
+                    assert_eq!(second.endpoints.len(), 1);
+                    assert_eq!(second.endpoints[0].connection.target, target);
+                    assert!(!Arc::ptr_eq(
+                        &second.endpoints[0].connection.inbox,
+                        &first_inbox
+                    ));
+                })
+                .unwrap();
+        });
+        // The originating window keeps its own selection and error state.
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.selected_endpoint, 0);
+            assert!(view.local_error.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn window_title_follows_the_focused_space_of_that_window(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(fixture_window);
+        cx.update(|window, cx| {
+            view.update(cx, |view, _| {
+                let mut snapshot = snapshot(4);
+                snapshot.focused_workspace_id = Some("w0".into());
+                view.live.snapshot = Some(Arc::new(snapshot));
+            });
+            view.update(cx, |view, _| view.sync_window_title(window));
+        });
+        assert_eq!(
+            view.read_with(cx, |view, _| view.title.clone()),
+            format!("{WINDOW_TITLE} \u{2014} herdr")
+        );
+        // An unknown focus falls back to the bare product name.
+        cx.update(|window, cx| {
+            view.update(cx, |view, _| {
+                view.live.snapshot = None;
+                view.sync_window_title(window);
+            });
+        });
+        assert_eq!(
+            view.read_with(cx, |view, _| view.title.clone()),
+            WINDOW_TITLE
+        );
     }
 }
 
@@ -1068,10 +1199,17 @@ impl Render for HerdrWindow {
                             .debug_selector(|| "status-version".into())
                             .flex_none()
                             .whitespace_nowrap()
-                            .text_color(rgb(self.theme.muted))
                             .cursor_pointer()
                             .hover(|s| s.bg(rgb(self.theme.active)))
-                            .child(if matches!(self.updater.state(), updater::State::Available { .. } | updater::State::Ready { .. }) {
+                            // A waiting update is the one status here worth
+                            // interrupting for, so it takes the accent color
+                            // the rest of the chrome reserves for chosen rows.
+                            .text_color(rgb(if self.updater.update_available() {
+                                self.theme.primary()
+                            } else {
+                                self.theme.muted
+                            }))
+                            .child(if self.updater.update_available() {
                                 "Update available"
                             } else {
                                 APP_VERSION
@@ -1210,7 +1348,16 @@ fn menus() -> Vec<Menu> {
         },
         Menu {
             name: "Window".into(),
-            items: vec![MenuItem::action("GPUI Logs", ShowLogs)],
+            items: vec![
+                MenuItem::action(
+                    "New Window",
+                    RunCommand {
+                        command: Command::NewWindow,
+                    },
+                ),
+                MenuItem::separator(),
+                MenuItem::action("GPUI Logs", ShowLogs),
+            ],
         },
         Menu {
             name: "QA".into(),
@@ -1220,6 +1367,66 @@ fn menus() -> Vec<Menu> {
             ],
         },
     ]
+}
+
+/// Opens one main window onto `target`. Every window is an independent client
+/// of that daemon: its own connection, surface lease, and workspace focus.
+fn open_window(
+    target: ConnectTarget,
+    updater: updater::Updater,
+    cx: &mut App,
+    #[cfg(feature = "integration-test")] fixture: bool,
+) -> anyhow::Result<WindowHandle<HerdrWindow>> {
+    // Cascade rather than stack windows exactly, so a new one is visible at once.
+    let existing = cx
+        .windows()
+        .iter()
+        .filter(|handle| handle.downcast::<HerdrWindow>().is_some())
+        .count();
+    let step = px(28. * existing.min(6) as f32);
+    let mut bounds = Bounds::centered(None, size(px(1200.), px(780.)), cx);
+    bounds.origin += point(step, step);
+    cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_min_size: Some(size(px(640.), px(400.))),
+            titlebar: Some(titlebar::options(WINDOW_TITLE)),
+            app_id: Some("so.pen.herdr-gpui".into()),
+            ..Default::default()
+        },
+        |window, cx| {
+            cx.new(|cx| {
+                let mut view = HerdrWindow::new(
+                    target,
+                    window,
+                    cx,
+                    #[cfg(feature = "integration-test")]
+                    fixture,
+                );
+                view.updater = updater;
+                view
+            })
+        },
+    )
+}
+
+/// Opens another window from inside the focused window's own update.
+fn open_additional_window(target: ConnectTarget, cx: &mut App) {
+    cx.defer(move |cx| {
+        let opened = open_window(
+            target,
+            updater::Updater::secondary(),
+            cx,
+            #[cfg(feature = "integration-test")]
+            false,
+        );
+        match opened {
+            Ok(handle) => {
+                let _ = handle.update(cx, |_, window, _| window.activate_window());
+            }
+            Err(_) => tracing::error!("Unable to open an additional Herdr window"),
+        }
+    });
 }
 
 fn main() -> std::process::ExitCode {
@@ -1305,32 +1512,19 @@ fn run() -> std::process::ExitCode {
             }
         })
         .detach();
-        let bounds = Bounds::centered(None, size(px(1200.), px(780.)), cx);
-        let opened = cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(640.), px(400.))),
-                titlebar: Some(titlebar::options("Herdr")),
-                app_id: Some("so.pen.herdr-gpui".into()),
-                ..Default::default()
-            },
-            |window, cx| {
-                cx.new(|cx| {
-                    let mut view = HerdrWindow::new(
-                        target,
-                        window,
-                        cx,
-                        #[cfg(feature = "integration-test")]
-                        {
-                            sidebar_test || performance_test
-                        },
-                    );
-                    // Native test modes and CLI invocations never start an updater worker.
-                    if mode == LaunchMode::Normal {
-                        view.updater = updater::Updater::start();
-                    }
-                    view
-                })
+        // Native test modes and CLI invocations never start an updater worker.
+        let updater = if mode == LaunchMode::Normal {
+            updater::Updater::start()
+        } else {
+            updater::Updater::default()
+        };
+        let opened = open_window(
+            target,
+            updater,
+            cx,
+            #[cfg(feature = "integration-test")]
+            {
+                sidebar_test || performance_test
             },
         );
         match opened {

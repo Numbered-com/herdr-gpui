@@ -267,7 +267,7 @@ tests are included in the standalone harness, not disabled integration fixtures.
 
 ## Runtime And Recovery
 
-Release builds check on startup, every six hours while idle, and on request.
+Release builds check on startup, every hour while idle, and on request.
 Local builds without a valid release version and embedded key never check.
 Checking/downloading/extraction and subprocess waits run off the UI thread.
 Cancel is acknowledged after the current operation releases its staging resources;

@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum State {
@@ -90,6 +90,17 @@ impl Default for Updater {
 }
 
 impl Updater {
+    /// Additional windows never run a second update worker: two workers could
+    /// stage and restart the same installation at once.
+    pub(super) fn secondary() -> Self {
+        let mut updater = Self::default();
+        updater.state = State::Disabled(
+            "another window owns app updates in this process. Use the window that was open first."
+                .into(),
+        );
+        updater
+    }
+
     pub(super) fn start() -> Self {
         let mut updater = Self::default();
         let Some(key) = option_env!("HERDR_UPDATE_PUBLIC_KEY") else {
@@ -125,6 +136,12 @@ impl Updater {
 
     pub(super) fn state(&self) -> &State {
         &self.state
+    }
+
+    /// A newer release is waiting for the user, either still to download or
+    /// already staged. Transient checking/downloading states are not a result.
+    pub(super) fn update_available(&self) -> bool {
+        matches!(self.state, State::Available { .. } | State::Ready { .. })
     }
 
     fn send(&mut self, operation: Operation, state: State) {
@@ -348,6 +365,46 @@ pub(super) fn run_helper(args: &[OsString]) -> Option<ExitCode> {
 mod tests {
     use super::*;
     use anyhow::Context as _;
+
+    #[test]
+    fn only_a_waiting_release_marks_an_update_available() {
+        let mut updater = Updater::default();
+        for state in [
+            State::Disabled(String::new()),
+            State::Idle,
+            State::Checking,
+            State::Current,
+            State::Downloading {
+                received: 1,
+                total: 2,
+            },
+            State::Installing,
+            State::Cancelling,
+            State::Error(String::new()),
+        ] {
+            updater.state = state.clone();
+            assert!(!updater.update_available(), "{state:?} is not an update");
+        }
+        for state in [
+            State::Available {
+                version: "20260920.2".into(),
+            },
+            State::Ready {
+                version: "20260920.2".into(),
+            },
+        ] {
+            updater.state = state.clone();
+            assert!(updater.update_available(), "{state:?} is an update");
+        }
+    }
+
+    #[test]
+    fn scheduled_checks_run_hourly() {
+        assert_eq!(CHECK_INTERVAL, Duration::from_secs(60 * 60));
+        let updater = Updater::default();
+        assert!(updater.next_check > Instant::now());
+        assert!(updater.next_check <= Instant::now() + CHECK_INTERVAL);
+    }
 
     #[test]
     fn disabled_and_preview_services_never_queue_work() -> anyhow::Result<()> {

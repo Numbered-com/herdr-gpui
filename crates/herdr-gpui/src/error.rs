@@ -17,8 +17,6 @@ pub enum Error {
     DeletionLookup,
     #[error("Reopen the deletion dialog.")]
     MissingDeletion,
-    #[error("Type {0} to confirm.")]
-    DeletionConfirmation(&'static str),
     #[error("{method}: {source}")]
     Request {
         method: &'static str,

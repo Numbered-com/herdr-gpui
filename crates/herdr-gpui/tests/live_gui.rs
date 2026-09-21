@@ -143,6 +143,10 @@ fn native_gui_live() {
         "GUI did not verify native action, key, and text delivery"
     );
     assert!(
+        log.contains("GUI second window verified:") && log.contains("windows=2 first_space="),
+        "GUI did not verify a second window on its own space"
+    );
+    assert!(
         log.contains("GUI external workspace push verified:")
             && log.contains("bound_ms=3000 observation_poll_ms=100 unchanged_connection=true unchanged_focus=true no_refresh=true")
             && log.contains("3 workspaces / 4 tabs"),
