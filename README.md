@@ -50,7 +50,8 @@ on [Releases](https://github.com/penso/herdr-gpui/releases).
 ### From source
 
 Install Rust/rustup and, on macOS, the Xcode command-line tools. The repository
-pins Rust 1.96.1 and GPUI 0.2.2.
+pins Rust 1.96.1 and GPUI 0.2.2; the Rust version is declared in `rust-toolchain.toml`
+and mirrored in `mise.toml`, so `mise install` also provisions it.
 
 ```sh
 git clone https://github.com/penso/herdr-gpui.git
