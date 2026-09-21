@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
 pub enum Command {
+    NewWindow,
     Workspace,
     Tab,
     SplitRight,
@@ -42,6 +43,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         command: Command::Logs,
         label: "GPUI Logs",
         shortcut: "",
+    },
+    CommandInfo {
+        command: Command::NewWindow,
+        label: "New Window",
+        shortcut: "cmd-shift-n",
     },
     CommandInfo {
         command: Command::Workspace,
@@ -306,7 +312,8 @@ pub fn request(command: Command, snapshot: &ClientShellSnapshot) -> Option<(&'st
             })?;
             ("tab.focus", json!({"tab_id": target.tab_id}))
         }
-        Command::ToggleSidebar
+        Command::NewWindow
+        | Command::ToggleSidebar
         | Command::Settings
         | Command::Keybinds
         | Command::Themes
@@ -336,6 +343,7 @@ mod tests {
         use Command::*;
         let expected = [
             (Logs, ""),
+            (NewWindow, "cmd-shift-n"),
             (Workspace, "cmd-n"),
             (Tab, "cmd-t"),
             (SplitRight, "cmd-d"),
@@ -388,6 +396,7 @@ mod tests {
         let s = snapshot();
         for command in [
             Command::Logs,
+            Command::NewWindow,
             Command::ToggleSidebar,
             Command::Settings,
             Command::Keybinds,

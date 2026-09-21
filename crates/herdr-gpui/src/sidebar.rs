@@ -1133,7 +1133,7 @@ fn workspace_pr(
     cache.peek(key, branch).map(|pr| PrBadge::new(pr, theme))
 }
 
-fn workspace_label(workspace: &ClientShellWorkspace, indented: bool) -> &str {
+pub(super) fn workspace_label(workspace: &ClientShellWorkspace, indented: bool) -> &str {
     let branch = (indented && !workspace.custom_label)
         .then_some(workspace.branch.as_deref())
         .flatten()

@@ -1995,7 +1995,8 @@ impl HerdrWindow {
                 | Command::PreviousPane
                 | Command::TabNumber(_)
                 | Command::WorkspacePicker => 1,
-                Command::ToggleSidebar
+                Command::NewWindow
+                | Command::ToggleSidebar
                 | Command::Settings
                 | Command::Keybinds
                 | Command::Themes
