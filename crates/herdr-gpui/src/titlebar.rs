@@ -25,10 +25,11 @@ impl HerdrWindow {
     /// when no local checkout is tracked, so remote endpoints show no control
     /// that cannot act.
     ///
-    /// Two count groups can appear: what a commit would include right now, and
-    /// the prefetched pull request's own churn behind its number. The number
-    /// separates them, and it carries the same lifecycle color the sidebar
-    /// badge uses, so one pull request reads the same in both places.
+    /// One set of counts only, so two "+N -M" pairs can never sit side by side
+    /// meaning different things. A branch with a prefetched pull request shows
+    /// that pull request, exactly as its sidebar row does, and a dot when the
+    /// checkout also has uncommitted work; the popup says how much. A branch
+    /// without one shows what a commit would include right now.
     fn render_git_button(&self, cx: &mut Context<Self>) -> Option<Div> {
         self.git.tracked()?;
         let theme = &self.theme;
@@ -80,33 +81,8 @@ impl HerdrWindow {
                                     theme.muted
                                 })),
                         )
-                        .when_some(status.filter(|status| status.dirty()), |button, status| {
-                            button
-                                .child(
-                                    div()
-                                        .debug_selector(|| "titlebar-git-additions".into())
-                                        .text_color(rgb(theme.palette[2]))
-                                        .child(format!("+{}", status.additions)),
-                                )
-                                .child(
-                                    div()
-                                        .debug_selector(|| "titlebar-git-deletions".into())
-                                        .text_color(rgb(theme.palette[1]))
-                                        .child(format!("-{}", status.deletions)),
-                                )
-                                // Untracked files are staged by a commit too,
-                                // but have no diff against HEAD to count.
-                                .when(status.untracked > 0, |button| {
-                                    button.child(
-                                        div()
-                                            .debug_selector(|| "titlebar-git-untracked".into())
-                                            .text_color(rgb(theme.muted))
-                                            .child("*"),
-                                    )
-                                })
-                        })
-                        .when_some(pr, |button, (number, color, additions, deletions)| {
-                            button
+                        .map(|button| match pr {
+                            Some((number, color, additions, deletions)) => button
                                 .child(
                                     div()
                                         .debug_selector(|| "titlebar-git-pr".into())
@@ -141,6 +117,45 @@ impl HerdrWindow {
                                                 )),
                                         ),
                                 )
+                                // The pull request's churn is history; the dot
+                                // says work is still sitting in the checkout.
+                                .when(status.is_some_and(|status| status.dirty()), |button| {
+                                    button.child(
+                                        div()
+                                            .debug_selector(|| "titlebar-git-dirty".into())
+                                            .child("\u{2022}"),
+                                    )
+                                }),
+                            None => button.when_some(
+                                status.filter(|status| status.dirty()),
+                                |button, status| {
+                                    button
+                                        .child(
+                                            div()
+                                                .debug_selector(|| "titlebar-git-additions".into())
+                                                .text_color(rgb(theme.palette[2]))
+                                                .child(format!("+{}", status.additions)),
+                                        )
+                                        .child(
+                                            div()
+                                                .debug_selector(|| "titlebar-git-deletions".into())
+                                                .text_color(rgb(theme.palette[1]))
+                                                .child(format!("-{}", status.deletions)),
+                                        )
+                                        // Untracked files are staged by a commit
+                                        // too, but have no diff against HEAD.
+                                        .when(status.untracked > 0, |button| {
+                                            button.child(
+                                                div()
+                                                    .debug_selector(|| {
+                                                        "titlebar-git-untracked".into()
+                                                    })
+                                                    .text_color(rgb(theme.muted))
+                                                    .child("*"),
+                                            )
+                                        })
+                                },
+                            ),
                         })
                         .child(
                             svg()
@@ -449,7 +464,7 @@ mod git_button_tests {
     }
 
     #[gpui::test]
-    fn a_cached_pull_request_adds_its_number_and_churn(cx: &mut TestAppContext) {
+    fn a_cached_pull_request_replaces_the_uncommitted_counts(cx: &mut TestAppContext) {
         let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
         let input = Input {
             checkout: None,
@@ -481,14 +496,18 @@ mod git_button_tests {
             let _ = window.draw(cx);
         });
         let button = cx.debug_bounds("titlebar-git").unwrap();
-        let uncommitted = cx.debug_bounds("titlebar-git-additions").unwrap();
         let number = cx.debug_bounds("titlebar-git-pr").unwrap();
         let churn = cx.debug_bounds("titlebar-git-pr-lines").unwrap();
-        // The number separates the two count groups: what a commit would
-        // include, then the pull request's own churn.
-        assert!(uncommitted.right() <= number.left());
+        let dirty = cx.debug_bounds("titlebar-git-dirty").unwrap();
+        // One set of counts only: the pull request's, then a dot for the work
+        // still sitting in the checkout. Two "+N -M" pairs never sit together.
+        assert!(
+            cx.debug_bounds("titlebar-git-additions").is_none(),
+            "uncommitted counts give way to the pull request's"
+        );
         assert!(number.right() <= churn.left());
-        assert!(churn.right() <= button.right());
+        assert!(churn.right() <= dirty.left());
+        assert!(dirty.right() <= button.right());
         assert!(button.right() <= cx.debug_bounds("titlebar-avatar").unwrap().left());
         // Additions and deletions are separate spans so each keeps its own
         // color, as the sidebar badge paints them.
@@ -496,6 +515,35 @@ mod git_button_tests {
         let deletions = cx.debug_bounds("titlebar-git-pr-deletions").unwrap();
         assert!(churn.left() <= additions.left() && additions.right() <= deletions.left());
         assert!(deletions.right() <= churn.right());
+    }
+
+    #[gpui::test]
+    fn a_clean_checkout_with_a_pull_request_shows_no_dot(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        let input = Input {
+            checkout: None,
+            repo_key: "/fixture/agent-launcher/.git".into(),
+            branch: "develop".into(),
+        };
+        cx.simulate_resize(size(px(900.), px(600.)));
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.git = Git::fixture(input.clone(), Status::default());
+                view.menu.github = crate::github::Auth::connected_fixture();
+                view.menu.pr_cache.seed(
+                    input,
+                    crate::pull_request::fixture().unwrap(),
+                    std::time::Instant::now(),
+                );
+                cx.notify();
+            })
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            let _ = window.draw(cx);
+        });
+        assert!(cx.debug_bounds("titlebar-git-pr-lines").is_some());
+        assert!(cx.debug_bounds("titlebar-git-dirty").is_none());
     }
 }
 
