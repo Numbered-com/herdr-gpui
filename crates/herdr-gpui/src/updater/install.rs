@@ -1082,6 +1082,7 @@ pub(super) fn run_helper(args: &[OsString]) -> Option<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context as _;
     use flate2::{Compression, write::GzEncoder};
 
     fn archive(root: &Path, entries: &[(&str, u8, &str)]) -> anyhow::Result<PathBuf> {
@@ -1606,6 +1607,59 @@ mod tests {
                 &cancel,
             ),
             Err(Error::ValidationFailed(_))
+        ));
+        Ok(())
+    }
+
+    // csreq proves the text parses; this proves codesign accepts the exact
+    // argument shape `identity()` builds. Apple signs its own platform
+    // binaries, so `anchor apple` matches /bin/ls whenever codesign reads the
+    // argument as source text instead of a requirement file path.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn codesign_accepts_the_inline_requirement_form() -> anyhow::Result<()> {
+        let cancel = AtomicBool::new(false);
+        let verify = |requirement: String| {
+            output(
+                Command::new("/usr/bin/codesign")
+                    .args(["--verify", "--deep", "--strict", "-R"])
+                    .arg(requirement)
+                    .arg("/bin/ls"),
+                &cancel,
+            )
+        };
+        verify(format!("{}anchor apple", &REQUIREMENT[..1]))?;
+        assert!(matches!(
+            verify("anchor apple".to_owned()),
+            Err(Error::ValidationFailed(_))
+        ));
+        Ok(())
+    }
+
+    // End-to-end proof against a real Developer ID bundle: no fixture can
+    // satisfy the production requirement, so the installation is named
+    // explicitly and never discovered.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires an explicit HERDR_TEST_BUNDLE installed Herdr.app"]
+    fn installed_bundle_satisfies_the_designated_requirement() -> anyhow::Result<()> {
+        let cancel = AtomicBool::new(false);
+        let bundle = PathBuf::from(
+            env::var_os("HERDR_TEST_BUNDLE")
+                .context("set HERDR_TEST_BUNDLE to an explicit absolute Herdr.app")?,
+        );
+        let version = output(
+            Command::new("/usr/bin/plutil")
+                .args(["-extract", "CFBundleShortVersionString", "raw", "-o", "-"])
+                .arg(bundle.join("Contents/Info.plist")),
+            &cancel,
+        )?;
+        let (team, identifier) = identity(&bundle, version.trim(), &cancel)?;
+        assert_eq!(identifier, "so.pen.herdr-gpui");
+        assert!(!team.is_empty());
+        assert!(matches!(
+            identity(&bundle, "0.0.0", &cancel),
+            Err(Error::BundleVersion)
         ));
         Ok(())
     }
