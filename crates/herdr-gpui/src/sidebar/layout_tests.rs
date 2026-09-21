@@ -366,6 +366,8 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         sidebar_drag: None,
         sidebar_preferences: None,
         sidebar_modified: false,
+        agent_sort: Default::default(),
+        agent_sort_modified: false,
         avatars: None,
         #[cfg(feature = "integration-test")]
         input_probe: crate::smoke::InputProbe::default(),
@@ -1767,4 +1769,65 @@ fn the_sidebar_menu_stays_clear_of_the_window_chrome(cx: &mut gpui::TestAppConte
         cx.simulate_keystrokes("escape");
         cx.update(|window, cx| window.draw(cx).clear());
     }
+}
+
+#[gpui::test]
+fn the_agents_header_toggles_between_grouped_and_priority(cx: &mut gpui::TestAppContext) {
+    use crate::preferences::AgentSort;
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        crate::bind_keys(cx);
+        let view = cx.new(|cx| fixture_window(window, cx));
+        cx.observe(&view, |_, _, cx| cx.notify()).detach();
+        SidebarFixture(view)
+    });
+    let view = cx.update(|_, cx| fixture.read(cx).0.clone());
+    // The second agent wants attention; only priority floats it to the top.
+    cx.update(|_, cx| {
+        view.update(cx, |view, _| {
+            let snapshot = Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+            snapshot.agents[0].state_change_seq = 9;
+            snapshot.agents[1].agent_status = AgentStatus::Blocked;
+            snapshot.agents[1].state_change_seq = 1;
+        })
+    });
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear());
+    let (first, second) = (
+        "row-review",
+        "row-Investigate sidebar rendering and verify long agent labels",
+    );
+    let sort = cx.debug_bounds("agents-sort").unwrap();
+    let header = cx.debug_bounds("sidebar").unwrap();
+    // The label ends at the sidebar's inner edge, opposite the "agents" title.
+    assert_eq!(sort.right(), header.right() - px(13.));
+    for (expected, top) in [(AgentSort::Grouped, first), (AgentSort::Priority, second)] {
+        cx.update(|_, cx| {
+            assert_eq!(view.read(cx).agent_sort, expected);
+            let probes = &cx.global::<TextProbes>().0;
+            assert!(probes.contains_key(expected.label()), "{:?}", probes.keys());
+        });
+        let (a, b) = (
+            cx.debug_bounds(first).unwrap(),
+            cx.debug_bounds(second).unwrap(),
+        );
+        let ordered = if top == first {
+            a.top() < b.top()
+        } else {
+            b.top() < a.top()
+        };
+        assert!(ordered, "{expected:?}: {a:?} {b:?}");
+        cx.simulate_click(sort.center(), Default::default());
+        cx.update(|window, cx| {
+            cx.default_global::<TextProbes>().0.clear();
+            window.refresh();
+            window.draw(cx).clear();
+        });
+    }
+    // Toggling twice returns to the stored default without a daemon request.
+    cx.update(|_, cx| {
+        let view = view.read(cx);
+        assert_eq!(view.agent_sort, AgentSort::Grouped);
+        assert!(view.agent_sort_modified);
+    });
 }

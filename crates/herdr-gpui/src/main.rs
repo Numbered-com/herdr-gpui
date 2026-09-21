@@ -160,6 +160,9 @@ struct HerdrWindow {
     sidebar_drag: Option<(f32, f32)>,
     sidebar_preferences: Option<preferences::Preferences>,
     sidebar_modified: bool,
+    agent_sort: preferences::AgentSort,
+    /// Keeps a toggle made before the stored chrome arrives from being undone.
+    agent_sort_modified: bool,
     avatars: Option<avatars::Avatars>,
     #[cfg(feature = "integration-test")]
     input_probe: smoke::InputProbe,
@@ -207,11 +210,15 @@ impl HerdrWindow {
                         if this.avatars.as_mut().is_some_and(|avatars| avatars.poll()) {
                             cx.notify();
                         }
-                        if let Some(width) =
+                        if let Some(chrome) =
                             this.sidebar_preferences.as_mut().and_then(|p| p.loaded())
-                            && !this.sidebar_modified
                         {
-                            this.sidebar_width = width;
+                            if !this.sidebar_modified {
+                                this.sidebar_width = chrome.sidebar_width;
+                            }
+                            if !this.agent_sort_modified {
+                                this.agent_sort = chrome.agent_sort;
+                            }
                             cx.notify();
                         }
                         let old_pane = this
@@ -286,6 +293,8 @@ impl HerdrWindow {
             sidebar_drag: None,
             sidebar_preferences: None,
             sidebar_modified: false,
+            agent_sort: preferences::AgentSort::default(),
+            agent_sort_modified: false,
             avatars: None,
             #[cfg(feature = "integration-test")]
             input_probe: smoke::InputProbe::default(),

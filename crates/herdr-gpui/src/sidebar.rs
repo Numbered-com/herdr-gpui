@@ -32,8 +32,16 @@ pub(super) const LABEL_WIDTH: f32 =
 impl HerdrWindow {
     fn save_sidebar_width(&mut self) {
         self.sidebar_modified = true;
+        self.save_chrome();
+    }
+
+    /// One file holds the whole chrome, so every save carries both fields.
+    pub(super) fn save_chrome(&self) {
         if let Some(preferences) = &self.sidebar_preferences {
-            preferences.save(self.sidebar_width);
+            preferences.save(crate::preferences::Chrome {
+                sidebar_width: self.sidebar_width,
+                agent_sort: self.agent_sort,
+            });
         }
     }
 
@@ -265,7 +273,7 @@ impl HerdrWindow {
                     })),
                 );
             }
-            for agent in &snapshot.agents {
+            for agent in sorted_agents(&snapshot.agents, self.agent_sort) {
                 if selected && agent.focused {
                     highlighted[1] = Some(agent_count);
                 }
@@ -398,7 +406,11 @@ impl HerdrWindow {
                     .flex_1()
                     .min_h_0()
                     .overflow_hidden()
-                    .child(header("agents", font, theme))
+                    .child(
+                        header("agents", font, theme)
+                            .justify_between()
+                            .child(agents_sort(self, cx)),
+                    )
                     .child(agents),
             )
             .child(
@@ -493,6 +505,68 @@ fn header(label: &'static str, font: &FontConfig, theme: &Theme) -> Div {
         .text_size(px(font.size))
         .text_color(rgb(theme.muted))
         .child(label)
+}
+
+/// Upstream's agents panel ends its header with the current sort, which a
+/// click flips. An active agent view names itself there instead, and cannot be
+/// re-sorted, so the label is inert while one is on.
+fn agents_sort(window: &HerdrWindow, cx: &mut Context<HerdrWindow>) -> Stateful<Div> {
+    let theme = &window.theme;
+    let view = window
+        .live
+        .snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.agent_view_label.clone());
+    let label = view
+        .clone()
+        .unwrap_or_else(|| window.agent_sort.label().into());
+    div()
+        .id("agents-sort")
+        .debug_selector(|| "agents-sort".into())
+        .flex_none()
+        .min_w_0()
+        .truncate()
+        .text_color(rgb(theme.muted))
+        .when(view.is_none(), |sort| {
+            sort.cursor_pointer()
+                .hover(|style| style.text_color(rgb(theme.foreground)))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.agent_sort = this.agent_sort.toggled();
+                    this.agent_sort_modified = true;
+                    this.save_chrome();
+                    cx.notify();
+                }))
+        })
+        .child(label_text(&label))
+}
+
+/// Attention first, then the most recent change, as upstream orders it.
+fn status_priority(status: AgentStatus) -> u8 {
+    match status {
+        AgentStatus::Blocked => 4,
+        AgentStatus::Done => 3,
+        AgentStatus::Working => 2,
+        AgentStatus::Idle => 1,
+        AgentStatus::Unknown => 0,
+    }
+}
+
+/// The agents of one endpoint in the order the panel paints them.
+fn sorted_agents(
+    agents: &[ClientShellAgent],
+    sort: crate::preferences::AgentSort,
+) -> Vec<&ClientShellAgent> {
+    let mut ordered: Vec<_> = agents.iter().collect();
+    if sort == crate::preferences::AgentSort::Priority {
+        ordered.sort_by_key(|agent| {
+            (
+                std::cmp::Reverse(status_priority(agent.agent_status)),
+                std::cmp::Reverse(agent.state_change_seq),
+            )
+        });
+    }
+    ordered
 }
 
 /// Where a row sits in its worktree group, which decides whether the gutter
