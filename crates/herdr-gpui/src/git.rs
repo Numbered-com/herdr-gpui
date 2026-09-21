@@ -1,15 +1,18 @@
-//! Working-tree status and Git write operations for the focused checkout.
+//! Working-tree status and Git write operations for local checkouts.
 //!
 //! One worker thread owns every child process, so the UI thread only queues a
-//! request and reads the result on a later tick. Status is a read-only refresh
-//! of the focused workspace; commit, push and pull request creation are
-//! explicit user actions and are never retried or replayed automatically.
+//! request and reads the result on a later tick. The focused checkout gets a
+//! counted status; every other listed workspace gets a cheaper dirty probe,
+//! round-robin and rate limited, so the sidebar can mark uncommitted work
+//! without a process per row per frame. Commit, push and pull request creation
+//! are explicit user actions and are never retried or replayed automatically.
 use crate::{
     Error,
     pull_request::{Input, clean, local_checkout, origin_repository, run},
 };
 use secrecy::SecretString;
 use std::{
+    collections::VecDeque,
     process::Command,
     sync::{
         Arc,
@@ -24,6 +27,14 @@ use std::{
 /// checkout the chrome is actually showing.
 const REFRESH: Duration = Duration::from_secs(5);
 const ERROR_BACKOFF: Duration = Duration::from_secs(60);
+/// Rows the user is not working in change rarely and cost a process each, so
+/// they refresh slowly and a failure waits longer still.
+const PROBE_REFRESH: Duration = Duration::from_secs(30);
+const PROBE_BACKOFF: Duration = Duration::from_secs(300);
+/// One scan per second at most, and a bounded cache: a daemon listing hundreds
+/// of workspaces cannot turn into hundreds of queued probes.
+const SCAN_INTERVAL: Duration = Duration::from_secs(1);
+const CACHE_LIMIT: usize = 128;
 const STATUS_TIMEOUT: Duration = Duration::from_secs(15);
 /// Signing a commit or authenticating a push can wait on a hardware key.
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(180);
@@ -82,12 +93,25 @@ pub(super) struct Outcome {
 
 enum Job {
     Status,
+    /// Is there anything to commit? Cheaper than counting lines, and all a
+    /// sidebar row needs to show its dot.
+    Dirty,
     Run(Action, Option<Arc<SecretString>>),
 }
 
 enum Completion {
     Status(crate::Result<Status>),
+    Dirty(crate::Result<bool>),
     Action(crate::Result<Outcome>),
+}
+
+/// One listed checkout's probe. A failure is remembered as "unknown" rather
+/// than "clean", so a broken repository shows no dot instead of a wrong one.
+struct Probe {
+    input: Input,
+    dirty: Option<bool>,
+    due: Instant,
+    used: Instant,
 }
 
 struct Worker {
@@ -109,6 +133,9 @@ pub(super) struct Git {
     running: Option<Action>,
     error: Option<String>,
     outcome: Option<Outcome>,
+    probes: Vec<Probe>,
+    queue: VecDeque<Input>,
+    next_scan: Option<Instant>,
 }
 
 impl Drop for Git {
@@ -126,6 +153,13 @@ impl Git {
         git.input = Some(input);
         git.status = Some(status);
         git
+    }
+
+    /// Chrome fixture: a probe answer for a listed checkout, with no worker
+    /// and therefore no scheduled Git work.
+    #[cfg(test)]
+    pub fn seed_probe(&mut self, input: Input, dirty: bool, now: Instant) {
+        self.record_probe(input, Some(dirty), now);
     }
 
     pub fn tracked(&self) -> Option<&Input> {
@@ -174,6 +208,90 @@ impl Git {
         changed
     }
 
+    /// Does this checkout have anything to commit? `None` while unknown, so a
+    /// row shows nothing rather than claiming a clean tree. Pure cache read:
+    /// rendering never schedules Git work.
+    pub fn dirty(&self, repo_key: &str, branch: &str) -> Option<bool> {
+        if self
+            .input
+            .as_ref()
+            .is_some_and(|input| input.repo_key == repo_key && input.branch == branch)
+            && let Some(status) = self.status
+        {
+            return Some(status.dirty());
+        }
+        self.probes
+            .iter()
+            .find(|probe| probe.input.repo_key == repo_key && probe.input.branch == branch)
+            .and_then(|probe| probe.dirty)
+    }
+
+    /// Follow the listed checkouts: drop probes for workspaces that are gone
+    /// and queue the ones whose answer is missing or stale.
+    pub fn track_listed(
+        &mut self,
+        inputs: impl IntoIterator<Item = Input>,
+        refresh: bool,
+        now: Instant,
+    ) {
+        let mut listed = Vec::new();
+        for input in inputs.into_iter().take(CACHE_LIMIT) {
+            if !listed.contains(&input) {
+                listed.push(input);
+            }
+        }
+        self.probes.retain(|probe| listed.contains(&probe.input));
+        self.queue.retain(|input| listed.contains(input));
+        if !refresh || self.next_scan.is_some_and(|next| now < next) {
+            return;
+        }
+        self.next_scan = Some(now + SCAN_INTERVAL);
+        for input in listed {
+            // The focused checkout is counted by its own status refresh.
+            if self.input.as_ref() == Some(&input) || self.queue.contains(&input) {
+                continue;
+            }
+            if self
+                .probes
+                .iter()
+                .find(|probe| probe.input == input)
+                .is_none_or(|probe| now >= probe.due)
+            {
+                self.queue.push_back(input);
+            }
+        }
+    }
+
+    fn record_probe(&mut self, input: Input, dirty: Option<bool>, now: Instant) {
+        let due = now
+            + if dirty.is_some() {
+                PROBE_REFRESH
+            } else {
+                PROBE_BACKOFF
+            };
+        if let Some(probe) = self.probes.iter_mut().find(|probe| probe.input == input) {
+            probe.dirty = dirty;
+            probe.due = due;
+            probe.used = now;
+            return;
+        }
+        if self.probes.len() == CACHE_LIMIT
+            && let Some((index, _)) = self
+                .probes
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, probe)| probe.used)
+        {
+            self.probes.remove(index);
+        }
+        self.probes.push(Probe {
+            input,
+            dirty,
+            due,
+            used: now,
+        });
+    }
+
     /// Queue an explicit user action against the tracked checkout.
     pub fn start(&mut self, action: Action, token: Option<Arc<SecretString>>) -> crate::Result<()> {
         if self.running.is_some() {
@@ -218,6 +336,9 @@ impl Git {
                             }
                             self.due = Some(now + ERROR_BACKOFF);
                         }
+                        Completion::Dirty(result) => {
+                            self.record_probe(input, result.ok(), now);
+                        }
                         Completion::Action(result) => {
                             self.running = None;
                             match result {
@@ -242,6 +363,12 @@ impl Git {
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
+        }
+        if !self.busy
+            && self.waiting.is_none()
+            && let Some(input) = self.queue.pop_front()
+        {
+            self.waiting = Some((input, Job::Dirty));
         }
         if !self.busy
             && let Some((input, job)) = self.waiting.take()
@@ -302,6 +429,7 @@ fn execute(input: &Input, job: Job, cancelled: &impl Fn() -> bool) -> Completion
         Job::Status => {
             Completion::Status(status(input, Instant::now() + STATUS_TIMEOUT, cancelled))
         }
+        Job::Dirty => Completion::Dirty(dirty(input, Instant::now() + STATUS_TIMEOUT, cancelled)),
         // Writes are never cancelled: killing `git commit` or `git push`
         // halfway through can leave an index lock or a half-written ref behind,
         // so only their own deadline ends them.
@@ -316,6 +444,20 @@ fn status(
 ) -> crate::Result<Status> {
     let checkout = local_checkout(input, deadline, cancelled)?;
     checkout_status(&checkout, deadline, cancelled)
+}
+
+/// Porcelain output is machine readable and collapses untracked directories,
+/// so an unignored build directory stays one entry rather than thousands.
+fn dirty(input: &Input, deadline: Instant, cancelled: &impl Fn() -> bool) -> crate::Result<bool> {
+    let checkout = local_checkout(input, deadline, cancelled)?;
+    let status = git(
+        &checkout,
+        &["status", "--porcelain", "--untracked-files=normal", "-z"],
+        "read working tree state",
+        deadline,
+        cancelled,
+    )?;
+    Ok(!status.is_empty())
 }
 
 fn checkout_status(
@@ -724,6 +866,78 @@ mod tests {
                 .error()
                 .is_some_and(|error| error.contains("rejected"))
         );
+    }
+
+    #[test]
+    fn listed_checkouts_are_probed_round_robin_and_forgotten_when_they_go() {
+        let mut peer = Peer::new();
+        let now = Instant::now();
+        let listed = [input("feature"), input("other")];
+        peer.git.track(Some(input("feature")), true, now);
+        peer.git.track_listed(listed.clone(), true, now);
+        peer.git.poll(now);
+        // The focused checkout is counted by its own status, not probed twice.
+        let (requested, job) = peer.request();
+        assert_eq!(requested, input("feature"));
+        assert!(matches!(job, Job::Status));
+        peer.complete(requested, Completion::Status(Ok(status(1, 0, 0))), now);
+        assert_eq!(peer.git.dirty("/repo/.git", "feature"), Some(true));
+        peer.git.poll(now);
+        let (requested, job) = peer.request();
+        assert_eq!(requested, input("other"), "the rest are probed in turn");
+        assert!(matches!(job, Job::Dirty));
+        assert_eq!(
+            peer.git.dirty("/repo/.git", "other"),
+            None,
+            "unknown, not clean"
+        );
+        peer.complete(requested, Completion::Dirty(Ok(true)), now);
+        assert_eq!(peer.git.dirty("/repo/.git", "other"), Some(true));
+        // A failed probe is remembered as unknown and backs off further.
+        peer.git
+            .track_listed(listed.clone(), true, now + PROBE_REFRESH);
+        peer.git.poll(now + PROBE_REFRESH);
+        let (requested, _) = peer.request();
+        peer.complete(
+            requested,
+            Completion::Dirty(Err(Error::GitNoCheckout)),
+            now + PROBE_REFRESH,
+        );
+        assert_eq!(peer.git.dirty("/repo/.git", "other"), None);
+        let early = now + PROBE_REFRESH + PROBE_BACKOFF - Duration::from_secs(1);
+        peer.git.track_listed(listed.clone(), true, early);
+        peer.git.poll(early);
+        assert!(peer.incoming.try_recv().is_err(), "a failure waits longer");
+        let due = now + PROBE_REFRESH + PROBE_BACKOFF;
+        peer.git.track_listed(listed.clone(), false, due);
+        peer.git.poll(due);
+        assert!(
+            peer.incoming.try_recv().is_err(),
+            "an inactive window probes nothing"
+        );
+        peer.git.track_listed(listed, true, due);
+        peer.git.poll(due);
+        assert!(matches!(peer.request().1, Job::Dirty));
+        // A workspace that leaves the listing takes its answer with it.
+        peer.git
+            .track_listed([input("feature")], true, due + SCAN_INTERVAL);
+        assert_eq!(peer.git.dirty("/repo/.git", "other"), None);
+        assert!(peer.git.queue.is_empty());
+    }
+
+    #[test]
+    fn the_probe_cache_is_bounded() {
+        let mut git = Git::default();
+        let now = Instant::now();
+        let listed: Vec<_> = (0..CACHE_LIMIT + 10)
+            .map(|index| input(&format!("branch-{index}")))
+            .collect();
+        git.track_listed(listed.clone(), true, now);
+        assert_eq!(git.queue.len(), CACHE_LIMIT);
+        for (index, input) in listed.iter().enumerate() {
+            git.seed_probe(input.clone(), index.is_multiple_of(2), now);
+        }
+        assert_eq!(git.probes.len(), CACHE_LIMIT);
     }
 
     #[test]
