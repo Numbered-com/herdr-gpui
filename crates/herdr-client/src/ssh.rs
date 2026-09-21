@@ -1,6 +1,6 @@
 //! POSIX discovery/stdio bridge adapted from upstream remote/attach.rs.
 //! No installers, daemon restarts, SSH config edits, or trust-on-first-use.
-use crate::{Error, POLL, Result, catalog::validate_target, session_socket};
+use crate::{Error, Result, catalog::validate_target, limits::POLL, session_socket};
 use std::{
     io::{self, Read, Write},
     os::{fd::OwnedFd, unix::net::UnixStream},

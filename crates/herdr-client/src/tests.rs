@@ -1,6 +1,27 @@
 use super::*;
-use std::os::unix::net::UnixListener;
-
+use crate::{
+    Error, Result,
+    frame::FrameReader,
+    handle::HandleInner,
+    limits::{
+        COMMAND_CAPACITY, COMMAND_TIMEOUT, EVENT_CAPACITY, MAX_RESPONSE_BYTES, POLL, TIMEOUT,
+    },
+    options::validate_options,
+    protocol::{endpoint::*, *},
+    session::{Health, Pending, Session, run_connection},
+};
+use crossbeam_channel::bounded;
+use serde_json::{Value, json};
+use std::{
+    io::{self, Read, Write},
+    os::unix::net::{UnixListener, UnixStream},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
 const SNAPSHOT: &str =
     include_str!("../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json");
 const WELCOME: &str = include_str!("../../herdr-protocol/tests/fixtures/endpoint-welcome-v1.json");
