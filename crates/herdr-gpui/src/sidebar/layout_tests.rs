@@ -1539,20 +1539,40 @@ fn worktree_rows_wear_their_cached_pull_request(cx: &mut gpui::TestAppContext) {
     assert!(cx.debug_bounds("pr-sidebar-child").is_none());
     cx.update(|_, cx| {
         view.update(cx, |view, cx| {
-            let mut value = crate::pull_request::fixture().unwrap();
-            value.number = 7;
-            value.state = "MERGED".into();
-            value.additions = 23;
-            value.deletions = 342;
-            view.menu.pr_cache.seed(
-                crate::pull_request::Input {
-                    checkout: None,
-                    repo_key: "/fixture/agent-launcher/.git".into(),
-                    branch: "worktree/sidebar-child".into(),
-                },
-                value,
-                std::time::Instant::now(),
-            );
+            // A standalone checkout too, to compare with a collapsible group row.
+            let snapshot = Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+            snapshot.workspaces[0].worktree = Some(ClientShellWorktree {
+                key: "/fixture/solo/.git".into(),
+                label: "solo".into(),
+                is_linked_worktree: false,
+            });
+            let now = std::time::Instant::now();
+            for (key, branch, number, state, additions, deletions) in [
+                (
+                    "/fixture/agent-launcher/.git",
+                    "worktree/sidebar-child",
+                    7,
+                    "MERGED",
+                    23,
+                    342,
+                ),
+                ("/fixture/solo/.git", "main", 9, "OPEN", 4, 5),
+            ] {
+                let mut value = crate::pull_request::fixture().unwrap();
+                value.number = number;
+                value.state = state.into();
+                value.additions = additions;
+                value.deletions = deletions;
+                view.menu.pr_cache.seed(
+                    crate::pull_request::Input {
+                        checkout: None,
+                        repo_key: key.into(),
+                        branch: branch.into(),
+                    },
+                    value,
+                    now,
+                );
+            }
             cx.notify();
         })
     });
@@ -1568,9 +1588,11 @@ fn worktree_rows_wear_their_cached_pull_request(cx: &mut gpui::TestAppContext) {
     assert!(badge.right() <= row.right());
     assert!(name.right() <= badge.left());
     assert!(name.size.width < bare.size.width);
+    // A row that cannot collapse still lines its badge up with one that can.
+    assert_eq!(cx.debug_bounds("pr-herdr").unwrap().right(), badge.right());
     cx.update(|_, cx| {
         let probes = &cx.global::<TextProbes>().0;
-        for text in ["#7", "+23", "-342"] {
+        for text in ["#7", "+23", "-342", "#9", "+4", "-5"] {
             assert!(
                 probes.contains_key(text),
                 "missing {text}: {:?}",

@@ -544,6 +544,13 @@ fn row(
         .as_ref()
         .map(|badge| badge.width(font) + LABEL_GAP)
         .unwrap_or_default();
+    // Badges sit inside the collapse column, which every badged row reserves
+    // whether or not it can collapse, so they line up down the whole list.
+    let arrow_reserve = if reserve_arrow || pr.is_some() {
+        ARROW_RESERVE
+    } else {
+        0.
+    };
     let label_width = (width
         - 1.
         - 2. * ROW_PADDING
@@ -551,8 +558,8 @@ fn row(
         - LABEL_GAP
         - indent
         - pr_reserve
-        - if reserve_arrow { ARROW_RESERVE } else { 0. })
-    .max(0.);
+        - arrow_reserve)
+        .max(0.);
     div()
         .debug_selector(|| format!("row-{name}"))
         .h(px(2. * line_height(font) + 8.))
@@ -815,7 +822,8 @@ fn status_style(status: AgentStatus, theme: &Theme) -> (f32, bool, u32) {
     match status {
         AgentStatus::Working => (STATUS_WIDTH, true, theme.palette[3]),
         AgentStatus::Blocked => (STATUS_WIDTH, true, theme.palette[1]),
-        AgentStatus::Done => (STATUS_WIDTH, true, theme.palette[6]),
+        // Upstream paints "done" teal; ANSI 6 alone is purple in some themes.
+        AgentStatus::Done => (STATUS_WIDTH, true, theme.blue()),
         AgentStatus::Idle => (STATUS_WIDTH, false, theme.palette[2]),
         AgentStatus::Unknown => (STATUS_DOT_UNKNOWN, true, theme.muted),
     }
@@ -978,17 +986,26 @@ mod tests {
         theme.palette[1] = 0x112233;
         theme.palette[2] = 0x223344;
         theme.palette[3] = 0x334455;
+        // Done takes the cooler of the blue and cyan slots, whichever the theme
+        // actually paints blue: here cyan is warmer, so blue wins.
+        theme.palette[4] = 0x5566ff;
         theme.palette[6] = 0x667788;
         theme.muted = 0x778899;
         for (status, color) in [
             (AgentStatus::Blocked, 0x112233),
             (AgentStatus::Idle, 0x223344),
             (AgentStatus::Working, 0x334455),
-            (AgentStatus::Done, 0x667788),
+            (AgentStatus::Done, 0x5566ff),
             (AgentStatus::Unknown, 0x778899),
         ] {
             assert_eq!(status_style(status, &theme).2, color);
         }
+        theme.palette[4] = 0xcc66ff;
+        assert_eq!(
+            status_style(AgentStatus::Done, &theme).2,
+            theme.palette[6],
+            "a purple blue slot hands the dot to cyan"
+        );
     }
 
     #[test]
@@ -1017,7 +1034,7 @@ mod tests {
                 match status {
                     AgentStatus::Working => theme.palette[3],
                     AgentStatus::Blocked => theme.palette[1],
-                    AgentStatus::Done => theme.palette[6],
+                    AgentStatus::Done => theme.blue(),
                     AgentStatus::Idle => theme.palette[2],
                     AgentStatus::Unknown => theme.muted,
                 }

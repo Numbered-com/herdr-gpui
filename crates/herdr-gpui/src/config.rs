@@ -452,6 +452,16 @@ impl Theme {
         self.palette[5]
     }
 
+    /// The bluer of the theme's blue and cyan slots. Themes disagree about which
+    /// one reads blue: Xcode Dark paints ANSI 6 purple while its ANSI 4 is blue,
+    /// and Dracula does the reverse. Red content is what separates a purple from
+    /// a blue or a teal, so the slot carrying less of it wins.
+    pub fn blue(&self) -> u32 {
+        let red = |color: u32| (color >> 16) & 255;
+        let (blue, cyan) = (self.palette[4], self.palette[6]);
+        if red(cyan) < red(blue) { cyan } else { blue }
+    }
+
     /// A wash of [`Self::primary`] over the chrome, for filled selections such
     /// as the current tab. Large areas of the full accent shout; this keeps the
     /// hue while staying quiet enough to sit behind text all day.
