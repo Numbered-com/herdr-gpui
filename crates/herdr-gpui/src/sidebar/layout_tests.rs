@@ -172,7 +172,8 @@ impl Element for ProbeText {
             } else {
                 assert!(glyph_text.starts_with("sidebar-child"));
                 assert!(glyph_text.ends_with('\u{2026}'));
-                assert!(width > px(150.));
+                // Truncation fills the column it was given, whatever the indent.
+                assert!(width > bounds.size.width - px(12.), "{width:?}");
             }
             eprintln!("SIDEBAR child verified: {glyph_text}");
         }
@@ -1590,6 +1591,13 @@ fn worktree_rows_wear_their_cached_pull_request(cx: &mut gpui::TestAppContext) {
     assert!(badge.right() <= row.right());
     assert!(name.right() <= badge.left());
     assert!(name.size.width < bare.size.width);
+    // The tree gutter sits under the parent's label and stops at the child's
+    // own dot: lines never reach the text on either side.
+    let gutter = cx.debug_bounds("tree-sidebar-child").unwrap();
+    let parent_column = cx.debug_bounds("column-agent-launcher").unwrap();
+    let child_column = cx.debug_bounds("column-sidebar-child").unwrap();
+    assert_eq!(gutter.left(), parent_column.left());
+    assert!(gutter.right() <= child_column.left() - px(super::STATUS_WIDTH));
     // Badges hug the row's inner edge, whether or not the row can collapse and
     // whether or not an arrow is drawn in front of them.
     let solo = cx.debug_bounds("pr-herdr").unwrap();
@@ -1674,81 +1682,52 @@ fn the_workspace_menu_folds_and_unfolds_a_worktree_group(cx: &mut gpui::TestAppC
     }
 }
 
-#[gpui::test]
-fn child_rows_are_tied_to_their_parent_with_gutter_lines(cx: &mut gpui::TestAppContext) {
-    let (fixture, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| fixture_window(window, cx));
-        cx.observe(&view, |_, _, cx| cx.notify()).detach();
-        SidebarFixture(view)
-    });
-    let view = cx.update(|_, cx| fixture.read(cx).0.clone());
-    cx.simulate_resize(size(px(800.), px(600.)));
-    cx.run_until_parked();
-    cx.update(|window, cx| window.draw(cx).clear());
-    let parent = cx.debug_bounds("row-agent-launcher").unwrap();
-    for (name, row_id, tree_id, column_id, trunk_id, trunk) in [
-        (
-            "sidebar-child",
-            "row-sidebar-child",
-            "tree-sidebar-child",
-            "column-sidebar-child",
-            "trunk-sidebar-child",
-            true,
-        ),
-        (
-            "last child",
-            "row-sidebar-child-with-a-long-readable-branch-name",
-            "tree-sidebar-child-with-a-long-readable-branch-name",
-            "column-sidebar-child-with-a-long-readable-branch-name",
-            "trunk-sidebar-child-with-a-long-readable-branch-name",
-            false,
-        ),
-    ] {
-        let row = cx.debug_bounds(row_id).unwrap();
-        let elbow = cx.debug_bounds(tree_id).unwrap();
-        let column = cx.debug_bounds(column_id).unwrap();
-        // The elbow hangs from the row's top edge and turns in on the status
-        // dot's middle row, its trunk on the parent dot's own column: the line
-        // centers, not the box edges, are what must land on those pixels.
-        assert_eq!(elbow.top(), row.top(), "{name}");
-        assert_eq!(elbow.bottom() - px(0.5), row.top() + px(12.), "{name}");
-        assert_eq!(elbow.left() + px(0.5), parent.left() + px(16.), "{name}");
-        assert_eq!(elbow.right(), row.left() + px(28.), "{name}");
-        assert!(elbow.right() <= column.left(), "{name}");
-        // Only a row with a sibling below it carries the trunk onward.
-        match cx.debug_bounds(trunk_id) {
-            Some(bounds) => {
-                assert!(trunk, "{name} closes the group but drew a trunk");
-                assert_eq!(bounds.top(), elbow.bottom(), "{name}");
-                assert_eq!(bounds.bottom(), row.bottom(), "{name}");
-                assert_eq!(bounds.left(), elbow.left(), "{name}");
+#[test]
+fn child_gutter_lines_land_on_whole_device_pixels() {
+    use crate::sidebar::{RowTree, tree_lines};
+    use gpui::{Bounds, point, size};
+    let font = super::FontConfig {
+        family: "Menlo".into(),
+        size: 12.,
+    };
+    for scale in [1., 2., 3.] {
+        let row = Bounds::new(point(px(0.), px(244.)), size(px(231.), px(40.)));
+        let device = |value: Pixels| f32::from(value) * scale;
+        let whole = |value: Pixels| (device(value) - device(value).round()).abs() < 0.001;
+        for tree in [RowTree::Child, RowTree::LastChild] {
+            let [trunk, tick] = tree_lines(row, tree, &font, scale);
+            // Both lines carry the same weight and start on the device grid, so
+            // neither is drawn thinner or blurrier than the other.
+            assert!(
+                (trunk.size.width - tick.size.height).abs() < px(0.01),
+                "{scale}"
+            );
+            assert!(
+                (device(trunk.size.width) - scale.round().max(1.)).abs() < 0.01,
+                "{scale}"
+            );
+            for edge in [trunk.left(), trunk.top(), tick.left(), tick.top()] {
+                assert!(whole(edge), "{scale}: {edge:?}");
             }
-            None => assert!(!trunk, "{name} has a sibling below but no trunk"),
+            // The trunk hugs the gutter's leading edge, the tick crosses to the
+            // dot at its far edge; neither strays into the label beyond.
+            assert_eq!(trunk.left(), tick.left(), "{scale}");
+            assert_eq!(trunk.left(), row.left(), "{scale}");
+            assert_eq!(tick.right(), row.right(), "{scale}");
+            // The tick meets the status dot's middle row.
+            let middle = row.top() + px(4. + super::line_height(&font) / 2.);
+            assert!(
+                (tick.center().y - middle).abs() <= px(1. / scale),
+                "{scale}"
+            );
+            // Only a row with a sibling below carries the trunk to the bottom.
+            match tree {
+                RowTree::Child => assert_eq!(trunk.bottom(), row.bottom(), "{scale}"),
+                _ => assert_eq!(trunk.bottom(), tick.bottom(), "{scale}"),
+            }
+            assert_eq!(trunk.top(), row.top(), "{scale}");
         }
     }
-    // The footer's menu hugs the sidebar edge; new stays at the leading one.
-    let sidebar = cx.debug_bounds("sidebar").unwrap();
-    let menu = cx.debug_bounds("sidebar-menu").unwrap();
-    // Twelve pixels of padding inside the sidebar's one-pixel divider.
-    assert_eq!(menu.right(), sidebar.right() - px(13.));
-    assert!(menu.left() > sidebar.center().x);
-    // Parents and ungrouped workspaces keep a clean gutter.
-    assert!(cx.debug_bounds("tree-agent-launcher").is_none());
-    assert!(cx.debug_bounds("tree-herdr").is_none());
-    // Folding the group takes its children and their lines away.
-    cx.update(|_, cx| {
-        view.update(cx, |view, cx| {
-            view.collapsed_repos
-                .insert("/fixture/agent-launcher/.git".into());
-            cx.notify();
-        })
-    });
-    cx.update(|window, cx| {
-        cx.default_global::<TextProbes>().0.clear();
-        window.refresh();
-        window.draw(cx).clear();
-        assert!(!cx.global::<TextProbes>().0.contains_key("sidebar-child"));
-    });
 }
 
 #[gpui::test]

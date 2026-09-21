@@ -11,7 +11,10 @@ const STATUS_WIDTH: f32 = 8.;
 // Unknown stays a smaller dot so it reads as "no reported status" next to the full ones.
 const STATUS_DOT_UNKNOWN: f32 = 3.;
 pub(super) const LABEL_GAP: f32 = 8.;
-const CHILD_INDENT: f32 = 16.;
+// Children clear the gutter their tree lines run in, which starts at the
+// parent's label column so the trunk lines up under the parent's branch.
+const TREE_GUTTER: f32 = ROW_PADDING + STATUS_WIDTH + LABEL_GAP;
+const CHILD_INDENT: f32 = TREE_GUTTER - ROW_PADDING + 12.;
 pub(super) const ARROW_RESERVE: f32 = 18.;
 pub(super) const HOST_ARROW_WIDTH: f32 = 12.;
 pub(super) const HOST_GAP: f32 = 6.;
@@ -501,6 +504,42 @@ enum RowTree {
     LastChild,
 }
 
+/// Trunk and tick for a child row, given the gutter the row reserves between
+/// the parent's label column and the child's status dot. Snapped to whole
+/// device pixels and painted as quads rather than borders: a bordered box
+/// rounds each edge on its own, which left the trunk thinner than its tick.
+fn tree_lines(
+    gutter: Bounds<Pixels>,
+    tree: RowTree,
+    font: &FontConfig,
+    scale: f32,
+) -> [Bounds<Pixels>; 2] {
+    let device = |value: Pixels| f32::from(value) * scale;
+    let logical = |value: f32| px(value / scale);
+    let weight = scale.round().max(1.);
+    let snap = |value: Pixels| logical(device(value).round());
+    // The trunk runs down the gutter's leading edge; the tick crosses it at the
+    // status dot's middle row and stops where the dot begins.
+    let x = snap(gutter.origin.x);
+    let middle =
+        logical((device(gutter.origin.y + px(4. + line_height(font) / 2.)) - weight / 2.).round());
+    let end = if tree == RowTree::LastChild {
+        middle + logical(weight)
+    } else {
+        snap(gutter.bottom())
+    };
+    [
+        Bounds::from_corners(
+            point(x, snap(gutter.origin.y)),
+            point(x + logical(weight), end),
+        ),
+        Bounds::from_corners(
+            point(x, middle),
+            point(snap(gutter.right()), middle + logical(weight)),
+        ),
+    ]
+}
+
 /// Cached pull request state for a worktree row: the number carries the
 /// lifecycle color, the counts sit under it.
 struct PrBadge {
@@ -567,11 +606,6 @@ fn row(
     } else {
         CHILD_INDENT
     };
-    // Borders paint inside their box, so offset by half a pixel to put the line
-    // itself, not the box edge, on the parent's dot column and the child's dot
-    // row: the trunk drops from x, the tick arrives at the dot's vertical middle.
-    let trunk_x = ROW_PADDING + STATUS_WIDTH / 2. - 0.5;
-    let tick_y = 4. + line_height(font) / 2. + 0.5;
     let pr_reserve = pr
         .as_ref()
         .map(|badge| badge.width(font) + LABEL_GAP)
@@ -606,31 +640,27 @@ fn row(
         // Tree lines run in the indent the row already reserves, so a child is
         // tied to its parent without box-drawing glyphs in the label.
         .when(tree != RowTree::None, |row| {
+            let (color, font) = (theme.muted, font.clone());
             row.child(
                 div()
                     .debug_selector(|| format!("tree-{name}"))
                     .absolute()
-                    .left(px(trunk_x))
+                    // Between the parent's label column and this row's own dot.
+                    .left(px(TREE_GUTTER))
+                    .w(px(ROW_PADDING + CHILD_INDENT - TREE_GUTTER))
                     .top_0()
-                    // Ends on the dot's leading edge, where the indent runs out.
-                    .w(px(ROW_PADDING + CHILD_INDENT - trunk_x))
-                    .h(px(tick_y))
-                    .border_l_1()
-                    .border_b_1()
-                    .border_color(rgb(theme.muted)),
-            )
-        })
-        .when(tree == RowTree::Child, |row| {
-            row.child(
-                div()
-                    .debug_selector(|| format!("trunk-{name}"))
-                    .absolute()
-                    .left(px(trunk_x))
-                    .top(px(tick_y))
                     .bottom_0()
-                    .w(px(1.))
-                    .border_l_1()
-                    .border_color(rgb(theme.muted)),
+                    .child(
+                        canvas(
+                            |_, _, _| (),
+                            move |bounds, _, window, _| {
+                                for line in tree_lines(bounds, tree, &font, window.scale_factor()) {
+                                    window.paint_quad(fill(line, rgb(color)));
+                                }
+                            },
+                        )
+                        .size_full(),
+                    ),
             )
         })
         .child(status_indicator(status, font))
