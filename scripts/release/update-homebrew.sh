@@ -32,24 +32,30 @@ git check-ref-format "refs/heads/$branch"
 if [[ -f $temp/tap/Casks/herdr-gpui.rb ]]; then
     # Parse only a single literal version declaration; never evaluate tap Ruby.
     declaration=$(grep -E '^[[:blank:]]*version([[:blank:]]|$)' "$temp/tap/Casks/herdr-gpui.rb") || fail 'Missing existing cask version'
-    [[ $declaration =~ ^[[:blank:]]*version[[:blank:]]+\"([0-9]+\.[0-9]+\.[0-9]+)\"[[:blank:]]*$ ]] || fail 'Malformed existing cask version'
+    [[ $declaration =~ ^[[:blank:]]*version[[:blank:]]+\"([0-9.]+)\"[[:blank:]]*$ ]] || fail 'Malformed existing cask version'
     current_version=${BASH_REMATCH[1]}
-    version_check "$current_version"
-    IFS=. read -r -a current_parts <<< "$current_version"
-    IFS=. read -r -a next_parts <<< "$1"
-    for i in 0 1 2; do
-        current=${current_parts[$i]}
-        next=${next_parts[$i]}
-        # Length then lexical comparison avoids integer overflow for large components.
-        if [[ ${#next} -lt ${#current} || ( ${#next} -eq ${#current} && $next < $current ) ]]; then
-            fail "Refusing Homebrew downgrade from $current_version to $1"
+    if [[ $current_version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+        # One-time migration: the tap may still hold the pre-calendar X.Y.Z cask,
+        # which every calendar version supersedes, so there is no order to enforce.
+        printf '%s\n' "Replacing pre-calendar cask version $current_version"
+    else
+        version_check "$current_version"
+        IFS=. read -r -a current_parts <<< "$current_version"
+        IFS=. read -r -a next_parts <<< "$1"
+        for i in 0 1; do
+            current=${current_parts[$i]}
+            next=${next_parts[$i]}
+            # Length then lexical comparison avoids integer overflow for large components.
+            if [[ ${#next} -lt ${#current} || ( ${#next} -eq ${#current} && $next < $current ) ]]; then
+                fail "Refusing Homebrew downgrade from $current_version to $1"
+            fi
+            [[ $next == "$current" ]] || break
+        done
+        if [[ $1 == "$current_version" ]]; then
+            cmp -s -- "$2" "$temp/tap/Casks/herdr-gpui.rb" || fail 'Same cask version has different content; publish a new version'
+            printf '%s\n' 'Homebrew cask is already up to date'
+            exit 0
         fi
-        [[ $next == "$current" ]] || break
-    done
-    if [[ $1 == "$current_version" ]]; then
-        cmp -s -- "$2" "$temp/tap/Casks/herdr-gpui.rb" || fail 'Same cask version has different content; publish a new version'
-        printf '%s\n' 'Homebrew cask is already up to date'
-        exit 0
     fi
 fi
 mkdir -p "$temp/tap/Casks"

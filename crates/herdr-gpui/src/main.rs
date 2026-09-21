@@ -48,15 +48,17 @@ use std::sync::Arc;
 use std::time::Duration;
 use terminal::*;
 
-// Release builds embed the same tag used for the bundle and downloadable artifacts.
 // Even tab cells, as on herdr.dev, so short labels do not collapse to a sliver.
 const TAB_WIDTH: f32 = 64.;
 // The reference strip is a shallow band: chrome, not a toolbar.
 const TAB_HEIGHT: f32 = 24.;
 
+// Release builds embed the same calendar version (YYYYMMDD.COUNTER) used for the
+// tag, the bundle, and the downloadable artifacts. Local builds are not releases,
+// so they carry no version the updater or an issue report could act on.
 const APP_VERSION: &str = match option_env!("HERDR_RELEASE_VERSION") {
     Some(version) => version,
-    None => concat!("v", env!("CARGO_PKG_VERSION")),
+    None => "dev",
 };
 
 // Only the signed release pipeline sets that tag. Local `just run` and worktree

@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: bash scripts/gpg-sign-release.sh vX.Y.Z OUTPUT_DIR FULL_SIGNING_FINGERPRINT
+Usage: bash scripts/gpg-sign-release.sh vYYYYMMDD.COUNTER OUTPUT_DIR FULL_SIGNING_FINGERPRINT
 
 Download and verify immutable release assets, then create supplemental detached
 GPG signatures in OUTPUT_DIR/gpg/. OUTPUT_DIR must not exist. Nothing is uploaded
@@ -14,7 +14,7 @@ EOF
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then usage; exit 0; fi
 [[ $# == 3 ]] || { usage >&2; exit 1; }
 version=${1#v} output=$2 fingerprint=$3
-[[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 1
+[[ $version =~ ^[1-9][0-9]{7}\.[1-9][0-9]*$ ]] || exit 1
 [[ $fingerprint =~ ^([0-9A-F]{40}|[0-9A-F]{64})$ ]] || exit 1
 [[ ! -e $output && ! -L $output ]] || { echo 'Output already exists' >&2; exit 1; }
 scripts=$(cd -- "$(dirname -- "$0")" && pwd)

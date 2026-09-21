@@ -46,20 +46,21 @@ pub(super) struct Offer {
     pub(super) signature: Vec<u8>,
 }
 
-pub(super) fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = value.split('.');
-    let mut component = || {
-        let part = parts.next()?;
-        if part.is_empty()
-            || (part.len() > 1 && part.starts_with('0'))
-            || !part.bytes().all(|byte| byte.is_ascii_digit())
-        {
-            return None;
-        }
-        part.parse::<u64>().ok()
-    };
-    let version = (component()?, component()?, component()?);
-    parts.next().is_none().then_some(version)
+/// Releases are calendar versions: an eight-digit `YYYYMMDD` date and a same-day
+/// counter starting at 1. Both components compare numerically, so publication
+/// order is version order.
+pub(super) fn parse_version(value: &str) -> Option<(u64, u64)> {
+    let (date, counter) = value.split_once('.')?;
+    if date.len() != 8
+        || date.starts_with('0')
+        || !date.bytes().all(|byte| byte.is_ascii_digit())
+        || counter.is_empty()
+        || counter.starts_with('0')
+        || !counter.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((date.parse().ok()?, counter.parse().ok()?))
 }
 
 pub(super) fn target() -> Option<&'static str> {
@@ -552,10 +553,10 @@ mod tests {
     fn fixture() -> Manifest {
         Manifest {
             schema: 1,
-            version: "0.2.0".into(),
+            version: "20260920.2".into(),
             assets: vec![Asset {
                 target: "universal-apple-darwin".into(),
-                name: "herdr-gpui-0.2.0-macos-universal.app.tar.gz".into(),
+                name: "herdr-gpui-20260920.2-macos-universal.app.tar.gz".into(),
                 size: 3,
                 sha256: hex(&Sha256::digest(b"abc")),
             }],
@@ -568,48 +569,49 @@ mod tests {
             bytes,
             &key.sign(bytes).to_bytes(),
             &hex(key.verifying_key().as_bytes()),
-            "0.2.0",
+            "20260920.2",
         )
     }
 
     #[test]
-    fn versions_are_canonical_bounded_numeric_triples() {
-        for value in ["0.0.0", "0.2.0", "1.10.123", "18446744073709551615.0.0"] {
+    fn versions_are_canonical_bounded_calendar_versions() {
+        for value in ["20260920.1", "10000101.99", "99991231.18446744073709551615"] {
             assert!(parse_version(value).is_some(), "{value}");
         }
         for value in [
             "",
             "1",
             "1.2",
-            "1.2.3.4",
-            ".1.2",
-            "1..2",
-            "1.2.",
-            "01.2.3",
-            "1.02.3",
-            "1.2.03",
-            "v1.2.3",
-            "vv1.2.3",
-            "1.2.3-alpha",
-            "1.2.3+build",
-            "+1.2.3",
-            "-1.2.3",
-            " 1.2.3",
-            "1.2.3\n",
-            "１.2.3",
+            "1.2.3",
+            "20260920",
+            "20260920.",
+            "20260920.1.2",
+            ".20260920.1",
+            "2026092.1",
+            "202609201.1",
+            "02602092.1",
+            "20260920.0",
             "20260920.01",
-            "18446744073709551616.0.0",
-            "0.18446744073709551616.0",
-            "0.0.18446744073709551616",
+            "2026-09-20.1",
+            "v20260920.1",
+            "vv20260920.1",
+            "20260920.1-alpha",
+            "20260920.1+build",
+            "+20260920.1",
+            "-20260920.1",
+            " 20260920.1",
+            "20260920.1\n",
+            "２0260920.1",
+            "20260920.18446744073709551616",
         ] {
             assert!(parse_version(value).is_none(), "{value}");
         }
-        assert_eq!(parse_version("1.2.3"), Some((1, 2, 3)));
+        assert_eq!(parse_version("20260920.3"), Some((20260920, 3)));
         for (new, old) in [
-            ("0.2.0", "0.1.0"),
-            ("1.0.0", "0.99.99"),
-            ("0.10.0", "0.9.99"),
-            ("0.2.10", "0.2.9"),
+            ("20260920.2", "20260920.1"),
+            ("20260920.10", "20260920.9"),
+            ("20261005.1", "20260920.99"),
+            ("20270101.1", "20261231.4"),
         ] {
             assert!(parse_version(new) > parse_version(old));
         }
@@ -620,11 +622,11 @@ mod tests {
         for target in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
             let mut manifest = fixture();
             manifest.assets[0].target = target.into();
-            manifest.assets[0].name = format!("herdr-gpui-0.2.0-{target}-update.tar.gz");
+            manifest.assets[0].name = format!("herdr-gpui-20260920.2-{target}-update.tar.gz");
             assert_eq!(signed(&serde_json::to_vec(&manifest)?)?, manifest);
             for name in [
-                format!("herdr-gpui-0.2.0-{target}.tar.gz"),
-                format!("Herdr-0.2.0-{target}.tar.gz"),
+                format!("herdr-gpui-20260920.2-{target}.tar.gz"),
+                format!("Herdr-20260920.2-{target}.tar.gz"),
             ] {
                 manifest.assets[0].name = name;
                 assert!(matches!(
@@ -656,7 +658,7 @@ mod tests {
                 .is::<ed25519_dalek::SignatureError>()
         );
         assert!(matches!(
-            verify_manifest(&bytes, &signature, &public, "0.2.1"),
+            verify_manifest(&bytes, &signature, &public, "20260920.3"),
             Err(Error::ManifestVersion)
         ));
         let wrong_key = SigningKey::from_bytes(&[43; 32]);
@@ -732,7 +734,7 @@ mod tests {
         let mut value = serde_json::to_value(base)?;
         value["extra"] = true.into();
         assert!(signed(&serde_json::to_vec(&value)?).is_err());
-        assert!(signed(br#"{"schema":1,"schema":1,"version":"0.2.0","assets":[]}"#).is_err());
+        assert!(signed(br#"{"schema":1,"schema":1,"version":"20260920.2","assets":[]}"#).is_err());
         Ok(())
     }
 
@@ -853,27 +855,27 @@ mod tests {
 
     #[test]
     fn release_metadata_rejects_unstable_and_untrusted_names() -> anyhow::Result<()> {
-        let value = serde_json::json!({"tag_name":"v0.2.0", "draft":false, "prerelease":false, "assets":[{
+        let value = serde_json::json!({"tag_name":"v20260920.2", "draft":false, "prerelease":false, "assets":[{
             "name":"update-manifest.json", "size":100,
-            "browser_download_url":"https://github.com/penso/herdr-gpui/releases/download/v0.2.0/update-manifest.json"
+            "browser_download_url":"https://github.com/penso/herdr-gpui/releases/download/v20260920.2/update-manifest.json"
         }]});
         assert_eq!(
             parse_release(&serde_json::to_vec(&value)?)?.version,
-            "0.2.0"
+            "20260920.2"
         );
         for tag in [
-            "0.2.0",
-            "vv0.2.0",
-            "V0.2.0",
-            "v00.2.0",
-            "v0.2.0-rc.1",
+            "20260920.2",
+            "vv20260920.2",
+            "V20260920.2",
+            "v020260920.2",
+            "v20260920.2-rc.1",
             "v20260920.01",
         ] {
             let mut bad = value.clone();
             bad["tag_name"] = tag.into();
             assert!(parse_release(&serde_json::to_vec(&bad)?).is_err(), "{tag}");
         }
-        for tag in ["0.2.0", "vv0.2.0", "v0.1.0"] {
+        for tag in ["20260920.2", "vv20260920.2", "v20260920.1"] {
             let mut bad = value.clone();
             bad["assets"][0]["browser_download_url"] = format!(
                 "https://github.com/penso/herdr-gpui/releases/download/{tag}/update-manifest.json"

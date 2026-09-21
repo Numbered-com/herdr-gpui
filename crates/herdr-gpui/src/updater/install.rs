@@ -1419,7 +1419,7 @@ mod tests {
         let offer = release::Offer {
             manifest: release::Manifest {
                 schema: 1,
-                version: "0.2.0".into(),
+                version: "20260920.2".into(),
                 assets: vec![asset.clone()],
             },
             asset,
@@ -1797,7 +1797,7 @@ mod tests {
             header.set_cksum();
             archive.append_data(
                 &mut header,
-                "herdr-gpui-0.2.0-portable-test",
+                "herdr-gpui-20260920.2-portable-test",
                 expected_payload.as_slice(),
             )?;
             archive.into_inner()?.finish()?;
@@ -1814,7 +1814,7 @@ mod tests {
             let offer = release::Offer {
                 manifest: release::Manifest {
                     schema: 1,
-                    version: "0.2.0".into(),
+                    version: "20260920.2".into(),
                     assets: vec![asset.clone()],
                 },
                 asset,

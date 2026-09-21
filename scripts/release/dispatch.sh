@@ -3,9 +3,9 @@ set -euo pipefail
 
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
-[[ $# == 1 ]] || fail 'Usage: bash scripts/release/dispatch.sh X.Y.Z'
-version=$1
-[[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail 'Version must be X.Y.Z without leading zeros'
+# The workflow derives the calendar version from today's UTC date and the tags
+# already published; nothing here chooses or dispatches a version.
+[[ $# == 0 ]] || fail 'Usage: bash scripts/release/dispatch.sh'
 for command in git gh jq openssl; do
     command -v "$command" >/dev/null || fail "Required command: $command"
 done
@@ -24,11 +24,11 @@ repo=penso/herdr-gpui
 sha=$(git rev-parse HEAD)
 [[ "$(gh api "repos/$repo/git/ref/heads/main" --jq .object.sha)" == "$sha" ]] || fail 'HEAD does not match origin main on GitHub; no fetch or checkout was performed'
 
-# A nonce avoids confusing this dispatch with another run for the same version/SHA.
+# A nonce avoids confusing this dispatch with another run for the same SHA.
 request_id=$(openssl rand -hex 16)
-title="Release $version @ $sha [$request_id]"
+title="Release @ $sha [$request_id]"
 gh workflow run release.yml --repo "$repo" --ref main \
-    -f "VERSION=$version" -f "expected_sha=$sha" -f "request_id=$request_id"
+    -f "expected_sha=$sha" -f "request_id=$request_id"
 printf 'Dispatched %s\n' "$title"
 
 run_id=''
@@ -53,4 +53,5 @@ printf 'Watching https://github.com/%s/actions/runs/%s (protected jobs may await
 gh run watch "$run_id" --repo "$repo" --exit-status
 conclusion=$(gh run view "$run_id" --repo "$repo" --json conclusion --jq .conclusion)
 [[ "$conclusion" == success ]] || fail "Release run concluded: $conclusion"
-printf 'Release %s completed successfully.\n' "$version"
+published=$(gh api "repos/$repo/releases/latest" --jq .tag_name 2>/dev/null || printf 'unknown')
+printf 'Release %s completed successfully.\n' "$published"

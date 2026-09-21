@@ -24,7 +24,7 @@ SPEC.loader.exec_module(MANIFEST)
 SPEC = importlib.util.spec_from_file_location("sbom", ROOT / "scripts/release/generate-sbom.py")
 SBOM = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SBOM)
-VERSION = "0.1.0"
+VERSION = "20260920.1"
 
 
 class ReleaseTargets(unittest.TestCase):
@@ -113,6 +113,10 @@ class ReleaseTargets(unittest.TestCase):
         sections = re.split(r"^  ([a-z-]+):\n", workflow.split("\njobs:\n", 1)[1], flags=re.M)
         jobs = dict(zip(sections[1::2], sections[2::2]))
         self.assertIn("scripts/update-manifest.py validate-public-key", jobs["validate"])
+        # The publishable version is derived from GitHub's own tags, never dispatched.
+        self.assertNotIn("inputs.VERSION", workflow)
+        self.assertIn('python3 scripts/release/next-version.py "$(date -u +%Y%m%d)"', jobs["validate"])
+        self.assertIn('[[ "$version" =~ ^[1-9][0-9]{7}\\.[1-9][0-9]*$ ]]', jobs["validate"])
         for name in ("macos-build", "linux"):
             self.assertIn("HERDR_RELEASE_VERSION: ${{ needs.validate.outputs.version }}", jobs[name])
             self.assertIn("HERDR_UPDATE_PUBLIC_KEY: ${{ vars.HERDR_UPDATE_PUBLIC_KEY }}", jobs[name])
@@ -211,12 +215,12 @@ class ReleaseSecurity(unittest.TestCase):
     def test_complete_set_and_homebrew(self):
         self.run_manifest("verify")
         self.assertEqual(set(MANIFEST.base_names(VERSION)), {
-            "Herdr-0.1.0-universal-apple-darwin.dmg", "Herdr-0.1.0.cdx.json",
-            "Herdr-0.1.0-x86_64-unknown-linux-gnu.tar.gz",
-            "Herdr-0.1.0-aarch64-unknown-linux-gnu.tar.gz",
-            "herdr-gpui-0.1.0-macos-universal.app.tar.gz",
-            "herdr-gpui-0.1.0-x86_64-unknown-linux-gnu-update.tar.gz",
-            "herdr-gpui-0.1.0-aarch64-unknown-linux-gnu-update.tar.gz",
+            "Herdr-20260920.1-universal-apple-darwin.dmg", "Herdr-20260920.1.cdx.json",
+            "Herdr-20260920.1-x86_64-unknown-linux-gnu.tar.gz",
+            "Herdr-20260920.1-aarch64-unknown-linux-gnu.tar.gz",
+            "herdr-gpui-20260920.1-macos-universal.app.tar.gz",
+            "herdr-gpui-20260920.1-x86_64-unknown-linux-gnu-update.tar.gz",
+            "herdr-gpui-20260920.1-aarch64-unknown-linux-gnu-update.tar.gz",
             "update-manifest.json", "update-manifest.sig"})
         self.assertEqual(len((self.path / "SHA256SUMS").read_text().splitlines()), 45)
         self.assertEqual(len(self.run_manifest("names").splitlines()), 46)
@@ -265,7 +269,7 @@ class ReleaseSecurity(unittest.TestCase):
 
     def test_invalid_versions_and_missing_arguments(self):
         for script in ("verify-release.sh", "gpg-sign-release.sh"):
-            for args in (["--version"], ["--version", "20260920.01"], ["--version", "v01.2.3"]):
+            for args in (["--version"], ["--version", "20260920.01"], ["--version", "v020260920.1"]):
                 result = subprocess.run(["bash", str(ROOT / "scripts" / script), *args],
                                         capture_output=True)
                 self.assertNotEqual(result.returncode, 0)
@@ -352,7 +356,7 @@ fi
                        ATTEST_LOG=str(tools / "attest.log"), COSIGN_LOG=str(tools / "cosign.log"),
                        GPG_LOG=str(tools / "gpg.log"))
             command = ["bash", str(ROOT / "scripts/verify-release.sh"),
-                       "--version", "v0.1.0", "--directory", str(self.path)]
+                       "--version", "v20260920.1", "--directory", str(self.path)]
             for extra, updates, success in (
                 ([], {}, True),
                 (["--sha", "2" * 40], {}, False),

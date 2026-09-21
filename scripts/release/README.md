@@ -2,7 +2,8 @@
 
 Run with Bash; packaging scripts never build or execute the GUI, bundle a daemon,
 or publish artifacts. Output directories must already exist. Existing
-artifacts are refused. Versions must be numeric SemVer `X.Y.Z`, without `v`,
+artifacts are refused. Versions are calendar versions `YYYYMMDD.COUNTER`: an
+eight-digit UTC date and a same-day counter starting at 1, without `v`,
 prerelease/build suffixes, or leading zeros.
 
 ## Build Identity
@@ -248,11 +249,11 @@ signing prerequisites above. Install both targets explicitly first:
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 # Public key only, obtained from the reviewed repository Actions variable:
 export HERDR_UPDATE_PUBLIC_KEY=YOUR_64_LOWERCASE_HEX_PUBLIC_KEY
-just dmg 0.1.0
+just dmg 20260920.1
 ```
 
-The version must match the `herdr-gpui` manifest version inherited from
-`[workspace.package].version`. Builds use `--locked`, `--target-dir target`, and
+Any valid `YYYYMMDD.COUNTER` version works locally; only the release workflow
+derives and publishes versions. Builds use `--locked`, `--target-dir target`, and
 `MACOSX_DEPLOYMENT_TARGET=15.0` and `HERDR_RELEASE_VERSION=VERSION` on both targets.
 The caller must supply a valid `HERDR_UPDATE_PUBLIC_KEY` before building. All six
 Apple signing variables listed above and `HERDR_UPDATE_SIGNING_KEY` are removed

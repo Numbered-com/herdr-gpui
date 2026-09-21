@@ -6,7 +6,9 @@ resolver = "2"
 edition      = "2024"
 license      = "Apache-2.0"
 rust-version = "1.96"
-version      = "0.1.0"
+# Cargo metadata only. Releases carry a derived calendar version YYYYMMDD.COUNTER
+# that CI embeds as HERDR_RELEASE_VERSION; this value never reaches the UI.
+version = "0.1.0"
 # Workspace crates are not published to crates.io; they build this application.
 publish = false
 

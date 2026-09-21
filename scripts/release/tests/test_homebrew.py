@@ -13,16 +13,17 @@ SCRIPT = Path(__file__).resolve().parents[1] / "update-homebrew.sh"
 class HomebrewTests(unittest.TestCase):
     def test_publish_and_failures(self):
         existing_versions = {
-            "old-job-rerun": "1.2.4", "lower-minor": "1.10.0",
-            "lower-major": "2.0.0", "upgrade-patch": "1.2.2",
-            "upgrade-minor": "1.1.99", "upgrade-major": "0.99.99",
-            "upgrade-numeric": "1.9.99",
-            "large-component": "1.2.18446744073709551616",
-            "leading-zero": "01.2.3", "prerelease": "1.2.3-rc.1",
+            "old-job-rerun": "20260920.4", "lower-date": "20260921.1",
+            "lower-counter": "20260920.10", "upgrade-counter": "20260920.2",
+            "upgrade-date": "20260919.9", "upgrade-old-date": "20250101.1",
+            "upgrade-numeric": "20260920.9",
+            "large-component": "20260920.18446744073709551616",
+            "leading-zero": "020260920.3", "prerelease": "20260920.3-rc.1",
+            "legacy-semver": "0.1.0", "legacy-leading-zero": "01.2.3",
             "invalid-existing": "garbage",
         }
-        successes = ("publish", "unchanged", "upgrade-patch", "upgrade-minor", "upgrade-major",
-                     "upgrade-numeric")
+        successes = ("publish", "unchanged", "upgrade-counter", "upgrade-date",
+                     "upgrade-old-date", "upgrade-numeric", "legacy-semver")
         for case in ("publish", "unchanged", "missing-key", "bad-version", "symlink",
                      "curl", "clone", "push", "bad-meta", "directory", "diff-error",
                      "version-mismatch", "missing-cask", "changed-checksum", "changed-content",
@@ -49,35 +50,35 @@ class HomebrewTests(unittest.TestCase):
                 git("init", "--initial-branch=trunk", seed)
                 (seed / "README.md").write_text("Preserve this file\n")
                 cask = work / "rendered.rb"
-                cask.write_text('cask "herdr-gpui" do\n  version "1.2.3"\n  sha256 "' + "a" * 64 + '"\nend\n')
+                cask.write_text('cask "herdr-gpui" do\n  version "20260920.3"\n  sha256 "' + "a" * 64 + '"\nend\n')
                 if case in existing_versions or case in (
                         "unchanged", "changed-checksum", "changed-content", "missing-version",
                         "duplicate-version", "ruby-version"):
                     (seed / "Casks").mkdir()
                     content = cask.read_text()
                     if case in existing_versions:
-                        content = content.replace('"1.2.3"', '"' + existing_versions[case] + '"')
+                        content = content.replace('"20260920.3"', '"' + existing_versions[case] + '"')
                     elif case == "changed-checksum":
                         content = content.replace("a" * 64, "b" * 64)
                     elif case == "changed-content":
                         content += "# different content\n"
                     elif case == "missing-version":
-                        content = content.replace('  version "1.2.3"\n', "")
+                        content = content.replace('  version "20260920.3"\n', "")
                     elif case == "duplicate-version":
-                        content += '  version "1.2.3"\n'
+                        content += '  version "20260920.3"\n'
                     elif case == "ruby-version":
-                        content = content.replace('"1.2.3"', '`touch "' + str(work / "executed") + '"`')
+                        content = content.replace('"20260920.3"', '`touch "' + str(work / "executed") + '"`')
                     (seed / "Casks/herdr-gpui.rb").write_text(content)
-                version = "1.10.0" if case == "upgrade-numeric" else "1.2.3"
+                version = "20260920.10" if case == "upgrade-numeric" else "20260920.3"
                 if case == "upgrade-numeric":
-                    cask.write_text(cask.read_text().replace('"1.2.3"', '"1.10.0"'))
+                    cask.write_text(cask.read_text().replace('"20260920.3"', '"20260920.10"'))
                 if case == "symlink":
                     (seed / "Casks").symlink_to(".")
                 if case == "directory":
                     (seed / "Casks/herdr-gpui.rb").mkdir(parents=True)
                     (seed / "Casks/herdr-gpui.rb/keep").touch()
                 if case == "version-mismatch":
-                    cask.write_text('  version "9.9.9"\n')
+                    cask.write_text('  version "20260920.9"\n')
                 if case == "missing-cask":
                     cask.unlink()
                 git("-C", seed, "add", ".")
@@ -125,11 +126,13 @@ sys.exit(subprocess.call([os.environ["REAL_GIT"], *args]))
                 if case == "missing-key":
                     del env["HOMEBREW_TAP_SSH_KEY"]
                 result = subprocess.run(
-                    ["bash", str(SCRIPT), "01.2.3" if case == "bad-version" else version, str(cask)],
+                    ["bash", str(SCRIPT), "020260920.3" if case == "bad-version" else version, str(cask)],
                     env=env, text=True, capture_output=True, timeout=30)
                 self.assertEqual(result.returncode == 0, case in successes, result.stderr)
-                if case in ("old-job-rerun", "lower-minor", "lower-major", "large-component"):
+                if case in ("old-job-rerun", "lower-date", "lower-counter", "large-component"):
                     self.assertIn("Refusing Homebrew downgrade", result.stderr)
+                if case == "legacy-semver":
+                    self.assertIn("Replacing pre-calendar cask version 0.1.0", result.stdout)
                 if case in ("changed-checksum", "changed-content"):
                     self.assertIn("Same cask version has different content", result.stderr)
                 if case == "unchanged":

@@ -387,7 +387,7 @@ mod tests {
             &updater.mailbox,
             command.generation,
             State::Ready {
-                version: "0.2.0".into(),
+                version: "20260920.2".into(),
             },
             None,
         );
