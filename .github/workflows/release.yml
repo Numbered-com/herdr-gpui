@@ -384,7 +384,15 @@ jobs:
           name: release-sbom
           path: dist
       - run: python3 scripts/release/artifact-manifest.py base "$VERSION" dist
+      # cosign v3 makes the new bundle format the default: it ignores
+      # --output-signature/--output-certificate and writes a single .bundle
+      # instead. The published asset set, artifact-manifest.py and
+      # verify-release.sh are all defined in terms of the .sig/.crt sidecars, so
+      # pin the last v2 rather than silently changing what a release publishes.
+      # Migrating to bundles is a deliberate change to the verification contract.
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v2.6.5'
       # Deliberately execute the action from the already SHA-validated checkout.
       - uses: ./.github/actions/sign-artifacts # zizmor: ignore[self-repository]
         with:
