@@ -36,6 +36,7 @@ mod theme_picker;
 mod titlebar;
 mod update_panel;
 mod updater;
+mod worktree;
 mod worktree_banner;
 
 use connection::ConnectionBridge;
@@ -229,7 +230,7 @@ impl HerdrWindow {
                             .as_ref()
                             .and_then(|s| s.focused_pane_id.clone());
                         this.poll_endpoints(cx);
-                        this.update_deletion_dialog();
+                        this.update_workspace_dialog(window, cx);
                         this.poll_tab_rename(window, cx);
                         if old_pane
                             != this
