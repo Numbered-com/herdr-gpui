@@ -626,7 +626,11 @@ mod tests {
             window.draw(cx).clear();
         });
         // GPUI retains removed debug selectors; measure the remaining action panel.
-        assert!(cx.debug_bounds("menu-panel").unwrap().size.height < px(120.));
+        // Four action rows and nothing else: no PR section, no stale metadata.
+        let rows = cx.update(|_, cx| view.read(cx).workspace_menu_actions().len());
+        assert_eq!(rows, 4);
+        let panel = cx.debug_bounds("menu-panel").unwrap().size.height;
+        assert!(panel < px(35. * rows as f32), "{panel:?}");
     }
 
     /// Explicitly selected running daemon only: no start, focus, resize, input,

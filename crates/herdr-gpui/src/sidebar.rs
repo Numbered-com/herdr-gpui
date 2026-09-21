@@ -575,7 +575,7 @@ fn row(
         .cursor_pointer()
         .when(focused, |s| s.bg(rgb(theme.active)))
         .hover(|s| s.bg(rgb(theme.active)))
-        .child(status_indicator(status, font, theme))
+        .child(status_indicator(status, font))
         .child(
             div()
                 .flex()
@@ -798,9 +798,9 @@ fn workspace_label(workspace: &ClientShellWorkspace, indented: bool) -> &str {
     first_text([branch, Some(&workspace.label)], "workspace")
 }
 
-fn status_indicator(status: AgentStatus, font: &FontConfig, theme: &Theme) -> Div {
+fn status_indicator(status: AgentStatus, font: &FontConfig) -> Div {
     // Upstream dots: working/blocked/done filled, idle hollow, unknown a small dot.
-    let (diameter, filled, color) = status_style(status, theme);
+    let (diameter, filled, color) = status_style(status);
     div()
         .size(px(STATUS_WIDTH))
         .mt(px((line_height(font) - STATUS_WIDTH) / 2.))
@@ -818,14 +818,17 @@ fn status_indicator(status: AgentStatus, font: &FontConfig, theme: &Theme) -> Di
         )
 }
 
-fn status_style(status: AgentStatus, theme: &Theme) -> (f32, bool, u32) {
+/// Upstream draws status from its own palette, defaulting to Catppuccin Mocha,
+/// and never from the terminal's ANSI colors. Matching those literals keeps a
+/// dot the same color in both clients whatever terminal theme is loaded, where
+/// ANSI slots would drift: Xcode Dark paints its cyan purple.
+fn status_style(status: AgentStatus) -> (f32, bool, u32) {
     match status {
-        AgentStatus::Working => (STATUS_WIDTH, true, theme.palette[3]),
-        AgentStatus::Blocked => (STATUS_WIDTH, true, theme.palette[1]),
-        // Upstream paints "done" teal; ANSI 6 alone is purple in some themes.
-        AgentStatus::Done => (STATUS_WIDTH, true, theme.blue()),
-        AgentStatus::Idle => (STATUS_WIDTH, false, theme.palette[2]),
-        AgentStatus::Unknown => (STATUS_DOT_UNKNOWN, true, theme.muted),
+        AgentStatus::Working => (STATUS_WIDTH, true, 0xf9e2af),
+        AgentStatus::Blocked => (STATUS_WIDTH, true, 0xf38ba8),
+        AgentStatus::Done => (STATUS_WIDTH, true, 0x94e2d5),
+        AgentStatus::Idle => (STATUS_WIDTH, false, 0xa6e3a1),
+        AgentStatus::Unknown => (STATUS_DOT_UNKNOWN, true, 0x6c7086),
     }
 }
 
@@ -981,31 +984,34 @@ mod tests {
     }
 
     #[test]
-    fn status_colors_follow_the_supplied_theme() {
-        let mut theme = crate::config::Theme::default();
-        theme.palette[1] = 0x112233;
-        theme.palette[2] = 0x223344;
-        theme.palette[3] = 0x334455;
-        // Done takes the cooler of the blue and cyan slots, whichever the theme
-        // actually paints blue: here cyan is warmer, so blue wins.
-        theme.palette[4] = 0x5566ff;
-        theme.palette[6] = 0x667788;
-        theme.muted = 0x778899;
+    fn status_colors_match_upstream_and_ignore_the_theme() {
+        // The literals are upstream's default palette (Catppuccin Mocha), which
+        // its status dots use whatever terminal colors are loaded.
         for (status, color) in [
-            (AgentStatus::Blocked, 0x112233),
-            (AgentStatus::Idle, 0x223344),
-            (AgentStatus::Working, 0x334455),
-            (AgentStatus::Done, 0x5566ff),
-            (AgentStatus::Unknown, 0x778899),
+            (AgentStatus::Working, 0xf9e2af),
+            (AgentStatus::Blocked, 0xf38ba8),
+            (AgentStatus::Done, 0x94e2d5),
+            (AgentStatus::Idle, 0xa6e3a1),
+            (AgentStatus::Unknown, 0x6c7086),
         ] {
-            assert_eq!(status_style(status, &theme).2, color);
+            assert_eq!(status_style(status).2, color);
         }
-        theme.palette[4] = 0xcc66ff;
-        assert_eq!(
-            status_style(AgentStatus::Done, &theme).2,
-            theme.palette[6],
-            "a purple blue slot hands the dot to cyan"
-        );
+        for name in crate::config::Theme::BUILTIN_NAMES {
+            let theme = crate::config::Theme::builtin(name).unwrap();
+            for status in [
+                AgentStatus::Working,
+                AgentStatus::Blocked,
+                AgentStatus::Done,
+                AgentStatus::Idle,
+                AgentStatus::Unknown,
+            ] {
+                let color = status_style(status).2;
+                assert!(
+                    !theme.palette.contains(&color) || theme.palette[..16].contains(&color),
+                    "{name}: dots must not be read out of the theme"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1027,16 +1033,15 @@ mod tests {
             let agent: ClientShellAgent = serde_json::from_value(value).unwrap();
             assert_eq!(agent.agent_status, status);
             assert_eq!(serde_json::to_value(status).unwrap(), wire);
-            let theme = crate::config::Theme::default();
-            let (diameter, filled, color) = status_style(status, &theme);
+            let (diameter, filled, color) = status_style(status);
             assert_eq!(
                 color,
                 match status {
-                    AgentStatus::Working => theme.palette[3],
-                    AgentStatus::Blocked => theme.palette[1],
-                    AgentStatus::Done => theme.blue(),
-                    AgentStatus::Idle => theme.palette[2],
-                    AgentStatus::Unknown => theme.muted,
+                    AgentStatus::Working => 0xf9e2af,
+                    AgentStatus::Blocked => 0xf38ba8,
+                    AgentStatus::Done => 0x94e2d5,
+                    AgentStatus::Idle => 0xa6e3a1,
+                    AgentStatus::Unknown => 0x6c7086,
                 }
             );
             assert_eq!(filled, status != AgentStatus::Idle);

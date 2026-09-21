@@ -34,22 +34,30 @@ pub(super) enum WorkspaceAction {
     DeleteWorktree,
 }
 
-impl WorkspaceAction {
-    /// Embedded icon for the row, so each action is recognizable before reading.
-    fn icon(self) -> &'static str {
-        match self {
-            Self::Rename => "icons/pencil.svg",
-            Self::Close => "icons/close.svg",
-            Self::NewWorktree => "icons/plus.svg",
-            Self::DeleteWorktree => "icons/trash.svg",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WorkspaceMenuAction {
     Dialog(WorkspaceAction),
+    /// Fold or unfold the worktree group this workspace heads. Applied at once:
+    /// it changes only the sidebar's own view, never the daemon's state.
+    Collapse,
+    Expand,
     PullRequest,
+}
+
+impl WorkspaceMenuAction {
+    /// Embedded icon for the row, so each action is recognizable before reading.
+    /// The pull request section draws its own header rather than a menu row.
+    fn icon(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Dialog(WorkspaceAction::Rename) => "icons/pencil.svg",
+            Self::Dialog(WorkspaceAction::Close) => "icons/close.svg",
+            Self::Dialog(WorkspaceAction::NewWorktree) => "icons/plus.svg",
+            Self::Dialog(WorkspaceAction::DeleteWorktree) => "icons/trash.svg",
+            Self::Collapse => "icons/chevron-up.svg",
+            Self::Expand => "icons/chevron-down.svg",
+            Self::PullRequest => return None,
+        })
+    }
 }
 
 struct WorkspaceTarget {
@@ -83,6 +91,14 @@ impl WorkspaceTarget {
         self.worktree
             .as_ref()
             .is_some_and(|tree| tree.is_linked_worktree)
+    }
+
+    /// The worktree key this workspace heads, when other checkouts hang off it.
+    fn group_key(&self) -> Option<&str> {
+        self.worktree
+            .as_ref()
+            .filter(|tree| !tree.is_linked_worktree && self.close_members.len() > 1)
+            .map(|tree| tree.key.as_str())
     }
 
     fn close_label(&self) -> &'static str {
@@ -492,21 +508,64 @@ impl HerdrWindow {
         cx.notify();
     }
 
-    fn workspace_items(&self) -> Vec<(WorkspaceAction, &'static str)> {
+    fn workspace_items(&self) -> Vec<(WorkspaceMenuAction, &'static str)> {
+        use WorkspaceMenuAction::Dialog;
         let Some(target) = &self.menu.target else {
             return vec![];
         };
         let mut items = vec![
-            (WorkspaceAction::Rename, "Rename"),
-            (WorkspaceAction::Close, target.close_label()),
+            (Dialog(WorkspaceAction::Rename), "Rename"),
+            (Dialog(WorkspaceAction::Close), target.close_label()),
         ];
         if target.can_create() {
-            items.push((WorkspaceAction::NewWorktree, "New worktree"));
+            items.push((Dialog(WorkspaceAction::NewWorktree), "New worktree"));
         }
         if target.can_delete() {
-            items.push((WorkspaceAction::DeleteWorktree, "Delete worktree checkout"));
+            items.push((
+                Dialog(WorkspaceAction::DeleteWorktree),
+                "Delete worktree checkout",
+            ));
+        }
+        // Only a workspace that heads a group of checkouts can fold anything.
+        if let Some(key) = target.group_key() {
+            items.push(if self.collapsed_repos_for_selection().contains(key) {
+                (WorkspaceMenuAction::Expand, "Expand group")
+            } else {
+                (WorkspaceMenuAction::Collapse, "Collapse group")
+            });
         }
         items
+    }
+
+    /// The collapsed set the sidebar paints for the selected endpoint.
+    fn collapsed_repos_for_selection(&self) -> &std::collections::HashSet<String> {
+        if self.selected_endpoint == 0 {
+            &self.collapsed_repos
+        } else {
+            &self.endpoints[self.selected_endpoint].collapsed_repos
+        }
+    }
+
+    fn toggle_selected_group(&mut self, cx: &mut Context<Self>) {
+        let Some(key) = self
+            .menu
+            .target
+            .as_ref()
+            .and_then(|target| target.group_key())
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        let collapsed = if self.selected_endpoint == 0 {
+            &mut self.collapsed_repos
+        } else {
+            &mut self.endpoints[self.selected_endpoint].collapsed_repos
+        };
+        if !collapsed.remove(&key) {
+            collapsed.insert(key);
+        }
+        self.menu.reset();
+        cx.notify();
     }
 
     fn open_workspace_dialog(&mut self, action: WorkspaceAction, cx: &mut Context<Self>) {
@@ -545,7 +604,7 @@ impl HerdrWindow {
         let mut actions: Vec<_> = self
             .workspace_items()
             .into_iter()
-            .map(|(action, _)| WorkspaceMenuAction::Dialog(action))
+            .map(|(action, _)| action)
             .collect();
         if self.menu.github.connected() && self.menu.pr.value.is_some() {
             actions.push(WorkspaceMenuAction::PullRequest);
@@ -556,6 +615,9 @@ impl HerdrWindow {
     fn activate_workspace_menu(&mut self, action: WorkspaceMenuAction, cx: &mut Context<Self>) {
         match action {
             WorkspaceMenuAction::Dialog(action) => self.open_workspace_dialog(action, cx),
+            WorkspaceMenuAction::Collapse | WorkspaceMenuAction::Expand => {
+                self.toggle_selected_group(cx)
+            }
             WorkspaceMenuAction::PullRequest => self.open_workspace_pr(cx),
         }
     }
@@ -909,8 +971,7 @@ impl HerdrWindow {
         } else if page == Page::GitHub {
             panel = panel.child(self.render_github_auth(cx));
         } else if page == Page::Workspace {
-            for (item, label) in self.workspace_items() {
-                let action = WorkspaceMenuAction::Dialog(item);
+            for (action, label) in self.workspace_items() {
                 panel = panel.child(
                     div()
                         .id(label)
@@ -933,14 +994,16 @@ impl HerdrWindow {
                             }
                             cx.notify();
                         }))
-                        .child(
-                            svg()
-                                .path(item.icon())
-                                .debug_selector(move || format!("workspace-menu-icon-{label}"))
-                                .size(px(14.))
-                                .flex_none()
-                                .text_color(rgb(theme.muted)),
-                        )
+                        .when_some(action.icon(), |row, icon| {
+                            row.child(
+                                svg()
+                                    .path(icon)
+                                    .debug_selector(move || format!("workspace-menu-icon-{label}"))
+                                    .size(px(14.))
+                                    .flex_none()
+                                    .text_color(rgb(theme.muted)),
+                            )
+                        })
                         .child(label)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
