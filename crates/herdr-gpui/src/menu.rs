@@ -990,12 +990,6 @@ impl HerdrWindow {
             WorkspaceAction::DeleteWorktree if force => "Force delete",
             WorkspaceAction::DeleteWorktree => "Delete checkout",
         };
-        let verb = match action {
-            WorkspaceAction::Rename => "rename",
-            WorkspaceAction::Close => "close",
-            WorkspaceAction::NewWorktree => "create",
-            WorkspaceAction::DeleteWorktree => "confirm",
-        };
         let caption = |text: String| {
             div()
                 .text_color(rgb(theme.muted))
@@ -1166,12 +1160,6 @@ impl HerdrWindow {
                                 this.submit_workspace_dialog(window, cx);
                             })),
                     ),
-            )
-            .child(
-                div()
-                    .text_color(rgb(theme.muted))
-                    .text_size(px(font.size * 0.9))
-                    .child(format!("Enter to {verb}. Escape to cancel.")),
             )
     }
 
