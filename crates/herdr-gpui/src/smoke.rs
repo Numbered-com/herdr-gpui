@@ -55,9 +55,6 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         .update(cx, |_, cx| cx.notify());
                     window.refresh();
                     window.draw(cx).clear();
-                    if frame > 0 && sidebar::GITHUB_ICON.clone().use_render_image(window, cx).is_none() {
-                        bail!("embedded GitHub SVG did not render");
-                    }
                     let probes = &cx.global::<PaintedProbes>().0;
                     let mut failed = false;
                     for input in [

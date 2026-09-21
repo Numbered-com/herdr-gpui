@@ -5,7 +5,7 @@ use herdr_client::protocol::{
     AgentStatus, ClientShellAgent, ClientShellSnapshot, ClientShellWorkspace,
 };
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 const SIDEBAR_WIDTH: f32 = 232.;
 const ROW_PADDING: f32 = 12.;
@@ -21,12 +21,23 @@ pub(super) const ARROW_RESERVE: f32 = 18.;
 pub(super) const HOST_ARROW_WIDTH: f32 = 12.;
 pub(super) const HOST_GAP: f32 = 6.;
 pub(super) const ICON_RESERVE: f32 = 18.;
-pub(super) static GITHUB_ICON: LazyLock<Arc<Image>> = LazyLock::new(|| {
-    Arc::new(Image::from_bytes(
-        ImageFormat::Svg,
-        include_bytes!("../../../assets/icons/github.svg").to_vec(),
-    ))
-});
+/// What a row shows in its leading icon slot: a repository owner's avatar when
+/// one is cached, the GitHub mark while it is not, and nothing for the child
+/// rows that reserve no slot at all.
+enum RowIcon {
+    None,
+    Mark,
+    Avatar(Arc<Image>),
+}
+
+/// The mark paints as vector rather than a rasterized image, so it stays sharp
+/// at every size it stands in for an avatar.
+pub(super) fn github_mark(color: u32) -> Svg {
+    svg()
+        .path("icons/github.svg")
+        .flex_none()
+        .text_color(rgb(color))
+}
 #[cfg(any(test, feature = "integration-test"))]
 pub(super) const LABEL_WIDTH: f32 =
     SIDEBAR_WIDTH - 1. - 2. * ROW_PADDING - STATUS_WIDTH - LABEL_GAP;
@@ -242,13 +253,15 @@ impl HerdrWindow {
                         tree,
                         reserve_arrow,
                         width,
-                        (!indented).then(|| {
+                        if indented {
+                            RowIcon::None
+                        } else {
                             self.avatars
                                 .as_ref()
                                 .filter(|_| endpoint_index == 0)
                                 .and_then(|avatars| avatars.image(&workspace.new_workspace_cwd))
-                                .unwrap_or_else(|| GITHUB_ICON.clone())
-                        }),
+                                .map_or(RowIcon::Mark, RowIcon::Avatar)
+                        },
                         arrow,
                         workspace_pr(workspace, &self.menu.pr_cache, theme),
                         (font, theme),
@@ -299,7 +312,7 @@ impl HerdrWindow {
                         RowTree::None,
                         false,
                         width,
-                        None,
+                        RowIcon::None,
                         None,
                         None,
                         (font, theme),
@@ -797,18 +810,18 @@ fn row(
     tree: RowTree,
     reserve_arrow: bool,
     width: f32,
-    workspace_icon: Option<Arc<Image>>,
+    workspace_icon: RowIcon,
     arrow: Option<Stateful<Div>>,
     pr: Option<PrBadge>,
     appearance: (&FontConfig, &Theme),
 ) -> Div {
     let (font, theme) = appearance;
     let (name_color, weight, detail_color) = row_text(kind, focused, theme);
-    let icon_reserve = if workspace_icon.is_some() {
-        ICON_RESERVE
-    } else {
-        0.
+    let icon_reserve = match workspace_icon {
+        RowIcon::None => 0.,
+        _ => ICON_RESERVE,
     };
+    let muted = theme.muted;
     let indent = if tree == RowTree::None {
         0.
     } else {
@@ -887,7 +900,7 @@ fn row(
                         .relative()
                         .w(px(label_width))
                         .h(px(line_height(font)))
-                        .when_some(workspace_icon, |title, image| {
+                        .when(!matches!(workspace_icon, RowIcon::None), |title| {
                             title.child(
                                 div()
                                     .debug_selector(|| format!("github-{key}"))
@@ -897,23 +910,19 @@ fn row(
                                     .size(px(12.))
                                     .flex_none()
                                     .overflow_hidden()
-                                    .child(
-                                        img(image)
+                                    .child(match workspace_icon {
+                                        RowIcon::Avatar(image) => img(image)
                                             .size_full()
                                             .rounded_full()
-                                            .with_fallback(|| {
-                                                img(GITHUB_ICON.clone())
-                                                    .size_full()
-                                                    .rounded_full()
-                                                    .into_any_element()
+                                            .with_fallback(move || {
+                                                github_mark(muted).size_full().into_any_element()
                                             })
-                                            .with_loading(|| {
-                                                img(GITHUB_ICON.clone())
-                                                    .size_full()
-                                                    .rounded_full()
-                                                    .into_any_element()
-                                            }),
-                                    ),
+                                            .with_loading(move || {
+                                                github_mark(muted).size_full().into_any_element()
+                                            })
+                                            .into_any_element(),
+                                        _ => github_mark(muted).size_full().into_any_element(),
+                                    }),
                             )
                         })
                         .child(
