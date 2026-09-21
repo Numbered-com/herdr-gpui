@@ -345,12 +345,12 @@ pub(super) fn run_helper(args: &[OsString]) -> Option<ExitCode> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use anyhow::Context as _;
 
     #[test]
-    fn disabled_and_preview_services_never_queue_work() {
+    fn disabled_and_preview_services_never_queue_work() -> anyhow::Result<()> {
         let mut updater = Updater::default();
         let initial = updater.state.clone();
         updater.check();
@@ -359,18 +359,19 @@ mod tests {
         updater.cancel();
         assert_eq!(updater.state, initial);
         assert!(!updater.poll());
-        assert!(!updater.commit_restart().unwrap());
+        assert!(!updater.commit_restart()?);
+        Ok(())
     }
 
     #[test]
-    fn single_operation_and_generation_fence_keep_old_progress_out() {
+    fn single_operation_and_generation_fence_keep_old_progress_out() -> anyhow::Result<()> {
         let (sender, receiver) = mpsc::sync_channel(2);
         let mut updater = Updater::default();
         updater.commands = Some(sender);
         updater.state = State::Idle;
         updater.check();
         updater.check();
-        let command = receiver.try_recv().unwrap();
+        let command = receiver.try_recv().context("receive initial check")?;
         assert!(receiver.try_recv().is_err());
         publish(
             &updater.mailbox,
@@ -395,17 +396,24 @@ mod tests {
             "cancel fences an already-published completion"
         );
         assert_eq!(updater.state, State::Cancelling);
-        let cancellation = receiver.try_recv().unwrap();
+        let cancellation = receiver.try_recv().context("receive cancellation")?;
         assert!(matches!(cancellation.operation, Operation::Cancel));
         publish(&updater.mailbox, cancellation.generation, State::Idle, None);
         assert!(updater.poll());
         updater.check();
         assert!(!updater.cancelled.load(Ordering::Acquire));
-        assert_ne!(receiver.try_recv().unwrap().generation, command.generation);
+        assert_ne!(
+            receiver
+                .try_recv()
+                .context("receive subsequent check")?
+                .generation,
+            command.generation
+        );
+        Ok(())
     }
 
     #[test]
-    fn periodic_checks_cannot_reset_active_cancellation() {
+    fn periodic_checks_cannot_reset_active_cancellation() -> anyhow::Result<()> {
         let (sender, receiver) = mpsc::sync_channel(2);
         let mut updater = Updater::default();
         updater.commands = Some(sender);
@@ -413,7 +421,10 @@ mod tests {
         updater.next_check = Instant::now();
         assert!(updater.poll());
         assert!(matches!(
-            receiver.try_recv().unwrap().operation,
+            receiver
+                .try_recv()
+                .context("receive periodic check")?
+                .operation,
             Operation::Check
         ));
         updater.cancel();
@@ -422,9 +433,13 @@ mod tests {
         assert!(updater.cancelled.load(Ordering::Acquire));
         assert_eq!(updater.state, State::Cancelling);
         assert!(matches!(
-            receiver.try_recv().unwrap().operation,
+            receiver
+                .try_recv()
+                .context("receive cancellation")?
+                .operation,
             Operation::Cancel
         ));
         assert!(receiver.try_recv().is_err());
+        Ok(())
     }
 }

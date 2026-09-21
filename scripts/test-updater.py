@@ -33,6 +33,7 @@ import tomllib
 
 
 DEPENDENCIES = (
+    "anyhow",
     "serde", "serde_json", "ureq", "ed25519-dalek", "sha2", "tempfile", "tar", "flate2", "thiserror",
 )
 # Public half of the deliberately public [42; 32] unit-test signing seed.
@@ -43,31 +44,32 @@ MAIN = r'''
 const APP_VERSION: &str = env!("HERDR_RELEASE_VERSION");
 pub use updater::UpdateError;
 
-fn main() -> std::process::ExitCode {
+fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
+    use anyhow::Context as _;
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if let Some(code) = updater::run_helper(&args) {
-        return code;
+        return Ok(code);
     }
     match args.first().and_then(|arg| arg.to_str()) {
         Some("--harness-sign") if args.len() == 1 => {
             use ed25519_dalek::{Signer, SigningKey};
             use std::io::Read;
             let mut bytes = Vec::new();
-            std::io::stdin().read_to_end(&mut bytes).unwrap();
+            std::io::stdin().read_to_end(&mut bytes).context("read signing input")?;
             let key = SigningKey::from_bytes(&[42; 32]);
-            println!("{}", serde_json::to_string(&key.sign(&bytes).to_bytes().to_vec()).unwrap());
+            println!("{}", serde_json::to_string(&key.sign(&bytes).to_bytes().to_vec())?);
         }
         Some("--harness-restarted") if args.len() == 3 => {
             use std::os::unix::ffi::OsStrExt;
             let report = serde_json::json!({
                 "argument": args[2].as_bytes(),
-                "cwd": std::env::current_dir().unwrap().as_os_str().as_bytes(),
+                "cwd": std::env::current_dir().context("read restart working directory")?.as_os_str().as_bytes(),
             });
-            std::fs::write(&args[1], serde_json::to_vec(&report).unwrap()).unwrap();
+            std::fs::write(&args[1], serde_json::to_vec(&report)?).context("write restart report")?;
         }
-        _ => return std::process::ExitCode::FAILURE,
+        _ => return Ok(std::process::ExitCode::FAILURE),
     }
-    std::process::ExitCode::SUCCESS
+    Ok(std::process::ExitCode::SUCCESS)
 }
 
 #[test]

@@ -249,40 +249,48 @@ pub enum UpdateError {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use anyhow::Context as _;
     use std::error::Error as _;
 
     #[test]
-    fn sources_remain_typed_without_displaying_remote_diagnostics() {
+    fn sources_remain_typed_without_displaying_remote_diagnostics() -> anyhow::Result<()> {
         let private =
             "https://release-assets.githubusercontent.com/a?signature=secret\n".repeat(4096);
         let http = UpdateError::Http(Box::new(ureq::Error::BadUri(private.clone())));
         assert_eq!(http.to_string(), "Update HTTPS request failed");
         assert!(
-            matches!(http.source().unwrap().downcast_ref::<Box<ureq::Error>>().map(Box::as_ref), Some(ureq::Error::BadUri(uri)) if uri == &private)
+            matches!(http.source().context("expected HTTP source")?.downcast_ref::<Box<ureq::Error>>().map(Box::as_ref), Some(ureq::Error::BadUri(uri)) if uri == &private)
         );
 
         let io = UpdateError::ReadArchive(io::Error::new(io::ErrorKind::PermissionDenied, private));
         assert_eq!(io.to_string(), "Reading archive failed");
         assert_eq!(
             io.source()
-                .unwrap()
+                .context("expected archive read source")?
                 .downcast_ref::<io::Error>()
-                .unwrap()
+                .context("expected I/O source")?
                 .kind(),
             io::ErrorKind::PermissionDenied
         );
 
-        let json = serde_json::from_str::<u32>("\"signature=secret\"").unwrap_err();
+        let json = serde_json::from_str::<u32>("\"signature=secret\"")
+            .err()
+            .context("expected JSON type error")?;
         let error = UpdateError::ManifestJson(json);
         assert_eq!(error.to_string(), "Invalid update manifest");
-        assert!(error.source().unwrap().is::<serde_json::Error>());
+        assert!(
+            error
+                .source()
+                .context("expected manifest JSON source")?
+                .is::<serde_json::Error>()
+        );
+        Ok(())
     }
 
     #[test]
-    fn recovery_retains_both_failures_and_path() {
+    fn recovery_retains_both_failures_and_path() -> anyhow::Result<()> {
         let error = UpdateError::RestartRecovery {
             source: Box::new(UpdateError::Io(io::Error::from(io::ErrorKind::NotFound))),
             recovery: io::Error::from(io::ErrorKind::PermissionDenied),
@@ -291,11 +299,11 @@ mod tests {
         assert_eq!(
             error
                 .source()
-                .unwrap()
+                .context("expected restart recovery source")?
                 .source()
-                .unwrap()
+                .context("expected underlying restart source")?
                 .downcast_ref::<io::Error>()
-                .unwrap()
+                .context("expected I/O source")?
                 .kind(),
             io::ErrorKind::NotFound
         );
@@ -312,5 +320,6 @@ mod tests {
             UpdateError::Cancelled
         ));
         assert!(!matches!(UpdateError::NotCommitted, UpdateError::Cancelled));
+        Ok(())
     }
 }

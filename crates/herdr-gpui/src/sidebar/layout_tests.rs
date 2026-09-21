@@ -236,7 +236,8 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
         cx.observe(&view, |_, _, cx| cx.notify()).detach();
         SidebarFixture(view)
     });
-    check_sidebar(fixture, cx);
+    let result = check_sidebar(fixture, cx);
+    assert!(result.is_ok(), "sidebar layout failed: {result:#?}");
 }
 
 #[gpui::test]
@@ -405,7 +406,11 @@ fn palette_rejects_changed_endpoint_epoch_or_generation(cx: &mut gpui::TestAppCo
 }
 
 #[cfg(test)]
-fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestContext) {
+fn check_sidebar(
+    fixture: Entity<SidebarFixture>,
+    cx: &mut gpui::VisualTestContext,
+) -> anyhow::Result<()> {
+    use anyhow::Context as _;
     use gpui::{Modifiers, MouseButton, MouseDownEvent, point};
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.run_until_parked();
@@ -998,13 +1003,17 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
         assert_eq!(view.read(cx).live.snapshot, before_install);
     });
     assert!(cx.debug_bounds("app-update-action").is_none());
-    let releases = cx.debug_bounds("app-update-releases").unwrap();
+    let releases = cx
+        .debug_bounds("app-update-releases")
+        .context("update releases bounds")?;
     cx.simulate_click(releases.center(), Default::default());
     assert_eq!(
         cx.opened_url().as_deref(),
         Some("https://github.com/penso/herdr-gpui/releases")
     );
-    let close = cx.debug_bounds("app-update-close").unwrap();
+    let close = cx
+        .debug_bounds("app-update-close")
+        .context("update close bounds")?;
     cx.simulate_click(close.center(), Default::default());
     cx.update(|window, cx| {
         let view = view.read(cx);
@@ -1034,18 +1043,34 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
                     })
                 );
             });
-            let panel = cx.debug_bounds("app-update-panel").unwrap();
-            let action = cx.debug_bounds("app-update-action").unwrap();
-            let header = cx.debug_bounds("app-update-header").unwrap();
-            let close = cx.debug_bounds("app-update-close").unwrap();
+            let panel = cx
+                .debug_bounds("app-update-panel")
+                .context("update panel bounds")?;
+            let action = cx
+                .debug_bounds("app-update-action")
+                .context("update action bounds")?;
+            let header = cx
+                .debug_bounds("app-update-header")
+                .context("update header bounds")?;
+            let close = cx
+                .debug_bounds("app-update-close")
+                .context("update close bounds")?;
             assert_eq!(close.right(), header.right() - px(16.));
             assert!(close.left() > header.center().x);
             assert!(close.top() >= header.top() && close.bottom() <= header.bottom());
             assert!(header.bottom() < action.top());
-            let body = cx.debug_bounds("app-update-body").unwrap();
-            let footer = cx.debug_bounds("app-update-footer").unwrap();
-            let current = cx.debug_bounds("app-update-current-version").unwrap();
-            let latest = cx.debug_bounds("app-update-latest-version").unwrap();
+            let body = cx
+                .debug_bounds("app-update-body")
+                .context("update body bounds")?;
+            let footer = cx
+                .debug_bounds("app-update-footer")
+                .context("update footer bounds")?;
+            let current = cx
+                .debug_bounds("app-update-current-version")
+                .context("current version bounds")?;
+            let latest = cx
+                .debug_bounds("app-update-latest-version")
+                .context("latest version bounds")?;
             assert_eq!(current.left(), latest.left());
             assert_eq!(current.right(), latest.right());
             assert!(current.bottom() < latest.top());
@@ -1073,7 +1098,9 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
         view.update(cx, |view, cx| view.open_menu(window, cx));
         window.draw(cx).clear();
     });
-    let updates = cx.debug_bounds("menu-app updates").unwrap();
+    let updates = cx
+        .debug_bounds("menu-app updates")
+        .context("app updates menu bounds")?;
     assert!(cx.debug_bounds("menu-preview app update").is_some());
     cx.simulate_click(updates.center(), Default::default());
     cx.update(|_, cx| {
@@ -1106,7 +1133,9 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
         assert!(report.right() <= status.right());
         assert!(report.top() >= status.top());
         assert!(report.bottom() <= status.bottom());
-        let version = cx.debug_bounds("status-version").unwrap();
+        let version = cx
+            .debug_bounds("status-version")
+            .context("status version bounds")?;
         assert!(version.size.width > px(0.));
         assert!(version.left() >= report.right());
         assert!(version.right() <= status.right());
@@ -1134,4 +1163,5 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
             )
         );
     }
+    Ok(())
 }

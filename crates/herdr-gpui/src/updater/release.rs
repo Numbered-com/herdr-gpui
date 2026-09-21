@@ -486,9 +486,9 @@ pub(super) fn verify_archive(path: &Path, asset: &Asset, cancel: &AtomicBool) ->
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use anyhow::Context as _;
     use ed25519_dalek::{Signer, SigningKey};
 
     #[test]
@@ -514,7 +514,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn archive_creation_is_private_and_never_overwrites() {
+    fn archive_creation_is_private_and_never_overwrites() -> anyhow::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         use std::sync::atomic::AtomicU64;
 
@@ -528,20 +528,21 @@ mod tests {
             match std::fs::create_dir(&directory) {
                 Ok(()) => break directory,
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => panic!("Creating test directory: {error}"),
+                Err(error) => return Err(error).context("Creating test directory"),
             }
         };
         let path = directory.join("archive.tar.gz");
-        let mut file = create_archive(&path).unwrap();
+        let mut file = create_archive(&path)?;
         // Do not mutate the process-global umask in a parallel test. The explicit
         // creation mode excludes group/other bits regardless of the current umask.
-        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o077, 0);
-        file.write_all(b"original").unwrap();
+        assert_eq!(file.metadata()?.permissions().mode() & 0o077, 0);
+        file.write_all(b"original")?;
         assert!(create_archive(&path).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        assert_eq!(std::fs::read(&path)?, b"original");
         drop(file);
-        std::fs::remove_file(path).unwrap();
-        std::fs::remove_dir(directory).unwrap();
+        std::fs::remove_file(path)?;
+        std::fs::remove_dir(directory)?;
+        Ok(())
     }
 
     fn hex(bytes: &[u8]) -> String {
@@ -615,44 +616,43 @@ mod tests {
     }
 
     #[test]
-    fn linux_update_assets_are_distinct_from_manual_archives() {
+    fn linux_update_assets_are_distinct_from_manual_archives() -> anyhow::Result<()> {
         for target in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
             let mut manifest = fixture();
             manifest.assets[0].target = target.into();
             manifest.assets[0].name = format!("herdr-gpui-0.2.0-{target}-update.tar.gz");
-            assert_eq!(
-                signed(&serde_json::to_vec(&manifest).unwrap()).unwrap(),
-                manifest
-            );
+            assert_eq!(signed(&serde_json::to_vec(&manifest)?)?, manifest);
             for name in [
                 format!("herdr-gpui-0.2.0-{target}.tar.gz"),
                 format!("Herdr-0.2.0-{target}.tar.gz"),
             ] {
                 manifest.assets[0].name = name;
                 assert!(matches!(
-                    signed(&serde_json::to_vec(&manifest).unwrap()),
+                    signed(&serde_json::to_vec(&manifest)?),
                     Err(Error::ManifestAsset)
                 ));
             }
         }
+        Ok(())
     }
 
     #[test]
-    fn authentication_binds_exact_bytes_key_and_version() {
+    fn authentication_binds_exact_bytes_key_and_version() -> anyhow::Result<()> {
         use std::error::Error as _;
         let manifest = fixture();
-        let bytes = serde_json::to_vec(&manifest).unwrap();
-        assert_eq!(signed(&bytes).unwrap(), manifest);
+        let bytes = serde_json::to_vec(&manifest)?;
+        assert_eq!(signed(&bytes)?, manifest);
         let key = SigningKey::from_bytes(&[42; 32]);
         let signature = key.sign(&bytes).to_bytes();
         let public = hex(key.verifying_key().as_bytes());
-        let error =
-            verify_manifest(&bytes, &signature[..63], &public, &manifest.version).unwrap_err();
+        let error = verify_manifest(&bytes, &signature[..63], &public, &manifest.version)
+            .err()
+            .context("expected signature length error")?;
         assert!(matches!(error, Error::SignatureLength(_)));
         assert!(
             error
                 .source()
-                .unwrap()
+                .context("expected signature length source")?
                 .is::<ed25519_dalek::SignatureError>()
         );
         assert!(matches!(
@@ -671,25 +671,35 @@ mod tests {
         );
         let mut changed = bytes.clone();
         changed.push(b' ');
-        let error = verify_manifest(&changed, &signature, &public, &manifest.version).unwrap_err();
+        let error = verify_manifest(&changed, &signature, &public, &manifest.version)
+            .err()
+            .context("expected signature verification error")?;
         assert!(matches!(error, Error::Signature(_)));
         assert!(
             error
                 .source()
-                .unwrap()
+                .context("expected signature verification source")?
                 .is::<ed25519_dalek::SignatureError>()
         );
         assert!(matches!(
             signed(&vec![b' '; MANIFEST_LIMIT + 1]),
             Err(Error::ManifestBounds)
         ));
-        let error = signed(b"not json").unwrap_err();
+        let error = signed(b"not json")
+            .err()
+            .context("expected manifest JSON error")?;
         assert!(matches!(error, Error::ManifestJson(_)));
-        assert!(error.source().unwrap().is::<serde_json::Error>());
+        assert!(
+            error
+                .source()
+                .context("expected manifest JSON source")?
+                .is::<serde_json::Error>()
+        );
+        Ok(())
     }
 
     #[test]
-    fn signed_manifest_still_requires_strict_policy() {
+    fn signed_manifest_still_requires_strict_policy() -> anyhow::Result<()> {
         let base = fixture();
         let mut invalid = Vec::new();
         let mut value = base.clone();
@@ -717,24 +727,24 @@ mod tests {
         value.assets[0].sha256 = "A".repeat(64);
         invalid.push(value);
         for manifest in invalid {
-            assert!(signed(&serde_json::to_vec(&manifest).unwrap()).is_err());
+            assert!(signed(&serde_json::to_vec(&manifest)?).is_err());
         }
-        let mut value = serde_json::to_value(base).unwrap();
+        let mut value = serde_json::to_value(base)?;
         value["extra"] = true.into();
-        assert!(signed(&serde_json::to_vec(&value).unwrap()).is_err());
+        assert!(signed(&serde_json::to_vec(&value)?).is_err());
         assert!(signed(br#"{"schema":1,"schema":1,"version":"0.2.0","assets":[]}"#).is_err());
+        Ok(())
     }
 
     #[test]
-    fn archive_reader_checks_size_digest_and_cancellation() {
+    fn archive_reader_checks_size_digest_and_cancellation() -> anyhow::Result<()> {
         let asset = fixture().assets.remove(0);
         let cancel = AtomicBool::new(false);
         let mut output = Vec::new();
         let mut progress = Vec::new();
         copy_archive(&b"abc"[..], &mut output, &asset, &cancel, |done, total| {
             progress.push((done, total))
-        })
-        .unwrap();
+        })?;
         assert_eq!(output, b"abc");
         assert_eq!(progress, [(0, 3), (3, 3)]);
         for bytes in [&b"ab"[..], &b"abcd"[..], &b"abd"[..]] {
@@ -750,15 +760,17 @@ mod tests {
             Err(Error::Cancelled)
         ));
         cancel.store(false, Ordering::Relaxed);
-        assert_eq!(read_bounded(&b"abc"[..], 3, &cancel).unwrap(), b"abc");
+        assert_eq!(read_bounded(&b"abc"[..], 3, &cancel)?, b"abc");
         assert!(matches!(
             read_bounded(&b"abcd"[..], 3, &cancel),
             Err(Error::ResponseLimit)
         ));
+        Ok(())
     }
 
     #[test]
-    fn transport_io_failures_keep_sources_and_do_not_masquerade_as_cancellation() {
+    fn transport_io_failures_keep_sources_and_do_not_masquerade_as_cancellation()
+    -> anyhow::Result<()> {
         use std::{error::Error as _, io};
 
         struct FailedRead;
@@ -777,28 +789,34 @@ mod tests {
             }
         }
         let cancel = AtomicBool::new(false);
-        let error = read_bounded(FailedRead, 3, &cancel).unwrap_err();
+        let error = read_bounded(FailedRead, 3, &cancel)
+            .err()
+            .context("expected update read error")?;
         assert!(matches!(error, Error::ReadUpdate(_)));
         assert_eq!(
             error
                 .source()
-                .unwrap()
+                .context("expected update read source")?
                 .downcast_ref::<io::Error>()
-                .unwrap()
+                .context("expected I/O source")?
                 .kind(),
             io::ErrorKind::TimedOut
         );
         let asset = fixture().assets.remove(0);
-        let error = copy_archive(FailedRead, io::sink(), &asset, &cancel, |_, _| {}).unwrap_err();
+        let error = copy_archive(FailedRead, io::sink(), &asset, &cancel, |_, _| {})
+            .err()
+            .context("expected archive read error")?;
         assert!(matches!(error, Error::ReadArchive(_)));
-        let error = copy_archive(&b"abc"[..], FailedWrite, &asset, &cancel, |_, _| {}).unwrap_err();
+        let error = copy_archive(&b"abc"[..], FailedWrite, &asset, &cancel, |_, _| {})
+            .err()
+            .context("expected archive write error")?;
         assert!(matches!(error, Error::WriteArchive(_)));
         assert_eq!(
             error
                 .source()
-                .unwrap()
+                .context("expected archive write source")?
                 .downcast_ref::<io::Error>()
-                .unwrap()
+                .context("expected I/O source")?
                 .kind(),
             io::ErrorKind::StorageFull
         );
@@ -807,6 +825,7 @@ mod tests {
             read_bounded(FailedRead, 3, &cancel),
             Err(Error::Cancelled)
         ));
+        Ok(())
     }
 
     #[test]
@@ -833,15 +852,13 @@ mod tests {
     }
 
     #[test]
-    fn release_metadata_rejects_unstable_and_untrusted_names() {
+    fn release_metadata_rejects_unstable_and_untrusted_names() -> anyhow::Result<()> {
         let value = serde_json::json!({"tag_name":"v0.2.0", "draft":false, "prerelease":false, "assets":[{
             "name":"update-manifest.json", "size":100,
             "browser_download_url":"https://github.com/penso/herdr-gpui/releases/download/v0.2.0/update-manifest.json"
         }]});
         assert_eq!(
-            parse_release(&serde_json::to_vec(&value).unwrap())
-                .unwrap()
-                .version,
+            parse_release(&serde_json::to_vec(&value)?)?.version,
             "0.2.0"
         );
         for tag in [
@@ -854,10 +871,7 @@ mod tests {
         ] {
             let mut bad = value.clone();
             bad["tag_name"] = tag.into();
-            assert!(
-                parse_release(&serde_json::to_vec(&bad).unwrap()).is_err(),
-                "{tag}"
-            );
+            assert!(parse_release(&serde_json::to_vec(&bad)?).is_err(), "{tag}");
         }
         for tag in ["0.2.0", "vv0.2.0", "v0.1.0"] {
             let mut bad = value.clone();
@@ -866,22 +880,23 @@ mod tests {
             )
             .into();
             assert!(matches!(
-                parse_release(&serde_json::to_vec(&bad).unwrap()),
+                parse_release(&serde_json::to_vec(&bad)?),
                 Err(Error::ReleaseAsset)
             ));
         }
         for field in ["draft", "prerelease"] {
             let mut bad = value.clone();
             bad[field] = true.into();
-            assert!(parse_release(&serde_json::to_vec(&bad).unwrap()).is_err());
+            assert!(parse_release(&serde_json::to_vec(&bad)?).is_err());
         }
         for name in ["../escape", "bad/name", "..", "bad%20name"] {
             let mut bad = value.clone();
             bad["assets"][0]["name"] = name.into();
-            assert!(parse_release(&serde_json::to_vec(&bad).unwrap()).is_err());
+            assert!(parse_release(&serde_json::to_vec(&bad)?).is_err());
         }
         let mut bad = value.clone();
         bad["assets"][0]["browser_download_url"] = "https://evil.test/a".into();
-        assert!(parse_release(&serde_json::to_vec(&bad).unwrap()).is_err());
+        assert!(parse_release(&serde_json::to_vec(&bad)?).is_err());
+        Ok(())
     }
 }
