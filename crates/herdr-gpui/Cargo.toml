@@ -1,61 +1,67 @@
 [package]
-name = "herdr-gpui"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-publish.workspace = true
+edition.workspace      = true
+license.workspace      = true
+name                   = "herdr-gpui"
+publish.workspace      = true
 rust-version.workspace = true
+version.workspace      = true
 
 [lints]
 workspace = true
 
 [dependencies]
-anyhow.workspace = true
-chrono.workspace = true
-thiserror.workspace = true
-gpui = { workspace = true, features = ["runtime_shaders"] }
-herdr-client.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+anyhow.workspace               = true
+chrono.workspace               = true
+config_loader.workspace        = true
+ed25519-dalek.workspace        = true
+flate2.workspace               = true
+gpui                           = { features = ["runtime_shaders"], workspace = true }
+herdr-client.workspace         = true
+image.workspace                = true
+rustix.workspace               = true
+secrecy.workspace              = true
+serde.workspace                = true
+serde_json.workspace           = true
+sha2.workspace                 = true
+tar.workspace                  = true
+tempfile.workspace             = true
+thiserror.workspace            = true
+toml.workspace                 = true
+toml_edit.workspace            = true
+tracing.workspace              = true
+tracing-subscriber.workspace   = true
 unicode-segmentation.workspace = true
-toml.workspace = true
-config_loader.workspace = true
-toml_edit.workspace = true
-ureq.workspace = true
-ed25519-dalek.workspace = true
-tempfile.workspace = true
-tar.workspace = true
-flate2.workspace = true
-secrecy.workspace = true
-zeroize.workspace = true
-rustix.workspace = true
-sha2.workspace = true
-image.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
+ureq.workspace                 = true
+zeroize.workspace              = true
 
 [dev-dependencies]
-gpui = { workspace = true, features = ["test-support"] }
+gpui = { features = ["test-support"], workspace = true }
 
 [features]
-integration-test = ["dep:cocoa", "dep:objc", "dep:core-graphics", "dep:foreign-types", "dep:raw-window-handle"]
+integration-test = [
+  "dep:cocoa",
+  "dep:core-graphics",
+  "dep:foreign-types",
+  "dep:objc",
+  "dep:raw-window-handle",
+]
 
 [target.'cfg(target_os = "macos")'.dependencies]
-nix.workspace = true
+cocoa                        = { optional = true, workspace = true }
+core-graphics                = { optional = true, workspace = true }
+foreign-types                = { optional = true, workspace = true }
+nix.workspace                = true
+objc                         = { optional = true, workspace = true }
+objc2.workspace              = true
+objc2-app-kit.workspace      = true
+objc2-foundation.workspace   = true
+raw-window-handle            = { optional = true, workspace = true }
 security-framework.workspace = true
-objc2.workspace = true
-objc2-app-kit.workspace = true
-objc2-foundation.workspace = true
-cocoa = { workspace = true, optional = true }
-objc = { workspace = true, optional = true }
-core-graphics = { workspace = true, optional = true }
-foreign-types = { workspace = true, optional = true }
-raw-window-handle = { workspace = true, optional = true }
 
 [[test]]
-name = "live_gui"
+name              = "live_gui"
 required-features = ["integration-test"]
 
 [[test]]
-name = "performance_gui"
+name              = "performance_gui"
 required-features = ["integration-test"]
