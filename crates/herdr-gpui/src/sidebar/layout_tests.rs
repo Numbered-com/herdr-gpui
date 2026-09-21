@@ -1919,7 +1919,8 @@ fn the_agents_header_toggles_between_grouped_and_priority(cx: &mut gpui::TestApp
 }
 
 /// Resting the pointer on a workspace opens the menu its right click opens,
-/// once, and only after the pointer has both moved and settled.
+/// once, and only after the pointer has both moved and settled. The behavior
+/// is opt-in, so the test turns its feature flag on.
 #[gpui::test]
 fn resting_on_a_workspace_opens_its_menu_once(cx: &mut gpui::TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| {
@@ -1927,6 +1928,7 @@ fn resting_on_a_workspace_opens_its_menu_once(cx: &mut gpui::TestAppContext) {
         let mut view = fixture_window(window, cx);
         view.live.status = crate::state::ConnectionStatus::Connected;
         view.active = true;
+        view.config.features.sidebar_hover_menu = true;
         view
     });
     cx.simulate_resize(size(px(900.), px(700.)));
@@ -2062,6 +2064,73 @@ fn resting_on_a_workspace_opens_its_menu_once(cx: &mut gpui::TestAppContext) {
     );
     settle(&view, cx, super::HOVER_MENU_DELAY);
     assert!(view.read_with(cx, |view, _| view.menu.page.is_none()));
+}
+
+/// Preferences lists every feature flag, in both states: the config file is
+/// the only place a flag is turned on.
+#[gpui::test]
+fn preferences_list_feature_flags(cx: &mut gpui::TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        crate::bind_keys(cx);
+        fixture_window(window, cx)
+    });
+    cx.simulate_resize(size(px(900.), px(1200.)));
+    for enabled in [false, true] {
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.config.features.sidebar_hover_menu = enabled;
+                view.open_preferences(window, cx);
+            });
+            window.draw(cx).clear();
+        });
+        let body = cx.debug_bounds("preferences-body").unwrap();
+        for (id, label, _) in crate::preferences::feature_rows(&Default::default()) {
+            let bounds = cx.debug_bounds(id).unwrap_or_else(|| panic!("{label} row"));
+            assert!(
+                body.contains(&bounds.center()),
+                "{label} row outside the body"
+            );
+        }
+    }
+}
+
+/// Without its feature flag, a resting pointer arms nothing and opens nothing:
+/// only a right click still opens a space's menu.
+#[gpui::test]
+fn resting_on_a_workspace_opens_nothing_by_default(cx: &mut gpui::TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        crate::bind_keys(cx);
+        let mut view = fixture_window(window, cx);
+        view.live.status = crate::state::ConnectionStatus::Connected;
+        view.active = true;
+        view
+    });
+    assert!(!crate::config::Config::default().features.sidebar_hover_menu);
+    cx.simulate_resize(size(px(900.), px(700.)));
+    cx.update(|window, cx| window.draw(cx).clear());
+    let row = cx.debug_bounds("row-herdr").unwrap().center();
+
+    cx.simulate_mouse_move(row, None, Modifiers::default());
+    cx.simulate_mouse_move(row + point(px(6.), px(0.)), None, Modifiers::default());
+    assert!(
+        view.read_with(cx, |view, _| view.hover.is_none()),
+        "row armed"
+    );
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            // A stale rest from before the flag was turned off still expires.
+            view.hover_workspace("w0", true, window);
+            view.poll_hover_menu(
+                std::time::Instant::now() + super::HOVER_MENU_DELAY * 2,
+                window,
+                cx,
+            );
+            assert!(view.menu.page.is_none());
+            assert!(view.hover.is_none());
+            assert!(view.hover_menu.is_none());
+        });
+        window.draw(cx).clear();
+    });
 }
 
 /// Draw one preview state in a freshly opened panel and return its bounds.

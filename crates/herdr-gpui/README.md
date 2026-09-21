@@ -102,6 +102,9 @@ built-ins or Ghostty files into a `Theme` with packed 24-bit RGB colors and all
 256 palette entries. Theme resolution is a separate fallible step from loading
 and validating TOML. Font sections can override either family or size without
 repeating the other field. `FontConfig::line_height()` returns `size * 20 / 14`.
+The `[features]` table holds opt-in behaviors as `Features`, with every flag off
+by default and unknown keys rejected like the other sections; Preferences lists
+each flag and its state read-only, since only the config file turns one on.
 Config and theme I/O is synchronous; startup and reload schedule it on the GPUI
 background executor and apply the validated pair together. Failed reloads retain
 current settings. Theme selection cancels pending reload application so a delayed
@@ -186,9 +189,11 @@ native-frame appearance also remains unverified by these macOS tests.
   preserving other GUI config settings and comments.
 - Right-click spaces for Rename, Close (Close group on non-linked parents with
   multiple spaces sharing `worktree.key`), and New worktree on non-linked Git
-  parents. Resting the pointer on a space of the selected connection opens the
-  same menu, and moving the pointer anywhere but into that menu closes it again;
-  a menu opened by right-click stays until it is dismissed. Close requires
+  parents. With `features.sidebar_hover_menu` enabled, resting the pointer on a
+  space of the selected connection opens the same menu, and moving the pointer
+  anywhere but into that menu closes it again; the flag is off by default, so
+  spaces normally open their menu only on right-click, and a menu opened by
+  right-click stays until it is dismissed. Close requires
   confirmation and terminates terminals, not checkout files or branches. New
   worktree proposes the branch name the daemon would generate, previews the
   checkout path derived from it, reports the daemon's own failures, and selects

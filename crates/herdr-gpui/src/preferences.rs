@@ -1,4 +1,7 @@
-use crate::{HerdrWindow, config::Config};
+use crate::{
+    HerdrWindow,
+    config::{Config, Features},
+};
 use gpui::{prelude::*, *};
 use std::env;
 use std::fs::{self, OpenOptions};
@@ -7,6 +10,16 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
+
+/// Debug selector, label, and state of each feature flag, in display order.
+/// Flags are turned on in the config file, so Preferences only reports them.
+pub(crate) fn feature_rows(features: &Features) -> [(&'static str, &'static str, bool); 1] {
+    [(
+        "preferences-feature-sidebar-hover-menu",
+        "Sidebar hover menu",
+        features.sidebar_hover_menu,
+    )]
+}
 
 impl HerdrWindow {
     pub(super) fn render_preferences(&self, cx: &mut Context<Self>) -> Div {
@@ -104,6 +117,14 @@ impl HerdrWindow {
         body = body
             .child(note(
                 "Font families and sizes are read-only here. Sizes are logical pixels, independent of display scaling.",
+            ))
+            .child(section("FEATURES"));
+        for (id, label, enabled) in feature_rows(&self.config.features) {
+            body = body.child(row(id, label, if enabled { "On" } else { "Off" }.into()));
+        }
+        body = body
+            .child(note(
+                "Optional behaviors, off by default. Turn one on in the [features] table of the GUI config file, then reload GUI config.",
             ))
             .child(section("CONFIGURATION"))
             .child(
