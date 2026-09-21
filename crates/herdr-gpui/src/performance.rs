@@ -1,7 +1,12 @@
 //! Native event-dispatch + scene-construction benchmark; never connects to a daemon.
-use super::*;
+use crate::{HerdrWindow, sidebar, smoke};
 use anyhow::{Context as _, Result, anyhow, bail};
-use std::time::Instant;
+use gpui::*;
+use herdr_client::protocol::*;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 #[cfg(target_os = "macos")]
 #[path = "performance_native.rs"]
 mod native;

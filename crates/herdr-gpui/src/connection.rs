@@ -3,7 +3,7 @@ use crate::{
     terminal::InputTarget,
 };
 use herdr_client::{
-    ClientEvent, ClientHandle, ConnectOptions, ConnectTarget, connect_with_connector,
+    ClientEvent, ClientHandle, ConnectOptions, ConnectTarget, Method, connect_with_connector,
     protocol::ClientPaneInputEvent,
 };
 use std::sync::{
@@ -162,7 +162,7 @@ impl ConnectionBridge {
     pub fn request_dialog(
         &self,
         boot_id: &str,
-        method: &str,
+        method: Method,
         params: serde_json::Value,
     ) -> crate::Result<String> {
         // Register while holding the mailbox so even an immediate rejection is retained.

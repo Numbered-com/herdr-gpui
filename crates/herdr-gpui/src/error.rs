@@ -19,7 +19,7 @@ pub enum Error {
     MissingDeletion,
     #[error("{method}: {source}")]
     Request {
-        method: &'static str,
+        method: herdr_client::Method,
         #[source]
         source: herdr_client::Error,
     },

@@ -4,7 +4,7 @@
 mod sandbox;
 
 use herdr_client::{
-    Client, ClientEvent, ConnectOptions, ConnectTarget, connect,
+    Client, ClientEvent, ConnectOptions, ConnectTarget, Method, connect,
     protocol::{
         ClientKeyCode, ClientKeyKind, ClientPaneInputEvent, ClientShellSnapshot, ClientSurfaceSize,
     },
@@ -230,7 +230,7 @@ fn stable_endpoint_live() {
     });
     eprintln!("semantic TextCommit + Enter produced shell output: {marker}");
 
-    let id = session.client.handle.request(&boot, "tab.create",
+    let id = session.client.handle.request(&boot, Method::TabCreate,
         json!({"workspace_id": workspace, "cwd": daemon.sandbox.dir, "focus": true, "label": "live-tab"})).unwrap();
     let result = session.response(id);
     let second_tab = result["tab"]["tab_id"]
@@ -250,7 +250,7 @@ fn stable_endpoint_live() {
         .handle
         .request(
             &boot,
-            "workspace.create",
+            Method::WorkspaceCreate,
             json!({"cwd": daemon.sandbox.dir, "focus": true, "label": "live-workspace"}),
         )
         .unwrap();

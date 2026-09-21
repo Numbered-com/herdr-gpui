@@ -1,5 +1,10 @@
-use super::*;
-use crate::pull_request::{Input, repository_input};
+use super::{Page, WorkspaceMenuAction};
+use crate::{
+    HerdrWindow,
+    pull_request::{Input, repository_input},
+};
+use gpui::{prelude::*, *};
+use herdr_client::protocol::*;
 use std::sync::Arc;
 
 impl HerdrWindow {
@@ -618,7 +623,9 @@ mod tests {
     #[allow(clippy::expect_used)]
     #[ignore = "requires explicit HERDR_TEST_PR_SOCKET/REPO_KEY/BRANCH; HERDR_TEST_PR_GITHUB=1 additionally uses existing sign-in"]
     fn live_local_pr_lookup() {
-        use herdr_client::{ClientEvent, ConnectOptions, ConnectTarget, connect_with_connector};
+        use herdr_client::{
+            ClientEvent, ConnectOptions, ConnectTarget, Method, connect_with_connector,
+        };
         use std::{
             env,
             path::PathBuf,
@@ -656,7 +663,7 @@ mod tests {
                     supports_workspace_get = welcome
                         .methods
                         .iter()
-                        .any(|method| method == "workspace.get")
+                        .any(|method| method == Method::WorkspaceGet.as_str())
                 }
                 ClientEvent::Snapshot(snapshot) => break snapshot,
                 ClientEvent::Disconnected { reason } => panic!("local connection failed: {reason}"),
@@ -679,7 +686,7 @@ mod tests {
                 .handle
                 .request(
                     &snapshot.boot_id,
-                    "workspace.get",
+                    Method::WorkspaceGet,
                     serde_json::json!({"workspace_id":workspace.workspace_id}),
                 )
                 .unwrap();

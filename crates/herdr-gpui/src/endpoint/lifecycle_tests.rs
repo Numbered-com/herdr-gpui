@@ -4,7 +4,7 @@ use super::*;
 use crate::controls::Command;
 use gpui::AppContext;
 use herdr_client::{
-    ClientEvent,
+    ClientEvent, Method,
     protocol::{endpoint::*, *},
 };
 use std::{
@@ -140,23 +140,23 @@ fn connected_endpoint(id: &str) -> (Endpoint, Server) {
     ]);
     welcome.methods.extend(
         [
-            "client_shell.surface.set",
-            "workspace.create",
-            "tab.create",
-            "pane.split",
-            "tab.focus",
-            "pane.focus",
-            "workspace.focus",
-            "pane.focus_direction",
-            "pane.zoom",
-            "pane.close",
-            "tab.close",
-            "command.invoke",
-            "workspace.close",
-            "worktree.create",
-            "worktree.remove",
+            Method::ClientShellSurfaceSet,
+            Method::WorkspaceCreate,
+            Method::TabCreate,
+            Method::PaneSplit,
+            Method::TabFocus,
+            Method::PaneFocus,
+            Method::WorkspaceFocus,
+            Method::PaneFocusDirection,
+            Method::PaneZoom,
+            Method::PaneClose,
+            Method::TabClose,
+            Method::CommandInvoke,
+            Method::WorkspaceClose,
+            Method::WorktreeCreate,
+            Method::WorktreeRemove,
         ]
-        .map(str::to_owned),
+        .map(|method| method.as_str().to_owned()),
     );
     for (kind, data) in [
         (
@@ -282,27 +282,27 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
     });
     let view = fixture.update(cx, |fixture, _| fixture.0.clone());
     for (command, method) in [
-        (Command::SplitRight, "pane.split"),
-        (Command::SplitDown, "pane.split"),
-        (Command::Tab, "tab.create"),
-        (Command::Workspace, "workspace.create"),
-        (Command::NextTab, "tab.focus"),
-        (Command::PreviousTab, "tab.focus"),
-        (Command::TabNumber(1), "tab.focus"),
-        (Command::FocusLeft, "pane.focus_direction"),
-        (Command::FocusRight, "pane.focus_direction"),
-        (Command::FocusUp, "pane.focus_direction"),
-        (Command::FocusDown, "pane.focus_direction"),
-        (Command::NextPane, "pane.focus"),
-        (Command::PreviousPane, "pane.focus"),
-        (Command::Zoom, "pane.zoom"),
-        (Command::ClosePane, "pane.close"),
-        (Command::CloseTab, "tab.close"),
-        (Command::WorkspacePicker, "workspace.focus"),
-        (Command::Palette, "command.invoke"),
-        (Command::Workspace, "workspace.close"),
-        (Command::Workspace, "worktree.create"),
-        (Command::Workspace, "worktree.remove"),
+        (Command::SplitRight, Method::PaneSplit),
+        (Command::SplitDown, Method::PaneSplit),
+        (Command::Tab, Method::TabCreate),
+        (Command::Workspace, Method::WorkspaceCreate),
+        (Command::NextTab, Method::TabFocus),
+        (Command::PreviousTab, Method::TabFocus),
+        (Command::TabNumber(1), Method::TabFocus),
+        (Command::FocusLeft, Method::PaneFocusDirection),
+        (Command::FocusRight, Method::PaneFocusDirection),
+        (Command::FocusUp, Method::PaneFocusDirection),
+        (Command::FocusDown, Method::PaneFocusDirection),
+        (Command::NextPane, Method::PaneFocus),
+        (Command::PreviousPane, Method::PaneFocus),
+        (Command::Zoom, Method::PaneZoom),
+        (Command::ClosePane, Method::PaneClose),
+        (Command::CloseTab, Method::TabClose),
+        (Command::WorkspacePicker, Method::WorkspaceFocus),
+        (Command::Palette, Method::CommandInvoke),
+        (Command::Workspace, Method::WorkspaceClose),
+        (Command::Workspace, Method::WorktreeCreate),
+        (Command::Workspace, Method::WorktreeRemove),
     ] {
         let (endpoint, mut server) = connected_endpoint("ssh:fixture");
         cx.update(|window, cx| {
@@ -316,7 +316,7 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
                 assert!(view.input_ready());
                 if matches!(
                     method,
-                    "workspace.close" | "worktree.create" | "worktree.remove"
+                    Method::WorkspaceClose | Method::WorktreeCreate | Method::WorktreeRemove
                 ) {
                     crate::menu::workspace_tests::submit_focus_change(view, method, window, cx);
                 } else {
@@ -362,14 +362,14 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
             panic!("missing command");
         };
         let request: serde_json::Value = serde_json::from_str(&request).unwrap();
-        assert_eq!(request["method"], method);
+        assert_eq!(request["method"], method.as_str());
         // herdr-client serializes API requests behind their predecessor's reply.
         server.respond(&request);
         let ClientMessage::ClientShellEndpointRequest { request, .. } = server.receive() else {
             panic!("missing surface barrier");
         };
         let barrier: serde_json::Value = serde_json::from_str(&request).unwrap();
-        assert_eq!(barrier["method"], "client_shell.surface.set");
+        assert_eq!(barrier["method"], Method::ClientShellSurfaceSet.as_str());
         assert!(matches!(
             server.receive(),
             ClientMessage::ClientShellFocus { focused: false }
@@ -526,7 +526,7 @@ fn retiring_release_source_unblocks_destination_without_waiting_for_timeout(
         };
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&request).unwrap()["method"],
-            "client_shell.surface.set"
+            Method::ClientShellSurfaceSet.as_str()
         );
     }
 }

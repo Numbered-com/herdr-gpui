@@ -1,12 +1,19 @@
 //! Opt-in Unix plaintext storage. All callers run on a background worker.
 #![forbid(unsafe_code)]
 
-use super::*;
+use super::{Result, valid_token};
+use crate::Error;
 use rustix::fs::{AtFlags, Mode, OFlags, open, openat, renameat, unlinkat};
 use rustix::process::geteuid;
+use secrecy::{ExposeSecret, SecretString};
 use std::os::unix::fs::MetadataExt;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::{fs::File, io::Write, path::Path};
+use std::{
+    fs::File,
+    io::{Read, Write},
+    path::Path,
+};
+use zeroize::Zeroizing;
 
 const NAME: &std::ffi::CStr = c"github-credentials";
 fn directory(path: &Path) -> Result<File> {

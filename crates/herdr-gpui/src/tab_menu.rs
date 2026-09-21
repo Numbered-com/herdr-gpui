@@ -1,6 +1,6 @@
 use crate::{HerdrWindow, menu::Page, search_input::SearchInput};
 use gpui::{prelude::*, *};
-use herdr_client::protocol::ClientShellSnapshot;
+use herdr_client::{Method, protocol::ClientShellSnapshot};
 use serde_json::{Value, json};
 
 #[derive(Clone)]
@@ -434,7 +434,7 @@ impl HerdrWindow {
                 .try_lock()
                 .map_err(|_| crate::Error::ConnectionBusy)?;
             // Install correlation under the same lock used by the event reducer.
-            let request = handle.request(&target.boot, "tab.rename", params)?;
+            let request = handle.request(&target.boot, Method::TabRename, params)?;
             inbox.tab_rename = Some(crate::state::TabRenameResult {
                 request: request.clone(),
                 result: None,
