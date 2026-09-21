@@ -27,6 +27,7 @@ mod menus;
 mod navigation;
 mod palette;
 mod preferences;
+mod presentation;
 mod pull_request;
 mod search_input;
 mod sidebar;

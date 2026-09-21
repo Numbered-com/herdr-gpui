@@ -908,6 +908,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
         let mut external_rx = None;
         let mut external = None;
         let mut baseline = None;
+        let mut switched = None;
         let mut completed = false;
         loop {
             timer.timer(Duration::from_millis(100)).await;
@@ -1043,9 +1044,27 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         key("cmd-n", window, cx)?;
                     }
                     6 if snapshot.workspaces.len() == 2 && focused_workspace != workspace && surface.panes.len() == 1 => {
+                        let before = view.read(cx).presentation.probe;
                         view.update(cx, |view, cx| { view.navigate(NavigationTarget::Workspace(&workspace), cx); window.focus(&view.focus); });
+                        // Draw the frame that follows the focus change immediately: the client
+                        // has just dropped its surface and the next projection is a round trip
+                        // away, which is precisely when the terminal area used to blank.
+                        window.refresh();
+                        window.draw(cx).clear();
+                        let after = view.read(cx).presentation.probe;
+                        if after.blank > before.blank {
+                            bail!("space switch blanked the terminal area: {} empty frame(s); {}", after.blank - before.blank, diagnostic());
+                        }
+                        switched = Some((Instant::now(), after));
                     }
                     7 if focused_workspace == workspace && focused_tab == second_tab && surface.panes.len() == 3 => {
+                        let (started, before) = switched.take().context("missing space switch probe")?;
+                        let probe = view.read(cx).presentation.probe;
+                        if probe.blank > before.blank {
+                            bail!("space switch blanked the terminal area: {} empty frame(s); {}", probe.blank - before.blank, diagnostic());
+                        }
+                        eprintln!("GUI space switch verified: blank_frames=0 retained_paints={} gap_observed_ms={} observation_poll_ms=100",
+                            probe.retained - before.retained, started.elapsed().as_millis());
                         // Use the full-width tab so the exact output row cannot wrap in a split.
                         window.dispatch_action(Box::new(RunCommand { command: Command::PreviousTab }), cx);
                     }

@@ -123,11 +123,10 @@ impl Render for HerdrWindow {
                 );
             }
         }
-        let surface = self
-            .live
-            .surface
-            .clone()
-            .filter(|_| self.live.surface_ready());
+        // Paints the frame on screen, which during a focus change is the one
+        // presented before it: the terminal area never blanks between two
+        // projections. What the client knows to be current stays in `live`.
+        let surface = self.presentation.frame(&self.live);
         let entity = cx.entity();
         let paint_entity = entity.clone();
         let focus = self.focus.clone();
