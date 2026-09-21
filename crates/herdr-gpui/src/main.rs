@@ -689,7 +689,6 @@ impl Render for HerdrWindow {
                         .cursor_pointer()
                         .bg(rgb(background))
                         .text_color(rgb(text))
-                        .when(tab.focused, |tab| tab.font_weight(FontWeight::EXTRA_BOLD))
                         .child(tab.label.clone())
                         .child(
                             div()
