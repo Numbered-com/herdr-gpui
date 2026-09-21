@@ -216,14 +216,17 @@ native-frame appearance also remains unverified by these macOS tests.
   `[github].oauth_client_id`, then `HERDR_GITHUB_OAUTH_CLIENT_ID`. No client secret
   or private key is needed or shipped. The compact native macOS titlebar design
   is integrated from main commit `3909f21`, without unrelated tab changes.
-  Tokens use this app's macOS Keychain entry; `GH_TOKEN` / `GITHUB_TOKEN` override
-  it. Access tokens and retained device/user codes use redacted, zeroizing
+  Signed macOS release builds keep tokens in this app's Keychain entry; unsigned
+  development and worktree builds use the private file store instead, so a new
+  code identity per rebuild cannot trigger a Keychain prompt on every launch.
+  `GH_TOKEN` / `GITHUB_TOKEN` override either. Access tokens and retained device/user codes use redacted, zeroizing
   `secrecy` types; HTTP headers are sensitive and application-owned raw OAuth
   buffers are wiped. The user code is intentionally exposed for rendering.
   Library/OS/rendering copies are not guaranteed to be erased. Linux supports an
   explicit `allow_plaintext_credentials = true` opt-in with a prominent warning,
-  separate private credential file and atomic no-follow Unix writes. macOS still
-  uses Keychain. Sign-out suppresses environment tokens for this app session and
+  separate private credential file and atomic no-follow Unix writes; macOS
+  development builds use that same store, enabled by default and warned about in
+  the profile panel. Signed macOS release builds still use Keychain. Sign-out suppresses environment tokens for this app session and
   fences late profile/avatar/PR results. Plaintext policy reloads re-evaluate the
   active credential, without reactivating an explicitly signed-out session.
   Disabling plaintext stops its session use but keeps the file; explicit sign-out

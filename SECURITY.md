@@ -30,7 +30,8 @@ In scope:
   socket peer validation, SSH target validation, and host/session selection.
 - Native GitHub PR lookup and OAuth device sign-in, including HTTPS boundaries,
   cancellation, secret redaction/zeroization, and the app-specific macOS Keychain
-  entry. The [README](README.md#native-github-sign-in) documents credential
+  entry used by signed release builds (development builds use the private file
+  store instead). The [README](README.md#native-github-sign-in) documents credential
   precedence, requested scope, and the limits of memory erasure.
 - Anything in `crates/herdr-gpui` that lets terminal content escape its pane:
   unintended command execution, clipboard or notification writes, or path
