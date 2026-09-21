@@ -50,6 +50,8 @@ pub(crate) struct HerdrWindow {
     /// Last title pushed to the OS, so the window is renamed only when it changes.
     pub(crate) title: String,
     pub(crate) cell_width: f32,
+    pub(crate) hovered_terminal_link: bool,
+    pub(crate) pressed_terminal_link: Option<String>,
     pub(crate) painter: std::rc::Rc<std::cell::RefCell<terminal_painter::TerminalPainter>>,
     pub(crate) marked: String,
     /// The sidebar row the pointer is resting on, waiting to open its menu.
@@ -196,6 +198,8 @@ impl HerdrWindow {
             bounds: Bounds::default(),
             title: WINDOW_TITLE.to_owned(),
             cell_width: 9.,
+            hovered_terminal_link: false,
+            pressed_terminal_link: None,
             painter: Default::default(),
             marked: String::new(),
             hover: None,

@@ -133,8 +133,20 @@ impl Render for HerdrWindow {
         let focus = self.focus.clone();
         let cell_width = self.cell_width;
         let painter = self.painter.clone();
+        self.hovered_terminal_link = self.terminal_link_at(window.mouse_position()).is_some();
         let terminal = div()
             .id("terminal")
+            .when(self.hovered_terminal_link, |terminal| {
+                terminal.cursor_pointer()
+            })
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                let hovered = this.terminal_link_at(event.position).is_some();
+                if hovered != this.hovered_terminal_link {
+                    this.hovered_terminal_link = hovered;
+                    cx.notify();
+                }
+            }))
+            .on_click(cx.listener(Self::open_terminal_link))
             .relative()
             .flex_1()
             .min_h_0()
@@ -147,6 +159,14 @@ impl Render for HerdrWindow {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    this.pressed_terminal_link = this.terminal_link_at(event.position);
+                    if this.menu.page.is_some() {
+                        return;
+                    }
+                    if this.pressed_terminal_link.is_some() {
+                        cx.stop_propagation();
+                        return;
+                    }
                     window.focus(&this.focus);
                     if let Some(surface) = &this.live.surface
                         && surface.popup.is_none()

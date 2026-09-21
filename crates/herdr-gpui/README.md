@@ -160,6 +160,17 @@ double-click preferences (zoom/minimize/do nothing), fullscreen transitions and
 auto-hidden controls, theme changes, and modal/focus/IME behavior. Windows/Linux
 native-frame appearance also remains unverified by these macOS tests.
 
+## Terminal Links
+
+Click an explicit terminal hyperlink or a visible `http://` / `https://` URL to
+open it in your default browser. A hand cursor indicates a clickable destination.
+Only HTTP and HTTPS destinations are opened. Links inside a popup target that
+popup, and menus block activation. Dragging does not activate a link.
+
+Plain URL detection is limited to one row within one pane; links that wrap or
+reach the right edge need explicit terminal hyperlink metadata. Other URI schemes
+and local file paths are not activated.
+
 ## Supported
 
 - Workspace/worktree sidebar with main-checkout parents, indented linked
@@ -350,7 +361,7 @@ GPUI native action/menu/keybinding patterns.
   Private-use icons may be missing. Fonts and palettes are configured locally,
   not synchronized from the host terminal's theme.
 - No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
-  hyperlink activation, image rendering, or animated blinking.
+  image rendering, or animated blinking.
 - No pane rename dialogs or horizontal wheel handling,
   server-owned keybindings, session picker, saved-host editing, or daemon
   stop/upgrade management.

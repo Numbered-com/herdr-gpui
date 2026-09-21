@@ -11,6 +11,47 @@ use gpui::{Context, KeyDownEvent, ScrollWheelEvent, Window};
 use herdr_client::protocol::ClientPaneInputEvent;
 
 impl HerdrWindow {
+    pub(crate) fn open_terminal_link(
+        &mut self,
+        event: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pressed = self.pressed_terminal_link.take();
+        let gpui::ClickEvent::Mouse(event) = event else {
+            return;
+        };
+        if event.down.button != gpui::MouseButton::Left
+            || event.down.click_count != 1
+            || (event.up.position.x - event.down.position.x).abs() > gpui::px(4.)
+            || (event.up.position.y - event.down.position.y).abs() > gpui::px(4.)
+        {
+            return;
+        }
+        if let Some(url) = self.terminal_link_at(event.up.position)
+            && pressed.as_ref() == Some(&url)
+        {
+            cx.stop_propagation();
+            cx.open_url(&url);
+        }
+    }
+
+    pub(crate) fn terminal_link_at(&self, position: gpui::Point<gpui::Pixels>) -> Option<String> {
+        if self.menu.page.is_some()
+            || !self.live.surface_ready()
+            || !self.bounds.contains(&position)
+        {
+            return None;
+        }
+        crate::terminal::link_at(
+            self.live.surface.as_deref()?,
+            f32::from(position.x - self.bounds.origin.x),
+            f32::from(position.y - self.bounds.origin.y),
+            self.cell_width,
+            self.config.terminal.line_height(),
+        )
+    }
+
     pub(crate) fn send(&mut self, event: ClientPaneInputEvent, cx: &mut Context<Self>) {
         if self.menu.page.is_some() || !self.input_ready() {
             return;

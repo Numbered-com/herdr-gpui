@@ -21,6 +21,7 @@ expect_used = "deny"
 unwrap_used = "deny"
 
 [workspace.dependencies]
+url = "2"
 anyhow               = "1"
 bincode              = { default-features = false, features = ["serde", "std"], version = "2" }
 chrono               = { default-features = false, features = ["clock"], version = "0.4" }
