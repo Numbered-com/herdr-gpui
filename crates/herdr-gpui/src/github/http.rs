@@ -2,7 +2,7 @@
 //! headers, the GraphQL call, and the account-wide rate-limit cooldown. Remote
 //! diagnostics stay bounded so a hostile response cannot flood the UI.
 
-use super::Result;
+use super::{Result, log};
 use crate::Error;
 use secrecy::{ExposeSecret, ExposeSecretMut, SecretBox as Secret, SecretString};
 use serde::de::DeserializeOwned;
@@ -25,14 +25,18 @@ pub(super) fn agent(timeout: Duration) -> ureq::Agent {
 }
 
 pub(super) fn response<T: DeserializeOwned>(
+    context: &'static str,
     mut response: ureq::http::Response<ureq::Body>,
 ) -> Result<T> {
-    match response.status().as_u16() {
-        200..=299 => {}
-        401 => return Err(Error::GitHubAuthentication),
-        403 => return Err(Error::GitHubForbidden),
-        429 => return Err(Error::GitHubRateLimit),
-        status => return Err(Error::GitHubStatus(status)),
+    let status = response.status().as_u16();
+    if !(200..=299).contains(&status) {
+        log::http(context, status, response.headers());
+        return Err(match status {
+            401 => Error::GitHubAuthentication,
+            403 => Error::GitHubForbidden,
+            429 => Error::GitHubRateLimit,
+            status => Error::GitHubStatus(status),
+        });
     }
     // Allocate the bounded capacity up front: no reallocations leave old body
     // fragments behind, and partial reads are wiped even on I/O errors.
@@ -44,9 +48,25 @@ pub(super) fn response<T: DeserializeOwned>(
         .read_to_end(&mut bytes)
         .map_err(Error::GitHubRead)?;
     if bytes.len() > LIMIT as usize {
+        tracing::warn!(
+            category = "github_http",
+            context,
+            status,
+            "GitHub response exceeded the size limit"
+        );
         return Err(Error::GitHubSize);
     }
-    serde_json::from_slice(&bytes).map_err(Error::github_json)
+    serde_json::from_slice(&bytes).map_err(|error| {
+        // The body may hold credentials, so only its shape is recorded.
+        tracing::warn!(
+            category = "github_http",
+            context,
+            status,
+            bytes = bytes.len() as u64,
+            "GitHub response was not the expected JSON"
+        );
+        Error::github_json(error)
+    })
 }
 
 pub(crate) fn graphql(
@@ -75,17 +95,25 @@ pub(crate) fn graphql(
         .header("Content-Type", "application/json")
         .header("Authorization", authorization(token)?)
         .send(body.as_bytes())
-        .map_err(Error::GitHubNetwork)?;
+        .map_err(log::network("graphql"))?;
     *cooldown = pr_cooldown(
         reply.status().as_u16(),
         reply.headers(),
         std::time::SystemTime::now(),
     );
-    let result: Value = response(reply)?;
+    let result: Value = response("graphql", reply)?;
     if cancelled() {
         return Err(Error::PrCancelled);
     }
     if result.get("errors").is_some() {
+        // GitHub explains SAML/SSO and org policy denials only in this text.
+        tracing::warn!(
+            category = "github_graphql",
+            detail = result["errors"][0]["message"].as_str().unwrap_or_default(),
+            error_type = result["errors"][0]["type"].as_str().unwrap_or_default(),
+            count = result["errors"].as_array().map_or(0, Vec::len) as u64,
+            "GitHub GraphQL query returned errors"
+        );
         if result["errors"].as_array().is_some_and(|errors| {
             errors.iter().any(|error| {
                 matches!(
@@ -145,18 +173,19 @@ pub(super) fn pr_cooldown(
 }
 
 pub(super) fn oauth<T: DeserializeOwned>(
-    path: &str,
+    path: &'static str,
     fields: &[(&str, &str)],
     timeout: Duration,
 ) -> Result<T> {
     // ureq owns form serialization and HTTP/TLS buffers; their copies cannot be
-    // zeroized by this module. Never log request fields or raw response errors.
+    // zeroized by this module. Never log request fields or response bodies.
     response(
+        path,
         agent(timeout)
             .post(format!("https://github.com/login/{path}"))
             .header("User-Agent", "Herdr-GPUI")
             .header("Accept", "application/json")
             .send_form(fields.iter().copied())
-            .map_err(Error::GitHubNetwork)?,
+            .map_err(log::network(path))?,
     )
 }

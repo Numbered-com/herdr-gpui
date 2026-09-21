@@ -64,7 +64,10 @@ pub(crate) use {
 // Re-exported at the root because they are referenced crate-wide; the domain
 // modules below are where they are defined and changed.
 #[cfg(feature = "integration-test")]
-pub(crate) use {app::open_window, state::ConnectionStatus};
+pub(crate) use app::open_window;
+// Only the macOS smoke checks drive the connection status from the root.
+#[cfg(all(feature = "integration-test", target_os = "macos"))]
+pub(crate) use state::ConnectionStatus;
 
 pub(crate) use {controls::Command, state::LiveState, terminal::WheelAccumulator};
 

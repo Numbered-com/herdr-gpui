@@ -4,6 +4,7 @@ use super::{Auth, Device, Note, Profile, Reply, SETUP_MESSAGE, Store, VERIFY_URL
 use super::{
     device::TokenResponse,
     http::{LIMIT, authorization, graphql, pr_cooldown, response},
+    log::{header, kind, public_sso},
     store::{KEYCHAIN, credential_bytes, resolve_token},
 };
 use crate::{Error, Result};
@@ -430,9 +431,10 @@ fn oauth_responses_deserialize_directly_to_redacted_secrets() {
             .body(ureq::Body::builder().data(body.to_vec()))
             .unwrap()
     };
-    let parsed: TokenResponse = response(reply(
-        br#"{"access_token":"fixture-access-secret","token_type":"bearer"}"#,
-    ))
+    let parsed: TokenResponse = response(
+        "test",
+        reply(br#"{"access_token":"fixture-access-secret","token_type":"bearer"}"#),
+    )
     .unwrap();
     assert!(!format!("{parsed:?}").contains("fixture-access-secret"));
     let Reply::Token(token) = super::token_reply(parsed).unwrap() else {
@@ -445,13 +447,13 @@ fn oauth_responses_deserialize_directly_to_redacted_secrets() {
         b"private-invalid-secret\xff",
     ] {
         assert_eq!(
-            response::<TokenResponse>(reply(body))
+            response::<TokenResponse>("test", reply(body))
                 .unwrap_err()
                 .to_string(),
             "Invalid GitHub JSON response."
         );
     }
-    let parsed: Device = response(reply(br#"{"device_code":"fixture-device","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","expires_in":900}"#)).unwrap();
+    let parsed: Device = response("test", reply(br#"{"device_code":"fixture-device","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","expires_in":900}"#)).unwrap();
     assert_eq!(
         parsed.validate().unwrap().user_code.expose_secret(),
         "ABCD-1234"
@@ -512,16 +514,17 @@ fn bounded_http_parsing_and_safe_errors() {
         (302, "request failed"),
         (500, "request failed"),
     ] {
-        let error = response::<Value>(reply(status, b"private-error-secret".to_vec())).unwrap_err();
+        let error =
+            response::<Value>("test", reply(status, b"private-error-secret".to_vec())).unwrap_err();
         assert!(error.to_string().contains(message));
         assert!(!error.to_string().contains("private-error-secret"));
     }
     assert_eq!(
-        response::<Value>(reply(200, b"{\"ok\":true}".to_vec())).unwrap()["ok"],
+        response::<Value>("test", reply(200, b"{\"ok\":true}".to_vec())).unwrap()["ok"],
         true
     );
-    assert!(response::<Value>(reply(200, b"not-json".to_vec())).is_err());
-    assert!(response::<Value>(reply(200, vec![b' '; LIMIT as usize + 1])).is_err());
+    assert!(response::<Value>("test", reply(200, b"not-json".to_vec())).is_err());
+    assert!(response::<Value>("test", reply(200, vec![b' '; LIMIT as usize + 1])).is_err());
     assert!(
         graphql(
             &"fixture".into(),
@@ -536,6 +539,55 @@ fn bounded_http_parsing_and_safe_errors() {
         .contains("cancelled")
     );
 }
+#[test]
+fn rejected_device_responses_name_the_failing_check() {
+    let device = |key: &str, value: Value| {
+        let mut v = serde_json::json!({"device_code":"fixture", "user_code":"ABCD-1234", "verification_uri":VERIFY_URL, "expires_in":900, "interval":5});
+        v[key] = value;
+        serde_json::from_value::<Device>(v).unwrap()
+    };
+    for (key, value, rejection) in [
+        ("device_code", serde_json::json!(""), "device_code"),
+        ("user_code", serde_json::json!("bad\ncode"), "user_code"),
+        ("user_code", serde_json::json!(""), "user_code"),
+        (
+            "verification_uri",
+            serde_json::json!("https://github.example.test/login/device"),
+            "verification_uri",
+        ),
+        ("expires_in", serde_json::json!(901), "expires_in"),
+        ("interval", serde_json::json!(0), "interval"),
+    ] {
+        let device = device(key, value);
+        assert_eq!(device.rejection(), Some(rejection));
+        assert!(device.validate().is_err());
+    }
+    assert_eq!(
+        device("interval", serde_json::json!(5)).rejection(),
+        None,
+        "a valid response must not report a rejection"
+    );
+}
+
+#[test]
+fn diagnostics_keep_public_details_and_drop_the_sso_request_id() {
+    assert_eq!(
+        public_sso("required; url=https://github.com/orgs/acme/sso?authorization_request=SECRET"),
+        "required; url=https://github.com/orgs/acme/sso"
+    );
+    assert_eq!(public_sso(""), "");
+    let mut headers = ureq::http::HeaderMap::new();
+    assert_eq!(header(&headers, "x-github-request-id"), "");
+    headers.insert("x-github-request-id", "ABCD:1234".parse().unwrap());
+    assert_eq!(header(&headers, "x-github-request-id"), "ABCD:1234");
+    // Categories stay stable so a log filter keeps working across releases.
+    assert_eq!(kind(&Error::GitHubForbidden), "forbidden");
+    assert_eq!(kind(&Error::GitHubProfile), "profile");
+    assert_eq!(kind(&Error::GitHubStatus(500)), "status");
+    assert_eq!(kind(&Error::GitHubWorker("profile")), "worker");
+    assert_eq!(kind(&Error::PrTimeout), "other");
+}
+
 #[test]
 fn device_validation_and_oauth_error_lifecycle() {
     for (key, value) in [

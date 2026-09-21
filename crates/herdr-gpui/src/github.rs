@@ -4,6 +4,7 @@ mod auth;
 mod credentials;
 mod device;
 mod http;
+mod log;
 mod store;
 
 #[cfg(test)]

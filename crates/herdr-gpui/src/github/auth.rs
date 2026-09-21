@@ -5,8 +5,8 @@
 #[cfg(any(test, feature = "integration-test"))]
 use super::VERIFY_URL;
 use super::{
-    Device, Profile, Reply, Result, SETUP_MESSAGE, Store, http::oauth, load_token, profile, save,
-    token_reply,
+    Device, Profile, Reply, Result, SETUP_MESSAGE, Store, http::oauth, load_token, log, profile,
+    save, token_reply,
 };
 use crate::Error;
 use secrecy::{ExposeSecret, SecretString};
@@ -98,7 +98,8 @@ impl Auth {
                 let _ = tx.send(load(token, store));
             }) {
             Ok(_) => self.profile_incoming = Some(rx),
-            Err(_) => {
+            Err(error) => {
+                tracing::error!(category = "github_worker", error_kind = ?error.kind(), "Could not start GitHub profile worker");
                 self.failed = true;
                 self.message = Some("Could not start GitHub profile worker.".into());
             }
@@ -175,7 +176,8 @@ impl Auth {
                 let _ = tx.send(work());
             }) {
             Ok(_) => self.incoming = Some(rx),
-            Err(_) => {
+            Err(error) => {
+                tracing::error!(category = "github_worker", error_kind = ?error.kind(), "Could not start GitHub authentication worker");
                 self.flow = None;
                 self.committing = false;
                 self.failed = true;
@@ -191,6 +193,11 @@ impl Auth {
         self.initialized = true;
         self.failed = false;
         if self.store == Store::Environment {
+            tracing::warn!(
+                category = "github_signin",
+                store = ?self.store,
+                "No secure credential store is configured for GitHub sign-in"
+            );
             self.failed = true;
             self.message =
                 Some("No secure credential store configured. To accept unencrypted token storage, set [github] allow_plaintext_credentials = true and reload GUI config. Otherwise use GH_TOKEN / GITHUB_TOKEN.".into());
@@ -199,10 +206,15 @@ impl Auth {
         let client = match config.github.client_id() {
             Ok(Some(client)) => client,
             Ok(None) => {
+                tracing::info!(
+                    category = "github_signin",
+                    "No GitHub OAuth client ID is configured"
+                );
                 self.message = Some(SETUP_MESSAGE.into());
                 return;
             }
             Err(error) => {
+                log::failure("client_id", &error);
                 self.failed = true;
                 self.message = Some(error.to_string());
                 return;
@@ -212,6 +224,11 @@ impl Auth {
         self.signed_out = false;
         self.profile_incoming = None;
         self.message = Some("Requesting GitHub sign-in code...".into());
+        tracing::info!(
+            category = "github_signin",
+            store = ?self.store,
+            "Requesting a GitHub device code"
+        );
         self.launch(move || {
             let started = Instant::now();
             let device = oauth::<Device>(
@@ -323,6 +340,7 @@ impl Auth {
                             self.message = None;
                         }
                         Err(error) => {
+                            log::failure("profile", &error);
                             self.credential_cleanup = true;
                             self.profile = None;
                             self.failed = true;
@@ -352,6 +370,12 @@ impl Auth {
                     match reply {
                         Ok(Reply::Device(device, client, started)) => {
                             let now = Instant::now();
+                            tracing::info!(
+                                category = "github_signin",
+                                expires_in = device.expires_in,
+                                interval = device.interval,
+                                "GitHub device code ready; waiting for authorization"
+                            );
                             self.flow = Some(Flow {
                                 copied_until: None,
                                 client,
@@ -382,11 +406,20 @@ impl Auth {
                                 self.committing = true;
                                 self.credential_cleanup = true;
                                 self.message = Some("Saving GitHub credential...".into());
+                                tracing::info!(
+                                    category = "github_signin",
+                                    store = ?self.store,
+                                    "GitHub authorized; saving the credential"
+                                );
                                 self.launch(move || {
                                     persist(Some(&token))?;
                                     Ok(Reply::Authenticated(Arc::new(token)))
                                 });
                             } else {
+                                tracing::warn!(
+                                    category = "github_signin",
+                                    "GitHub authorized after the device code expired"
+                                );
                                 self.failed = true;
                                 self.message = Some("GitHub code expired. Sign in again.".into());
                             }
@@ -403,6 +436,7 @@ impl Auth {
                             self.load_profile_with(Some(token), load);
                         }
                         Err(error) => {
+                            log::failure("authentication", &error);
                             self.flow = None;
                             self.committing = false;
                             self.failed = true;
@@ -425,6 +459,10 @@ impl Auth {
         {
             let now = Instant::now();
             if now >= flow.deadline {
+                tracing::warn!(
+                    category = "github_signin",
+                    "GitHub device code expired before authorization"
+                );
                 self.flow = None;
                 self.failed = true;
                 self.message = Some("GitHub code expired. Sign in again.".into());
