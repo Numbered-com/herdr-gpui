@@ -1777,6 +1777,7 @@ fn child_gutter_lines_land_on_whole_device_pixels() {
     let font = crate::config::FontConfig {
         family: "Menlo".into(),
         size: 12.,
+        fallbacks: None,
     };
     for scale in [1., 2., 3.] {
         let row = Bounds::new(point(px(0.), px(244.)), size(px(231.), px(40.)));

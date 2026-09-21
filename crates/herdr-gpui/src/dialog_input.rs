@@ -231,7 +231,7 @@ impl HerdrWindow {
                             };
                             let run = TextRun {
                                 len: input.text.len(),
-                                font: font(this.config.ui.family.clone()),
+                                font: this.config.ui.font(),
                                 color: rgb(this.theme.foreground).into(),
                                 background_color: None,
                                 underline: None,

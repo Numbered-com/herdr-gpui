@@ -213,6 +213,10 @@ pub enum Error {
     EmptyFontFamily(&'static str),
     #[error("{0}.size must be finite and between 8 and 48 logical pixels")]
     InvalidFontSize(&'static str),
+    #[error("{0}.fallback families must not be empty")]
+    EmptyFontFallback(&'static str),
+    #[error("{0}.fallback must list at most 8 families")]
+    TooManyFontFallbacks(&'static str),
     #[error("theme must be a name, absolute path, or ~/ path")]
     InvalidThemePath,
     #[error("theme {name:?} not found in {directories:?}")]
