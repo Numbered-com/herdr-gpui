@@ -40,6 +40,8 @@ const UPGRADE: Duration = Duration::from_secs(30 * 60);
 const QUERY: Duration = Duration::from_secs(60);
 const RELAUNCH: Duration = Duration::from_secs(30);
 const DETAIL: usize = 120;
+/// How long to keep draining the pipes after the process exits.
+const DRAIN: Duration = Duration::from_secs(5);
 
 pub(super) struct Cask {
     brew: PathBuf,
@@ -221,14 +223,30 @@ fn run(
         let _ = child.kill();
     }
     let _ = child.wait();
-    // Drain whatever the pipes still hold, so the last lines are not lost.
-    while let Ok(Some(line)) = receiver.try_recv() {
-        if let Some(text) = detail(&line) {
-            if tail.len() == 8 {
-                tail.remove(0);
-            }
-            tail.push(text);
+    // The child exits before its readers have necessarily forwarded everything,
+    // so waiting on the readers is what drains the pipes: try_recv sees an empty
+    // channel and discards output still in flight, which loses the version line
+    // installed() parses and the lines these diagnostics are built from. Both
+    // readers hold a sender and the original was dropped above, so the channel
+    // disconnects once they reach EOF. Bounded, because a grandchild that
+    // inherited the pipes can hold them open after Homebrew itself exits, and a
+    // lost line must not become a hung update.
+    let drain = Instant::now() + DRAIN;
+    loop {
+        let remaining = drain.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
         }
+        let Ok(line) = receiver.recv_timeout(remaining) else {
+            break;
+        };
+        let Some(text) = line.as_deref().and_then(detail) else {
+            continue;
+        };
+        if tail.len() == 8 {
+            tail.remove(0);
+        }
+        tail.push(text);
     }
     result.map(|()| tail)
 }
