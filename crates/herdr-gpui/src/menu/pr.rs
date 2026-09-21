@@ -326,7 +326,7 @@ impl HerdrWindow {
         section
     }
 
-    #[cfg(any(test, feature = "integration-test"))]
+    #[cfg(any(test, all(feature = "integration-test", target_os = "macos")))]
     pub(crate) fn workspace_pr_fixture(
         &mut self,
         value: crate::pull_request::PullRequest,

@@ -1,57 +1,57 @@
 [workspace]
+members  = ["crates/herdr-client", "crates/herdr-gpui", "crates/herdr-protocol"]
 resolver = "2"
-members = ["crates/herdr-protocol", "crates/herdr-client", "crates/herdr-gpui"]
 
 [workspace.package]
-version = "0.1.0"
-edition = "2024"
+edition      = "2024"
+license      = "Apache-2.0"
 rust-version = "1.96"
-license = "Apache-2.0"
+version      = "0.1.0"
 # Workspace crates are not published to crates.io; they build this application.
 publish = false
 
 [workspace.lints.rust]
-unsafe_code = "deny"
+unsafe_code           = "deny"
 unused_qualifications = "deny"
 
 [workspace.lints.clippy]
-unwrap_used = "deny"
 expect_used = "deny"
+unwrap_used = "deny"
 
 [workspace.dependencies]
-anyhow = "1"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-thiserror = "2"
-herdr-protocol = { path = "crates/herdr-protocol" }
-herdr-client = { path = "crates/herdr-client" }
-gpui = "=0.2.2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+anyhow               = "1"
+bincode              = { default-features = false, features = ["serde", "std"], version = "2" }
+chrono               = { default-features = false, features = ["clock"], version = "0.4" }
+cocoa                = "0.27"
+config_loader        = { default-features = false, features = ["toml"], package = "config", version = "0.15.25" }
+core-graphics        = "0.25"
+crossbeam-channel    = "0.5"
+ed25519-dalek        = { default-features = false, features = ["std"], version = "2.2" }
+flate2               = "1"
+foreign-types        = "0.5"
+gpui                 = "=0.2.2"
+herdr-client         = { path = "crates/herdr-client" }
+herdr-protocol       = { path = "crates/herdr-protocol" }
+image                = { default-features = false, features = ["gif", "jpeg", "png", "webp"], version = "0.25.10" }
+nix                  = { default-features = false, features = ["socket", "user"], version = "=0.31.3" }
+objc                 = "0.2"
+objc2                = "0.6.4"
+objc2-app-kit        = { default-features = false, features = ["NSApplication", "NSImage", "std"], version = "0.3.2" }
+objc2-foundation     = { default-features = false, features = ["NSBundle", "NSData", "NSProcessInfo", "NSString", "std"], version = "0.3.2" }
+raw-window-handle    = "0.6"
+rustix               = { features = ["fs", "process"], version = "=1.1.5" }
+secrecy              = { features = ["serde"], version = "=0.10.3" }
+security-framework   = "=3.7.0"
+serde                = { features = ["derive"], version = "1" }
+serde_json           = "1"
+sha2                 = "0.10.9"
+tar                  = "0.4"
+tempfile             = "3"
+thiserror            = "2"
+toml                 = "0.8"
+toml_edit            = "0.25"
+tracing              = "0.1"
+tracing-subscriber   = { default-features = false, features = ["registry", "std"], version = "0.3" }
 unicode-segmentation = "1"
-toml = "0.8"
-config_loader = { package = "config", version = "0.15.25", default-features = false, features = ["toml"] }
-toml_edit = "0.25"
-ureq = "3"
-ed25519-dalek = { version = "2.2", default-features = false, features = ["std"] }
-tempfile = "3"
-tar = "0.4"
-flate2 = "1"
-security-framework = "=3.7.0"
-secrecy = { version = "=0.10.3", features = ["serde"] }
-zeroize = "=1.9.0"
-sha2 = "0.10.9"
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-bincode = { version = "2", default-features = false, features = ["std", "serde"] }
-crossbeam-channel = "0.5"
-rustix = { version = "=1.1.5", features = ["fs", "process"] }
-nix = { version = "=0.31.3", default-features = false, features = ["socket", "user"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
-cocoa = "0.27"
-objc = "0.2"
-core-graphics = "0.25"
-foreign-types = "0.5"
-raw-window-handle = "0.6"
-objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSImage"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSBundle", "NSProcessInfo", "NSString"] }
+ureq                 = "3"
+zeroize              = "=1.9.0"

@@ -11,7 +11,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 ABOUT_VERSION = "cargo-about 0.9.2"
-INSTALL = "cargo install cargo-about --version 0.9.2 --locked"
+INSTALL = "cargo install cargo-about --version 0.9.2 --locked --features cli"
 # cargo-about package exceptions are name-scoped; require a new version review.
 MPL_VERSIONS = {"cbindgen": "0.28.0", "option-ext": "0.2.0"}
 LICENSE_NAME = re.compile(r"^(licen[cs]e|copying)(?:$|[._-])", re.I)

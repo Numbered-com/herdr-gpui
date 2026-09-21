@@ -155,7 +155,13 @@ jobs:
       - run: rustup show
       - run: cargo build --locked --release -p herdr-gpui --target "$TARGET"
       - run: cargo test --locked --release -p herdr-gpui --test cli --target "$TARGET"
-      - run: cargo install cargo-about --version 0.9.2 --locked
+      # cargo-about gates its binary behind the non-default `cli` feature, and
+      # `cargo install` only warns and exits 0 when it installs nothing. Verify
+      # the subcommand resolves here rather than failing in the next step.
+      - name: Install the notice generator
+        run: |
+          cargo install cargo-about --version 0.9.2 --locked --features cli
+          cargo about --version
       - run: python3 scripts/release/generate-notices.py "target/$TARGET/release/THIRD-PARTY-NOTICES.txt"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4, Arbor/Moltis
         with:
@@ -203,7 +209,13 @@ jobs:
       - run: cargo test --locked --workspace --all-features
       - run: cargo build --locked --release -p herdr-gpui --target "$TARGET"
       - run: cargo test --locked --release -p herdr-gpui --test cli --target "$TARGET"
-      - run: cargo install cargo-about --version 0.9.2 --locked
+      # cargo-about gates its binary behind the non-default `cli` feature, and
+      # `cargo install` only warns and exits 0 when it installs nothing. Verify
+      # the subcommand resolves here rather than failing in the next step.
+      - name: Install the notice generator
+        run: |
+          cargo install cargo-about --version 0.9.2 --locked --features cli
+          cargo about --version
       - run: python3 scripts/release/generate-notices.py "target/$TARGET/release/THIRD-PARTY-NOTICES.txt"
       - name: Package experimental Linux executable
         run: |

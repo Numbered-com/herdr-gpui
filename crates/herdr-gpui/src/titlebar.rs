@@ -122,6 +122,14 @@ pub(super) fn render(surface: u32) -> Stateful<Div> {
         })
 }
 
+pub(super) fn options(title: &str) -> TitlebarOptions {
+    TitlebarOptions {
+        title: Some(title.to_owned().into()),
+        appears_transparent: cfg!(target_os = "macos"),
+        traffic_light_position: cfg!(target_os = "macos").then(|| point(px(9.), px(9.))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -179,13 +187,6 @@ mod tests {
                 assert!(!view.menu.github.busy());
             })
         });
-    }
-}
-pub(super) fn options(title: &str) -> TitlebarOptions {
-    TitlebarOptions {
-        title: Some(title.to_owned().into()),
-        appears_transparent: cfg!(target_os = "macos"),
-        traffic_light_position: cfg!(target_os = "macos").then(|| point(px(9.), px(9.))),
     }
 }
 

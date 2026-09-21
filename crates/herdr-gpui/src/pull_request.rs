@@ -198,7 +198,7 @@ pub(super) struct Cache {
 }
 
 impl Cache {
-    #[cfg(any(test, feature = "integration-test"))]
+    #[cfg(any(test, all(feature = "integration-test", target_os = "macos")))]
     pub fn seed(&mut self, input: Input, value: PullRequest, now: Instant) {
         self.entries.retain(|entry| entry.input != input);
         if self.entries.len() == CACHE_LIMIT {
@@ -765,7 +765,7 @@ fn run(
     result
 }
 
-#[cfg(any(test, feature = "integration-test"))]
+#[cfg(any(test, all(feature = "integration-test", target_os = "macos")))]
 pub(super) fn fixture() -> crate::Result<PullRequest> {
     parse(&serde_json::json!([{
         "number": 8, "url": "https://github.com/example/project/pull/8",
@@ -1236,11 +1236,19 @@ mod tests {
             run(&mut command, deadline(), &|| false).is_err(),
             "non-UTF8 Git paths must fail closed, not be lossily mapped"
         );
+        // Draining OUTPUT_LIMIT costs one 10ms sleep per WouldBlock, so the wall
+        // time scales with the host's socketpair buffer size. Give the limit its
+        // own generous deadline: this asserts that oversized output is rejected,
+        // not how fast the host refills a socket. Timeouts are asserted below.
         assert!(
-            run(&mut Command::new("/usr/bin/yes"), deadline(), &|| false)
-                .unwrap_err()
-                .to_string()
-                .contains("size limit")
+            run(
+                &mut Command::new("/usr/bin/yes"),
+                Instant::now() + Duration::from_secs(60),
+                &|| false
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("size limit")
         );
         let mut sleep = Command::new("/bin/sleep");
         sleep.arg("5");
