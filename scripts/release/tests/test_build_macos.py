@@ -1,5 +1,4 @@
 """Local build orchestration only: never compile or sign real artifacts."""
-import json
 import os
 from pathlib import Path
 import shutil
@@ -47,15 +46,11 @@ class BuildMacosTests(unittest.TestCase):
                 *(f'[[ ${{{name}+present}} != present ]]' for name in SECRETS),
                 '[[ $MACOSX_DEPLOYMENT_TARGET == 15.0 ]]',
                 '[[ $CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP == none ]]',
-                '[[ $HERDR_RELEASE_VERSION == 1.2.3 || $HERDR_RELEASE_VERSION == 1.2.4 ]]',
+                '[[ $HERDR_RELEASE_VERSION == 20260920.3 ]]',
                 '[[ $HERDR_UPDATE_PUBLIC_KEY == ' + 'ab' * 32 + ' ]]',
                 '[[ ! -e sourced ]]',
-                'if [[ $1 == metadata ]]; then',
-                "printf '%s\\n' '" + json.dumps({"packages": [{"name": "herdr-gpui", "version": "1.2.3"}]}) + "'",
-                'else',
                 'printf "%s\\n" "$*" >> calls',
                 '[[ ${FAIL_BUILD:-0} == 0 ]]',
-                'fi',
             ]),
         }.items():
             tool = tools / name
@@ -68,30 +63,30 @@ class BuildMacosTests(unittest.TestCase):
     def config(self):
         (self.root / ".envrc").write_text(
             'touch sourced\nherdr_sign() {\n'
-            '[[ $1 == 1.2.3 && $2 == "$3/Herdr.app" '
+            '[[ $1 == 20260920.3 && $2 == "$3/Herdr.app" '
             '&& $3 == "$PWD/target/distribution/.herdr-build."* && -d $2 '
-            '&& ! -e target/distribution/1.2.3 ]] || return 1\n'
+            '&& ! -e target/distribution/20260920.3 ]] || return 1\n'
             'printf "sign\\n" >> calls\n'
             'printf "sign diagnostic\\n"\n'
             '[[ ${MISSING_DMG:-0} == 0 ]] || return 0\n'
             'printf "mock dmg" > "$3/Herdr-$1-universal-apple-darwin.dmg"\n'
             '[[ ${FAIL_SIGN:-0} == 0 ]] || return 1\n'
             'if [[ ${LATE_OUTPUT:-0} == 1 ]]; then\n'
-            'mkdir target/distribution/1.2.3\n'
-            'printf "preserve" > target/distribution/1.2.3/existing\n'
+            'mkdir target/distribution/20260920.3\n'
+            'printf "preserve" > target/distribution/20260920.3/existing\n'
             'fi\n'
             'printf "%s\\n" "$3/Herdr-$1-universal-apple-darwin.dmg"\n}\n'
         )
 
-    def run_build(self, version="1.2.3", success=False):
+    def run_build(self, version="20260920.3", success=False):
         result = subprocess.run(
             ["bash", str(self.root / "scripts/release/build-macos.sh"), version],
             env=self.env, capture_output=True, text=True, timeout=10,
         )
         self.assertEqual(result.returncode == 0, success, result.stderr)
         if success:
-            output = self.root / "target/distribution/1.2.3"
-            dmg = output / "Herdr-1.2.3-universal-apple-darwin.dmg"
+            output = self.root / "target/distribution/20260920.3"
+            dmg = output / "Herdr-20260920.3-universal-apple-darwin.dmg"
             self.assertEqual(result.stdout, str(dmg) + "\n")
             self.assertEqual(dmg.read_text(), "mock dmg")
             self.assertTrue((output / "Herdr.app").is_dir())
@@ -101,11 +96,11 @@ class BuildMacosTests(unittest.TestCase):
         return result.stderr
 
     def test_validation_and_missing_config(self):
-        for version in ("v1.2.3", "01.2.3", "1.2", "1.2.3-rc1", "$(id)"):
+        for version in ("v20260920.3", "020260920.3", "20260920", "2026092.3",
+                        "20260920.03", "20260920.3-rc1", "$(id)"):
             self.assertIn("Version must", self.run_build(version))
         self.assertIn("Missing local .envrc", self.run_build())
         self.config()
-        self.assertIn("match manifest", self.run_build("1.2.4"))
         self.assertFalse((self.root / "calls").exists())
         self.assertFalse((self.root / "sourced").exists())
 
@@ -113,7 +108,7 @@ class BuildMacosTests(unittest.TestCase):
         self.config()
         self.env["FAIL_BUILD"] = "1"
         self.run_build()
-        self.assertFalse((self.root / "target/distribution/1.2.3").exists())
+        self.assertFalse((self.root / "target/distribution/20260920.3").exists())
         self.assertFalse((self.root / "sourced").exists())
         self.env["FAIL_BUILD"] = "0"
         self.run_build(success=True)
@@ -141,7 +136,7 @@ class BuildMacosTests(unittest.TestCase):
         self.assertNotIn("package", calls)
         self.assertNotIn("sign", calls)
         self.assertFalse((self.root / "sourced").exists())
-        self.assertFalse((self.root / "target/distribution/1.2.3").exists())
+        self.assertFalse((self.root / "target/distribution/20260920.3").exists())
         del self.env["FAIL_NOTICES"]
         self.run_build(success=True)
 
@@ -151,24 +146,24 @@ class BuildMacosTests(unittest.TestCase):
             with self.subTest(failure=failure):
                 self.env[failure] = "1"
                 self.run_build()
-                self.assertFalse((self.root / "target/distribution/1.2.3").exists())
+                self.assertFalse((self.root / "target/distribution/20260920.3").exists())
                 del self.env[failure]
                 (self.root / "sourced").unlink(missing_ok=True)
                 self.run_build(success=True)
-                shutil.rmtree(self.root / "target/distribution/1.2.3")
+                shutil.rmtree(self.root / "target/distribution/20260920.3")
                 (self.root / "sourced").unlink()
 
     def test_output_created_during_signing_is_preserved(self):
         self.config()
         self.env["LATE_OUTPUT"] = "1"
         self.assertIn("Output already exists", self.run_build())
-        output = self.root / "target/distribution/1.2.3"
+        output = self.root / "target/distribution/20260920.3"
         self.assertEqual([p.name for p in output.iterdir()], ["existing"])
         self.assertEqual((output / "existing").read_text(), "preserve")
 
     def test_existing_symlink_is_preserved(self):
         self.config()
-        output = self.root / "target/distribution/1.2.3"
+        output = self.root / "target/distribution/20260920.3"
         output.parent.mkdir(parents=True)
         output.symlink_to(self.root / "missing")
         self.assertIn("Output already exists", self.run_build())

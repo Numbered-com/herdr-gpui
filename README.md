@@ -417,11 +417,12 @@ host immediately. Closing the app leaves daemon sessions running.
 Use **Report issue** on the right of the status bar to open this repository's
 GitHub bug report form with the running GUI version prefilled. Redact secrets and
 private terminal content before submitting.
-The adjacent version label shows the running GUI's embedded numeric release version
-(`X.Y.Z`, published as tag `vX.Y.Z`), or Cargo package version for local builds.
-Release CI sets
-`HERDR_RELEASE_VERSION` at compile time for both the app bundle and standalone
-executables from the validated workspace version in the manual main-branch workflow.
+The adjacent version label shows the running GUI's embedded calendar release
+version (`YYYYMMDD.COUNTER`, published as tag `vYYYYMMDD.COUNTER`), or `dev` for
+local builds, which are not releases. Release CI sets `HERDR_RELEASE_VERSION` at
+compile time for both the app bundle and standalone executables from the version
+the manual main-branch workflow derives; `workspace.package.version` in
+`Cargo.toml` is only Cargo metadata and never appears in the UI.
 
 ### App Updates
 
@@ -552,8 +553,8 @@ The ivory tile and upstream Herdr ram artwork and provenance are in
 supplied PNG export; `just icons` regenerates the macOS ICNS from that PNG with
 Swift/CoreGraphics and `iconutil`.
 
-For a local signed/notarized universal DMG, use `just dmg 0.1.0` (matching the
-manifest version). This requires both Rust macOS targets and ignored local signing
+For a local signed/notarized universal DMG, use `just dmg 20260920.1` with any
+valid `YYYYMMDD.COUNTER` version. This requires both Rust macOS targets and ignored local signing
 configuration; see [local DMG setup](scripts/release/README.md#local-dmg).
 Artifacts go to `target/distribution/VERSION`; nothing is published.
 
@@ -1008,7 +1009,7 @@ in YAML alone do **not** enforce approval; do not dispatch until protection is s
     token remains Contents read-only. Ensure tap branch rules permit this update;
     revoke the tap deploy key and replace the environment secret when rotating it.
 5. Ensure repository policy permits the publication job's built-in token to write
-   contents and create `vX.Y.Z` tags/releases. All other jobs have Contents read
+   contents and create `vYYYYMMDD.COUNTER` tags/releases. All other jobs have Contents read
    only; the workflow default is `permissions: {}`. Use disposable hosted runners,
    not shared self-hosted runners with untrusted processes or concurrent keychain
    operations. If your GitHub plan cannot enforce required environment reviewers,
@@ -1022,25 +1023,27 @@ in YAML alone do **not** enforce approval; do not dispatch until protection is s
 
 ### Dispatch And Recovery
 
-Update `[workspace.package].version` in `Cargo.toml` and its lockfile metadata as
-needed, review and merge all release inputs into `main`, then use a clean local
-`main` checkout at exactly GitHub's current main HEAD. With `gh` authenticated as
+Review and merge all release inputs into `main`, then use a clean local `main`
+checkout at exactly GitHub's current main HEAD. With `gh` authenticated as
 `penso`, `git`, `jq`, `openssl`, and `just` installed:
 
 ```sh
 just release-check
-just release 0.1.0
+just release
 ```
 
-The helper rejects nonnumeric `X.Y.Z` versions, leading zeros, dirty trees,
-non-main checkouts, a different origin, or a HEAD differing from GitHub's main.
-It queries GitHub without fetching, moving branches, or editing files. The
-exported recipe argument is passed as data, not interpolated shell. It dispatches
-`release.yml` explicitly on `main` with `VERSION`, `expected_sha`, and a random
-`request_id`; matches the unique run name plus SHA; and watches that run through
-its conclusion. Approval waits may require a second browser/terminal session.
-The Actions UI can also dispatch with the version and full SHA; `request_id` is
-optional there. A concurrent main update causes validation to fail rather than
+No version is chosen by hand. The workflow derives `YYYYMMDD.COUNTER` from the
+run's UTC date and the next unused same-day counter after the `v*` tags GitHub
+already holds, so published versions are strictly increasing and no bump commit
+is required.
+
+The helper rejects dirty trees, non-main checkouts, a different origin, or a HEAD
+differing from GitHub's main. It queries GitHub without fetching, moving branches,
+or editing files. It dispatches `release.yml` explicitly on `main` with
+`expected_sha` and a random `request_id`; matches the unique run name plus SHA;
+and watches that run through its conclusion. Approval waits may require a second
+browser/terminal session. The Actions UI can also dispatch with the full SHA;
+`request_id` is optional there. A concurrent main update causes validation to fail rather than
 silently releasing a different commit.
 
 The workflow checks the version against the workspace manifest and freezes the
@@ -1096,11 +1099,11 @@ may replace an older pending run with a newer dispatch, so dispatch one at a tim
 To verify a published release, install Python 3.11+, `gh`, and cosign 2.x, then:
 
 ```sh
-bash scripts/verify-release.sh --version v0.1.0
+bash scripts/verify-release.sh --version v20260920.1
 # Prefer pinning the independently reviewed source commit:
-bash scripts/verify-release.sh --version v0.1.0 --sha FULL_COMMIT_SHA
+bash scripts/verify-release.sh --version v20260920.1 --sha FULL_COMMIT_SHA
 # Basic GitHub provenance check:
-gh attestation verify Herdr-0.1.0-universal-apple-darwin.dmg --repo penso/herdr-gpui
+gh attestation verify Herdr-20260920.1-universal-apple-darwin.dmg --repo penso/herdr-gpui
 ```
 
 The script checks the exact asset/checksum set and requires Sigstore and provenance

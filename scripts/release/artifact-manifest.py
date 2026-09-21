@@ -8,8 +8,8 @@ import re
 
 
 def base_names(version):
-    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
-        raise ValueError("Expected numeric X.Y.Z version")
+    if not re.fullmatch(r"[1-9][0-9]{7}\.[1-9][0-9]*", version):
+        raise ValueError("Expected YYYYMMDD.COUNTER version")
     return [f"Herdr-{version}-universal-apple-darwin.dmg",
             f"Herdr-{version}-x86_64-unknown-linux-gnu.tar.gz",
             f"Herdr-{version}-aarch64-unknown-linux-gnu.tar.gz",

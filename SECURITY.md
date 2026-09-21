@@ -64,17 +64,17 @@ Checksums alone are not authentication:
 
 ```sh
 # Exact asset set, SHA256/SHA512, Sigstore and GitHub provenance
-bash scripts/verify-release.sh --version v0.1.0
+bash scripts/verify-release.sh --version v20260920.1
 
 # Basic provenance check (the script also pins workflow, main ref, and tag SHA)
-gh attestation verify Herdr-0.1.0-universal-apple-darwin.dmg \
+gh attestation verify Herdr-20260920.1-universal-apple-darwin.dmg \
   --repo penso/herdr-gpui
 ```
 
 The verification script requires Python 3.11+, `gh`, and cosign 2.x. It requires
 the exact workflow identity
 `https://github.com/penso/herdr-gpui/.github/workflows/release.yml@refs/heads/main`,
-GitHub's OIDC issuer, and the commit identified by the lightweight `vX.Y.Z` tag.
+GitHub's OIDC issuer, and the commit identified by the lightweight `vYYYYMMDD.COUNTER` tag.
 Use `--sha FULL_COMMIT_SHA` to pin a separately reviewed source commit rather
 than trusting the current tag mapping. These are manual **main-branch** runs;
 the certificate identity is not a tag ref. Verification requires network access
@@ -102,14 +102,14 @@ subkey fingerprint** through a trusted channel as well: it can differ from the
 primary fingerprint. HTTPS and a successful GPG verification alone do not prove
 that the expected person signed.
 
-`bash scripts/gpg-sign-release.sh v0.1.0 ./release-approval FULL_SIGNING_FINGERPRINT`
+`bash scripts/gpg-sign-release.sh v20260920.1 ./release-approval FULL_SIGNING_FINGERPRINT`
 downloads and verifies the immutable release, then saves detached signatures in
 `release-approval/gpg/`. It never uploads, clobbers, or modifies a release. Share
 these supplemental signatures separately; they are not promised release assets.
 No GPG private key is stored in CI. To verify downloaded supplemental signatures:
 
 ```sh
-bash scripts/verify-release.sh --version v0.1.0 --directory ./release-approval \
+bash scripts/verify-release.sh --version v20260920.1 --directory ./release-approval \
   --gpg-key ./maintainer-public.asc --gpg-fingerprint FULL_SIGNING_FINGERPRINT
 ```
 

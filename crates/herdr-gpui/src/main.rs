@@ -48,10 +48,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use terminal::*;
 
-// Release builds embed the same tag used for the bundle and downloadable artifacts.
+// Release builds embed the same calendar version (YYYYMMDD.COUNTER) used for the
+// tag, the bundle, and the downloadable artifacts. Local builds are not releases,
+// so they carry no version the updater or an issue report could act on.
 const APP_VERSION: &str = match option_env!("HERDR_RELEASE_VERSION") {
     Some(version) => version,
-    None => concat!("v", env!("CARGO_PKG_VERSION")),
+    None => "dev",
 };
 
 // Only the signed release pipeline sets that tag. Local `just run` and worktree

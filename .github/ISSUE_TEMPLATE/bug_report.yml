@@ -41,7 +41,7 @@ body:
     attributes:
       label: Running Herdr GPUI version
       description: Copy the version shown at the right of the GUI status bar. The Report issue button prefills this field. For source builds, also include the commit if known.
-      placeholder: "0.2.0 (release) or v0.1.0 (local build)"
+      placeholder: "20260920.1 (release) or dev (local build)"
     validations:
       required: true
   - type: input

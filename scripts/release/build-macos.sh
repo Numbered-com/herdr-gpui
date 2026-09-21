@@ -22,9 +22,6 @@ build_env=(env
     CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP=none)
 # Public configuration must be supplied before loading any local signing helper.
 "${build_env[@]}" python3 scripts/update-manifest.py validate-public-key
-manifest_version=$("${build_env[@]}" cargo metadata --locked --offline --no-deps --format-version 1 |
-    jq -er '.packages[] | select(.name == "herdr-gpui") | .version')
-[[ $version == "$manifest_version" ]] || fail "Version must match manifest version $manifest_version"
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
     "${build_env[@]}" cargo build --locked --release --target-dir target -p herdr-gpui --target "$target"
 done

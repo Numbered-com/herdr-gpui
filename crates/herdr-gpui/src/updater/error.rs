@@ -106,7 +106,7 @@ pub enum UpdateError {
     ResponseLimit,
     #[error("Release metadata exceeds size limit")]
     MetadataLimit,
-    #[error("GitHub release is not a stable vX.Y.Z release")]
+    #[error("GitHub release is not a stable vYYYYMMDD.COUNTER release")]
     UnstableRelease,
     #[error("GitHub release has too many assets")]
     ReleaseAssetCount,

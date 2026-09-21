@@ -97,9 +97,9 @@ sign-release *args:
 verify-release *args:
     ./scripts/verify-release.sh {{args}}
 
-# Owner-only remote release. Exported parameter is data, never interpolated shell.
-release $VERSION:
-    bash scripts/release/dispatch.sh "$VERSION"
+# Owner-only remote release; CI derives the YYYYMMDD.COUNTER version itself.
+release:
+    bash scripts/release/dispatch.sh
 
 # Local universal signed/notarized DMG; does not publish anything.
 dmg $VERSION:

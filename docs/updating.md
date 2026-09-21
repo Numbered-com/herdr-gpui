@@ -19,7 +19,8 @@ installs should use their package manager rather than overwrite managed files.
 
 Both macOS architecture builds and both Linux builds receive
 `HERDR_UPDATE_PUBLIC_KEY` and `HERDR_RELEASE_VERSION` as compile-time environment
-variables. The version is the validated workspace `X.Y.Z`, without `v`.
+variables. The version is the derived calendar version `YYYYMMDD.COUNTER`, without
+`v`; builds without it report `dev` and never run the updater.
 The public key is required and format-validated before builds. The private key is
 loaded only in the manifest-signing step of the protected `sign` job, never in
 compilation, tests, metadata, OIDC attestation, or publication. Signing rejects a missing key,
@@ -86,11 +87,11 @@ here only for readability:
 ```json
 {
   "schema": 1,
-  "version": "0.1.0",
+  "version": "20260920.1",
   "assets": [
     {
       "target": "universal-apple-darwin",
-      "name": "herdr-gpui-0.1.0-macos-universal.app.tar.gz",
+      "name": "herdr-gpui-20260920.1-macos-universal.app.tar.gz",
       "size": 123456,
       "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
@@ -98,8 +99,10 @@ here only for readability:
 }
 ```
 
-- Versions are numeric SemVer `X.Y.Z`, without `v`, leading zeros, prerelease or
-  build suffixes. GitHub release tags are `vX.Y.Z`.
+- Versions are calendar versions `YYYYMMDD.COUNTER`: an eight-digit UTC date and a
+  same-day counter starting at 1, without `v`, leading zeros, prerelease or build
+  suffixes. Both components compare numerically, so publication order is version
+  order. GitHub release tags are `vYYYYMMDD.COUNTER`.
 - JSON has exactly these fields, schema 1, at most 65536 bytes, and one to three
   unique supported targets. The release generator always requires the current
   version's macOS archive and includes either Linux archive when present. Release
@@ -136,12 +139,12 @@ parent directories; commands refuse to overwrite existing outputs.
 
 ```sh
 python3 scripts/update-manifest.py package-macos dist/Herdr.app \
-  dist/herdr-gpui-0.1.0-macos-universal.app.tar.gz
+  dist/herdr-gpui-20260920.1-macos-universal.app.tar.gz
 python3 scripts/update-manifest.py package-linux path/to/herdr-gpui \
-  x86_64-unknown-linux-gnu 0.1.0 \
-  dist/herdr-gpui-0.1.0-x86_64-unknown-linux-gnu-update.tar.gz
+  x86_64-unknown-linux-gnu 20260920.1 \
+  dist/herdr-gpui-20260920.1-x86_64-unknown-linux-gnu-update.tar.gz
 # Package the aarch64 Linux archive too before requiring all release targets:
-python3 scripts/update-manifest.py create dist 0.1.0 --require-all-targets
+python3 scripts/update-manifest.py create dist 20260920.1 --require-all-targets
 HERDR_UPDATE_PUBLIC_KEY="$public" python3 scripts/update-manifest.py validate-public-key
 HERDR_UPDATE_PUBLIC_KEY="$public" python3 scripts/update-manifest.py check-key \
   "$OPENSSL" path/to/private.pem
@@ -200,11 +203,26 @@ signature and remain required. Manual Linux archives preserve desktop/icon/licen
 installation; updater archives only replace the existing executable. Their matching
 manual archive supplies release-specific attribution and notices.
 
+### Migrating From `X.Y.Z`
+
+`v0.1.0` was published under the previous numeric SemVer scheme. Its tag is
+ignored when the next version is derived, and the first calendar release replaces
+the pre-calendar Homebrew cask without an ordering check, since every
+`YYYYMMDD.COUNTER` version supersedes it.
+
+Clients already running `0.1.0` cannot update themselves to a calendar release:
+their embedded parser accepts only three numeric components, so they reject the
+newer release as unstable and keep reporting no update. Those installations must
+be replaced manually, through Homebrew or a fresh download. Calendar releases
+update each other normally.
+
 ### Publication Security
 
-Publish increasing `X.Y.Z` versions **in order**. The manual-only workflow is
-restricted to `penso` dispatching/rerunning from main, serializes all releases and
-never cancels an active signer. It refuses existing tags/releases and verifies all
+Versions increase by construction: the workflow derives `YYYYMMDD.COUNTER` from
+the run's UTC date and the highest same-day counter already tagged, and refuses to
+publish when a tag is dated after that run. The manual-only workflow is restricted
+to `penso` dispatching/rerunning from main, serializes all releases and never
+cancels an active signer. It refuses existing tags/releases and verifies all
 draft assets before immutable publication. Coordinate dispatches: concurrency
 alone does not enforce numeric release ordering, and a valid old signature does
 not prove freshness. HTTPS and GitHub account security remain important.

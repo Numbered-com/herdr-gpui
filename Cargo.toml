@@ -3,6 +3,8 @@ resolver = "2"
 members = ["crates/herdr-protocol", "crates/herdr-client", "crates/herdr-gpui"]
 
 [workspace.package]
+# Cargo metadata only. Releases carry a derived calendar version YYYYMMDD.COUNTER
+# that CI embeds as HERDR_RELEASE_VERSION; this value never reaches the UI.
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"

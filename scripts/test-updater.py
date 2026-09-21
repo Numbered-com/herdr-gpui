@@ -38,7 +38,7 @@ DEPENDENCIES = (
 )
 # Public half of the deliberately public [42; 32] unit-test signing seed.
 PUBLIC_KEY = "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61"
-VERSION = "0.1.0"
+VERSION = "20260920.1"
 
 MAIN = r'''
 const APP_VERSION: &str = env!("HERDR_RELEASE_VERSION");
@@ -77,7 +77,7 @@ fn embedded_fixture_key_and_version_match() {
     let public: String = ed25519_dalek::SigningKey::from_bytes(&[42; 32])
         .verifying_key().as_bytes().iter().map(|byte| format!("{byte:02x}")).collect();
     assert_eq!(public, env!("HERDR_UPDATE_PUBLIC_KEY"));
-    assert_eq!(APP_VERSION, "0.1.0");
+    assert_eq!(APP_VERSION, "20260920.1");
 }
 '''
 
@@ -177,7 +177,7 @@ def linux_helper_tests(binary, parent):
             stage = Path(tempfile.mkdtemp(prefix=".herdr-update-", dir=home))
             marker = home / "restarted.json"
             environment = {"HOME": str(home), "PATH": "/usr/bin:/bin", "LC_ALL": "C"}
-            payload_name = f"herdr-gpui-0.2.0-{target}"
+            payload_name = f"herdr-gpui-20260920.2-{target}"
             buffer = io.BytesIO()
             with tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as archive:
                 entry = tarfile.TarInfo(payload_name)
@@ -186,7 +186,7 @@ def linux_helper_tests(binary, parent):
                 archive.addfile(entry, io.BytesIO(new))
             archive_bytes = gzip.compress(buffer.getvalue(), mtime=0)
             (stage / "archive.tar.gz").write_bytes(archive_bytes)
-            manifest = json.dumps({"schema": 1, "version": "0.2.0", "assets": [{
+            manifest = json.dumps({"schema": 1, "version": "20260920.2", "assets": [{
                 "target": target, "name": payload_name + "-update.tar.gz",
                 "size": len(archive_bytes), "sha256": hashlib.sha256(archive_bytes).hexdigest(),
             }]}).encode()
@@ -196,7 +196,7 @@ def linux_helper_tests(binary, parent):
             ).stdout)
             argument = b"space and non-UTF8: \xff"
             request = {
-                "current_version": VERSION, "version": "0.2.0",
+                "current_version": VERSION, "version": "20260920.2",
                 "manifest": list(manifest), "signature": signature,
                 "args": [list(b"--harness-restarted"), list(os.fsencode(marker)), list(argument)],
                 "cwd": list(os.fsencode(home)), "token": [42] * 32,
@@ -206,7 +206,7 @@ def linux_helper_tests(binary, parent):
             elif case == "bad-archive":
                 (stage / "archive.tar.gz").write_bytes(b"not the signed archive")
             elif case == "stale-version":
-                request["current_version"] = "0.0.1"
+                request["current_version"] = "20260919.1"
             elif case == "unsafe-stage":
                 stage.chmod(0o755)
             elif case == "spawn-failure":

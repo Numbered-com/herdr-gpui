@@ -38,25 +38,25 @@ class ReleaseTests(unittest.TestCase):
         return result
 
     def test_cask(self):
-        first = self.run_script("render-cask.sh", "1.2.3", "AB" * 32).stdout
-        self.assertEqual(first, self.run_script("render-cask.sh", "1.2.3", "ab" * 32).stdout)
-        self.assertIn('version "1.2.3"', first)
+        first = self.run_script("render-cask.sh", "20260920.3", "AB" * 32).stdout
+        self.assertEqual(first, self.run_script("render-cask.sh", "20260920.3", "ab" * 32).stdout)
+        self.assertIn('version "20260920.3"', first)
         self.assertIn('sha256 "' + "ab" * 32 + '"', first)
         self.assertIn("penso/herdr-gpui/releases/download/v#{version}/Herdr-#{version}-universal-apple-darwin.dmg", first)
         self.assertIn('depends_on macos: ">= :sequoia"', first)
-        for version in ["v1.2.3", "1.2", "01.2.3", "1.2.3-rc1", "1.2.3+build", "1.2.3\n", "$(id)"]:
+        for version in ["v20260920.3", "1.2", "020260920.3", "20260920.3-rc1", "20260920.3+build", "20260920.3\n", "$(id)"]:
             self.run_script("render-cask.sh", version, "ab" * 32, success=False)
         for sha in ["abc", "g" * 64, "a" * 65, "a" * 63 + "\n"]:
-            self.run_script("render-cask.sh", "1.2.3", sha, success=False)
+            self.run_script("render-cask.sh", "20260920.3", sha, success=False)
 
     def test_linux_archive(self):
         binary = self.work / "input binary"
         binary.write_bytes(build_identity())
         for target in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"):
             with self.subTest(target=target):
-                result = self.run_script("package-linux.sh", "1.2.3", target, binary, self.work, self.notices)
+                result = self.run_script("package-linux.sh", "20260920.3", target, binary, self.work, self.notices)
                 with tarfile.open(result.stdout.strip()) as archive:
-                    base = f"Herdr-1.2.3-{target}/"
+                    base = f"Herdr-20260920.3-{target}/"
                     files = {m.name: m for m in archive.getmembers() if m.isfile()}
                     self.assertEqual(set(files), {base + p for p in [
                         "bin/herdr-gpui", "share/applications/herdr-gpui.desktop",
@@ -73,15 +73,15 @@ class ReleaseTests(unittest.TestCase):
                     for source in ("LICENSE", "NOTICE", "assets/icons/LICENSE-octicons", "crates/herdr-protocol/NOTICE.md"):
                         self.assertEqual(archive.extractfile(base + "share/licenses/herdr-gpui/" + Path(source).name).read(), (ROOT / source).read_bytes())
                 # The updater ships the same binary, without changing the manual tree.
-                update = self.work / f"herdr-gpui-1.2.3-{target}-update.tar.gz"
+                update = self.work / f"herdr-gpui-20260920.3-{target}-update.tar.gz"
                 subprocess.run(["python3", str(ROOT / "scripts/update-manifest.py"), "package-linux",
-                                str(binary), target, "1.2.3", str(update)], check=True,
+                                str(binary), target, "20260920.3", str(update)], check=True,
                                env=self.env, capture_output=True)
                 with tarfile.open(update) as archive:
-                    self.assertEqual(archive.getnames(), [f"herdr-gpui-1.2.3-{target}"])
+                    self.assertEqual(archive.getnames(), [f"herdr-gpui-20260920.3-{target}"])
                     self.assertEqual(archive.extractfile(archive.getmembers()[0]).read(), binary.read_bytes())
-                self.run_script("package-linux.sh", "1.2.3", target, binary, self.work, self.notices, success=False)
-        self.run_script("package-linux.sh", "1.2.3", "bad-target", binary, self.work, self.notices, success=False)
+                self.run_script("package-linux.sh", "20260920.3", target, binary, self.work, self.notices, success=False)
+        self.run_script("package-linux.sh", "20260920.3", "bad-target", binary, self.work, self.notices, success=False)
 
     def test_packaging_requires_notices(self):
         self.mock_tools()
@@ -89,9 +89,9 @@ class ReleaseTests(unittest.TestCase):
         binary.touch()
         for script, inputs in [("package-linux.sh", ["x86_64-unknown-linux-gnu", binary]),
                                ("package-macos.sh", [binary, binary])]:
-            self.run_script(script, "1.2.3", *inputs, self.work, success=False)
+            self.run_script(script, "20260920.3", *inputs, self.work, success=False)
             for notices in [self.work / "missing", binary]:
-                result = self.run_script(script, "1.2.3", *inputs, self.work, notices, success=False)
+                result = self.run_script(script, "20260920.3", *inputs, self.work, notices, success=False)
                 self.assertIn("Nonempty third-party notices", result.stderr)
         self.assertFalse((self.work / "Herdr.app").exists())
         self.assertFalse(list(self.work.glob("*.tar.gz")))
@@ -110,8 +110,8 @@ class ReleaseTests(unittest.TestCase):
         self.mock_tools()
         self.env["MOCK_OS"] = "Linux"
         for script, args in [
-            ("package-macos.sh", ["1.2.3", "arm", "intel", self.work, self.notices]),
-            ("sign-macos.sh", ["1.2.3", "app", self.work]),
+            ("package-macos.sh", ["20260920.3", "arm", "intel", self.work, self.notices]),
+            ("sign-macos.sh", ["20260920.3", "app", self.work]),
         ]:
             result = self.run_script(script, *args, success=False)
             self.assertIn("macOS required", result.stderr)
@@ -122,7 +122,7 @@ class ReleaseTests(unittest.TestCase):
         arm, intel = self.work / "arm64", self.work / "x86_64"
         arm.write_bytes(build_identity())
         intel.write_bytes(build_identity())
-        self.run_script("package-macos.sh", "1.2.3", arm, intel, self.work, self.notices)
+        self.run_script("package-macos.sh", "20260920.3", arm, intel, self.work, self.notices)
         app = self.work / "Herdr.app"
         self.assertEqual({str(p.relative_to(app)) for p in app.rglob("*") if p.is_file()}, {
             "Contents/MacOS/Herdr", "Contents/Info.plist", "Contents/Resources/Herdr.icns",
@@ -134,7 +134,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual((app / "Contents/Resources/Herdr.icns").read_bytes(), (ROOT / "assets/icons/Herdr.icns").read_bytes())
         for source in ("LICENSE", "NOTICE", "assets/icons/LICENSE-octicons", "crates/herdr-protocol/NOTICE.md"):
             self.assertEqual((app / "Contents/Resources" / Path(source).name).read_bytes(), (ROOT / source).read_bytes())
-        self.run_script("package-macos.sh", "1.2.3", arm, intel, self.work, self.notices, success=False)
+        self.run_script("package-macos.sh", "20260920.3", arm, intel, self.work, self.notices, success=False)
 
     def test_worktree_icons_and_mismatched_architectures(self):
         self.mock_tools()
@@ -154,14 +154,14 @@ class ReleaseTests(unittest.TestCase):
         arm, intel = self.work / "arm64", self.work / "x86_64"
         arm.write_bytes(build_identity(True))
         intel.write_bytes(build_identity())
-        result = self.run_script("package-macos.sh", "1.2.3", arm, intel, self.work, self.notices, success=False)
+        result = self.run_script("package-macos.sh", "20260920.3", arm, intel, self.work, self.notices, success=False)
         self.assertIn("different build identities", result.stderr)
         intel.write_bytes(build_identity(True))
-        self.run_script("package-macos.sh", "1.2.3", arm, intel, self.work, self.notices)
+        self.run_script("package-macos.sh", "20260920.3", arm, intel, self.work, self.notices)
         self.assertEqual((self.work / "Herdr.app/Contents/Resources/Herdr.icns").read_bytes(), (fixture / "assets/icons/Herdr-worktree.icns").read_bytes())
-        result = self.run_script("package-linux.sh", "1.2.3", "aarch64-unknown-linux-gnu", arm, self.work, self.notices)
+        result = self.run_script("package-linux.sh", "20260920.3", "aarch64-unknown-linux-gnu", arm, self.work, self.notices)
         with tarfile.open(result.stdout.strip()) as archive:
-            self.assertEqual(archive.extractfile("Herdr-1.2.3-aarch64-unknown-linux-gnu/share/icons/hicolor/1024x1024/apps/herdr-gpui.png").read(), (fixture / "assets/icons/herdr-square-worktree-1024.png").read_bytes())
+            self.assertEqual(archive.extractfile("Herdr-20260920.3-aarch64-unknown-linux-gnu/share/icons/hicolor/1024x1024/apps/herdr-gpui.png").read(), (fixture / "assets/icons/herdr-square-worktree-1024.png").read_bytes())
 
     def test_missing_malformed_conflicting_identity_fails_closed(self):
         binary = self.work / "binary"
@@ -169,7 +169,7 @@ class ReleaseTests(unittest.TestCase):
                      build_identity().replace(b"pr=\n", b"pr=0\n"),
                      build_identity().replace(b"worktree=0", b"worktree=9")]:
             binary.write_bytes(data)
-            self.run_script("package-linux.sh", "1.2.3", "x86_64-unknown-linux-gnu", binary, self.work, self.notices, success=False)
+            self.run_script("package-linux.sh", "20260920.3", "x86_64-unknown-linux-gnu", binary, self.work, self.notices, success=False)
             self.assertFalse(list(self.work.glob("*.tar.gz")))
 
     def test_signing_success_and_fail_closed(self):
@@ -184,14 +184,14 @@ class ReleaseTests(unittest.TestCase):
             APPLE_API_PRIVATE_KEY="dummy p8", APPLE_API_KEY_ID="dummy",
             APPLE_API_ISSUER_ID="dummy", MACOS_SIGNING_IDENTITY="Developer ID Application: Dummy",
         )
-        output = self.work / "Herdr-1.2.3-universal-apple-darwin.dmg"
-        update = self.work / "herdr-gpui-1.2.3-macos-universal.app.tar.gz"
+        output = self.work / "Herdr-20260920.3-universal-apple-darwin.dmg"
+        update = self.work / "herdr-gpui-20260920.3-macos-universal.app.tar.gz"
         for response in ['{"status":"Invalid"}', '{"status":"In Progress"}', '{}', 'not json',
                          '{"status":"Invalid"}\n{"status":"Accepted"}', '{"status":"Accepted"}']:
             with self.subTest(response=response):
                 self.env["MOCK_NOTARY_JSON"] = response
                 accepted = response == '{"status":"Accepted"}'
-                self.run_script("sign-macos.sh", "1.2.3", app, self.work, success=accepted)
+                self.run_script("sign-macos.sh", "20260920.3", app, self.work, success=accepted)
                 self.assertEqual(output.exists(), accepted)
                 self.assertEqual(update.exists(), accepted)
                 self.assertFalse(list(self.work.glob(".herdr-sign.*")))
@@ -205,19 +205,19 @@ class ReleaseTests(unittest.TestCase):
         output.unlink()
         # Existing updater outputs also fail before creating credentials.
         before = (self.work / "log").read_text()
-        self.run_script("sign-macos.sh", "1.2.3", app, self.work, success=False)
+        self.run_script("sign-macos.sh", "20260920.3", app, self.work, success=False)
         self.assertEqual((self.work / "log").read_text(), before)
         update.unlink()
         for tool in ["codesign", "spctl", "hdiutil", "xcrun"]:
             self.env["MOCK_FAIL"] = tool
-            self.run_script("sign-macos.sh", "1.2.3", app, self.work, success=False)
+            self.run_script("sign-macos.sh", "20260920.3", app, self.work, success=False)
             self.assertFalse(output.exists())
             self.assertFalse(update.exists())
             self.assertFalse(list(self.work.glob(".herdr-sign.*")))
         del self.env["MOCK_FAIL"]
         # A USTAR packaging failure must not promote the already signed DMG.
         (app / ("x" * 101)).write_bytes(b"unsupported USTAR name")
-        self.run_script("sign-macos.sh", "1.2.3", app, self.work, success=False)
+        self.run_script("sign-macos.sh", "20260920.3", app, self.work, success=False)
         self.assertFalse(output.exists())
         self.assertFalse(update.exists())
         self.assertFalse(list(self.work.glob(".herdr-sign.*")))
@@ -232,7 +232,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(all("runtime" in c for c in signs if not c[-1].endswith(".dmg")))
         del self.env["APPLE_API_PRIVATE_KEY"]
         before = (self.work / "log").read_text()
-        self.run_script("sign-macos.sh", "1.2.3", app, self.work, success=False)
+        self.run_script("sign-macos.sh", "20260920.3", app, self.work, success=False)
         self.assertEqual((self.work / "log").read_text(), before)
 
 

@@ -1,13 +1,9 @@
 name: Release
-run-name: Release ${{ inputs.VERSION }} @ ${{ inputs.expected_sha }} [${{ inputs.request_id }}]
+run-name: Release @ ${{ inputs.expected_sha }} [${{ inputs.request_id }}]
 
 on:
   workflow_dispatch:
     inputs:
-      VERSION:
-        description: Workspace version (X.Y.Z, no v or leading zeros)
-        required: true
-        type: string
       expected_sha:
         description: Full commit SHA of main HEAD
         required: true
@@ -73,26 +69,22 @@ jobs:
       - id: validate
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.VERSION }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           REQUEST_ID: ${{ inputs.request_id }}
         run: |
           set -euo pipefail
-          [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$REQUEST_ID" =~ ^[a-zA-Z0-9-]{0,64}$ ]]
           [[ "$EXPECTED_SHA" == "$GITHUB_SHA" ]]
           [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
           [[ "$(gh api repos/penso/herdr-gpui/git/ref/heads/main --jq .object.sha)" == "$EXPECTED_SHA" ]]
-          python3 - <<'PY'
-          import os, tomllib
-          with open("Cargo.toml", "rb") as manifest:
-              version = tomllib.load(manifest)["workspace"]["package"]["version"]
-          if version != os.environ["VERSION"]:
-              raise SystemExit("VERSION must match workspace.package.version")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"version={version}\nsha={os.environ['EXPECTED_SHA']}\n")
-          PY
+          # The calendar version is derived here, never dispatched: today's UTC
+          # date and the next same-day counter after the tags GitHub already has.
+          version=$(gh api --paginate repos/penso/herdr-gpui/git/matching-refs/tags/v --jq '.[].ref' |
+            python3 scripts/release/next-version.py "$(date -u +%Y%m%d)")
+          [[ "$version" =~ ^[1-9][0-9]{7}\.[1-9][0-9]*$ ]]
+          printf 'version=%s\nsha=%s\n' "$version" "$EXPECTED_SHA" >> "$GITHUB_OUTPUT"
+          printf 'Publishing v%s\n' "$version"
       - name: Validate embedded updater public key
         env:
           HERDR_UPDATE_PUBLIC_KEY: ${{ vars.HERDR_UPDATE_PUBLIC_KEY }}

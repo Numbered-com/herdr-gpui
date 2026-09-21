@@ -22,8 +22,9 @@ ED25519_SPKI = bytes.fromhex("302a300506032b6570032100")
 
 
 def version(value):
-    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", value):
-        raise ValueError("version must be numeric X.Y.Z without leading zeros")
+    """Calendar version: an eight-digit YYYYMMDD date and a same-day counter."""
+    if not re.fullmatch(r"[1-9][0-9]{7}\.[1-9][0-9]*", value):
+        raise ValueError("version must be YYYYMMDD.COUNTER without leading zeros")
     if any(int(component) > 2**64 - 1 for component in value.split(".")):
         raise ValueError("version components must fit unsigned 64-bit integers")
     return value

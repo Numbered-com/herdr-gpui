@@ -36,10 +36,10 @@ panel does not cancel work. Explicit **Cancel** requests cancellation.
 The existing UI timer polls the updater mailbox; workers own blocking work, and
 the restart helper is dispatched before CLI parsing or GPUI startup.
 
-Only normal launches with a numeric `X.Y.Z` release version (tag `vX.Y.Z`) and
-embedded public signing key start the service. Test fixtures use a disabled,
-worker-free updater. Update targets are
-macOS app bundles and user-owned Linux executables under `HOME` on x86_64/aarch64
+Only normal launches with a calendar release version `YYYYMMDD.COUNTER` (tag
+`vYYYYMMDD.COUNTER`) and embedded public signing key start the service. Test
+fixtures use a disabled, worker-free updater. Update targets are macOS app
+bundles and user-owned Linux executables under `HOME` on x86_64/aarch64
 GNU systems, not arbitrary packages or a claim of full Linux app support.
 **QA > Show app update available** and the sidebar's **preview app update** use
 independent synthetic version `9999.0.0`: Download becomes Ready and Install and

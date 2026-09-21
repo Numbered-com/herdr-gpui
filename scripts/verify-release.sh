@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: bash scripts/verify-release.sh --version vX.Y.Z [--directory DIR] [--sha SHA]
+Usage: bash scripts/verify-release.sh --version vYYYYMMDD.COUNTER [--directory DIR] [--sha SHA]
        [--gpg-key PUBLIC_KEY_FILE --gpg-fingerprint FULL_SIGNING_FINGERPRINT]
 
 Without --directory, download the release into a temporary directory.
@@ -32,7 +32,7 @@ while [[ $# -gt 0 ]]; do
         *) usage >&2; exit 1 ;;
     esac
 done
-[[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { usage >&2; exit 1; }
+[[ $version =~ ^[1-9][0-9]{7}\.[1-9][0-9]*$ ]] || { usage >&2; exit 1; }
 [[ -z $sha || $sha =~ ^[0-9a-f]{40}$ ]] || exit 1
 if [[ -n $gpg_key || -n $fingerprint ]]; then
     [[ -f $gpg_key && $fingerprint =~ ^([0-9A-F]{40}|[0-9A-F]{64})$ ]] || exit 1
