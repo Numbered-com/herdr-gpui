@@ -79,6 +79,30 @@ pub(crate) fn menus() -> Vec<Menu> {
             ],
         },
         Menu {
+            name: "View".into(),
+            items: vec![
+                MenuItem::action(
+                    "Increase Font Size",
+                    RunCommand {
+                        command: Command::IncreaseFontSize,
+                    },
+                ),
+                MenuItem::action(
+                    "Decrease Font Size",
+                    RunCommand {
+                        command: Command::DecreaseFontSize,
+                    },
+                ),
+                MenuItem::separator(),
+                MenuItem::action(
+                    "Reset Font Size",
+                    RunCommand {
+                        command: Command::ResetFontSize,
+                    },
+                ),
+            ],
+        },
+        Menu {
             name: "Terminal".into(),
             items: vec![
                 MenuItem::action(
@@ -148,4 +172,45 @@ pub(crate) fn menus() -> Vec<Menu> {
             ],
         },
     ]
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// The font size items are the only way to reach these commands from the
+    /// macOS menu bar, and each must dispatch the catalog command rather than
+    /// an action of its own.
+    #[test]
+    fn view_menu_carries_the_font_size_commands() {
+        let menus = menus();
+        let names: Vec<_> = menus.iter().map(|menu| menu.name.as_ref()).collect();
+        assert_eq!(names, ["Herdr", "File", "View", "Terminal", "Window", "QA"]);
+
+        let view = menus
+            .iter()
+            .find(|menu| menu.name.as_ref() == "View")
+            .unwrap();
+        let actions: Vec<_> = view
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MenuItem::Action { name, action, .. } => Some((name.as_ref(), action)),
+                _ => None,
+            })
+            .collect();
+        let expected = [
+            ("Increase Font Size", Command::IncreaseFontSize),
+            ("Decrease Font Size", Command::DecreaseFontSize),
+            ("Reset Font Size", Command::ResetFontSize),
+        ];
+        assert_eq!(actions.len(), expected.len());
+        for ((name, action), (label, command)) in actions.iter().zip(expected) {
+            assert_eq!(*name, label);
+            assert!(action.partial_eq(&RunCommand { command }), "{label}");
+        }
+        // Reset is a different kind of act from stepping, so it sits apart.
+        assert!(matches!(view.items[2], MenuItem::Separator));
+    }
 }

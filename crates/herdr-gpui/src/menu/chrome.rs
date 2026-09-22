@@ -63,6 +63,9 @@ impl HerdrWindow {
             "settings",
             "keybinds",
             "themes",
+            "increase font size",
+            "decrease font size",
+            "reset font size",
             "commands",
             "workspaces",
             "reload GUI config",
@@ -108,6 +111,17 @@ impl HerdrWindow {
             "settings" => self.open_preferences(window, cx),
             "keybinds" => self.open_keybinds(window, cx),
             "themes" => self.open_theme_picker(window, cx),
+            "increase font size" | "decrease font size" | "reset font size" => {
+                use crate::config::FONT_SIZE_STEP;
+                let size = match item {
+                    "increase font size" => self.config.terminal.size + FONT_SIZE_STEP,
+                    "decrease font size" => self.config.terminal.size - FONT_SIZE_STEP,
+                    _ => self.configured_terminal_size,
+                };
+                // `command` refuses to act while a page is open, so apply here.
+                self.set_terminal_font_size(size, cx);
+                self.dismiss_menu(window, cx);
+            }
             "commands" => self.open_palette(false, window, cx),
             "workspaces" => self.open_palette(true, window, cx),
             "update ready" => self.menu.page = Some(Page::Update),

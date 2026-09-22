@@ -5,11 +5,19 @@ use serde::Deserialize;
 use std::{
     env, fs,
     io::{ErrorKind, Write},
+    ops::RangeInclusive,
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
 const DEFAULT_CONFIG: &str = include_str!("../config-gpui.example.toml");
+
+/// Every face is held to this range, whether it comes from the config file or
+/// from a runtime adjustment, so the two can never disagree on what is valid.
+pub const FONT_SIZE_RANGE: RangeInclusive<f32> = 8.0..=48.0;
+
+/// One logical pixel: the smallest step that can move the terminal cell grid.
+pub const FONT_SIZE_STEP: f32 = 1.0;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -342,7 +350,7 @@ impl Config {
             if font.family.trim().is_empty() {
                 return Err(Error::EmptyFontFamily(name));
             }
-            if !font.size.is_finite() || !(8.0..=48.0).contains(&font.size) {
+            if !font.size.is_finite() || !FONT_SIZE_RANGE.contains(&font.size) {
                 return Err(Error::InvalidFontSize(name));
             }
         }
