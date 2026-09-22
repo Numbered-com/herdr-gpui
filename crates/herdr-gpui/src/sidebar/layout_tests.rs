@@ -2292,3 +2292,86 @@ fn hiding_agents_reclaims_sidebar_height(cx: &mut gpui::TestAppContext) {
         }
     }
 }
+
+#[cfg(test)]
+#[gpui::test]
+fn hiding_agents_preserves_scrolled_multi_endpoint_lists(cx: &mut gpui::TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut view = fixture_window(window, cx);
+        let snapshot = Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+        snapshot.agents = (0..8)
+            .map(|i| {
+                let mut agent = snapshot.agents[0].clone();
+                agent.pane_id = format!("p{i}");
+                agent
+            })
+            .collect();
+        let mut remote = crate::endpoint::Endpoint::new(
+            "ssh:test".into(),
+            "Remote".into(),
+            ConnectTarget::Socket("/unused-remote-layout-test.sock".into()),
+            true,
+        );
+        remote.live.snapshot = view.live.snapshot.clone();
+        for agent in &mut Arc::make_mut(remote.live.snapshot.as_mut().unwrap()).agents {
+            agent.display_agent = Some("Remote Agent".into());
+        }
+        view.endpoints.push(remote);
+        view
+    });
+    for width in [800., 360.] {
+        cx.simulate_resize(size(px(width), px(600.)));
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+            for scroll in &view.read(cx).sidebar_scroll {
+                scroll.set_offset(point(px(0.), px(-40.)));
+            }
+            window.refresh();
+            window.draw(cx).clear();
+        });
+        let spaces_height = cx.debug_bounds("spaces-scroll").unwrap().size.height;
+        for show_agents in [false, true] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.config.show_agents = show_agents;
+                    cx.notify();
+                });
+                cx.default_global::<TextProbes>().0.clear();
+                window.refresh();
+                window.draw(cx).clear();
+                for label in ["Claude Code", "Remote Agent"] {
+                    assert_eq!(
+                        cx.global::<TextProbes>().0.contains_key(label),
+                        show_agents,
+                        "{label}"
+                    );
+                }
+                let view = view.read(cx);
+                for scroll in &view.sidebar_scroll {
+                    assert_eq!(scroll.offset(), point(px(0.), px(-40.)));
+                }
+                assert_eq!(view.selected_endpoint, 0);
+                assert_eq!(view.live.snapshot.as_ref().unwrap().agents.len(), 8);
+                assert_eq!(
+                    view.endpoints[1]
+                        .live
+                        .snapshot
+                        .as_ref()
+                        .unwrap()
+                        .agents
+                        .len(),
+                    8
+                );
+            });
+            let height = cx.debug_bounds("spaces-scroll").unwrap().size.height;
+            if show_agents {
+                assert_eq!(height, spaces_height);
+                for selector in ["agent-local-p0", "agent-ssh:test-p0"] {
+                    assert!(cx.debug_bounds(selector).is_some());
+                }
+            } else {
+                assert!(height > spaces_height + px(100.));
+            }
+        }
+    }
+}
