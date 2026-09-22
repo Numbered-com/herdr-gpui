@@ -35,9 +35,8 @@ impl WorkspaceTarget {
     }
 
     pub(super) fn can_create(&self) -> bool {
-        self.worktree
-            .as_ref()
-            .is_some_and(|tree| !tree.is_linked_worktree)
+        // Like the TUI, accept Git branches before worktree metadata is available.
+        (self.worktree.is_some() || self.branch.is_some()) && !self.can_delete()
     }
 
     pub(super) fn can_delete(&self) -> bool {
@@ -97,7 +96,10 @@ impl WorkspaceTarget {
                 )
             }
             WorkspaceAction::NewWorktree => {
-                if !self.can_create() || self.worktree != workspace.worktree {
+                if !self.can_create()
+                    || self.worktree != workspace.worktree
+                    || (workspace.worktree.is_none() && workspace.branch.is_none())
+                {
                     return Err(crate::Error::WorkspaceRepositoryChanged);
                 }
                 let mut params = serde_json::json!({"workspace_id": self.id, "base": "HEAD", "focus": true, "trust_repository": false});

@@ -205,7 +205,8 @@ and local file paths are not activated.
   preserving other GUI config settings and comments.
 - Right-click spaces for Rename, Close (Close group on non-linked parents with
   multiple spaces sharing `worktree.key`), and New worktree on non-linked Git
-  parents. With `features.sidebar_hover_menu` enabled, resting the pointer on a
+  parents, including spaces with a known Git branch but no worktree metadata yet.
+  With `features.sidebar_hover_menu` enabled, resting the pointer on a
   space of the selected connection opens the same menu, and moving the pointer
   anywhere but into that menu closes it again; the flag is off by default, so
   spaces normally open their menu only on right-click, and a menu opened by
