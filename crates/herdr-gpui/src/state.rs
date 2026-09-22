@@ -37,6 +37,12 @@ impl std::fmt::Display for ConnectionStatus {
 
 #[derive(Clone)]
 pub struct LiveState {
+    pub(crate) sound_events: std::collections::VecDeque<(
+        std::time::Instant,
+        herdr_client::protocol::SemanticNotification,
+    )>,
+    pub(crate) reload_sound: bool,
+    pub(crate) sound_cancel: Arc<std::sync::atomic::AtomicBool>,
     pub snapshot: Option<Arc<ClientShellSnapshot>>,
     pub surface: Option<Arc<PaneSurfaceFrame>>,
     pub status: ConnectionStatus,
@@ -75,6 +81,9 @@ pub struct SurfaceActivation {
 impl Default for LiveState {
     fn default() -> Self {
         Self {
+            sound_events: Default::default(),
+            reload_sound: false,
+            sound_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             snapshot: None,
             surface: None,
             status: ConnectionStatus::Connecting,
@@ -160,6 +169,14 @@ impl LiveState {
                 self.error = None;
             }
             ClientEvent::Snapshot(snapshot) => {
+                if self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|old| old.boot_id != snapshot.boot_id)
+                {
+                    self.cancel_sounds();
+                    self.sound_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                }
                 if let Some(activation) = &mut self.activation
                     && activation.boot != snapshot.boot_id
                 {
@@ -186,6 +203,7 @@ impl LiveState {
                 }
             }
             ClientEvent::Disconnected { reason } => {
+                self.cancel_sounds();
                 self.status = ConnectionStatus::Disconnected;
                 self.error = Some(reason);
                 self.snapshot = None;
@@ -260,6 +278,14 @@ impl LiveState {
             ClientEvent::Message(ServerMessage::ClientShellError { message }) => {
                 self.error = Some(message)
             }
+            ClientEvent::Message(ServerMessage::SemanticNotification(event)) => {
+                if self.sound_events.len() == crate::sound::MAX_PENDING {
+                    self.sound_events.pop_front();
+                }
+                self.sound_events
+                    .push_back((std::time::Instant::now(), event));
+            }
+            ClientEvent::Message(ServerMessage::ReloadSoundConfig) => self.reload_sound = true,
             _ => return,
         }
         // Focus is evidence for completing one navigation, not a permanent
@@ -271,6 +297,13 @@ impl LiveState {
             activation.focus = None;
         }
         self.dirty = true;
+    }
+
+    pub(crate) fn cancel_sounds(&mut self) {
+        self.sound_cancel
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.sound_events.clear();
+        self.reload_sound = false;
     }
 }
 

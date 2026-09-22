@@ -29,6 +29,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) struct HerdrWindow {
+    pub(crate) sound: crate::sound::Service,
     pub(crate) updater: updater::Updater,
     pub(crate) update_preview: Option<updater::State>,
     pub(crate) config: config::Config,
@@ -187,6 +188,7 @@ impl HerdrWindow {
         });
         let config = config::Config::default();
         let mut this = Self {
+            sound: crate::sound::Service::default(),
             updater: updater::Updater::default(),
             update_preview: None,
             configured_terminal_size: config.terminal.size,

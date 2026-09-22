@@ -68,12 +68,13 @@ class ReleaseTests(unittest.TestCase):
                         "share/licenses/herdr-gpui/LICENSE", "share/licenses/herdr-gpui/NOTICE",
                         "share/licenses/herdr-gpui/LICENSE-octicons",
                         "share/licenses/herdr-gpui/THIRD-PARTY-NOTICES.txt",
+                        "share/licenses/herdr-gpui/SOUND-NOTICE.md",
                     ]})
                     self.assertEqual(files[base + "bin/herdr-gpui"].mode & 0o777, 0o755)
                     self.assertEqual(archive.extractfile(base + "bin/herdr-gpui").read(), binary.read_bytes())
                     self.assertEqual(archive.extractfile(base + "share/icons/hicolor/1024x1024/apps/herdr-gpui.png").read(), (ROOT / "assets/icons/herdr-icon-square-clean.png").read_bytes())
                     self.assertEqual(archive.extractfile(base + "share/licenses/herdr-gpui/THIRD-PARTY-NOTICES.txt").read(), self.notices.read_bytes())
-                    for source in ("LICENSE", "NOTICE", "assets/icons/LICENSE-octicons", "crates/herdr-protocol/NOTICE.md"):
+                    for source in ("LICENSE", "NOTICE", "assets/icons/LICENSE-octicons", "crates/herdr-protocol/NOTICE.md", "crates/herdr-gpui/SOUND-NOTICE.md"):
                         self.assertEqual(archive.extractfile(base + "share/licenses/herdr-gpui/" + Path(source).name).read(), (ROOT / source).read_bytes())
                 # The updater ships the same binary, without changing the manual tree.
                 update = self.work / f"herdr-gpui-20260920.3-{target}-update.tar.gz"
@@ -132,10 +133,11 @@ class ReleaseTests(unittest.TestCase):
             "Contents/Resources/LICENSE-APACHE", "Contents/Resources/NOTICE.md",
             "Contents/Resources/LICENSE", "Contents/Resources/NOTICE", "Contents/Resources/LICENSE-octicons",
             "Contents/Resources/THIRD-PARTY-NOTICES.txt",
+            "Contents/Resources/SOUND-NOTICE.md",
         })
         self.assertEqual((app / "Contents/Resources/THIRD-PARTY-NOTICES.txt").read_bytes(), self.notices.read_bytes())
         self.assertEqual((app / "Contents/Resources/Herdr.icns").read_bytes(), (ROOT / "assets/icons/Herdr.icns").read_bytes())
-        for source in ("LICENSE", "NOTICE", "assets/icons/LICENSE-octicons", "crates/herdr-protocol/NOTICE.md"):
+        for source in ("LICENSE", "NOTICE", "assets/icons/LICENSE-octicons", "crates/herdr-protocol/NOTICE.md", "crates/herdr-gpui/SOUND-NOTICE.md"):
             self.assertEqual((app / "Contents/Resources" / Path(source).name).read_bytes(), (ROOT / source).read_bytes())
         self.run_script("package-macos.sh", "20260920.3", arm, intel, self.work, self.notices, success=False)
 
@@ -146,7 +148,8 @@ class ReleaseTests(unittest.TestCase):
         for path in ["scripts/release/common.sh", "scripts/release/package-macos.sh",
                      "scripts/release/package-linux.sh", "scripts/release/build-icon.py",
                      "scripts/release/herdr-gpui.desktop", "assets/macos/Info.plist",
-                     "LICENSE", "NOTICE", "assets/icons/LICENSE-octicons",
+                      "LICENSE", "NOTICE", "assets/icons/LICENSE-octicons",
+                      "crates/herdr-gpui/SOUND-NOTICE.md",
                      "crates/herdr-protocol/LICENSE-APACHE", "crates/herdr-protocol/NOTICE.md"]:
             destination = fixture / path
             destination.parent.mkdir(parents=True, exist_ok=True)

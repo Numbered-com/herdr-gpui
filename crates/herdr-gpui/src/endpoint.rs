@@ -62,6 +62,7 @@ pub(super) struct Endpoint {
     online_since: Option<Instant>,
     detached: bool,
     initial_surface: bool,
+    sounds: crate::sound::Policy,
 }
 
 impl Endpoint {
@@ -83,6 +84,7 @@ impl Endpoint {
             online_since: None,
             detached: false,
             initial_surface: false,
+            sounds: Default::default(),
         }
     }
 
@@ -473,6 +475,12 @@ impl HerdrWindow {
         let mut changed = false;
         for (index, endpoint) in self.endpoints.iter_mut().enumerate() {
             let updated = endpoint.poll(Instant::now());
+            self.sound.poll(
+                &mut endpoint.sounds,
+                &mut endpoint.live,
+                index == self.selected_endpoint && self.active,
+                Instant::now(),
+            );
             changed |= updated;
             // Remote cwd strings must never be resolved against this machine's Git repos.
             if updated

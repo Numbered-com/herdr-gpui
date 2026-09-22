@@ -335,6 +335,7 @@ fn multi_host_rows_scope_duplicate_ids_and_keep_agents_when_host_collapses(
 #[cfg(test)]
 pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>) -> HerdrWindow {
     HerdrWindow {
+        sound: Default::default(),
         updater: crate::updater::Updater::default(),
         update_preview: None,
         removal: None,

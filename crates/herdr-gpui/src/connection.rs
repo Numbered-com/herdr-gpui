@@ -29,6 +29,9 @@ impl ConnectionBridge {
     }
 
     fn reset(&mut self, status: ConnectionStatus, active: bool) {
+        if let Ok(mut state) = self.inbox.lock() {
+            state.cancel_sounds();
+        }
         if let Some(handle) = self.handle.take() {
             handle.disconnect();
         }
@@ -152,7 +155,11 @@ impl ConnectionBridge {
             .dialog_response
             .as_mut()
             .and_then(|(_, result)| result.take());
+        let sounds = std::mem::take(&mut state.sound_events);
+        let reload_sound = std::mem::take(&mut state.reload_sound);
         let mut update = state.clone();
+        update.sound_events = sounds;
+        update.reload_sound = reload_sound;
         if let Some((_, result)) = &mut update.dialog_response {
             *result = response;
         }
@@ -194,6 +201,9 @@ impl ConnectionBridge {
 
 impl Drop for ConnectionBridge {
     fn drop(&mut self) {
+        if let Ok(mut state) = self.inbox.lock() {
+            state.cancel_sounds();
+        }
         // Detach this client only; never kill a daemon or PTY.
         if let Some(handle) = &self.handle {
             tracing::debug!("Connection bridge dropping client");
