@@ -1,6 +1,8 @@
 //! Resting the pointer on a row to open its menu, and leaving it to close it
 //! again. The rest and the menu it opened are tracked separately so a small
-//! pointer jitter inside the slop does not cancel a pending open.
+//! pointer jitter inside the slop does not cancel a pending open. The whole
+//! behavior is behind the `features.sidebar_hover_menu` config flag, off by
+//! default: without it, only a right click opens a row's menu.
 
 use super::{HOVER_MENU_DELAY, HOVER_MENU_SLOP};
 use crate::HerdrWindow;
@@ -78,6 +80,12 @@ impl HerdrWindow {
     ) {
         let position = window.mouse_position();
         if self.close_hover_menu(position, window, cx) {
+            return;
+        }
+        // A config reload can retire the feature under an armed pointer. An
+        // already open menu still closes above, by its own rules.
+        if !self.config.features.sidebar_hover_menu {
+            self.hover = None;
             return;
         }
         let scroll = self.sidebar_scroll[0].offset();

@@ -46,9 +46,13 @@ impl HerdrWindow {
     }
 
     pub(crate) fn load_gui_config(&mut self, cx: &mut Context<Self>) {
+        // Enumerating installed families is slow, so it rides the same
+        // background load as parsing rather than the UI thread.
+        let text_system = cx.text_system().clone();
         self.load_gui_config_with(
-            || {
-                let config = Config::load()?;
+            move || {
+                let mut config = Config::load()?;
+                config.resolve_font_fallbacks(|| text_system.all_font_names());
                 let theme = config.theme()?;
                 Ok((config, theme))
             },

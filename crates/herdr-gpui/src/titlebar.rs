@@ -1,5 +1,5 @@
 //! Native chrome and GitHub account access.
-use crate::{HerdrWindow, menu::Page};
+use crate::{HerdrWindow, fonts::StyledFont, menu::Page};
 use gpui::{prelude::*, *};
 
 /// Signed-in avatar. Smaller than the hit target around it, which stays a
@@ -64,7 +64,7 @@ impl HerdrWindow {
                         .px(px(6.))
                         .rounded(px(4.))
                         .cursor_pointer()
-                        .font_family(font.family.clone())
+                        .text_font(font)
                         .text_size(px(font.size))
                         .text_color(rgb(theme.foreground))
                         .hover(|button| {

@@ -695,8 +695,34 @@ mod tests {
         changed.cells[1].modifier = 1 | 4;
         draw(changed, font("Menlo"));
         assert_eq!(painter.borrow().entries, 5);
-        draw(frame, font("Courier"));
+        draw(frame.clone(), font("Courier"));
         assert_eq!(painter.borrow().entries, 3, "new font discards old glyphs");
+        // A changed icon cascade reshapes every cell: the same family can now
+        // resolve Private Use Area glyphs a text face does not carry.
+        let with_fallbacks = |families: &[&str]| {
+            crate::config::FontConfig {
+                family: "Courier".into(),
+                size: FONT_SIZE,
+                fallbacks: Some(families.iter().map(|family| (*family).to_owned()).collect()),
+            }
+            .font()
+        };
+        let cascaded = with_fallbacks(&["Symbols Nerd Font Mono"]);
+        assert_ne!(cascaded, font("Courier"));
+        draw(frame.clone(), cascaded.clone());
+        assert_eq!(
+            painter.borrow().entries,
+            3,
+            "an added cascade discards old glyphs"
+        );
+        assert_eq!(painter.borrow().config.as_ref(), Some(&cascaded));
+        draw(frame.clone(), with_fallbacks(&["Hack Nerd Font Mono"]));
+        assert_eq!(
+            painter.borrow().entries,
+            3,
+            "a reordered cascade discards old glyphs"
+        );
+        draw(frame, font("Courier"));
         let many = FrameData {
             width: 100,
             height: 50,

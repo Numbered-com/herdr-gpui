@@ -318,6 +318,9 @@ impl HerdrWindow {
         if !endpoint.initial_surface {
             self.live.surface = None;
         }
+        // Another connection's picture is not this one's, so a reconnect, a
+        // detach, or a switch of endpoint starts from an empty terminal area.
+        self.presentation.clear();
         self.local_error = None;
         self.marked.clear();
         self.last_queued_options = None;

@@ -14,6 +14,7 @@ use super::{
 use crate::{
     Command, HerdrWindow, NavigationTarget,
     config::{FontConfig, Theme},
+    fonts::StyledFont,
 };
 use gpui::{prelude::*, *};
 
@@ -253,11 +254,15 @@ impl HerdrWindow {
                     // Only the selected endpoint's rows arm the hover menu:
                     // another endpoint's menu would have to select it first, and
                     // resting the pointer must not switch which daemon is shown.
-                    .when(selected, |row| {
-                        row.on_hover(cx.listener(move |this, hovered: &bool, window, _| {
-                            this.hover_workspace(&hover_id, *hovered, window);
-                        }))
-                    }),
+                    // The feature is opt-in, so rows stay unarmed without it.
+                    .when(
+                        selected && self.config.features.sidebar_hover_menu,
+                        |row| {
+                            row.on_hover(cx.listener(move |this, hovered: &bool, window, _| {
+                                this.hover_workspace(&hover_id, *hovered, window);
+                            }))
+                        },
+                    ),
                 );
             }
             for agent in sorted_agents(&snapshot.agents, self.agent_sort) {
@@ -330,7 +335,7 @@ impl HerdrWindow {
             .overflow_hidden()
             .flex()
             .flex_col()
-            .font_family(font.family.clone())
+            .text_font(font)
             .text_size(px(font.size))
             .line_height(px(line_height(font)))
             .text_color(rgb(theme.foreground))

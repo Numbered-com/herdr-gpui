@@ -9,6 +9,7 @@ use gpui::{
 };
 
 use crate::config::{Config, FontConfig, Theme};
+use crate::fonts::StyledFont;
 
 pub struct Changed;
 
@@ -380,7 +381,7 @@ impl Render for SearchInput {
             .border_color(rgb(self.theme.active))
             .bg(rgb(self.theme.background))
             .text_color(rgb(self.theme.foreground))
-            .font_family(self.font.family.clone())
+            .text_font(&self.font)
             .text_size(px(self.font.size))
             .line_height(height)
             .track_focus(&self.focus)

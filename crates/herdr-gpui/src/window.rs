@@ -17,8 +17,8 @@ mod tests;
 use crate::smoke;
 use crate::{
     WINDOW_TITLE, avatars, config, endpoint, git, log_window, menu,
-    navigation::OwnedNavigationTarget, preferences, sidebar, state::LiveState,
-    terminal::WheelAccumulator, terminal_painter, updater,
+    navigation::OwnedNavigationTarget, preferences, presentation::Presentation, sidebar,
+    state::LiveState, terminal::WheelAccumulator, terminal_painter, updater,
 };
 use gpui::{prelude::*, *};
 use herdr_client::{ConnectOptions, ConnectTarget};
@@ -52,6 +52,8 @@ pub(crate) struct HerdrWindow {
     pub(crate) cell_width: f32,
     pub(crate) hovered_terminal_link: bool,
     pub(crate) pressed_terminal_link: Option<String>,
+    /// The frame on screen, kept across the gap between two projections.
+    pub(crate) presentation: Presentation,
     pub(crate) painter: std::rc::Rc<std::cell::RefCell<terminal_painter::TerminalPainter>>,
     pub(crate) marked: String,
     /// The sidebar row the pointer is resting on, waiting to open its menu.
@@ -200,6 +202,7 @@ impl HerdrWindow {
             cell_width: 9.,
             hovered_terminal_link: false,
             pressed_terminal_link: None,
+            presentation: Default::default(),
             painter: Default::default(),
             marked: String::new(),
             hover: None,

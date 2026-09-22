@@ -34,6 +34,67 @@ fn fixture_size(width: f32, height: f32) -> Size<Pixels> {
     size(px(width), px(height + banner_height()))
 }
 
+/// Native check that the icon cascade reaches an installed Nerd Font. Prompts
+/// draw powerline separators and icons from the Private Use Area, which no text
+/// face and no platform default cascade covers, so without the cascade every
+/// such cell shapes to the platform's missing-glyph box. Headless shaping
+/// cannot show this: the test text system reports no installed families and
+/// gives every glyph the same fixed advance.
+fn symbol_cascade(window: &mut Window, cx: &mut App) -> Result<&'static str> {
+    let detected = crate::config::symbol_fallbacks(cx.text_system().all_font_names());
+    if detected.is_empty() {
+        // An installed icon font is an external resource, like a daemon binary.
+        return Ok("symbol cascade skipped (no Nerd Font installed)");
+    }
+    let font = crate::config::FontConfig {
+        family: "Menlo".into(),
+        size: crate::terminal::FONT_SIZE,
+        fallbacks: Some(detected.clone()),
+    }
+    .font();
+    // Fallback faces never enter `get_font_for_id`, and a cascade gives the
+    // same family a new font id, so coverage is read from the glyphs: anything
+    // no font carries shapes to the platform's missing-glyph box, and a covered
+    // codepoint must not land on that same glyph.
+    let glyphs = |symbol: &str, window: &mut Window| {
+        window
+            .text_system()
+            .shape_line(
+                symbol.to_owned().into(),
+                px(crate::terminal::FONT_SIZE),
+                &[TextRun {
+                    len: symbol.len(),
+                    font: font.clone(),
+                    color: rgb(0xffffff).into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            )
+            .runs
+            .iter()
+            .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.id))
+            .collect::<Vec<_>>()
+    };
+    // Plane 15 is private and unassigned by every shipped font, including the
+    // Nerd Font patches, so it names the missing-glyph box for this machine.
+    let missing = glyphs("\u{f0000}", window);
+    if missing.is_empty() {
+        bail!("no missing-glyph baseline to compare icons against");
+    }
+    // A separator, a branch and a clock: three prompt icons from three ranges.
+    for symbol in ["\u{e0b0}", "\u{e0a0}", "\u{f017}"] {
+        if glyphs(symbol, window) == missing {
+            bail!("icon {symbol:?} stayed a missing-glyph box under cascade {detected:?}");
+        }
+    }
+    if glyphs("A", window) == missing {
+        bail!("cascade lost the configured face for plain text");
+    }
+    Ok("symbol cascade reaches installed Nerd Fonts")
+}
+
 pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
     EXIT_CODE.store(1, Ordering::SeqCst);
     #[cfg(target_os = "macos")]
@@ -45,6 +106,16 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
     cx.set_global(sidebar::layout_tests::PaintedProbes::default());
     let timer = cx.background_executor().clone();
     cx.spawn(async move |cx| {
+        // Shaping first: the cascade is independent of every layout probe below.
+        let cascade = match handle.update(cx, |_, window, cx| symbol_cascade(window, cx)) {
+            Ok(Ok(summary)) => summary,
+            other => {
+                eprintln!("SIDEBAR native symbol cascade FAIL: {other:?}");
+                let _ = cx.update(|cx| cx.quit());
+                return;
+            }
+        };
+        eprintln!("SIDEBAR native symbol cascade: {cascade}");
         for frame in 0..12 {
             timer.timer(Duration::from_millis(100)).await;
             let result = AnyWindowHandle::from(handle).update(
@@ -380,7 +451,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
             let _ = cx.update(|cx| cx.quit());
             return;
         }
-        eprintln!("SIDEBAR native PASS: 12 Menlo draws, 4 sizes, collapse/expand, menu isolation, PR title/stats glyphs, GitHub auth fixtures, right-click dialogs and Unicode fields at 2 sizes; host routing, disabled selection, scoped repositories, resized host/agent glyphs, independent scroll and decoy key window");
+        eprintln!("SIDEBAR native PASS: {cascade}; 12 Menlo draws, 4 sizes, collapse/expand, menu isolation, PR title/stats glyphs, GitHub auth fixtures, right-click dialogs and Unicode fields at 2 sizes; host routing, disabled selection, scoped repositories, resized host/agent glyphs, independent scroll and decoy key window");
         EXIT_CODE.store(0, Ordering::SeqCst);
         let _ = cx.update(|cx| cx.quit());
     })
@@ -908,6 +979,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
         let mut external_rx = None;
         let mut external = None;
         let mut baseline = None;
+        let mut switched = None;
         let mut completed = false;
         loop {
             timer.timer(Duration::from_millis(100)).await;
@@ -1043,9 +1115,27 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         key("cmd-n", window, cx)?;
                     }
                     6 if snapshot.workspaces.len() == 2 && focused_workspace != workspace && surface.panes.len() == 1 => {
+                        let before = view.read(cx).presentation.probe;
                         view.update(cx, |view, cx| { view.navigate(NavigationTarget::Workspace(&workspace), cx); window.focus(&view.focus); });
+                        // Draw the frame that follows the focus change immediately: the client
+                        // has just dropped its surface and the next projection is a round trip
+                        // away, which is precisely when the terminal area used to blank.
+                        window.refresh();
+                        window.draw(cx).clear();
+                        let after = view.read(cx).presentation.probe;
+                        if after.blank > before.blank {
+                            bail!("space switch blanked the terminal area: {} empty frame(s); {}", after.blank - before.blank, diagnostic());
+                        }
+                        switched = Some((Instant::now(), after));
                     }
                     7 if focused_workspace == workspace && focused_tab == second_tab && surface.panes.len() == 3 => {
+                        let (started, before) = switched.take().context("missing space switch probe")?;
+                        let probe = view.read(cx).presentation.probe;
+                        if probe.blank > before.blank {
+                            bail!("space switch blanked the terminal area: {} empty frame(s); {}", probe.blank - before.blank, diagnostic());
+                        }
+                        eprintln!("GUI space switch verified: blank_frames=0 retained_paints={} gap_observed_ms={} observation_poll_ms=100",
+                            probe.retained - before.retained, started.elapsed().as_millis());
                         // Use the full-width tab so the exact output row cannot wrap in a split.
                         window.dispatch_action(Box::new(RunCommand { command: Command::PreviousTab }), cx);
                     }

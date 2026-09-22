@@ -81,6 +81,31 @@ fn surface(snapshot: &ClientShellSnapshot) -> Arc<PaneSurfaceFrame> {
     })
 }
 
+/// Poll until the inbox has been projected into `live`, then return.
+///
+/// `ConnectionBridge::take_update` reads the inbox under `try_lock` so the UI
+/// thread never blocks on the socket worker: a poll that races the worker
+/// projects nothing and the next one delivers it. A test that polls once and
+/// asserts is therefore reading whatever `live` happened to hold, which is a
+/// revision behind whenever the worker held the lock. Drive polls until the
+/// expected state lands instead of assuming a single poll suffices.
+fn project_until(
+    view: &mut HerdrWindow,
+    cx: &mut Context<HerdrWindow>,
+    what: &str,
+    ready: impl Fn(&HerdrWindow) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        view.poll_endpoints(cx);
+        if ready(view) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{what} was never projected");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn wait_until(mut ready: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(3);
     while !ready() {
@@ -388,7 +413,10 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
                 state.apply(ClientEvent::Snapshot(Arc::new(next.clone())));
                 state.apply(ClientEvent::Surface(surface(&next)));
             }
-            view.poll_endpoints(cx);
+            project_until(view, cx, "fresh frame", |view| {
+                view.live.snapshot.as_ref().map(|s| s.revision) == Some(next.revision)
+                    && view.live.activation.is_some()
+            });
             assert!(!view.input_ready());
             {
                 let mut state = view.endpoints[view.selected_endpoint]
@@ -404,7 +432,13 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
                     }}),
                 });
             }
-            view.poll_endpoints(cx);
+            project_until(view, cx, "ack ahead of the frame", |view| {
+                view.live
+                    .activation
+                    .as_ref()
+                    .and_then(|activation| activation.revision)
+                    == Some(next.revision + 1)
+            });
             assert!(
                 !view.input_ready(),
                 "ack newer than frame still fences input"
@@ -419,7 +453,9 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
                 state.apply(ClientEvent::Snapshot(Arc::new(next.clone())));
                 state.apply(ClientEvent::Surface(surface(&next)));
             }
-            view.poll_endpoints(cx);
+            project_until(view, cx, "frame matching the ack", |view| {
+                view.live.surface.as_ref().map(|s| s.projection_revision) == Some(next.revision)
+            });
             assert!(view.input_ready());
             assert!(view.activation_deadline.is_none());
             view.send(ClientPaneInputEvent::TextCommit("new pane only".into()), cx);
