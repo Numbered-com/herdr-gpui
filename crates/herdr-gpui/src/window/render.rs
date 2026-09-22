@@ -5,8 +5,8 @@
 use super::HerdrWindow;
 use crate::{
     APP_VERSION, CheckForUpdates, RunCommand, ShowHerdrNotDetected, ShowUpdatePreview, TAB_HEIGHT,
-    TAB_WIDTH, controls::Command, navigation::NavigationTarget, state::ConnectionStatus,
-    terminal::*, worktree_banner,
+    TAB_WIDTH, controls::Command, fonts::StyledFont, navigation::NavigationTarget,
+    state::ConnectionStatus, terminal::*, worktree_banner,
 };
 use gpui::{prelude::*, *};
 use herdr_client::ConnectOptions;
@@ -15,7 +15,7 @@ use std::time::Duration;
 impl Render for HerdrWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.restore_menu_focus(window);
-        let font = font(self.config.terminal.family.clone());
+        let font = self.config.terminal.font();
         let cell_height = self.config.terminal.line_height();
         self.painter.borrow_mut().set_appearance(
             self.config.terminal.size,
@@ -29,7 +29,7 @@ impl Render for HerdrWindow {
             .flex()
             .flex_none()
             .h(px((self.config.tabs.size * 1.6 + 4.).max(TAB_HEIGHT)))
-            .font_family(self.config.tabs.family.clone())
+            .text_font(&self.config.tabs)
             .text_size(px(self.config.tabs.size))
             .overflow_x_scroll()
             .bg(rgb(self.theme.surface))
@@ -123,11 +123,10 @@ impl Render for HerdrWindow {
                 );
             }
         }
-        let surface = self
-            .live
-            .surface
-            .clone()
-            .filter(|_| self.live.surface_ready());
+        // Paints the frame on screen, which during a focus change is the one
+        // presented before it: the terminal area never blanks between two
+        // projections. What the client knows to be current stays in `live`.
+        let surface = self.presentation.frame(&self.live);
         let entity = cx.entity();
         let paint_entity = entity.clone();
         let focus = self.focus.clone();
@@ -248,7 +247,7 @@ impl Render for HerdrWindow {
             .flex_col()
             .bg(rgb(self.theme.background))
             .text_color(rgb(self.theme.foreground))
-            .font_family(self.config.ui.family.clone())
+            .text_font(&self.config.ui)
             .text_size(px(self.config.ui.size))
             .child(self.render_titlebar(cx))
             .children(worktree_banner::render(

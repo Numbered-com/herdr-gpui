@@ -1,5 +1,6 @@
 //! GUI-only settings; no daemon settings are read or changed.
 use crate::{Error, Result, error::ThemeParseError};
+use gpui::{Font, FontFallbacks};
 use serde::Deserialize;
 use std::{
     env, fs,
@@ -20,6 +21,16 @@ pub struct Config {
     pub terminal: FontConfig,
     pub ui: FontConfig,
     pub github: GitHubConfig,
+    pub features: Features,
+}
+
+/// Optional behaviors the config file turns on. Every flag is off by default,
+/// so a missing or empty `[features]` table is the shipped experience.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Features {
+    /// Open a space's menu when the pointer rests on its sidebar row.
+    pub sidebar_hover_menu: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -62,16 +73,77 @@ impl GitHubConfig {
     }
 }
 
+/// Upper bound on a configured cascade. Every entry is searched for each
+/// uncovered codepoint, so a long list costs shaping time and covers nothing a
+/// short one does not. Names that are not installed are ignored by the platform.
+const MAX_FONT_FALLBACKS: usize = 8;
+
+/// Nerd Font patches keep this marker in every patched family name, so matching
+/// it finds the installed icon faces without naming individual fonts.
+const SYMBOL_FAMILY_MARKER: &str = "nerd font";
+
+/// A cascade is searched in order for every uncovered codepoint, so automatic
+/// detection keeps only the best-ranked few families.
+const MAX_DETECTED_FALLBACKS: usize = 3;
+
 #[derive(Clone, Debug)]
 pub struct FontConfig {
     pub family: String,
     pub size: f32,
+    /// Families searched, nearest first, for glyphs `family` lacks. `None`
+    /// until the config names them or [`Config::resolve_font_fallbacks`]
+    /// detects them; an empty list opts out of any cascade.
+    pub fallbacks: Option<Vec<String>>,
 }
 
 impl FontConfig {
     pub fn line_height(&self) -> f32 {
         self.size * 20.0 / 14.0
     }
+
+    /// The shaping font for this face. Terminal prompts draw powerline
+    /// separators and Nerd Font icons from the Private Use Area, which no text
+    /// face and no platform default cascade covers, so those cells shape to the
+    /// missing-glyph box unless the cascade names an icon font explicitly.
+    pub fn font(&self) -> Font {
+        let mut font = gpui::font(self.family.clone());
+        font.fallbacks = self
+            .fallbacks
+            .as_ref()
+            .filter(|families| !families.is_empty())
+            .map(|families| FontFallbacks::from_fonts(families.clone()));
+        font
+    }
+}
+
+/// Ranks an installed Nerd Font family for the automatic cascade. Symbols-only
+/// faces carry the icon ranges without replacing any text glyph, and `Mono`
+/// variants keep every icon inside a single terminal cell, so both come first.
+fn fallback_rank(family: &str) -> u8 {
+    let lowercase = family.to_lowercase();
+    let symbols = lowercase.starts_with("symbols nerd font");
+    let mono = lowercase.ends_with(" mono");
+    match (symbols, mono) {
+        (true, true) => 0,
+        (true, false) => 1,
+        (false, true) => 2,
+        (false, false) => 3,
+    }
+}
+
+/// Picks the installed icon families to search for Private Use Area glyphs.
+/// Ranking then alphabetical order keeps one machine's font set mapping to one
+/// cascade, so a rendering report describes a reproducible configuration.
+pub fn symbol_fallbacks(installed: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut families: Vec<String> = installed
+        .into_iter()
+        .filter(|family| family.to_lowercase().contains(SYMBOL_FAMILY_MARKER))
+        .collect();
+    families.sort_unstable();
+    families.dedup();
+    families.sort_by_key(|family| fallback_rank(family));
+    families.truncate(MAX_DETECTED_FALLBACKS);
+    families
 }
 
 impl Default for Config {
@@ -84,12 +156,14 @@ impl Default for Config {
         let font = |family: &str, size| FontConfig {
             family: family.into(),
             size,
+            fallbacks: None,
         };
         Self {
             theme: "Default".into(),
             github: GitHubConfig::default(),
             confirm_close_tab: true,
             show_agents: true,
+            features: Features::default(),
             sidebar: font(monospace, 12.0),
             // Tabs are terminal chrome, so they read in the monospace face the
             // sidebar and terminal use, as they do in the reference UI.
@@ -111,6 +185,7 @@ struct Settings {
     terminal: FontSettings,
     ui: FontSettings,
     github: GitHubConfig,
+    features: Features,
 }
 
 #[derive(Default, Deserialize)]
@@ -118,6 +193,7 @@ struct Settings {
 struct FontSettings {
     family: Option<String>,
     size: Option<f32>,
+    fallback: Option<Vec<String>>,
 }
 
 fn home() -> Result<PathBuf> {
@@ -167,6 +243,30 @@ impl Config {
         Ok(config_root()?.join("herdr/config-gpui.toml"))
     }
 
+    /// Gives every face the config left alone an automatic icon-font cascade.
+    /// `installed` is consulted only when some face still needs one, because
+    /// enumerating system fonts is slow enough to keep off the UI thread.
+    pub fn resolve_font_fallbacks<I>(&mut self, installed: impl FnOnce() -> I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        let faces = [
+            &mut self.sidebar,
+            &mut self.tabs,
+            &mut self.terminal,
+            &mut self.ui,
+        ];
+        if faces.iter().all(|face| face.fallbacks.is_some()) {
+            return;
+        }
+        let detected = symbol_fallbacks(installed());
+        for face in faces {
+            if face.fallbacks.is_none() {
+                face.fallbacks = Some(detected.clone());
+            }
+        }
+    }
+
     pub fn load() -> Result<Self> {
         Self::load_path(&Self::path()?)
     }
@@ -209,6 +309,7 @@ impl Config {
         let mut config = Self::default();
         settings.github.client_id_with_override(None)?;
         config.github = settings.github;
+        config.features = settings.features;
         if let Some(theme) = settings.theme {
             if theme.trim().is_empty() {
                 return Err(Error::EmptyTheme);
@@ -228,6 +329,15 @@ impl Config {
             }
             if let Some(size) = settings.size {
                 font.size = size;
+            }
+            if let Some(fallback) = settings.fallback {
+                if fallback.len() > MAX_FONT_FALLBACKS {
+                    return Err(Error::TooManyFontFallbacks(name));
+                }
+                if fallback.iter().any(|family| family.trim().is_empty()) {
+                    return Err(Error::EmptyFontFallback(name));
+                }
+                font.fallbacks = Some(fallback);
             }
             if font.family.trim().is_empty() {
                 return Err(Error::EmptyFontFamily(name));
@@ -896,6 +1006,9 @@ mod tests {
         ] {
             assert_eq!(config.theme()?, Theme::default());
             assert!(config.github.oauth_client_id.is_none());
+            // Every feature ships off, including in the example config.
+            assert_eq!(config.features, Features::default());
+            assert!(!config.features.sidebar_hover_menu);
             assert_eq!(config.terminal.line_height(), 20.0);
             for ((font, family), size) in [config.sidebar, config.tabs, config.terminal, config.ui]
                 .into_iter()
@@ -980,10 +1093,28 @@ mod tests {
             "[github]\noauth_client_id = ' bad-id'",
             "[github]\noauth_client_id = 'bad/id'",
             "[github]\noauth_client_id = '\u{e9}'",
+            "[features]\nunknown = true",
+            "[features]\nsidebar_hover_menu = 'true'",
+            "[features]\nsidebar_hover_menu = 1",
         ] {
             assert!(Config::parse(text).is_err(), "accepted {text:?}");
         }
         assert!(Config::parse("[tabs]\nsize = 8\n[ui]\nsize = 48").is_ok());
+    }
+
+    #[test]
+    fn features_are_opt_in_per_flag() -> anyhow::Result<()> {
+        assert!(!Config::parse("[features]")?.features.sidebar_hover_menu);
+        let config = Config::parse("[features]\nsidebar_hover_menu = true")?;
+        assert!(config.features.sidebar_hover_menu);
+        // Turning a flag on leaves the rest of the settings at their defaults.
+        assert_eq!(config.theme, Config::default().theme);
+        assert!(
+            !Config::parse("[features]\nsidebar_hover_menu = false")?
+                .features
+                .sidebar_hover_menu
+        );
+        Ok(())
     }
 
     #[test]
@@ -1131,5 +1262,116 @@ mod tests {
         })();
         fs::remove_dir_all(directory)?;
         result
+    }
+
+    /// Installed families as macOS reports them, in arbitrary order.
+    fn installed() -> Vec<String> {
+        [
+            "Menlo",
+            "Zapfino",
+            "JetBrainsMono Nerd Font Propo",
+            "Symbols Nerd Font",
+            "Hack Nerd Font Mono",
+            "Symbols Nerd Font Mono",
+            "Agave Nerd Font Mono",
+            "Hack Nerd Font Mono",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    }
+
+    #[test]
+    fn detection_ranks_symbol_and_mono_faces_and_ignores_text_families() {
+        // Symbols first, then single-cell Mono faces, alphabetical within each
+        // rank, deduplicated, and capped so the cascade stays short.
+        assert_eq!(
+            symbol_fallbacks(installed()),
+            [
+                "Symbols Nerd Font Mono",
+                "Symbols Nerd Font",
+                "Agave Nerd Font Mono",
+            ]
+        );
+        assert!(symbol_fallbacks(["Menlo".to_owned(), "Zapfino".to_owned()]).is_empty());
+    }
+
+    #[test]
+    fn detection_fills_only_the_faces_the_config_left_alone() -> anyhow::Result<()> {
+        let mut config = Config::parse("[terminal]\nfallback = ['Menlo']\n[ui]\nfallback = []")?;
+        config.resolve_font_fallbacks(installed);
+        assert_eq!(
+            config.terminal.fallbacks.as_deref(),
+            Some(["Menlo".to_owned()].as_slice())
+        );
+        // An explicit empty list opts out; it is not "unset".
+        assert_eq!(config.ui.fallbacks.as_deref(), Some([].as_slice()));
+        assert_eq!(config.ui.font().fallbacks, None);
+        let detected = symbol_fallbacks(installed());
+        assert_eq!(
+            config.sidebar.fallbacks.as_deref(),
+            Some(detected.as_slice())
+        );
+        assert_eq!(config.tabs.fallbacks.as_deref(), Some(detected.as_slice()));
+        Ok(())
+    }
+
+    #[test]
+    fn detection_does_not_enumerate_fonts_when_every_face_is_configured() -> anyhow::Result<()> {
+        // Enumerating installed families is slow, so a fully configured file
+        // must not pay for it.
+        let mut config = Config::parse(
+            "[sidebar]\nfallback = []\n[tabs]\nfallback = []\n\
+             [terminal]\nfallback = []\n[ui]\nfallback = []",
+        )?;
+        config.resolve_font_fallbacks(|| -> Vec<String> { panic!("enumerated installed fonts") });
+        Ok(())
+    }
+
+    #[test]
+    fn configured_fallbacks_reach_the_shaping_font_in_order() -> anyhow::Result<()> {
+        let config = Config::parse(
+            "[terminal]\nfallback = ['Symbols Nerd Font Mono', 'Hack Nerd Font Mono']",
+        )?;
+        let font = config.terminal.font();
+        assert_eq!(font.family, config.terminal.family);
+        let fallbacks = font
+            .fallbacks
+            .ok_or_else(|| anyhow::anyhow!("missing cascade"))?;
+        assert_eq!(
+            fallbacks.fallback_list(),
+            ["Symbols Nerd Font Mono", "Hack Nerd Font Mono"]
+        );
+        // The default face shapes without a cascade until one is resolved.
+        assert_eq!(Config::default().terminal.font().fallbacks, None);
+        Ok(())
+    }
+
+    #[test]
+    fn fallback_lists_are_validated_per_face() {
+        assert!(matches!(
+            Config::parse("[terminal]\nfallback = ['Menlo', '  ']"),
+            Err(Error::EmptyFontFallback("terminal"))
+        ));
+        let list = |count: usize| {
+            (0..count)
+                .map(|index| format!("'face{index}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        assert!(matches!(
+            Config::parse(&format!(
+                "[sidebar]\nfallback = [{}]",
+                list(MAX_FONT_FALLBACKS + 1)
+            )),
+            Err(Error::TooManyFontFallbacks("sidebar"))
+        ));
+        assert!(
+            Config::parse(&format!(
+                "[sidebar]\nfallback = [{}]",
+                list(MAX_FONT_FALLBACKS)
+            ))
+            .is_ok()
+        );
     }
 }

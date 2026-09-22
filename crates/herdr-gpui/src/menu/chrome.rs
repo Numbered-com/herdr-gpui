@@ -3,7 +3,7 @@
 //! here is the same geometry used for hit testing and IME placement.
 
 use super::{MENU_MARGIN, Page, WorkspaceAction};
-use crate::HerdrWindow;
+use crate::{HerdrWindow, fonts::StyledFont};
 use gpui::{prelude::*, *};
 use herdr_client::Method;
 
@@ -273,7 +273,7 @@ impl HerdrWindow {
             .border_color(rgb(theme.active))
             .bg(rgb(theme.surface))
             .text_color(rgb(theme.foreground))
-            .font_family(font.family.clone())
+            .text_font(font)
             .text_size(px(font.size))
             .line_height(px(font.line_height()))
             .occlude()

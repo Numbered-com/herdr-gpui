@@ -1,4 +1,4 @@
-use crate::HerdrWindow;
+use crate::{HerdrWindow, fonts::StyledFont};
 use gpui::{prelude::*, *};
 
 #[cfg(test)]
@@ -329,7 +329,7 @@ impl HerdrWindow {
                             div().id("github-code-scroll").overflow_x_scroll().child(
                                 div()
                                     .debug_selector(|| "github-device-code".into())
-                                    .font_family(self.config.terminal.family.clone())
+                                    .text_font(&self.config.terminal)
                                     .text_size(px(24.))
                                     .line_height(px(32.))
                                     .font_weight(FontWeight::SEMIBOLD)

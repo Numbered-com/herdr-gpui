@@ -582,7 +582,6 @@ fn diagnostics_keep_public_details_and_drop_the_sso_request_id() {
     assert_eq!(header(&headers, "x-github-request-id"), "ABCD:1234");
     // Categories stay stable so a log filter keeps working across releases.
     assert_eq!(kind(&Error::GitHubForbidden), "forbidden");
-    assert_eq!(kind(&Error::GitHubProfile), "profile");
     assert_eq!(kind(&Error::GitHubStatus(500)), "status");
     assert_eq!(kind(&Error::GitHubWorker("profile")), "worker");
     assert_eq!(kind(&Error::PrTimeout), "other");

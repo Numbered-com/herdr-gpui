@@ -105,17 +105,10 @@ pub(super) fn profile(token: Arc<SecretString>) -> Result<Profile> {
             .call()
             .map_err(log::network("profile"))?,
     )?;
-    if crate::avatars::github_repo(&format!("https://github.com/{}/profile", user.login)).is_none()
-    {
-        // The account name is already shown in the menu once connected, and an
-        // unsupported one is the whole failure, so it is recorded here.
-        tracing::warn!(
-            category = "github_profile",
-            login = user.login.as_str(),
-            "GitHub account name is not a supported login"
-        );
-        return Err(Error::GitHubProfile);
-    }
+    // The login is shown in the menu and logged, never persisted or placed in a
+    // URL, so GitHub stays the authority on the shape of its own account names.
+    // Enterprise managed users (`handle_shortcode`) are why guessing that shape
+    // here was worse than useless.
     tracing::info!(
         category = "github_profile",
         login = user.login.as_str(),

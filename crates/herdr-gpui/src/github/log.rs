@@ -66,7 +66,6 @@ pub(super) fn kind(error: &Error) -> &'static str {
         Error::GitHubNetwork(_) => "network",
         Error::GitHubHeader(_) => "header",
         Error::GitHubDevice => "device",
-        Error::GitHubProfile => "profile",
         Error::GitHubExpired => "expired",
         Error::GitHubDenied => "denied",
         Error::GitHubAuthorization => "authorization",

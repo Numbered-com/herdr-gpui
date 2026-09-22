@@ -21,6 +21,7 @@ fn section_headings_use_the_configured_sidebar_font_size() {
         let font = FontConfig {
             family: "Menlo".into(),
             size,
+            fallbacks: None,
         };
         for label in ["spaces", "agents"] {
             let mut heading = header(label, &font, &Theme::default());
