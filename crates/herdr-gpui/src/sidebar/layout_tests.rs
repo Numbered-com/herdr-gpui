@@ -785,6 +785,10 @@ fn check_sidebar(
             "workspace-menu-New worktree",
             "workspace-menu-icon-New worktree",
         ),
+        (
+            "workspace-menu-Open worktree...",
+            "workspace-menu-icon-Open worktree...",
+        ),
     ] {
         let label = row;
         let row = cx.debug_bounds(row).unwrap();
@@ -821,8 +825,12 @@ fn check_sidebar(
             let panel = cx.debug_bounds("menu-panel").unwrap();
             assert!(panel.left() >= px(0.) && panel.right() <= px(width));
             assert!(panel.bottom() <= px(600.));
+            let open_row = cx.debug_bounds("workspace-menu-Open worktree...").unwrap();
+            // Preserve the previous content budget, plus the one new action row.
+            let row_height = cx.update(|_, cx| px(view.read(cx).config.ui.line_height() + 12.));
+            assert!((open_row.size.height - row_height).abs() <= px(1.));
             assert!(
-                panel.size.height < px(320.),
+                panel.size.height < px(320.) + row_height,
                 "PR menu should size to its content: {panel:?}"
             );
             assert!(cx.debug_bounds("workspace-pr").is_some());
