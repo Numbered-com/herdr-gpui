@@ -1,7 +1,8 @@
 # Herdr Native Shell
 
-A GPUI 0.2.2 client for a Local daemon and saved SSH hosts, with macOS support
-and experimental Linux x86_64/ARM64 builds.
+A GPUI 0.2.2 client for a Local daemon and saved SSH hosts, with macOS support,
+experimental Linux x86_64/ARM64 builds, and an unproven Windows build that CI
+type-checks but does not run. See [Windows](#windows) for what is unavailable there.
 It starts an installed local `herdr server` when absent; explicit socket and
 development targets remain attach-only. It does not link or install Herdr, stop
 daemons, spawn a local PTY, or emulate a terminal. Herdr's remote bridge may start
@@ -91,7 +92,8 @@ seconds and return to Local; returning to Local never waits on a remote release.
 Servers without surface-switching support remain usable as single targets.
 
 Default and named-session startup discovers Herdr on PATH or in standard
-Homebrew, Cargo, or `~/.local/bin` locations, then waits up to 20 seconds to
+Homebrew, Cargo, or `~/.local/bin` locations (`herdr.exe` on Windows, where the
+Homebrew paths are skipped), then waits up to 20 seconds to
 connect without blocking the UI. If Herdr cannot be found, an installation modal
 offers an **Install** button that opens [herdr.dev](https://herdr.dev/); it never
 downloads or runs an installer. After installing, choose Terminal > Reconnect.
@@ -102,7 +104,8 @@ and its terminals running.
 ## Configuration
 
 GUI settings live in `$XDG_CONFIG_HOME/herdr/config-gpui.toml`, falling back to
-`~/.config/herdr/config-gpui.toml`. See
+`~/.config/herdr/config-gpui.toml` and, on Windows, to
+`%APPDATA%\herdr\config-gpui.toml`. See
 [`config-gpui.example.toml`](config-gpui.example.toml) for a complete example.
 Font sizes use logical pixels (finite 8..48), not typographic points. Restart the
 GUI or invoke GUI config reload after edits; daemon config reload is separate.
@@ -372,7 +375,10 @@ and local file paths are not activated.
   explicit `allow_plaintext_credentials = true` opt-in with a prominent warning,
   separate private credential file and atomic no-follow Unix writes; macOS
   development builds use that same store, enabled by default and warned about in
-  the profile panel. Signed macOS release builds still use Keychain. Sign-out suppresses environment tokens for this app session and
+  the profile panel. Signed macOS release builds still use Keychain. Windows has
+  neither store: the opt-in does not select the file there, saving a token
+  reports `CredentialUnsupported`, and sign-in says to use `GH_TOKEN` /
+  `GITHUB_TOKEN`. Sign-out suppresses environment tokens for this app session and
   fences late profile/avatar/PR results. Plaintext policy reloads re-evaluate the
   active credential, without reactivating an explicitly signed-out session.
   Disabling plaintext stops its session use but keeps the file; explicit sign-out
@@ -561,6 +567,41 @@ GPUI native action/menu/keybinding patterns.
   history.
 - Rendering is a simple two-pass cell painter, not an optimized damaged-row
   renderer. Large/high-frequency surfaces can consume significant CPU.
+
+## Windows
+
+Windows is a compile target, not a supported platform. CI type-checks every
+target and feature for `windows-2025` and runs the `herdr-protocol` and
+`herdr-client` suites there; nothing about the window, rendering, input, or a
+live daemon has been exercised. Local connections use the named pipe the Windows
+daemon binds, derived from the same socket path string upstream uses, so
+discovery and framing are the same code as on Unix. Receive deadlines are
+emulated with `PeekNamedPipe`, the one `unsafe` call in the workspace, because a
+named pipe has no receive timeout; send timeouts cannot be enforced at all
+there. Configuration and state
+follow upstream's Windows layout: `%APPDATA%\herdr` and `%LOCALAPPDATA%\herdr`,
+still overridden by `XDG_CONFIG_HOME` / `XDG_STATE_HOME` when they are set.
+
+These features are unavailable on Windows and say so rather than failing quietly:
+
+- **Saved SSH hosts.** The bridge gives the `ssh` child a socket pair as its
+  standard streams, which requires `OwnedFd`. Connecting to an SSH endpoint
+  reports `SSH endpoints are not supported on this platform`.
+- **In-app updates.** `release::target()` has no Windows asset, so the updater
+  stays disabled and reports that no standalone updater exists for this platform.
+  Homebrew delegation is macOS-only regardless.
+- **Saved GitHub credentials.** Neither the Keychain nor the private `0600` file
+  exists here, so `GH_TOKEN` / `GITHUB_TOKEN` are the only sources of a token.
+- **The avatar disk cache.** It depends on `openat`, `flock`, and POSIX
+  ownership and mode checks, so avatars stay in memory for the process lifetime.
+
+Starting a local `herdr server` looks for `herdr.exe` and uses
+`CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW` in place of `process_group(0)`, so
+the daemon survives the GUI and no console window appears.
+
+Cross type-check it from a Mac or Linux machine with `just lint-windows`, which
+targets `x86_64-pc-windows-gnu` because those hosts cannot supply the MSVC C
+toolchain; CI lints the MSVC target on a Windows runner.
 
 ## Build And Test
 

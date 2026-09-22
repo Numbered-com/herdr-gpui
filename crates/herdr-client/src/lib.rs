@@ -1,4 +1,4 @@
-//! A Unix local/SSH gen1 client. All transport I/O runs on a dedicated worker.
+//! A local/SSH gen1 client. All transport I/O runs on a dedicated worker.
 //! No reconnect/replay: commands carry the boot ID of the snapshot they act on.
 //! Drain `Client::events` on a GUI background task, never block the UI thread.
 #![doc = include_str!("../README.md")]
@@ -15,6 +15,7 @@ mod method;
 mod options;
 mod session;
 mod ssh;
+mod transport;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -35,3 +36,4 @@ pub use event::ClientEvent;
 pub use handle::{Client, ClientHandle};
 pub use method::Method;
 pub use options::ConnectOptions;
+pub use transport::Stream;

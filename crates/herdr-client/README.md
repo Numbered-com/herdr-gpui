@@ -1,6 +1,7 @@
 # Native Client API
 
-Unix/macOS local and SSH client for Herdr's stable generation 1 endpoint. This crate
+Local and SSH client for Herdr's stable generation 1 endpoint. Local connections
+work on Unix and on Windows; SSH endpoints are Unix-only. This crate
 does not link Herdr, GPUI, ratatui, crossterm, Tokio, or a PTY implementation.
 The workspace centralizes `gpui = "=0.2.2"` for the forthcoming GUI member.
 
@@ -42,6 +43,7 @@ ConnectTarget::Session { name: String, development: bool }
 ConnectTarget::Socket(PathBuf)
 ConnectTarget::Ssh { target: String, session: String }
 ConnectTarget::socket_path(&self) -> Result<PathBuf>
+Stream  // std::os::unix::net::UnixStream, or a named-pipe wrapper on Windows
 session_socket(config_dir: &Path, name: &str) -> Result<PathBuf>
 ConnectOptions { surface_size: ClientSurfaceSize, cell_width_px: u32, cell_height_px: u32 }
 ```
@@ -82,7 +84,22 @@ SSH discovery deadlines are `TimedOut`, cancellation is `Interrupted`.
 Errors are not `Clone`, `PartialEq`, or `Eq`; match their typed variants instead.
 
 `connect_with_connector` also returns `Result<Client>`. Its injected connector
-still returns `io::Result<UnixStream>` because it is an actual I/O interface.
+still returns `io::Result<Stream>` because it is an actual I/O interface.
+`Stream` is the crate's local endpoint type, re-exported at the root. It is
+`std::os::unix::net::UnixStream` on Unix. On Windows it wraps an `interprocess`
+named pipe, because that is what the Windows daemon binds: upstream maps the
+same socket path string into the NPFS namespace, so discovery is unchanged.
+Named pipes expose neither a pollable descriptor nor `SO_RCVTIMEO`, so the
+wrapper emulates `set_read_timeout` by peeking the pipe and sleeping briefly
+until data arrives or the deadline passes, keeping the session loop's receive
+deadlines and cancellation identical to the Unix socket. `PIPE_NOWAIT` cannot
+serve here: it reports "no data yet" as `ERROR_NO_DATA`, which the standard
+library maps to `BrokenPipe`, so an idle connection would read as a disconnect.
+The peek is the crate's only `unsafe`, a single `PeekNamedPipe` call with no
+safe wrapper available, matching what the daemon's own Windows client does; no
+extra threads are involved. `set_write_timeout` is accepted and not enforced,
+because a named pipe has no send timeout: a peer that stops reading can block a
+write until it exits.
 If adapting a typed error to that callback, use
 `io::Error::new(error.kind(), error)`, not `error.to_string()`, to retain sources.
 
@@ -180,8 +197,7 @@ focus changes. Full surfaces can skip surface revisions; patches cannot.
 This is a complete **text** baseline. Images retain their wire scene semantics:
 assets contain newly required bytes, not necessarily every live image's bytes.
 Rendering/caching images, optional delta codecs, local server spawning, discovery
-of all running sessions, automatic reconnect, and Windows transport are out of
-scope. No existing Herdr server or session is modified or started by discovery.
+of all running sessions, and automatic reconnect are out of scope. No existing Herdr server or session is modified or started by discovery.
 
 ## Saved SSH Hosts
 
@@ -233,8 +249,12 @@ unanswered probe. Any complete inbound message satisfies a probe, independently
 of the initial-snapshot deadline. As with local connections, continuously drain
 events: event backpressure pauses transport processing, including health checks.
 
-Limitations: POSIX remote hosts only; no Windows remote discovery, interactive
-bootstrap/install/upgrade, version-specific mise install scanning, or retry/replay.
+Limitations: POSIX remote hosts only, reachable from a Unix client only. The
+bridge hands the `ssh` child a socket pair as its standard streams, which needs
+`OwnedFd`; a Windows client therefore validates the target and session and then
+returns `Error::SshUnsupported` without spawning anything. There is no Windows
+remote discovery, interactive bootstrap/install/upgrade, version-specific mise
+install scanning, or retry/replay.
 Shell-initialized PATH entries unavailable to `/bin/sh` are not discovered unless
 covered by the known roots. The remote bridge itself can start the named daemon,
 as upstream does; disconnect only detaches and never stops the remote daemon.

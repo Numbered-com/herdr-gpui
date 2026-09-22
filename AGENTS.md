@@ -112,6 +112,10 @@ cargo test --locked --workspace --all-features
 ```
 
 - For linking, startup, or packaging changes, also use `just test-build` to build the release executable and exercise its CLI without a desktop.
+- Windows is type-checked, never run: the `windows` CI job lints every target and
+  feature and runs the protocol/client suites. Keep the `cfg(unix)`/`cfg(windows)`
+  split honest and say plainly what a platform cannot do instead of stubbing
+  behavior that appears to work.
 - Documentation-only changes need command/path/link review and `git diff --check`; do not claim a code test run that did not happen.
 - Add deterministic tests for invariants: ordering, cancellation, fragmentation, revision fencing, error paths, geometry, and cleanup. Prefer explicit coordination and bounded waits over timing guesses.
 - Test pure session/CLI/geometry logic without a socket or window where possible. Exercise public behavior with mock peers and headless GPUI tests where integration matters.

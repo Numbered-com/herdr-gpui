@@ -2,9 +2,15 @@
 mod error;
 pub use error::UpdateError;
 use error::{Result, UpdateError as Error};
+#[cfg(unix)]
 mod brew;
+#[cfg(unix)]
 mod install;
 mod release;
+#[cfg(not(unix))]
+mod unsupported;
+#[cfg(not(unix))]
+use unsupported::{brew, install};
 
 use std::{
     ffi::OsString,

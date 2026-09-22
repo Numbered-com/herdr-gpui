@@ -735,7 +735,8 @@ fn same_target(target: &ConnectTarget, host: &SavedHost) -> bool {
     matches!(target, ConnectTarget::Ssh { target, session } if target == &host.target && session == &host.session)
 }
 
-#[cfg(test)]
+// The fixtures drive the real client over bound Unix sockets and POSIX processes.
+#[cfg(all(test, unix))]
 mod lifecycle_tests;
 
 #[cfg(test)]

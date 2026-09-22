@@ -96,6 +96,17 @@ test-build: build-release
 
 ci: format-check lint test
 
+# Cross type-check the Windows target without a Windows machine. CI lints the
+# MSVC target on a Windows runner; this uses the GNU target because a Mac or
+# Linux host cannot supply the MSVC C toolchain some dependencies build against.
+# Needs `rustup target add x86_64-pc-windows-gnu` and mingw-w64
+# (`brew install mingw-w64`, or `apt install gcc-mingw-w64-x86-64`).
+lint-windows:
+    CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc \
+    AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar \
+    cargo clippy --locked --workspace --all-targets --all-features \
+        --target x86_64-pc-windows-gnu -- -D warnings
+
 # Audit the GitHub workflows for injection, over-broad permissions, and unpinned actions.
 audit-workflows:
     zizmor .github/

@@ -113,6 +113,8 @@ pub enum Error {
     ResponseId,
     #[error("{0}")]
     ServerShutdown(String),
+    #[error("SSH endpoints are not supported on this platform")]
+    SshUnsupported,
     #[error("SSH connection cancelled")]
     SshCancelled,
     #[error("SSH discovery timed out")]
@@ -173,6 +175,7 @@ impl Error {
             Self::InvalidSession | Self::NoLocalSocket | Self::InvalidSshTarget => {
                 io::ErrorKind::InvalidInput
             }
+            Self::SshUnsupported => io::ErrorKind::Unsupported,
             Self::Cancelled | Self::SshCancelled => io::ErrorKind::Interrupted,
             Self::EventReceiverDropped | Self::Disconnected => io::ErrorKind::BrokenPipe,
             Self::SocketClosed | Self::SshClosed => io::ErrorKind::UnexpectedEof,

@@ -1,21 +1,51 @@
 //! Opt-in Unix plaintext storage. All callers run on a background worker.
 #![forbid(unsafe_code)]
 
-use super::{Result, valid_token};
+use super::Result;
 use crate::Error;
+use secrecy::SecretString;
+use std::path::Path;
+
+#[cfg(unix)]
+use super::valid_token;
+#[cfg(unix)]
 use rustix::fs::{AtFlags, Mode, OFlags, open, openat, renameat, unlinkat};
+#[cfg(unix)]
 use rustix::process::geteuid;
-use secrecy::{ExposeSecret, SecretString};
+#[cfg(unix)]
+use secrecy::ExposeSecret;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(unix)]
 use std::{
     fs::File,
     io::{Read, Write},
-    path::Path,
 };
+#[cfg(unix)]
 use zeroize::Zeroizing;
 
+/// Keeping a token private on disk here depends on `openat`, POSIX ownership,
+/// and mode bits. Off POSIX there is no equivalent this crate can rely on, so
+/// `Store::File` is never selected and only removal, which has nothing to
+/// remove, succeeds.
+#[cfg(not(unix))]
+pub(super) fn read(_path: &Path) -> Result<Option<SecretString>> {
+    Ok(None)
+}
+
+#[cfg(not(unix))]
+pub(super) fn store(_path: &Path, token: Option<&SecretString>, _plaintext: bool) -> Result<()> {
+    if token.is_some() {
+        return Err(Error::CredentialUnsupported);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
 const NAME: &std::ffi::CStr = c"github-credentials";
+#[cfg(unix)]
 fn directory(path: &Path) -> Result<File> {
     let dir = File::from(
         open(
@@ -32,6 +62,7 @@ fn directory(path: &Path) -> Result<File> {
     Ok(dir)
 }
 
+#[cfg(unix)]
 fn existing(dir: &File) -> Result<Option<File>> {
     // Keep access relative to the validated directory, even if its path is replaced.
     let file = match openat(
@@ -56,6 +87,7 @@ fn existing(dir: &File) -> Result<Option<File>> {
     Ok(Some(file))
 }
 
+#[cfg(unix)]
 pub(super) fn read(path: &Path) -> Result<Option<SecretString>> {
     let dir = directory(path)?;
     let Some(file) = existing(&dir)? else {
@@ -72,6 +104,7 @@ pub(super) fn read(path: &Path) -> Result<Option<SecretString>> {
     Ok(Some(text.into()))
 }
 
+#[cfg(unix)]
 pub(super) fn store(path: &Path, token: Option<&SecretString>, plaintext: bool) -> Result<()> {
     if token.is_some() && !plaintext {
         return Err(Error::CredentialPolicy);
@@ -80,6 +113,7 @@ pub(super) fn store(path: &Path, token: Option<&SecretString>, plaintext: bool) 
     write(path, token)
 }
 
+#[cfg(unix)]
 fn write(path: &Path, token: Option<&SecretString>) -> Result<()> {
     let dir = directory(path)?;
     let present = existing(&dir)?.is_some();
@@ -122,7 +156,7 @@ fn write(path: &Path, token: Option<&SecretString>) -> Result<()> {
     result
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;

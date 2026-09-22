@@ -80,6 +80,18 @@ Audio normally routes through the desktop's ALSA plugin configuration; no CLI
 audio player is required. Custom notification sounds are MP3 only. See
 [notification sounds](crates/herdr-gpui/README.md#notification-sounds).
 
+### Windows
+
+Windows is a compile target, not a supported platform: CI type-checks every
+target and feature on `windows-2025` and runs the protocol and client test
+suites there, but no window, renderer, or live daemon has been exercised. Local
+connections use the named pipe the Windows daemon binds, and configuration and
+state follow its `%APPDATA%` / `%LOCALAPPDATA%` layout. Saved SSH
+hosts, in-app updates, saved GitHub credentials, and the avatar disk cache are
+unavailable and report that plainly; see
+[the GUI README](crates/herdr-gpui/README.md#windows). No Windows binary is
+published.
+
 ## How it connects
 
 ```mermaid

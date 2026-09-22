@@ -11,12 +11,12 @@ use crate::{
     method::Method,
     options::ConnectOptions,
     protocol::{endpoint::*, *},
+    transport::Stream,
 };
 use crossbeam_channel::{Receiver, Sender};
 use serde_json::Value;
 use std::{
     io::Write,
-    os::unix::net::UnixStream,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -133,7 +133,7 @@ impl Session {
 }
 
 pub(crate) fn run_connection(
-    mut stream: UnixStream,
+    mut stream: Stream,
     options: ConnectOptions,
     surface_active: bool,
     remote: bool,
