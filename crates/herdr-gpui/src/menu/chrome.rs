@@ -148,6 +148,8 @@ impl HerdrWindow {
         let font = &self.config.ui;
         let theme = &self.theme;
         let viewport = window.viewport_size();
+        // A GitHub tab of the new worktree dialog is a picker, not a form.
+        let listing = self.worktree_list_tab().is_some();
         // Context menus open where the pointer asked for them. A dialog is a
         // modal decision, not a continuation of the row it came from, so it
         // centres over a dimmed window the way the Herdr TUI's dialogs do.
@@ -164,6 +166,9 @@ impl HerdrWindow {
                         340.
                     } else if page == Page::Dialog(WorkspaceAction::DeleteWorktree) {
                         480.
+                    } else if listing {
+                        // A listing needs room for a title and its branch.
+                        560.
                     } else {
                         420.
                     })
@@ -171,6 +176,16 @@ impl HerdrWindow {
                     // Every dialog may use the window's height: a captioned form
                     // whose buttons need scrolling into view reads as clipped.
                     .max_h((viewport.height - px(24.)).max(px(0.)))
+                    // A listing is a picker: it takes a settled height and
+                    // scrolls inside it, as the theme and command pickers do.
+                    .when(listing, |panel| {
+                        panel
+                            .flex()
+                            .flex_col()
+                            .h(px(560. * (font.size / 12.))
+                                .min((viewport.height - px(24.)).max(px(0.))))
+                            .overflow_hidden()
+                    })
                     // Lift the popup off the terminal behind it, as the pickers do.
                     .shadow_lg()
             })
@@ -231,7 +246,7 @@ impl HerdrWindow {
                     // Dialogs draw their own full-bleed header and footer rules,
                     // so the panel's own inset would cut those rules short.
                     panel
-                        .overflow_y_scroll()
+                        .when(!listing, |panel| panel.overflow_y_scroll())
                         .when(!matches!(page, Page::Dialog(_)), |panel| panel.p(px(6.)))
                 },
             )
@@ -498,7 +513,23 @@ impl HerdrWindow {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if let Some(input) = this.menu.input.as_mut() {
+                // A listing has its own search field, so the branch draft must
+                // not consume the keys typed into it.
+                if this.worktree_source_key(event, window, cx) {
+                    cx.stop_propagation();
+                    window.prevent_default();
+                    return;
+                }
+                let listing = this.worktree_list_tab().is_some();
+                // A listing types into its own search field, so everything the
+                // list itself does not own must reach the native text handler.
+                if listing
+                    && (this.worktree_source_composing(cx)
+                        || event.keystroke.key.as_str() != "escape")
+                {
+                    return;
+                }
+                if let Some(input) = this.menu.input.as_mut().filter(|_| !listing) {
                     if input.key(&event.keystroke, cx) {
                         cx.stop_propagation();
                         window.prevent_default();

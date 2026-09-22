@@ -30,6 +30,7 @@ mod palette;
 mod preferences;
 mod presentation;
 mod pull_request;
+mod repo_items;
 mod search_input;
 mod sidebar;
 mod state;

@@ -257,6 +257,11 @@ impl HerdrWindow {
         self.menu.pr.clear();
         self.menu.pr_connection = None;
         self.menu.error = None;
+        if action == WorkspaceAction::NewWorktree {
+            self.open_worktree_source(cx);
+            cx.notify();
+            return;
+        }
         if action == WorkspaceAction::DeleteWorktree {
             let result = self.endpoints[self.selected_endpoint]
                 .connection
@@ -435,22 +440,22 @@ impl HerdrWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A refused creation leaves the dialog open, so the row it was for is
+        // released and the listing can be used again.
+        let release = |this: &mut Self, error: String, cx: &mut Context<Self>| {
+            if let Some(source) = &mut this.menu.worktree {
+                source.pending = None;
+            }
+            this.menu.error = Some(error);
+            cx.notify();
+        };
         let response = match result {
             Ok(response) => response,
-            Err(error) => {
-                self.menu.error = Some(error.to_string());
-                cx.notify();
-                return;
-            }
+            Err(error) => return release(self, error.to_string(), cx),
         };
         if let Some(error) = response.get("error") {
-            self.menu.error = Some(format!(
-                "{}: {}",
-                error["code"].as_str().unwrap_or("endpoint_error"),
-                error["message"].as_str().unwrap_or("Invalid daemon error")
-            ));
-            cx.notify();
-            return;
+            let (code, message) = endpoint_error(error);
+            return release(self, format!("{code}: {message}"), cx);
         }
         let result = &response["result"];
         let created = (result["type"] == "worktree_created")
@@ -459,13 +464,16 @@ impl HerdrWindow {
             .filter(|id| !id.is_empty())
             .map(str::to_owned);
         let Some(created) = created else {
-            self.menu.error = Some(
+            return release(
+                self,
                 "Unexpected daemon response. Review current workspace state before retrying."
                     .into(),
+                cx,
             );
-            cx.notify();
-            return;
         };
+        // The note names what the checkout is for, so it is taken from the
+        // dialog's own pending row before dismissal drops it.
+        self.write_worktree_note(result, cx);
         let endpoint = self.endpoints[self.selected_endpoint].id.clone();
         // A folded group would hide the new checkout the sidebar is about to select.
         let group = self
@@ -713,9 +721,13 @@ impl HerdrWindow {
                 .border_1()
                 .cursor_pointer()
         };
+        // A GitHub tab owns the panel's height, so its list scrolls inside the
+        // dialog instead of growing it past the window.
+        let listing = action == WorkspaceAction::NewWorktree && self.worktree_list_tab().is_some();
         div()
             .flex()
             .flex_col()
+            .when(listing, |dialog| dialog.size_full().min_h_0())
             .child(
                 div()
                     .flex()
@@ -757,7 +769,14 @@ impl HerdrWindow {
                             ),
                     ),
             )
-            .child(body)
+            .when(action == WorkspaceAction::NewWorktree, |dialog| {
+                dialog.child(self.render_worktree_tabs(cx))
+            })
+            .child(if listing {
+                self.render_worktree_items(cx)
+            } else {
+                body
+            })
             .child(
                 div()
                     .flex()
@@ -777,32 +796,36 @@ impl HerdrWindow {
                                 this.dismiss_menu(window, cx);
                             })),
                     )
-                    .child(
-                        button("dialog-submit")
-                            // The primary action carries the fill; a
-                            // destructive one also carries the warning hue.
-                            .border_color(if !armed {
-                                rgb(theme.active)
-                            } else if destructive {
-                                danger
-                            } else {
-                                rgb(theme.foreground)
-                            })
-                            .when(armed, |button| button.bg(rgb(theme.active)))
-                            .text_color(if !armed {
-                                rgb(theme.muted)
-                            } else if destructive {
-                                danger
-                            } else {
-                                rgb(theme.foreground)
-                            })
-                            .hover(|button| button.bg(rgb(theme.active)))
-                            .child(if creating { "Creating..." } else { submit })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.submit_workspace_dialog(window, cx);
-                            })),
-                    ),
+                    // A listed row creates its own checkout, so the branch
+                    // field's submit button belongs to the branch tab alone.
+                    .when(!listing, |footer| {
+                        footer.child(
+                            button("dialog-submit")
+                                // The primary action carries the fill; a
+                                // destructive one also carries the warning hue.
+                                .border_color(if !armed {
+                                    rgb(theme.active)
+                                } else if destructive {
+                                    danger
+                                } else {
+                                    rgb(theme.foreground)
+                                })
+                                .when(armed, |button| button.bg(rgb(theme.active)))
+                                .text_color(if !armed {
+                                    rgb(theme.muted)
+                                } else if destructive {
+                                    danger
+                                } else {
+                                    rgb(theme.foreground)
+                                })
+                                .hover(|button| button.bg(rgb(theme.active)))
+                                .child(if creating { "Creating..." } else { submit })
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.submit_workspace_dialog(window, cx);
+                                })),
+                        )
+                    }),
             )
     }
 }

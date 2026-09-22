@@ -69,6 +69,16 @@ pub enum Error {
     PrEncoding(#[source] std::str::Utf8Error),
     #[error("No repository metadata.")]
     PrMetadata,
+    #[error("Could not {operation} the agent context note for the new checkout.")]
+    AgentContext {
+        operation: &'static str,
+        #[source]
+        source: io::Error,
+    },
+    #[error(
+        "Pull request #{number} comes from the fork {owner}. Fetch its branch yourself, then create the checkout from the branch field."
+    )]
+    ForkPullRequest { number: u64, owner: String },
     #[error("git {operation} failed: {details}")]
     GitFailed {
         operation: &'static str,

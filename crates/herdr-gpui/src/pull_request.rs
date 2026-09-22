@@ -16,7 +16,6 @@ pub(crate) use {
     model::{Input, PullRequest, State, clean, repository_input},
 };
 
-#[cfg(all(test, feature = "integration-test", target_os = "macos"))]
 pub(crate) use fetch::local_repository;
 #[cfg(any(test, all(feature = "integration-test", target_os = "macos")))]
 pub(crate) use model::fixture;

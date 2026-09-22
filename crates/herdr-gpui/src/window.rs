@@ -139,6 +139,7 @@ impl HerdrWindow {
                             .and_then(|s| s.focused_pane_id.clone());
                         this.poll_endpoints(cx);
                         this.update_workspace_dialog(window, cx);
+                        this.poll_worktree_source(cx);
                         this.poll_hover_menu(std::time::Instant::now(), window, cx);
                         this.poll_tab_rename(window, cx);
                         if old_pane
