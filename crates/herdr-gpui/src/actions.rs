@@ -22,6 +22,12 @@ pub(crate) struct RunCommand {
     pub(crate) command: Command,
 }
 
+#[derive(Clone, PartialEq, serde::Deserialize, Action)]
+#[action(no_json)]
+pub(crate) struct ShowToastPreview {
+    pub(crate) kind: herdr_client::protocol::SemanticNotificationKind,
+}
+
 pub(crate) fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.bind_keys(

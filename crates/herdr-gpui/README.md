@@ -51,6 +51,13 @@ include desktop integration and notices; updater-only
 `herdr-gpui-VERSION-TARGET-update.tar.gz` archives contain one executable.
 Native two-version update/restart QA remains pending.
 
+The macOS **QA** menu offers **Show NeedsAttention toast**, **Show Finished
+toast**, **Show UpdateInstalled toast**, and **Show Custom toast**. Each adds a
+synthetic in-app toast for the selected endpoint, even when disconnected, using
+the normal bottom-right placement, three-card limit, ten-second expiry, and
+dismiss button. Previews do not contact the daemon or updater. Close any in-app
+panel first: toasts remain hidden while a panel is open.
+
 Spaces lists Local first, then saved hosts in the upstream catalog's order.
 Enabled hosts connect in the background with inactive terminal surfaces; disabled
 hosts remain visible. Host and repository collapse state is endpoint-scoped, and
@@ -341,6 +348,19 @@ and local file paths are not activated.
   the daemon or its terminals. Window activation is reported to the daemon.
 - Resize uses the actual terminal canvas bounds and measured configured font cell width,
   excluding the native sidebar, tabs and status bar.
+- Semantic daemon notifications appear as nonmodal, host-labeled in-app toasts,
+  including from background endpoints, without changing focus or selection.
+  Each connection retains at most eight pending notifications; each endpoint
+  retains its newest three toasts, with at most three cards visible across the
+  window (catalog order). Overflow drops oldest entries. Titles/bodies are inert
+  plain text, stripped of controls and bidi overrides and capped at 160/512 input
+  characters. Toasts expire ten seconds after receipt or can be dismissed with
+  their close button. Disconnect, detach, replacement, and boot changes clear them.
+  Requested corners are honored at wide sizes; below 720px all cards use bottom
+  right to avoid overlapping columns. Short windows show fewer cards; windows
+  under 180px in either dimension hide them. Menus hide toasts while expiry continues.
+  Long text is clipped to keep cards bounded. No sounds, OS notifications,
+  terminal escapes, or notification click navigation are performed.
 
 Socket I/O belongs to `herdr-client`'s worker. A separate event thread drains all
 ordered events into a bounded latest-state cache. The UI samples changed state
@@ -381,7 +401,9 @@ GPUI native action/menu/keybinding patterns.
   composition appears in the status bar rather than inline. Key releases and
   physical-key/extended keyboard protocol metadata are not reported.
 - Popups have a basic centered text presentation, without native title/border
-  chrome. Server notifications/clipboard writes are not executed.
+  chrome. Only semantic notifications get in-app toasts; legacy notification
+  commands and server clipboard writes are not executed. Notification target
+  hints are not clickable, and there is no notification history.
 - Rendering is a simple two-pass cell painter, not an optimized damaged-row
   renderer. Large/high-frequency surfaces can consume significant CPU.
 

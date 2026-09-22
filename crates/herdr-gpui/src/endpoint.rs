@@ -57,6 +57,7 @@ pub(super) struct Endpoint {
     pub collapsed_repos: HashSet<String>,
     pub live: LiveState,
     pub generation: u64,
+    pub(crate) toasts: crate::notifications::Toasts,
     retry_at: Instant,
     attempts: u32,
     online_since: Option<Instant>,
@@ -78,6 +79,7 @@ impl Endpoint {
             collapsed_repos: HashSet::new(),
             live: LiveState::default(),
             generation: 0,
+            toasts: Default::default(),
             retry_at: Instant::now(),
             attempts: 0,
             online_since: None,
@@ -87,6 +89,7 @@ impl Endpoint {
     }
 
     fn stop(&mut self) {
+        self.toasts.entries.clear();
         self.connection.detach(false);
         self.initial_surface = false;
         self.online_since = None;
@@ -101,15 +104,28 @@ impl Endpoint {
         self.attempts = self.attempts.saturating_add(1);
         self.connection.reconnect(options, false, active);
         self.live = self.connection.take_update().unwrap_or_default();
+        self.toasts.receive(self.live.notifications.drain(..));
         self.retry_at = Instant::now() + self.retry_delay();
     }
 
     fn poll(&mut self, now: Instant) -> bool {
         let mut changed = false;
-        if let Some(state) = self.connection.take_update() {
+        if let Some(mut state) = self.connection.take_update() {
+            if !state.status.is_connected()
+                || self
+                    .live
+                    .snapshot
+                    .as_ref()
+                    .zip(state.snapshot.as_ref())
+                    .is_some_and(|(old, new)| old.boot_id != new.boot_id)
+            {
+                self.toasts.entries.clear();
+            }
+            self.toasts.receive(state.notifications.drain(..));
             self.live = state;
             changed = true;
         }
+        changed |= self.toasts.expire(now);
         if self
             .connection
             .handle
@@ -673,6 +689,107 @@ mod tests {
             session: "default".into(),
             enabled,
         }
+    }
+
+    #[test]
+    fn notifications_stay_endpoint_owned_and_expire_without_new_updates() {
+        use crate::notifications::tests::notification;
+        use herdr_client::protocol::ServerMessage;
+        let mut local = Endpoint::new(LOCAL.into(), "Local".into(), ConnectTarget::Local, true);
+        let mut remote = Endpoint::new(
+            "ssh:test".into(),
+            "Remote".into(),
+            ConnectTarget::Local,
+            true,
+        );
+        for endpoint in [&mut local, &mut remote] {
+            let mut state = endpoint.connection.inbox.lock().unwrap();
+            state.apply(ClientEvent::Snapshot(Arc::new(
+                crate::sidebar::layout_tests::snapshot(1),
+            )));
+            state.apply(ClientEvent::Message(ServerMessage::SemanticNotification(
+                notification(&endpoint.label),
+            )));
+            state.apply(ClientEvent::Snapshot(Arc::new(
+                crate::sidebar::layout_tests::snapshot(2),
+            )));
+        }
+        let now = Instant::now();
+        assert!(local.poll(now));
+        assert!(remote.poll(now));
+        assert!(local.live.notifications.is_empty());
+        assert!(remote.live.notifications.is_empty());
+        assert_eq!(local.toasts.entries[0].1.title, "Local");
+        assert_eq!(remote.toasts.entries[0].1.title, "Remote");
+        assert!(!remote.poll(now));
+        local.stop();
+        assert!(local.toasts.entries.is_empty());
+        assert_eq!(remote.toasts.entries.len(), 1);
+        let deadline = remote.toasts.entries[0].1.expires;
+        assert!(remote.poll(deadline));
+        assert!(remote.toasts.entries.is_empty());
+        assert!(!remote.poll(deadline));
+    }
+
+    #[test]
+    fn notifications_clear_on_boot_change_and_disconnect() {
+        use crate::notifications::tests::notification;
+        use herdr_client::protocol::ServerMessage;
+        let mut endpoint = Endpoint::new(LOCAL.into(), "Local".into(), ConnectTarget::Local, true);
+        let mut snapshot = crate::sidebar::layout_tests::snapshot(1);
+        endpoint
+            .connection
+            .inbox
+            .lock()
+            .unwrap()
+            .apply(ClientEvent::Snapshot(Arc::new(snapshot.clone())));
+        endpoint
+            .connection
+            .inbox
+            .lock()
+            .unwrap()
+            .apply(ClientEvent::Message(ServerMessage::SemanticNotification(
+                notification("old"),
+            )));
+        endpoint.poll(Instant::now());
+        assert_eq!(endpoint.toasts.entries.len(), 1);
+        endpoint
+            .connection
+            .inbox
+            .lock()
+            .unwrap()
+            .apply(ClientEvent::Message(ServerMessage::SemanticNotification(
+                notification("pending old"),
+            )));
+        snapshot.boot_id = "replacement-boot".into();
+        endpoint
+            .connection
+            .inbox
+            .lock()
+            .unwrap()
+            .apply(ClientEvent::Snapshot(Arc::new(snapshot)));
+        endpoint.poll(Instant::now());
+        assert!(endpoint.toasts.entries.is_empty());
+        endpoint
+            .connection
+            .inbox
+            .lock()
+            .unwrap()
+            .apply(ClientEvent::Message(ServerMessage::SemanticNotification(
+                notification("new"),
+            )));
+        endpoint.poll(Instant::now());
+        assert_eq!(endpoint.toasts.entries.len(), 1);
+        endpoint
+            .connection
+            .inbox
+            .lock()
+            .unwrap()
+            .apply(ClientEvent::Disconnected {
+                reason: "test".into(),
+            });
+        endpoint.poll(Instant::now());
+        assert!(endpoint.toasts.entries.is_empty());
     }
 
     #[test]

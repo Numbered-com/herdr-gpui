@@ -7,6 +7,7 @@ mod commands;
 mod input;
 mod lifecycle;
 mod render;
+mod toasts;
 
 #[cfg(all(test, feature = "integration-test"))]
 mod resize_tests;

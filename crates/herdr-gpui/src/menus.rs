@@ -3,9 +3,10 @@
 
 use crate::{
     CheckForUpdates, Quit, RunCommand, ShowHerdrNotDetected, ShowLogs, ShowUpdatePreview,
-    controls::Command,
+    actions::ShowToastPreview, controls::Command,
 };
 use gpui::{Menu, MenuItem};
+use herdr_client::protocol::SemanticNotificationKind;
 
 pub(crate) fn menus() -> Vec<Menu> {
     vec![
@@ -145,6 +146,31 @@ pub(crate) fn menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action("Show herdr non-detected modal", ShowHerdrNotDetected),
                 MenuItem::action("Show app update available", ShowUpdatePreview),
+                MenuItem::separator(),
+                MenuItem::action(
+                    "Show NeedsAttention toast",
+                    ShowToastPreview {
+                        kind: SemanticNotificationKind::NeedsAttention,
+                    },
+                ),
+                MenuItem::action(
+                    "Show Finished toast",
+                    ShowToastPreview {
+                        kind: SemanticNotificationKind::Finished,
+                    },
+                ),
+                MenuItem::action(
+                    "Show UpdateInstalled toast",
+                    ShowToastPreview {
+                        kind: SemanticNotificationKind::UpdateInstalled,
+                    },
+                ),
+                MenuItem::action(
+                    "Show Custom toast",
+                    ShowToastPreview {
+                        kind: SemanticNotificationKind::Custom,
+                    },
+                ),
             ],
         },
     ]

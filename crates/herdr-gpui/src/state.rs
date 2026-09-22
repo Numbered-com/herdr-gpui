@@ -47,6 +47,7 @@ pub struct LiveState {
     pub(crate) supports_workspace_get: bool,
     pub dirty: bool,
     pub(crate) dialog_response: Option<(String, Option<DialogResponse>)>,
+    pub(crate) notifications: std::collections::VecDeque<crate::notifications::Notice>,
     outer_focused: Option<bool>,
     pub activation: Option<SurfaceActivation>,
     pub supports_surface: bool,
@@ -82,6 +83,7 @@ impl Default for LiveState {
             supports_workspace_get: false,
             dirty: true,
             dialog_response: None,
+            notifications: Default::default(),
             outer_focused: None,
             activation: None,
             supports_surface: false,
@@ -157,6 +159,13 @@ impl LiveState {
                 self.error = None;
             }
             ClientEvent::Snapshot(snapshot) => {
+                if self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|old| old.boot_id != snapshot.boot_id)
+                {
+                    self.notifications.clear();
+                }
                 if let Some(activation) = &mut self.activation
                     && activation.boot != snapshot.boot_id
                 {
@@ -183,6 +192,7 @@ impl LiveState {
                 }
             }
             ClientEvent::Disconnected { reason } => {
+                self.notifications.clear();
                 self.status = ConnectionStatus::Disconnected;
                 self.error = Some(reason);
                 self.snapshot = None;
@@ -250,6 +260,19 @@ impl LiveState {
             }
             ClientEvent::Message(ServerMessage::ClientShellError { message }) => {
                 self.error = Some(message)
+            }
+            ClientEvent::Message(ServerMessage::SemanticNotification(notification)) => {
+                if !self.status.is_connected() {
+                    return;
+                }
+                if self.notifications.len() == crate::notifications::PENDING_LIMIT {
+                    self.notifications.pop_front();
+                }
+                self.notifications
+                    .push_back(crate::notifications::Notice::new(
+                        notification,
+                        std::time::Instant::now(),
+                    ));
             }
             _ => return,
         }

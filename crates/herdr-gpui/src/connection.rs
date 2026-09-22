@@ -152,7 +152,9 @@ impl ConnectionBridge {
             .dialog_response
             .as_mut()
             .and_then(|(_, result)| result.take());
+        let notifications = std::mem::take(&mut state.notifications);
         let mut update = state.clone();
+        update.notifications = notifications;
         if let Some((_, result)) = &mut update.dialog_response {
             *result = response;
         }
@@ -209,6 +211,55 @@ mod tests {
 
     fn bridge() -> ConnectionBridge {
         ConnectionBridge::new(ConnectTarget::Socket("/unused-connection-test.sock".into()))
+    }
+
+    #[test]
+    fn notifications_move_once_are_bounded_and_fenced_by_replacement() {
+        use crate::notifications::{PENDING_LIMIT, tests::notification};
+        use herdr_client::protocol::ServerMessage;
+        let mut bridge = bridge();
+        let old = bridge.inbox.clone();
+        {
+            let mut state = old.lock().unwrap();
+            state.status = ConnectionStatus::Connected;
+            for id in 0..100 {
+                state.apply(ClientEvent::Message(ServerMessage::SemanticNotification(
+                    notification(&id.to_string()),
+                )));
+            }
+            state.set_outer_focus(true);
+        }
+        let update = bridge.take_update().unwrap();
+        assert_eq!(update.notifications.len(), PENDING_LIMIT);
+        assert_eq!(update.notifications[0].title, "92");
+        assert_eq!(update.notifications[7].title, "99");
+        assert!(bridge.take_update().is_none());
+        old.lock().unwrap().set_outer_focus(false);
+        assert!(bridge.take_update().unwrap().notifications.is_empty());
+        bridge.detach(false);
+        old.lock()
+            .unwrap()
+            .apply(ClientEvent::Message(ServerMessage::SemanticNotification(
+                notification("late"),
+            )));
+        assert!(bridge.take_update().unwrap().notifications.is_empty());
+        bridge.reset(ConnectionStatus::Connected, false);
+        old.lock()
+            .unwrap()
+            .apply(ClientEvent::Message(ServerMessage::SemanticNotification(
+                notification("late again"),
+            )));
+        assert!(bridge.take_update().unwrap().notifications.is_empty());
+        {
+            let mut state = bridge.inbox.lock().unwrap();
+            state.apply(ClientEvent::Message(ServerMessage::SemanticNotification(
+                notification("discard on disconnect"),
+            )));
+            state.apply(ClientEvent::Disconnected {
+                reason: "test".into(),
+            });
+        }
+        assert!(bridge.take_update().unwrap().notifications.is_empty());
     }
 
     #[test]
