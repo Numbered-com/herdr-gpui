@@ -231,6 +231,10 @@ fn run(
     // disconnects once they reach EOF. Bounded, because a grandchild that
     // inherited the pipes can hold them open after Homebrew itself exits, and a
     // lost line must not become a hung update.
+    //
+    // These lines are reported like any other. A short command can exit with
+    // its whole output still in flight, and whether a line reaches the caller
+    // must not depend on which side of the exit it was read on.
     let drain = Instant::now() + DRAIN;
     loop {
         let remaining = drain.saturating_duration_since(Instant::now());
@@ -246,7 +250,8 @@ fn run(
         if tail.len() == 8 {
             tail.remove(0);
         }
-        tail.push(text);
+        tail.push(text.clone());
+        progress(text);
     }
     result.map(|()| tail)
 }
@@ -468,9 +473,33 @@ mod tests {
         let Err(error) = run(command(&noisy), QUERY, None, |line| seen.push(line)) else {
             anyhow::bail!("a non-zero exit must fail");
         };
-        assert!(seen.len() > 8, "every line is reported as progress");
+        // Every line, whichever side of the child's exit it was read on: a
+        // command this short can exit with all of it still in flight.
+        let mut expected: Vec<String> = (1..=200).map(|i| format!("line {i}")).collect();
+        expected.push("boom".to_owned());
+        seen.sort();
+        expected.sort();
+        assert_eq!(seen, expected, "every line is reported as progress");
         assert!(matches!(&error, Error::BrewFailed { status, detail }
                 if status.code() == Some(3) && !detail.is_empty() && detail.len() <= DETAIL));
+
+        // A line that only reaches the pipe after the process exits is still
+        // that process's output: the grandchild keeps the pipe open past the
+        // exit, so this line can be read only while draining.
+        let late = cask(
+            "#!/bin/sh\n( sleep 1; echo 'after exit' ) &\necho 'before exit'\nexit 3\n",
+            root.path(),
+        )?;
+        let mut seen = Vec::new();
+        let Err(error) = run(command(&late), QUERY, None, |line| seen.push(line)) else {
+            anyhow::bail!("a non-zero exit must fail");
+        };
+        assert_eq!(seen, ["before exit", "after exit"], "drained lines report");
+        assert!(
+            matches!(&error, Error::BrewFailed { detail, .. }
+                if detail == "before exit"),
+            "the failure keeps the last line read before it: {error:?}"
+        );
 
         let long = cask(
             &format!("#!/bin/sh\necho '{}'\n", "x".repeat(4096)),
