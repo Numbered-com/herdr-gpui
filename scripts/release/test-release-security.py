@@ -69,7 +69,8 @@ class ReleaseTargets(unittest.TestCase):
         sections = re.split(r"^  ([a-z-]+):\n", workflow.split("\njobs:\n", 1)[1], flags=re.M)
         jobs = dict(zip(sections[1::2], sections[2::2]))
         targets = {"aarch64-apple-darwin", "x86_64-apple-darwin",
-                   "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"}
+                   "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
+                   "x86_64-pc-windows-msvc"}
         self.assertEqual(set(SBOM.TARGETS), targets)
         self.assertEqual(set(tomllib.loads((ROOT / "deny.toml").read_text())["graph"]["targets"]), targets)
         self.assertEqual(set(tomllib.loads((ROOT / "scripts/release/about.toml").read_text())["targets"]), targets)
@@ -88,6 +89,20 @@ class ReleaseTargets(unittest.TestCase):
             self.assertIn(command, linux)
         for target in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"):
             self.assertIn(f"name: linux-package-{target}\n", jobs["attest"])
+        windows = jobs["windows"]
+        self.assertEqual(re.findall(r"- runner: (\S+)\n            target: (\S+)", windows), [
+            ("windows-2025", "x86_64-pc-windows-msvc")])
+        for command in ('cargo build --locked --release -p herdr-gpui --target "$TARGET"',
+                        'cargo test --locked --release -p herdr-gpui --test cli --target "$TARGET"',
+                        'cargo clippy --locked --workspace --all-targets --all-features -- -D warnings',
+                        'test "$(rustc -vV | sed -n \'s/^host: //p\')" = "$TARGET"',
+                        'python scripts/release/generate-notices.py',
+                        'python scripts/release/package-windows.py "$VERSION" "$TARGET"',
+                        'name: windows-package-${{ matrix.target }}'):
+            self.assertIn(command, windows)
+        self.assertIn("name: windows-package-x86_64-pc-windows-msvc\n", jobs["attest"])
+        for name in ("sign", "attest"):
+            self.assertRegex(jobs[name], r"    needs: \[[^]]*\bwindows\b")
         attest = jobs["attest"].replace("${{ needs.validate.outputs.version }}", VERSION)
         signed = re.search(r"^          files: (.+)$", attest, re.M)[1].split()
         subjects = re.findall(r"^            dist/(\S+)$", attest, re.M)
@@ -104,7 +119,7 @@ class ReleaseTargets(unittest.TestCase):
         self.assertEqual(workflow.count('artifact-manifest.py create "$VERSION" dist'), 1)
         self.assertNotIn("scripts/package-linux.sh", workflow)
         self.assertNotIn("uses: actions/cache", workflow)
-        for name in ("macos-checks", "macos-build", "linux", "windows-protocol", "metadata", "changelog"):
+        for name in ("macos-checks", "macos-build", "linux", "windows", "metadata", "changelog"):
             self.assertIn("    needs: validate\n", jobs[name])
             self.assertNotIn("secrets.", jobs[name])
             self.assertNotIn("environment:", jobs[name])
@@ -250,12 +265,13 @@ class ReleaseSecurity(unittest.TestCase):
             "Herdr-20260920.1-universal-apple-darwin.dmg", "Herdr-20260920.1.cdx.json",
             "Herdr-20260920.1-x86_64-unknown-linux-gnu.tar.gz",
             "Herdr-20260920.1-aarch64-unknown-linux-gnu.tar.gz",
+            "Herdr-20260920.1-x86_64-pc-windows-msvc.zip",
             "herdr-gpui-20260920.1-macos-universal.app.tar.gz",
             "herdr-gpui-20260920.1-x86_64-unknown-linux-gnu-update.tar.gz",
             "herdr-gpui-20260920.1-aarch64-unknown-linux-gnu-update.tar.gz",
             "update-manifest.json", "update-manifest.sig"})
-        self.assertEqual(len((self.path / "SHA256SUMS").read_text().splitlines()), 45)
-        self.assertEqual(len(self.run_manifest("names").splitlines()), 46)
+        self.assertEqual(len((self.path / "SHA256SUMS").read_text().splitlines()), 50)
+        self.assertEqual(len(self.run_manifest("names").splitlines()), 51)
         self.assertEqual(self.run_manifest("base-names").splitlines(), MANIFEST.base_names(VERSION))
         with tempfile.TemporaryDirectory() as temp:
             name = MANIFEST.base_names(VERSION)[0]
