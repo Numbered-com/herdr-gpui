@@ -15,6 +15,7 @@ pub enum Method {
     PaneClose,
     PaneFocus,
     PaneFocusDirection,
+    PaneRename,
     PaneSplit,
     PaneZoom,
     ServerReloadConfig,
@@ -40,6 +41,7 @@ impl Method {
             Self::PaneClose => "pane.close",
             Self::PaneFocus => "pane.focus",
             Self::PaneFocusDirection => "pane.focus_direction",
+            Self::PaneRename => "pane.rename",
             Self::PaneSplit => "pane.split",
             Self::PaneZoom => "pane.zoom",
             Self::ServerReloadConfig => "server.reload_config",
@@ -68,5 +70,18 @@ impl Method {
 impl std::fmt::Display for Method {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pane_rename_wire_name_and_advertisement() {
+        assert_eq!(Method::PaneRename.as_str(), "pane.rename");
+        assert_eq!(Method::PaneRename.to_string(), "pane.rename");
+        assert!(Method::PaneRename.advertised_in(&["pane.rename".into()]));
+        assert!(!Method::PaneRename.advertised_in(&["tab.rename".into()]));
     }
 }

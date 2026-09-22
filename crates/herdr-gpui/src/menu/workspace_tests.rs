@@ -830,7 +830,8 @@ fn reset_drops_target_draft_composition_and_error(cx: &mut gpui::TestAppContext)
 
 #[test]
 fn actions_target_clicked_workspace_and_match_daemon_schemas() {
-    let snapshot = sidebar::layout_tests::snapshot(7);
+    let mut snapshot = sidebar::layout_tests::snapshot(7);
+    snapshot.workspaces[0].branch = None;
     let target = WorkspaceTarget::new(&snapshot, &snapshot.workspaces[3]);
     assert!(target.can_create());
     assert_eq!(target.close_label(), "Close group");
@@ -882,6 +883,41 @@ fn actions_target_clicked_workspace_and_match_daemon_schemas() {
     let target = WorkspaceTarget::new(&standalone, &standalone.workspaces[3]);
     assert!(target.can_create());
     assert_eq!(target.close_label(), "Close");
+}
+
+#[test]
+fn branch_only_workspace_can_create_until_git_identity_disappears() {
+    let mut snapshot = sidebar::layout_tests::snapshot(7);
+    snapshot.workspaces[3].worktree = None;
+    snapshot.workspaces[3].branch = Some("main".into());
+    let target = WorkspaceTarget::new(&snapshot, &snapshot.workspaces[3]);
+    assert!(target.can_create());
+    assert!(!target.can_delete());
+    assert_eq!(
+        target
+            .request(&snapshot, WorkspaceAction::NewWorktree, "feature/test")
+            .unwrap(),
+        (
+            Method::WorktreeCreate,
+            serde_json::json!({"workspace_id": "w3", "base": "HEAD", "focus": true,
+                "trust_repository": false, "branch": "feature/test"})
+        )
+    );
+
+    snapshot.workspaces[3].branch = None;
+    assert!(!WorkspaceTarget::new(&snapshot, &snapshot.workspaces[3]).can_create());
+    assert!(matches!(
+        target.request(&snapshot, WorkspaceAction::NewWorktree, ""),
+        Err(crate::Error::WorkspaceRepositoryChanged)
+    ));
+
+    snapshot.workspaces[3].branch = Some("main".into());
+    snapshot.workspaces[3].worktree = snapshot.workspaces[4].worktree.clone();
+    assert!(!WorkspaceTarget::new(&snapshot, &snapshot.workspaces[3]).can_create());
+    assert!(matches!(
+        target.request(&snapshot, WorkspaceAction::NewWorktree, ""),
+        Err(crate::Error::WorkspaceRepositoryChanged)
+    ));
 }
 
 #[test]

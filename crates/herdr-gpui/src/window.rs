@@ -149,6 +149,7 @@ impl HerdrWindow {
                         this.poll_worktree_source(cx);
                         this.poll_hover_menu(std::time::Instant::now(), window, cx);
                         this.poll_tab_rename(window, cx);
+                        this.poll_pane_rename(window, cx);
                         if old_pane
                             != this
                                 .live

@@ -27,6 +27,7 @@ mod menu;
 mod menus;
 mod navigation;
 mod palette;
+mod pane_menu;
 mod preferences;
 mod presentation;
 mod pull_request;

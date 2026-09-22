@@ -208,7 +208,8 @@ and local file paths are not activated.
   preserving other GUI config settings and comments.
 - Right-click spaces for Rename, Close (Close group on non-linked parents with
   multiple spaces sharing `worktree.key`), and New worktree on non-linked Git
-  parents. With `features.sidebar_hover_menu` enabled, resting the pointer on a
+  parents, including spaces with a known Git branch but no worktree metadata yet.
+  With `features.sidebar_hover_menu` enabled, resting the pointer on a
   space of the selected connection opens the same menu, and moving the pointer
   anywhere but into that menu closes it again; the flag is off by default, so
   spaces normally open their menu only on right-click, and a menu opened by
@@ -292,6 +293,15 @@ and local file paths are not activated.
   `confirm_close_tab = false`. Escape or an outside left/right click dismisses
   the menu without sending terminal input.
 - Click workspace, tab, agent, or a visible split pane to focus through the API.
+- Right-click a visible pane, including an inactive split, for Rename, Split
+  Right, Split Down, Toggle Zoom, and Close without first focusing it. Actions
+  retain the clicked pane/tab/workspace and daemon boot, and reject stale
+  membership or a changed connection. Rename uses an IME-aware native field,
+  trims surrounding whitespace, and clears the custom label when blank. It
+  waits for the matching daemon response and reports failures inline. Close
+  always asks for confirmation with Cancel selected. Popups and stale retained
+  terminal frames block pane context actions. Escape or an outside left/right
+  click dismisses the menu without forwarding input to the terminal.
 - Native File/Terminal menus and creation buttons: **+ New Workspace** in the
   sidebar and a persistent 18px SVG **+** in a 44px-wide button beside the horizontally
   scrolling tab strip. Each tab has a 16px SVG close cross in a 24px hit target;
@@ -377,7 +387,7 @@ GPUI native action/menu/keybinding patterns.
   not synchronized from the host terminal's theme.
 - No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
   image rendering, or animated blinking.
-- No pane rename dialogs or horizontal wheel handling,
+- No right-click passthrough or horizontal wheel handling,
   server-owned keybindings, session picker, saved-host editing, or daemon
   stop/upgrade management.
 - IME uses a minimal transient buffer, not a local editable terminal document;
