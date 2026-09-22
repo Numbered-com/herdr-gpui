@@ -112,6 +112,27 @@ sign-release *args:
 verify-release *args:
     ./scripts/verify-release.sh {{args}}
 
+# Check commit subjects the way CI does; the changelog is generated from them.
+check-commits base="origin/main":
+    python3 scripts/release/check-commit-messages.py range "{{base}}..HEAD"
+
+# Install the commit-msg hook for this checkout and every worktree of it.
+hooks:
+    git config core.hooksPath .githooks
+    @echo "core.hooksPath = .githooks"
+
+# What changed since the last release tag, straight from git history.
+changelog-unreleased:
+    git-cliff --config cliff.toml --unreleased
+
+# The whole generated changelog; it is never tracked in git.
+changelog:
+    git-cliff --config cliff.toml
+
+# Exactly what a release would publish: CHANGELOG.md and RELEASE_NOTES.md.
+changelog-release version output:
+    bash scripts/release/generate-changelog.sh "{{version}}" "{{output}}"
+
 # Owner-only remote release; CI derives the YYYYMMDD.COUNTER version itself.
 release:
     bash scripts/release/dispatch.sh

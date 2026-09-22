@@ -36,12 +36,15 @@ class ReleaseTargets(unittest.TestCase):
             for condition in ("github.repository == 'penso/herdr-gpui'",
                               "github.actor == 'penso'", "github.triggering_actor == 'penso'"):
                 self.assertIn(condition, job)
+        self.assertIn("    needs: [checks, commits]\n", jobs["checks-passed"])
+        self.assertIn('test "$RESULT" = success && test "$COMMITS" = success', jobs["checks-passed"])
+        self.assertIn("          fetch-depth: 0\n", jobs["commits"])
+        self.assertIn("python3 scripts/release/check-commit-messages.py range", jobs["commits"])
         for name in ("checks", "checks-passed"):
             self.assertIn("github.event.pull_request.user.login == 'penso'", jobs[name])
             self.assertIn("github.event.pull_request.head.repo.full_name == 'penso/herdr-gpui'", jobs[name])
         self.assertIn("runner: [macos-15, ubuntu-24.04, ubuntu-24.04-arm]", jobs["checks"])
         self.assertIn("    name: Format, lint, and test\n", jobs["checks-passed"])
-        self.assertIn("    needs: checks\n", jobs["checks-passed"])
         self.assertIn("always()", jobs["checks-passed"])
         self.assertIn('test "$RESULT" = success', jobs["checks-passed"])
         self.assertIn("github.ref == 'refs/heads/main'", jobs["build"])
@@ -90,7 +93,7 @@ class ReleaseTargets(unittest.TestCase):
         self.assertEqual(workflow.count('artifact-manifest.py create "$VERSION" dist'), 1)
         self.assertNotIn("scripts/package-linux.sh", workflow)
         self.assertNotIn("uses: actions/cache", workflow)
-        for name in ("macos-checks", "macos-build", "linux", "windows-protocol", "metadata"):
+        for name in ("macos-checks", "macos-build", "linux", "windows-protocol", "metadata", "changelog"):
             self.assertIn("    needs: validate\n", jobs[name])
             self.assertNotIn("secrets.", jobs[name])
             self.assertNotIn("environment:", jobs[name])
@@ -107,6 +110,24 @@ class ReleaseTargets(unittest.TestCase):
         self.assertIn("    environment: homebrew\n", jobs["homebrew"])
         self.assertEqual(re.findall(r"^  (\w+):", workflow.split("permissions:", 1)[0], re.M),
                          ["workflow_dispatch"])
+
+    def test_release_notes_come_from_history_and_stay_out_of_the_signed_assets(self):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        sections = re.split(r"^  ([a-z-]+):\n", workflow.split("\njobs:\n", 1)[1], flags=re.M)
+        jobs = dict(zip(sections[1::2], sections[2::2]))
+        changelog = jobs["changelog"]
+        # Notes are derived from git history, so the clone must carry all of it.
+        self.assertIn("          fetch-depth: 0\n", changelog)
+        self.assertIn('bash scripts/release/generate-changelog.sh "$VERSION" release-notes', changelog)
+        self.assertIn("          name: release-notes\n", changelog)
+        publish = jobs["publish"]
+        self.assertIn("    needs: [validate, attest, changelog]\n", publish)
+        self.assertIn("          name: release-notes\n", publish)
+        self.assertIn("          path: release-notes\n", publish)
+        self.assertIn("--notes-file release-notes/RELEASE_NOTES.md", publish)
+        # The body is not an asset: it never lands in the checksummed directory.
+        self.assertNotIn("release-notes/CHANGELOG.md dist", publish)
+        self.assertNotIn("RELEASE_NOTES", str(MANIFEST.asset_names(VERSION)))
 
     def test_updater_signing_boundary(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
