@@ -21,6 +21,9 @@ pub enum Command {
     CloseTab,
     TabNumber(u8),
     ToggleSidebar,
+    IncreaseFontSize,
+    DecreaseFontSize,
+    ResetFontSize,
     Settings,
     Keybinds,
     Themes,
@@ -181,6 +184,21 @@ pub const COMMANDS: &[CommandInfo] = &[
         shortcut: "cmd-b",
     },
     CommandInfo {
+        command: Command::IncreaseFontSize,
+        label: "Increase Font Size",
+        shortcut: "cmd-=",
+    },
+    CommandInfo {
+        command: Command::DecreaseFontSize,
+        label: "Decrease Font Size",
+        shortcut: "cmd--",
+    },
+    CommandInfo {
+        command: Command::ResetFontSize,
+        label: "Reset Font Size",
+        shortcut: "cmd-0",
+    },
+    CommandInfo {
         command: Command::Settings,
         label: "Settings",
         shortcut: "cmd-,",
@@ -320,6 +338,9 @@ pub fn request(command: Command, snapshot: &ClientShellSnapshot) -> Option<(Meth
         }
         Command::NewWindow
         | Command::ToggleSidebar
+        | Command::IncreaseFontSize
+        | Command::DecreaseFontSize
+        | Command::ResetFontSize
         | Command::Settings
         | Command::Keybinds
         | Command::Themes
@@ -377,6 +398,9 @@ mod tests {
             (TabNumber(8), "cmd-8"),
             (TabNumber(9), "cmd-9"),
             (ToggleSidebar, "cmd-b"),
+            (IncreaseFontSize, "cmd-="),
+            (DecreaseFontSize, "cmd--"),
+            (ResetFontSize, "cmd-0"),
             (Settings, "cmd-,"),
             (Keybinds, "cmd-/"),
             (Themes, ""),
@@ -411,6 +435,21 @@ mod tests {
         }
     }
 
+    /// `cmd--` is the one shortcut whose key is itself the separator, so it
+    /// exercises a parser branch no other entry reaches. Binding an unparseable
+    /// keystroke would fail at startup rather than here.
+    #[test]
+    fn every_catalog_shortcut_parses_as_a_keystroke() {
+        for info in COMMANDS.iter().filter(|info| !info.shortcut.is_empty()) {
+            let keystroke = gpui::Keystroke::parse(info.shortcut)
+                .unwrap_or_else(|error| panic!("{}: {error}", info.shortcut));
+            assert!(keystroke.modifiers.platform, "{}", info.shortcut);
+        }
+        let minus = gpui::Keystroke::parse("cmd--").unwrap();
+        assert_eq!(minus.key, "-");
+        assert!(!minus.modifiers.shift);
+    }
+
     #[test]
     fn gui_commands_never_send_daemon_requests() {
         let s = snapshot();
@@ -419,6 +458,9 @@ mod tests {
             Command::Logs,
             Command::NewWindow,
             Command::ToggleSidebar,
+            Command::IncreaseFontSize,
+            Command::DecreaseFontSize,
+            Command::ResetFontSize,
             Command::Settings,
             Command::Keybinds,
             Command::Themes,

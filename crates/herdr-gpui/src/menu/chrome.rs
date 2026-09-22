@@ -63,6 +63,9 @@ impl HerdrWindow {
             "settings",
             "keybinds",
             "themes",
+            "increase font size",
+            "decrease font size",
+            "reset font size",
             "commands",
             "workspaces",
             "reload GUI config",
@@ -108,6 +111,17 @@ impl HerdrWindow {
             "settings" => self.open_preferences(window, cx),
             "keybinds" => self.open_keybinds(window, cx),
             "themes" => self.open_theme_picker(window, cx),
+            "increase font size" | "decrease font size" | "reset font size" => {
+                use crate::config::FONT_SIZE_STEP;
+                let size = match item {
+                    "increase font size" => self.config.terminal.size + FONT_SIZE_STEP,
+                    "decrease font size" => self.config.terminal.size - FONT_SIZE_STEP,
+                    _ => self.configured_terminal_size,
+                };
+                // `command` refuses to act while a page is open, so apply here.
+                self.set_terminal_font_size(size, cx);
+                self.dismiss_menu(window, cx);
+            }
             "commands" => self.open_palette(false, window, cx),
             "workspaces" => self.open_palette(true, window, cx),
             "update ready" => self.menu.page = Some(Page::Update),
@@ -155,7 +169,13 @@ impl HerdrWindow {
         // centres over a dimmed window the way the Herdr TUI's dialogs do.
         let pointer_anchored = matches!(
             page,
-            Page::Workspace | Page::Tab | Page::RenameTab | Page::Git | Page::GitCommit
+            Page::Workspace
+                | Page::Tab
+                | Page::RenameTab
+                | Page::Pane
+                | Page::RenamePane
+                | Page::Git
+                | Page::GitCommit
         );
         let mut panel = div()
             .id("menu-panel")
@@ -217,13 +237,23 @@ impl HerdrWindow {
                         .min(px(if page == Page::Git { 240. } else { 420. })))
                     .max_h((viewport.height - px(24.)).max(px(0.)))
             })
-            .when(matches!(page, Page::Tab | Page::RenameTab), |panel| {
-                panel
-                    .w((viewport.width - px(24.))
-                        .max(px(0.))
-                        .min(px(if page == Page::Tab { 180. } else { 360. })))
-                    .max_h((viewport.height - px(24.)).max(px(0.)))
-            })
+            .when(
+                matches!(
+                    page,
+                    Page::Tab | Page::RenameTab | Page::Pane | Page::RenamePane
+                ),
+                |panel| {
+                    panel
+                        .w((viewport.width - px(24.)).max(px(0.)).min(px(
+                            if matches!(page, Page::Tab | Page::Pane) {
+                                180.
+                            } else {
+                                360.
+                            },
+                        )))
+                        .max_h((viewport.height - px(24.)).max(px(0.)))
+                },
+            )
             .when(
                 page != Page::Menu && !pointer_anchored && !matches!(page, Page::Dialog(_)),
                 |panel| {
@@ -392,6 +422,8 @@ impl HerdrWindow {
             panel = panel.child(self.render_git_commit(cx));
         } else if matches!(page, Page::Tab | Page::RenameTab) {
             panel = panel.child(self.render_tab_menu(cx));
+        } else if matches!(page, Page::Pane | Page::RenamePane) {
+            panel = panel.child(self.render_pane_menu(cx));
         } else if page == Page::Keybinds {
             panel = panel.child(self.render_keybinds(cx));
         } else if page == Page::Themes {
@@ -549,6 +581,10 @@ impl HerdrWindow {
                 }
                 if matches!(this.menu.page, Some(Page::Tab | Page::RenameTab)) {
                     this.tab_menu_key(event, window, cx);
+                    return;
+                }
+                if matches!(this.menu.page, Some(Page::Pane | Page::RenamePane)) {
+                    this.pane_menu_key(event, window, cx);
                     return;
                 }
                 if this.menu.page == Some(Page::Palette) {

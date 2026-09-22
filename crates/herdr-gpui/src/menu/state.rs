@@ -33,6 +33,7 @@ pub(crate) struct MenuState {
     pub(crate) palette: Option<crate::palette::Palette>,
     pub(crate) close: Option<crate::close_modal::CloseConfirmation>,
     pub(crate) tab: Option<crate::tab_menu::TabMenu>,
+    pub(crate) pane: Option<crate::pane_menu::PaneMenu>,
     /// The new worktree dialog's tabs and the GitHub listing behind them.
     pub(crate) worktree: Option<super::WorktreeSource>,
     pub(crate) pr: crate::pull_request::Lookup,
@@ -179,12 +180,14 @@ impl MenuState {
             github_scroll: ScrollHandle::new(),
             pr_connection: None,
             tab: None,
+            pane: None,
             worktree: None,
         }
     }
 
     pub fn reset(&mut self) {
         self.tab = None;
+        self.pane = None;
         self.github_selected = None;
         self.github_scroll.set_offset(Point::default());
         if self.github.busy() {

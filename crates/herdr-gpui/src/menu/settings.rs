@@ -87,6 +87,9 @@ impl HerdrWindow {
                                 endpoint.toasts.enabled_since = Some(cutoff);
                             }
                         }
+                        // Replacing the config also discards any session font
+                        // adjustment, so the baseline follows the file again.
+                        this.configured_terminal_size = config.terminal.size;
                         this.config = config;
                         this.tick_toasts(
                             this.menu.page.is_some() || this.toasts_hidden,
@@ -154,6 +157,9 @@ impl HerdrWindow {
                 | Command::WorkspacePicker => 1,
                 Command::NewWindow
                 | Command::ToggleSidebar
+                | Command::IncreaseFontSize
+                | Command::DecreaseFontSize
+                | Command::ResetFontSize
                 | Command::Settings
                 | Command::Keybinds
                 | Command::Themes
@@ -442,6 +448,7 @@ mod tests {
         use std::time::Instant;
         let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
         view.update(cx, |view, _| {
+            view.config.terminal.size = 24.;
             view.config.notifications = NotificationConfig {
                 enabled: true,
                 delay_seconds: 3600,
@@ -461,6 +468,8 @@ mod tests {
                     config.notifications.delay_seconds = 0;
                     config.notifications.position =
                         herdr_client::protocol::ToastHerdrPosition::TopRight;
+                    config.terminal.size = 18.;
+                    config.layout.sidebar_gap = 16.;
                     let theme = config.theme()?;
                     Ok((config, theme))
                 },
@@ -471,18 +480,28 @@ mod tests {
         view.update(cx, |view, cx| {
             assert!(view.endpoints[0].toasts.entries[0].1.visible);
             assert_eq!(view.config.notifications.delay_seconds, 0);
+            assert_eq!(view.config.terminal.size, 18.);
+            assert_eq!(view.configured_terminal_size, 18.);
+            assert_eq!(view.config.layout.sidebar_gap, 16.);
+            view.set_terminal_font_size(20., cx);
             view.load_gui_config_with(|| Err(crate::Error::MissingHome), cx);
         });
         cx.run_until_parked();
         view.update(cx, |view, cx| {
             assert!(view.config.notifications.enabled);
             assert!(view.endpoints[0].toasts.entries[0].1.visible);
+            assert_eq!(view.config.terminal.size, 20.);
+            assert_eq!(view.configured_terminal_size, 18.);
+            assert_eq!(view.config.layout.sidebar_gap, 16.);
             view.load_gui_config_with(|| Ok((Config::default(), Default::default())), cx);
         });
         cx.run_until_parked();
         view.read_with(cx, |view, _| {
             assert!(!view.config.notifications.enabled);
             assert!(view.endpoints[0].toasts.entries.is_empty());
+            assert_eq!(view.config.terminal.size, Config::default().terminal.size);
+            assert_eq!(view.configured_terminal_size, view.config.terminal.size);
+            assert_eq!(view.config.layout, Config::default().layout);
         });
     }
 

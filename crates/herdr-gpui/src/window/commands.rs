@@ -4,6 +4,7 @@
 
 use super::HerdrWindow;
 use crate::{
+    config::{FONT_SIZE_RANGE, FONT_SIZE_STEP},
     controls::{self, Command},
     log_window,
     navigation::{NavigationTarget, OwnedNavigationTarget},
@@ -103,6 +104,26 @@ impl HerdrWindow {
         }
     }
 
+    /// Applies a session terminal size. Painting, hit testing, and IME
+    /// placement all read `config.terminal.size` and its derived line height,
+    /// so writing that one field keeps the three in agreement; render
+    /// re-measures the cell and the canvas resends the geometry.
+    ///
+    /// A pending config load is deliberately left alone. Cancelling it the way
+    /// the theme picker does would strand the very first load, which has no
+    /// retry, on default fonts; a landing reload merely discards the
+    /// adjustment, which is what reloading is for.
+    pub(crate) fn set_terminal_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
+        let size = size.clamp(*FONT_SIZE_RANGE.start(), *FONT_SIZE_RANGE.end());
+        if size == self.config.terminal.size {
+            return;
+        }
+        self.config.terminal.size = size;
+        // The console follows the rendered terminal face, as a reload makes it.
+        log_window::set_appearance(&self.config, &self.theme, cx);
+        cx.notify();
+    }
+
     pub(crate) fn command(
         &mut self,
         command: Command,
@@ -168,6 +189,17 @@ impl HerdrWindow {
                 return;
             }
             Command::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
+            Command::IncreaseFontSize | Command::DecreaseFontSize => {
+                let step = if command == Command::IncreaseFontSize {
+                    FONT_SIZE_STEP
+                } else {
+                    -FONT_SIZE_STEP
+                };
+                self.set_terminal_font_size(self.config.terminal.size + step, cx);
+            }
+            Command::ResetFontSize => {
+                self.set_terminal_font_size(self.configured_terminal_size, cx);
+            }
             Command::Reconnect => self.reconnect(),
             Command::Quit => {
                 cx.quit();

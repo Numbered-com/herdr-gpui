@@ -15,6 +15,8 @@ pub(crate) enum Page {
     Install,
     Tab,
     RenameTab,
+    Pane,
+    RenamePane,
     Workspace,
     GitHub,
     /// Titlebar Git actions for the focused checkout, and its commit dialog.

@@ -27,6 +27,13 @@ delay_seconds = 1
 # top-left, top-right, bottom-left, bottom-right. Explicit wire corners win.
 position = "bottom-right"
 
+# Spacing, in logical pixels. Omit the table to keep the defaults.
+[layout]
+# Blank space between the sidebar and the terminal beside it, 0 to 64.
+# The terminal keeps the remaining width, so a wide gap costs columns.
+# Ignored while the sidebar is hidden. Set 0 to sit against the divider.
+sidebar_gap = 8
+
 [sidebar]
 # Default: "Menlo" on macOS, "DejaVu Sans Mono" on Linux.
 # family = "DejaVu Sans Mono"

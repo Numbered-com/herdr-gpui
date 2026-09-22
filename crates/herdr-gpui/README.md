@@ -107,6 +107,11 @@ GUI settings live in `$XDG_CONFIG_HOME/herdr/config-gpui.toml`, falling back to
 Font sizes use logical pixels (finite 8..48), not typographic points. Restart the
 GUI or invoke GUI config reload after edits; daemon config reload is separate.
 
+The terminal face can also be resized for the current session from the View menu,
+the in-app menu, the command palette, or `cmd-=` / `cmd--` / `cmd-0`. Adjustments
+are clamped to the same 8..48 range, apply to the terminal only, and are never
+written to disk, so a reload or a restart returns to the configured size.
+
 Set top-level `confirm_close_tab = false` to close tabs without confirmation
 (including their running processes), and `show_agents = false` to hide the Agents
 section and give Spaces the full sidebar height. Both default to `true`. Pane
@@ -132,6 +137,12 @@ replay discarded notifications. Enabling establishes an arrival cutoff, so event
 already waiting in a connection inbox from the disabled period are discarded too.
 Failed reloads preserve current settings. QA
 previews remain available regardless of delivery settings.
+
+The `[layout]` table holds spacing. `sidebar_gap` (finite 0..64 logical pixels,
+default `8`) is blank space between the sidebar and the terminal beside it, so
+the first column does not sit against the divider; `0` restores the flush edge.
+The terminal keeps the remaining width, so the daemon is resized to the columns
+it actually has, and the gap is ignored while the sidebar is hidden.
 
 The `src/config.rs` module exposes `Config::load()` and
 `Config::path()`, both returning the crate's typed `Result`. `Config::theme()` resolves
@@ -222,7 +233,10 @@ and local file paths are not activated.
   click flips; an active agent view names itself there instead. Client-local
   and persisted beside the sidebar width, as in the terminal client.
 - Resizable sidebar with width persisted per local daemon socket, shared across
-  host groups. Local workspace titles show repository owner avatars; remote
+  host groups. Drag the divider between Spaces and Agents up or down to resize
+  their sections; double-click it to restore an even split. The split is saved
+  across launches and retained while Agents is hidden.
+  Local workspace titles show repository owner avatars; remote
   workspaces use the GitHub fallback mark without resolving remote paths locally.
   Profile and owner avatars share a bounded public-image disk cache with 24-hour
   stale-while-refresh behavior; see [avatar caching](../../README.md#native-github-sign-in)
@@ -237,7 +251,8 @@ and local file paths are not activated.
   preserving other GUI config settings and comments.
 - Right-click spaces for Rename, Close (Close group on non-linked parents with
   multiple spaces sharing `worktree.key`), and New worktree on non-linked Git
-  parents. With `features.sidebar_hover_menu` enabled, resting the pointer on a
+  parents, including spaces with a known Git branch but no worktree metadata yet.
+  With `features.sidebar_hover_menu` enabled, resting the pointer on a
   space of the selected connection opens the same menu, and moving the pointer
   anywhere but into that menu closes it again; the flag is off by default, so
   spaces normally open their menu only on right-click, and a menu opened by
@@ -321,6 +336,15 @@ and local file paths are not activated.
   `confirm_close_tab = false`. Escape or an outside left/right click dismisses
   the menu without sending terminal input.
 - Click workspace, tab, agent, or a visible split pane to focus through the API.
+- Right-click a visible pane, including an inactive split, for Rename, Split
+  Right, Split Down, Toggle Zoom, and Close without first focusing it. Actions
+  retain the clicked pane/tab/workspace and daemon boot, and reject stale
+  membership or a changed connection. Rename uses an IME-aware native field,
+  trims surrounding whitespace, and clears the custom label when blank. It
+  waits for the matching daemon response and reports failures inline. Close
+  always asks for confirmation with Cancel selected. Popups and stale retained
+  terminal frames block pane context actions. Escape or an outside left/right
+  click dismisses the menu without forwarding input to the terminal.
 - Native File/Terminal menus and creation buttons: **+ New Workspace** in the
   sidebar and a persistent 18px SVG **+** in a 44px-wide button beside the horizontally
   scrolling tab strip. Each tab has a 16px SVG close cross in a 24px hit target;
@@ -456,7 +480,7 @@ GPUI native action/menu/keybinding patterns.
   not synchronized from the host terminal's theme.
 - No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
   image rendering, or animated blinking.
-- No pane rename dialogs or horizontal wheel handling,
+- No right-click passthrough or horizontal wheel handling,
   server-owned keybindings, session picker, saved-host editing, or daemon
   stop/upgrade management.
 - IME uses a minimal transient buffer, not a local editable terminal document;

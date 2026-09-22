@@ -9,6 +9,8 @@ mod lifecycle;
 mod render;
 mod toasts;
 
+#[cfg(test)]
+mod font_size_tests;
 #[cfg(all(test, feature = "integration-test"))]
 mod resize_tests;
 #[cfg(test)]
@@ -31,6 +33,10 @@ pub(crate) struct HerdrWindow {
     pub(crate) updater: updater::Updater,
     pub(crate) update_preview: Option<updater::State>,
     pub(crate) config: config::Config,
+    /// The terminal size the last loaded config asked for. Increase/decrease
+    /// write straight to `config.terminal.size`, so this is what Reset Font
+    /// Size restores; a session adjustment never reaches disk.
+    pub(crate) configured_terminal_size: f32,
     pub(crate) theme: config::Theme,
     pub(crate) config_load: Option<Task<()>>,
     pub(crate) endpoints: Vec<endpoint::Endpoint>,
@@ -73,7 +79,9 @@ pub(crate) struct HerdrWindow {
     pub(crate) sidebar_visible: bool,
     pub(crate) wheel: WheelAccumulator,
     pub(crate) sidebar_width: Option<f32>,
-    pub(crate) sidebar_drag: Option<(f32, f32)>,
+    pub(crate) sidebar_drag: Option<sidebar::SidebarDrag>,
+    pub(crate) sidebar_split: Option<f32>,
+    pub(crate) sidebar_split_modified: bool,
     pub(crate) sidebar_preferences: Option<preferences::Preferences>,
     pub(crate) sidebar_modified: bool,
     pub(crate) agent_sort: preferences::AgentSort,
@@ -132,6 +140,9 @@ impl HerdrWindow {
                             if !this.sidebar_modified {
                                 this.sidebar_width = chrome.sidebar_width;
                             }
+                            if !this.sidebar_split_modified {
+                                this.sidebar_split = chrome.sidebar_split;
+                            }
                             if !this.agent_sort_modified {
                                 this.agent_sort = chrome.agent_sort;
                             }
@@ -147,6 +158,7 @@ impl HerdrWindow {
                         this.poll_worktree_source(cx);
                         this.poll_hover_menu(std::time::Instant::now(), window, cx);
                         this.poll_tab_rename(window, cx);
+                        this.poll_pane_rename(window, cx);
                         if old_pane
                             != this
                                 .live
@@ -176,10 +188,12 @@ impl HerdrWindow {
                 }
             }
         });
+        let config = config::Config::default();
         let mut this = Self {
             updater: updater::Updater::default(),
             update_preview: None,
-            config: config::Config::default(),
+            configured_terminal_size: config.terminal.size,
+            config,
             theme: config::Theme::default(),
             config_load: None,
             catalog: endpoint::Catalog::new(&target),
@@ -223,6 +237,8 @@ impl HerdrWindow {
             wheel: WheelAccumulator::default(),
             sidebar_width: None,
             sidebar_drag: None,
+            sidebar_split: None,
+            sidebar_split_modified: false,
             sidebar_preferences: None,
             sidebar_modified: false,
             agent_sort: preferences::AgentSort::default(),
