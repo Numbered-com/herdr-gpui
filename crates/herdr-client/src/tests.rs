@@ -105,10 +105,13 @@ fn test_client() -> (Client, Stream, thread::JoinHandle<Result<()>>) {
 fn errors_preserve_sources_and_retry_categories() {
     use std::error::Error as _;
 
+    // The same refusal: EACCES on POSIX, ERROR_ACCESS_DENIED on Windows. The
+    // point is that a real OS code keeps both its category and its raw value.
+    const DENIED: i32 = if cfg!(windows) { 5 } else { 13 };
     struct Denied;
     impl Read for Denied {
         fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-            Err(io::Error::from_raw_os_error(13))
+            Err(io::Error::from_raw_os_error(DENIED))
         }
     }
     let error = FrameReader::new().poll(&mut Denied).unwrap_err();
@@ -121,7 +124,7 @@ fn errors_preserve_sources_and_retry_categories() {
             .downcast_ref::<io::Error>()
             .unwrap()
             .raw_os_error(),
-        Some(13)
+        Some(DENIED)
     );
 
     let mut reader = FrameReader::new();

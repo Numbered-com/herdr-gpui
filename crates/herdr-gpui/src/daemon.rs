@@ -231,7 +231,7 @@ fn connect_or_start(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::os::unix::net::UnixListener;
     use std::sync::atomic::AtomicUsize;
 
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -263,7 +263,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn local_endpoint_survives_executable_removal_and_replacement() {
-        use std::os::unix::fs::PermissionsExt;
+        // Only this test dials the endpoint; the rest just bind one.
+        use std::os::unix::{fs::PermissionsExt, net::UnixStream};
         let root = socket();
         std::fs::create_dir(&root).unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
