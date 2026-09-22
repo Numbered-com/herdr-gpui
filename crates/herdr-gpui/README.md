@@ -645,10 +645,11 @@ GPUI native action/menu/keybinding patterns.
 
 ## Windows
 
-Windows is a compile target, not a supported platform. CI type-checks every
-target and feature for `windows-2025` and runs the `herdr-protocol` and
-`herdr-client` suites there; nothing about the window, rendering, input, or a
-live daemon has been exercised. Local connections use the named pipe the Windows
+Windows is experimental, not a supported platform. CI type-checks every
+target and feature for `windows-2025`, runs the `herdr-protocol` and
+`herdr-client` suites there, and links the executable, and each release
+publishes it as `Herdr-VERSION-x86_64-pc-windows-msvc.zip`; nothing about the
+window, rendering, input, or a live daemon has been exercised. Local connections use the named pipe the Windows
 daemon binds, derived from the same socket path string upstream uses, so
 discovery and framing are the same code as on Unix. Receive deadlines are
 emulated with `PeekNamedPipe`, the one `unsafe` call in the workspace, because a
@@ -662,7 +663,8 @@ These features are unavailable on Windows and say so rather than failing quietly
 - **Saved SSH hosts.** The bridge gives the `ssh` child a socket pair as its
   standard streams, which requires `OwnedFd`. Connecting to an SSH endpoint
   reports `SSH endpoints are not supported on this platform`.
-- **In-app updates.** `release::target()` has no Windows asset, so the updater
+- **In-app updates.** `release::target()` has no Windows updater asset (the
+  release zip is for manual download only), so the updater
   stays disabled and reports that no standalone updater exists for this platform.
   Homebrew delegation is macOS-only regardless.
 - **Saved GitHub credentials.** Neither the Keychain nor the private `0600` file

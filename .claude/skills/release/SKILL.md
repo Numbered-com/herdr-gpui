@@ -59,7 +59,7 @@ not hit a foreground timeout.
 
 Jobs run roughly: `audit` (shown as "Release Workflow Security") and `validate`,
 then `macos-checks`, `macos-build` (arm64 + x86_64), `linux` (aarch64 + x86_64),
-`windows-protocol`, `metadata` and `changelog`, then `sign`, `attest`, `publish`,
+`windows` (x86_64 MSVC), `metadata` and `changelog`, then `sign`, `attest`, `publish`,
 and finally `homebrew`.
 
 `sign`, `attest` and `publish` use the **`release`** environment; `homebrew` uses
@@ -108,7 +108,7 @@ will print the published tag. Confirm with
 (`cliff.toml`) and `publish` passes it to `gh release create --notes-file`. Do
 not hand-write notes, and do not edit a published body to add them: fix the
 commit subjects instead, since those are the entries. The standing preamble
-about GUI-only DMG, experimental Linux archives and the required daemon lives in
+about GUI-only DMG, experimental Linux archives and Windows zip, and the required daemon lives in
 `scripts/release/generate-changelog.sh`.
 
 `CHANGELOG.md` is generated too, but it is **not** a release asset — the asset
