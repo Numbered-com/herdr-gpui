@@ -33,6 +33,8 @@ pub(crate) struct MenuState {
     pub(crate) palette: Option<crate::palette::Palette>,
     pub(crate) close: Option<crate::close_modal::CloseConfirmation>,
     pub(crate) tab: Option<crate::tab_menu::TabMenu>,
+    /// The new worktree dialog's tabs and the GitHub listing behind them.
+    pub(crate) worktree: Option<super::WorktreeSource>,
     pub(crate) pr: crate::pull_request::Lookup,
     /// Also read by the sidebar, which paints each worktree's cached PR badge.
     pub(crate) pr_cache: crate::pull_request::Cache,
@@ -177,6 +179,7 @@ impl MenuState {
             github_scroll: ScrollHandle::new(),
             pr_connection: None,
             tab: None,
+            worktree: None,
         }
     }
 
@@ -197,6 +200,7 @@ impl MenuState {
         self.deletion = None;
         self.creation = None;
         self.close = None;
+        self.worktree = None;
         self.pr.clear();
         self.pr_connection = None;
     }

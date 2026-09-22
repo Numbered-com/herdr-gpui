@@ -847,17 +847,27 @@ fn check_sidebar(
             });
             let panel = cx.debug_bounds("menu-panel").unwrap();
             assert_eq!(panel.size.width, px(if dialog { 420. } else { 340. }));
-            let expected = |position: Pixels, extent: Pixels, viewport: Pixels| {
-                if position + extent > viewport {
-                    (viewport - extent - px(12.)).round()
-                } else if position < px(0.) {
-                    px(12.)
-                } else {
-                    position.round()
-                }
-            };
-            assert_eq!(panel.left(), expected(anchor.x, panel.size.width, px(800.)));
-            assert_eq!(panel.top(), expected(anchor.y, panel.size.height, px(600.)));
+            if dialog {
+                // A dialog is a modal decision, so it centres on the window and
+                // ignores the anchor the row menu was opened from.
+                let offset = panel.center() - point(px(400.), px(300.));
+                assert!(
+                    offset.x.abs() <= px(1.) && offset.y.abs() <= px(1.),
+                    "{anchor:?}: {panel:?}"
+                );
+            } else {
+                let expected = |position: Pixels, extent: Pixels, viewport: Pixels| {
+                    if position + extent > viewport {
+                        (viewport - extent - px(12.)).round()
+                    } else if position < px(0.) {
+                        px(12.)
+                    } else {
+                        position.round()
+                    }
+                };
+                assert_eq!(panel.left(), expected(anchor.x, panel.size.width, px(800.)));
+                assert_eq!(panel.top(), expected(anchor.y, panel.size.height, px(600.)));
+            }
             assert!(panel.right() <= px(800.) && panel.bottom() <= px(600.));
         }
     }

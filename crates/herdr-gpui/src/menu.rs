@@ -12,14 +12,19 @@ mod pr;
 mod settings;
 mod state;
 mod workspace;
+mod worktree_render;
+mod worktree_source;
 
 #[cfg(test)]
 pub(crate) mod workspace_tests;
+#[cfg(test)]
+mod worktree_tests;
 
 pub(crate) use {
     colors::accent,
     page::{Page, WorkspaceAction},
     state::{MenuState, Removal},
+    worktree_source::WorktreeSource,
 };
 
 use colors::danger;
