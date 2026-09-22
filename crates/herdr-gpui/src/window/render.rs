@@ -133,8 +133,17 @@ impl Render for HerdrWindow {
         let cell_width = self.cell_width;
         let painter = self.painter.clone();
         self.hovered_terminal_link = self.terminal_link_at(window.mouse_position()).is_some();
+        // Pad the terminal itself: the canvas bounds that painting, hit testing,
+        // and IME placement all read then already exclude the gap.
+        let sidebar_gap = if self.sidebar_visible {
+            self.config.layout.sidebar_gap
+        } else {
+            0.
+        };
         let terminal = div()
             .id("terminal")
+            .debug_selector(|| "terminal".into())
+            .pl(px(sidebar_gap))
             .when(self.hovered_terminal_link, |terminal| {
                 terminal.cursor_pointer()
             })

@@ -30,6 +30,25 @@ pub struct Config {
     pub ui: FontConfig,
     pub github: GitHubConfig,
     pub features: Features,
+    pub layout: Layout,
+}
+
+/// Spacing the config file can adjust, in logical pixels.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Layout {
+    /// Blank space between the sidebar and the terminal it borders. Applies
+    /// only while the sidebar is on screen, and narrows the terminal, so the
+    /// daemon is told about the columns it actually has.
+    pub sidebar_gap: f32,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self {
+            sidebar_gap: DEFAULT_SIDEBAR_GAP,
+        }
+    }
 }
 
 /// Optional behaviors the config file turns on. Every flag is off by default,
@@ -80,6 +99,15 @@ impl GitHubConfig {
         Ok(id.map(str::to_owned))
     }
 }
+
+/// The first terminal column otherwise starts against the sidebar's divider,
+/// which crowds the prompt. Two-thirds of a default cell reads as a gutter
+/// without costing a column at any usable window width.
+const DEFAULT_SIDEBAR_GAP: f32 = 8.;
+
+/// A gap wider than this stops reading as spacing and starts eating columns the
+/// terminal needs, so the config file is held to a band a window can afford.
+const MAX_SIDEBAR_GAP: f32 = 64.;
 
 /// Upper bound on a configured cascade. Every entry is searched for each
 /// uncovered codepoint, so a long list costs shaping time and covers nothing a
@@ -172,6 +200,7 @@ impl Default for Config {
             confirm_close_tab: true,
             show_agents: true,
             features: Features::default(),
+            layout: Layout::default(),
             sidebar: font(monospace, 12.0),
             // Tabs are terminal chrome, so they read in the monospace face the
             // sidebar and terminal use, as they do in the reference UI.
@@ -194,6 +223,7 @@ struct Settings {
     ui: FontSettings,
     github: GitHubConfig,
     features: Features,
+    layout: Layout,
 }
 
 #[derive(Default, Deserialize)]
@@ -318,6 +348,12 @@ impl Config {
         settings.github.client_id_with_override(None)?;
         config.github = settings.github;
         config.features = settings.features;
+        if !settings.layout.sidebar_gap.is_finite()
+            || !(0.0..=MAX_SIDEBAR_GAP).contains(&settings.layout.sidebar_gap)
+        {
+            return Err(Error::InvalidSidebarGap);
+        }
+        config.layout = settings.layout;
         if let Some(theme) = settings.theme {
             if theme.trim().is_empty() {
                 return Err(Error::EmptyTheme);
@@ -1078,6 +1114,41 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_gap_defaults_to_a_gutter_and_accepts_its_band() -> anyhow::Result<()> {
+        for config in [
+            Config::default(),
+            Config::parse("")?,
+            Config::parse(DEFAULT_CONFIG)?,
+        ] {
+            assert_eq!(config.layout, Layout::default());
+            assert_eq!(config.layout.sidebar_gap, 8.);
+        }
+        // An empty table keeps the default; only a written value replaces it.
+        assert_eq!(Config::parse("[layout]")?.layout.sidebar_gap, 8.);
+        for (text, gap) in [
+            ("[layout]\nsidebar_gap = 0", 0.),
+            ("[layout]\nsidebar_gap = 12", 12.),
+            ("[layout]\nsidebar_gap = 7.5", 7.5),
+            ("[layout]\nsidebar_gap = 64", 64.),
+        ] {
+            let config = Config::parse(text)?;
+            assert_eq!(config.layout.sidebar_gap, gap);
+            // Spacing alone leaves every other setting at its default.
+            assert_eq!(config.theme, Config::default().theme);
+            assert_eq!(config.terminal.size, Config::default().terminal.size);
+        }
+        assert!(matches!(
+            Config::parse("[layout]\nsidebar_gap = 64.1"),
+            Err(Error::InvalidSidebarGap)
+        ));
+        assert!(matches!(
+            Config::parse("[layout]\nsidebar_gap = nan"),
+            Err(Error::InvalidSidebarGap)
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn rejects_invalid_settings() {
         for text in [
             "unknown = 1",
@@ -1104,6 +1175,11 @@ mod tests {
             "[features]\nunknown = true",
             "[features]\nsidebar_hover_menu = 'true'",
             "[features]\nsidebar_hover_menu = 1",
+            "[layout]\nunknown = 1",
+            "[layout]\nsidebar_gap = -1",
+            "[layout]\nsidebar_gap = 65",
+            "[layout]\nsidebar_gap = inf",
+            "[layout]\nsidebar_gap = '8'",
         ] {
             assert!(Config::parse(text).is_err(), "accepted {text:?}");
         }

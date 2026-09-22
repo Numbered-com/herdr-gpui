@@ -106,6 +106,12 @@ Set top-level `confirm_close_tab = false` to close tabs without confirmation
 section and give Spaces the full sidebar height. Both default to `true`. Pane
 closures still ask for confirmation. Reload GUI config or restart after editing.
 
+The `[layout]` table holds spacing. `sidebar_gap` (finite 0..64 logical pixels,
+default `8`) is blank space between the sidebar and the terminal beside it, so
+the first column does not sit against the divider; `0` restores the flush edge.
+The terminal keeps the remaining width, so the daemon is resized to the columns
+it actually has, and the gap is ignored while the sidebar is hidden.
+
 The `src/config.rs` module exposes `Config::load()` and
 `Config::path()`, both returning the crate's typed `Result`. `Config::theme()` resolves
 built-ins or Ghostty files into a `Theme` with packed 24-bit RGB colors and all

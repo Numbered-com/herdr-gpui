@@ -99,6 +99,11 @@ impl HerdrWindow {
                 "Confirm tab close",
                 self.config.confirm_close_tab.to_string(),
             ))
+            .child(row(
+                "preferences-sidebar-gap",
+                "Sidebar gap",
+                format!("{} px", self.config.layout.sidebar_gap),
+            ))
             .child(row("preferences-theme", "Theme", self.config.theme.clone()))
             .child(div().py(px(10.)).child(
                 button("preferences-choose-theme", "Choose theme").on_click(cx.listener(
@@ -161,7 +166,7 @@ impl HerdrWindow {
                     ),
             )
             .child(note(
-                "Edit the GUI config file to change theme, fonts, confirm_close_tab, or show_agents, then reload GUI config. Invalid configuration leaves the current appearance unchanged.",
+                "Edit the GUI config file to change theme, fonts, layout spacing, confirm_close_tab, or show_agents, then reload GUI config. Invalid configuration leaves the current appearance unchanged.",
             ))
             .child(
                 button("preferences-reload-config", "Reload GUI config").on_click(cx.listener(
