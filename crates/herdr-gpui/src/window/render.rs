@@ -5,8 +5,9 @@
 use super::HerdrWindow;
 use crate::{
     APP_VERSION, CheckForUpdates, PlaySound, RunCommand, ShowHerdrNotDetected, ShowUpdatePreview,
-    TAB_HEIGHT, TAB_WIDTH, actions::ShowToastPreview, controls::Command, fonts::StyledFont,
-    navigation::NavigationTarget, state::ConnectionStatus, terminal::*, worktree_banner,
+    TAB_HEIGHT, TAB_WIDTH, actions::ShowToastPreview, config::ClipboardToastPosition,
+    controls::Command, fonts::StyledFont, navigation::NavigationTarget, state::ConnectionStatus,
+    terminal::*, worktree_banner,
 };
 use gpui::{prelude::*, *};
 use herdr_client::ConnectOptions;
@@ -320,15 +321,27 @@ impl Render for HerdrWindow {
             // Direct feedback for the user's own gesture, not a daemon notice:
             // it sits over the cells it copied and needs no dismissing.
             .when(self.copy_feedback.is_some(), |terminal| {
+                use ClipboardToastPosition::*;
+                let position = self.config.clipboard_toast.position;
                 terminal.child(
                     div()
                         .absolute()
-                        .bottom(px(12.))
-                        .left_0()
+                        .map(|row| match position {
+                            TopLeft | TopCenter | TopRight => row.top(px(12.)),
+                            BottomLeft | BottomCenter | BottomRight => row.bottom(px(12.)),
+                        })
+                        .map(|row| match position {
+                            TopLeft | BottomLeft => row.justify_start(),
+                            TopCenter | BottomCenter => row.justify_center(),
+                            TopRight | BottomRight => row.justify_end(),
+                        })
+                        // The pane's own padding is not part of the terminal:
+                        // the flash spans the cells, so centering centers on
+                        // them and a corner is the corner of the grid.
+                        .left(px(sidebar_gap))
                         .right_0()
                         .px(px(12.))
                         .flex()
-                        .justify_center()
                         .overflow_hidden()
                         .child(
                             div()

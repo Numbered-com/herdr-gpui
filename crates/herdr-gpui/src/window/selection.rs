@@ -70,7 +70,7 @@ impl HerdrWindow {
         let copied = selected && self.copy_selection(cx);
         // The gesture is over either way: nothing stays highlighted behind it.
         self.selection = None;
-        if copied {
+        if copied && self.config.clipboard_toast.enabled {
             self.copy_feedback = Some(Instant::now() + COPY_FEEDBACK);
         }
         cx.notify();
@@ -328,6 +328,81 @@ mod tests {
             cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
             Some("kept".into())
         );
+    }
+
+    /// The flash obeys the resolved clipboard-toast settings: turned off, a
+    /// copy still happens silently, and each position puts it where it says.
+    #[gpui::test]
+    fn the_flash_follows_the_clipboard_toast_configuration(cx: &mut TestAppContext) {
+        use crate::config::ClipboardToastPosition::*;
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut view = fixture_window(window, cx);
+            let mut frame = surface(&["configured"], 12);
+            let snapshot = view.live.snapshot.as_ref().unwrap();
+            frame.boot_id = snapshot.boot_id.clone();
+            frame.projection_revision = snapshot.revision;
+            view.live.surface = Some(Arc::new(frame));
+            view
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear();
+        });
+        let (origin, width) = view.read_with(cx, |view, _| (view.bounds.origin, view.cell_width));
+        let at = |column: f32| origin + point(px(column * width), px(10.));
+        let drag = |view: &gpui::Entity<HerdrWindow>, cx: &mut gpui::VisualTestContext| {
+            cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("stale".into())));
+            cx.simulate_mouse_down(at(0.), MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_move(at(10.), MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_up(at(10.), MouseButton::Left, Modifiers::default());
+            view.read_with(cx, |view, _| view.copy_feedback.is_some())
+        };
+
+        view.update(cx, |view, _| view.config.clipboard_toast.enabled = false);
+        assert!(!drag(&view, cx), "a silent copy is still a copy");
+        assert_eq!(
+            cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+            Some("configured".into())
+        );
+
+        // Each corner lands where it says, measured against the terminal area.
+        view.update(cx, |view, _| view.config.clipboard_toast.enabled = true);
+        let bounds = view.read_with(cx, |view, _| view.bounds);
+        let mut seen = Vec::new();
+        for position in [
+            TopLeft,
+            TopCenter,
+            TopRight,
+            BottomLeft,
+            BottomCenter,
+            BottomRight,
+        ] {
+            view.update(cx, |view, _| {
+                view.config.clipboard_toast.position = position
+            });
+            assert!(drag(&view, cx));
+            let flash = cx.debug_bounds("copy-feedback").expect("the flash paints");
+            let top = matches!(position, TopLeft | TopCenter | TopRight);
+            assert_eq!(
+                flash.origin.y - bounds.origin.y < bounds.size.height / 2.,
+                top,
+                "{position:?}"
+            );
+            let left = flash.origin.x - bounds.origin.x;
+            let right = bounds.size.width - (left + flash.size.width);
+            match position {
+                TopLeft | BottomLeft => assert!(left < right, "{position:?}"),
+                TopRight | BottomRight => assert!(right < left, "{position:?}"),
+                TopCenter | BottomCenter => {
+                    assert!((left - right).abs() <= px(1.), "{position:?}")
+                }
+            }
+            assert!(
+                !seen.contains(&(flash.origin.x, flash.origin.y)),
+                "{position:?}"
+            );
+            seen.push((flash.origin.x, flash.origin.y));
+        }
     }
 
     /// A menu page holds the whole gesture: nothing is selected, copied, or
