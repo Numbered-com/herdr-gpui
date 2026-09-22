@@ -156,6 +156,13 @@ impl Render for HerdrWindow {
             .on_key_down(cx.listener(Self::key_down))
             .on_scroll_wheel(cx.listener(Self::scroll_wheel))
             .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.open_pane_menu_at(event.position, window, cx);
+                }),
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     this.pressed_terminal_link = this
@@ -169,25 +176,17 @@ impl Render for HerdrWindow {
                         return;
                     }
                     window.focus(&this.focus);
-                    if let Some(surface) = &this.live.surface
-                        && surface.popup.is_none()
+                    if this.input_ready()
+                        && let Some(surface) = &this.live.surface
                     {
-                        let col = ((event.position.x - this.bounds.origin.x).to_f64()
-                            / this.cell_width as f64)
-                            .floor() as u16;
-                        let row = ((event.position.y - this.bounds.origin.y).to_f64()
-                            / this.config.terminal.line_height() as f64)
-                            .floor() as u16;
-                        let pane = surface
-                            .panes
-                            .iter()
-                            .find(|p| {
-                                col >= p.rect.x
-                                    && col < p.rect.x.saturating_add(p.rect.width)
-                                    && row >= p.rect.y
-                                    && row < p.rect.y.saturating_add(p.rect.height)
-                            })
-                            .map(|p| p.pane_id.clone());
+                        let pane = pane_at(
+                            surface,
+                            this.bounds,
+                            event.position,
+                            this.cell_width,
+                            this.config.terminal.line_height(),
+                        )
+                        .map(str::to_owned);
                         if let Some(id) = pane {
                             this.navigate(NavigationTarget::Pane(&id), cx);
                         }

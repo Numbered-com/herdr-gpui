@@ -50,12 +50,14 @@ pub struct LiveState {
     outer_focused: Option<bool>,
     pub activation: Option<SurfaceActivation>,
     pub supports_surface: bool,
-    // One modal request, retained across coalesced snapshots until the UI observes it.
-    pub tab_rename: Option<TabRenameResult>,
+    // Bounded rename slots survive coalesced snapshots and do not overwrite a
+    // worktree operation whose dialog has already closed.
+    pub tab_rename: Option<RenameResult>,
+    pub pane_rename: Option<RenameResult>,
 }
 
 #[derive(Clone)]
-pub struct TabRenameResult {
+pub struct RenameResult {
     pub request: String,
     pub result: Option<Result<(), Arc<crate::Error>>>,
 }
@@ -86,6 +88,7 @@ impl Default for LiveState {
             activation: None,
             supports_surface: false,
             tab_rename: None,
+            pane_rename: None,
         }
     }
 }
@@ -196,10 +199,13 @@ impl LiveState {
                 {
                     *result = Some(Err(reason.clone()));
                 }
-                if let Some(rename) = &mut self.tab_rename
-                    && request_id.as_ref() == Some(&rename.request)
+                for rename in [&mut self.tab_rename, &mut self.pane_rename]
+                    .into_iter()
+                    .flatten()
                 {
-                    rename.result = Some(Err(reason));
+                    if request_id.as_ref() == Some(&rename.request) {
+                        rename.result = Some(Err(reason.clone()));
+                    }
                 }
                 if let Some(activation) = &mut self.activation
                     && request_id.as_ref() == Some(&activation.request)
@@ -211,17 +217,20 @@ impl LiveState {
                 request_id,
                 response,
             } => {
-                if let Some(rename) = &mut self.tab_rename
-                    && request_id == rename.request
+                for rename in [&mut self.tab_rename, &mut self.pane_rename]
+                    .into_iter()
+                    .flatten()
                 {
-                    rename.result = Some(
-                        match response.get("error").filter(|error| !error.is_null()) {
-                            Some(error) => {
-                                Err(Arc::new(crate::Error::DaemonResponse(error.clone())))
-                            }
-                            None => Ok(()),
-                        },
-                    );
+                    if request_id == rename.request {
+                        rename.result = Some(
+                            match response.get("error").filter(|error| !error.is_null()) {
+                                Some(error) => {
+                                    Err(Arc::new(crate::Error::DaemonResponse(error.clone())))
+                                }
+                                None => Ok(()),
+                            },
+                        );
+                    }
                 }
                 if let Some(activation) = &mut self.activation
                     && request_id == activation.request
@@ -313,7 +322,7 @@ mod tests {
     #[test]
     fn rename_failures_stay_typed_and_shared_across_mailbox_clones() {
         let mut state = LiveState {
-            tab_rename: Some(TabRenameResult {
+            tab_rename: Some(RenameResult {
                 request: "rename".into(),
                 result: None,
             }),

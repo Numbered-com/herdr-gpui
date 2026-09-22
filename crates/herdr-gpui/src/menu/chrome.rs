@@ -155,7 +155,13 @@ impl HerdrWindow {
         // centres over a dimmed window the way the Herdr TUI's dialogs do.
         let pointer_anchored = matches!(
             page,
-            Page::Workspace | Page::Tab | Page::RenameTab | Page::Git | Page::GitCommit
+            Page::Workspace
+                | Page::Tab
+                | Page::RenameTab
+                | Page::Pane
+                | Page::RenamePane
+                | Page::Git
+                | Page::GitCommit
         );
         let mut panel = div()
             .id("menu-panel")
@@ -217,13 +223,23 @@ impl HerdrWindow {
                         .min(px(if page == Page::Git { 240. } else { 420. })))
                     .max_h((viewport.height - px(24.)).max(px(0.)))
             })
-            .when(matches!(page, Page::Tab | Page::RenameTab), |panel| {
-                panel
-                    .w((viewport.width - px(24.))
-                        .max(px(0.))
-                        .min(px(if page == Page::Tab { 180. } else { 360. })))
-                    .max_h((viewport.height - px(24.)).max(px(0.)))
-            })
+            .when(
+                matches!(
+                    page,
+                    Page::Tab | Page::RenameTab | Page::Pane | Page::RenamePane
+                ),
+                |panel| {
+                    panel
+                        .w((viewport.width - px(24.)).max(px(0.)).min(px(
+                            if matches!(page, Page::Tab | Page::Pane) {
+                                180.
+                            } else {
+                                360.
+                            },
+                        )))
+                        .max_h((viewport.height - px(24.)).max(px(0.)))
+                },
+            )
             .when(
                 page != Page::Menu && !pointer_anchored && !matches!(page, Page::Dialog(_)),
                 |panel| {
@@ -392,6 +408,8 @@ impl HerdrWindow {
             panel = panel.child(self.render_git_commit(cx));
         } else if matches!(page, Page::Tab | Page::RenameTab) {
             panel = panel.child(self.render_tab_menu(cx));
+        } else if matches!(page, Page::Pane | Page::RenamePane) {
+            panel = panel.child(self.render_pane_menu(cx));
         } else if page == Page::Keybinds {
             panel = panel.child(self.render_keybinds(cx));
         } else if page == Page::Themes {
@@ -549,6 +567,10 @@ impl HerdrWindow {
                 }
                 if matches!(this.menu.page, Some(Page::Tab | Page::RenameTab)) {
                     this.tab_menu_key(event, window, cx);
+                    return;
+                }
+                if matches!(this.menu.page, Some(Page::Pane | Page::RenamePane)) {
+                    this.pane_menu_key(event, window, cx);
                     return;
                 }
                 if this.menu.page == Some(Page::Palette) {

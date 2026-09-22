@@ -249,6 +249,8 @@ pub enum Error {
     NotConnected,
     #[error("The original tab changed or no longer exists. Cancel and try again.")]
     StaleTab,
+    #[error("The original pane changed or no longer exists. Cancel and try again.")]
+    StalePane,
     #[error("Enter a tab name.")]
     EmptyTabName,
     #[error("No tab selected.")]
