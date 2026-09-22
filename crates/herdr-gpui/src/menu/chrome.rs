@@ -149,7 +149,8 @@ impl HerdrWindow {
         let theme = &self.theme;
         let viewport = window.viewport_size();
         // A GitHub tab of the new worktree dialog is a picker, not a form.
-        let listing = self.worktree_list_tab().is_some();
+        let listing = self.worktree_list_tab().is_some()
+            || page == Page::Dialog(WorkspaceAction::OpenWorktree);
         // Context menus open where the pointer asked for them. A dialog is a
         // modal decision, not a continuation of the row it came from, so it
         // centres over a dimmed window the way the Herdr TUI's dialogs do.
@@ -372,9 +373,9 @@ impl HerdrWindow {
                             )
                         })
                         .child(label)
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
-                            this.activate_workspace_menu(action, cx);
+                            this.activate_workspace_menu(action, window, cx);
                         })),
                 );
             }
@@ -513,6 +514,20 @@ impl HerdrWindow {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.menu.page == Some(Page::Dialog(WorkspaceAction::OpenWorktree))
+                    && (this
+                        .menu
+                        .worktree_open
+                        .as_ref()
+                        .is_some_and(|picker| picker.search.read(cx).is_composing())
+                        || !matches!(
+                            event.keystroke.key.as_str(),
+                            "escape" | "enter" | "up" | "down"
+                        ))
+                {
+                    // SearchInput and the platform own text editing and composition.
+                    return;
+                }
                 // A listing has its own search field, so the branch draft must
                 // not consume the keys typed into it.
                 if this.worktree_source_key(event, window, cx) {
@@ -585,6 +600,25 @@ impl HerdrWindow {
                 window.prevent_default();
                 match event.keystroke.key.as_str() {
                     "escape" => this.dismiss_menu(window, cx),
+                    "up" | "down"
+                        if this.menu.page == Some(Page::Dialog(WorkspaceAction::OpenWorktree)) =>
+                    {
+                        if let Some(picker) = &mut this.menu.worktree_open
+                            && !picker.filtered.is_empty()
+                            && this.menu.creation.is_none()
+                        {
+                            let count = picker.filtered.len();
+                            picker.selected = if event.keystroke.key == "up" {
+                                (picker.selected + count - 1) % count
+                            } else {
+                                (picker.selected + 1) % count
+                            };
+                            picker
+                                .scroll
+                                .scroll_to_item(picker.selected, ScrollStrategy::Top);
+                            cx.notify();
+                        }
+                    }
                     "enter" if matches!(this.menu.page, Some(Page::Dialog(_))) => {
                         this.submit_workspace_dialog(window, cx)
                     }
@@ -626,7 +660,7 @@ impl HerdrWindow {
                             .workspace_selected
                             .filter(|action| this.workspace_menu_actions().contains(action))
                         {
-                            this.activate_workspace_menu(action, cx);
+                            this.activate_workspace_menu(action, window, cx);
                         }
                     }
                     "up" | "down" | "pageup" | "pagedown"

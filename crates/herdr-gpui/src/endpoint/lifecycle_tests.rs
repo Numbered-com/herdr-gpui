@@ -179,6 +179,7 @@ fn connected_endpoint(id: &str) -> (Endpoint, Server) {
             Method::CommandInvoke,
             Method::WorkspaceClose,
             Method::WorktreeCreate,
+            Method::WorktreeOpen,
             Method::WorktreeRemove,
         ]
         .map(|method| method.as_str().to_owned()),
@@ -327,6 +328,7 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
         (Command::Palette, Method::CommandInvoke),
         (Command::Workspace, Method::WorkspaceClose),
         (Command::Workspace, Method::WorktreeCreate),
+        (Command::Workspace, Method::WorktreeOpen),
         (Command::Workspace, Method::WorktreeRemove),
     ]
     .into_iter()
@@ -356,7 +358,10 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
                     view.open_tab_close(id, window, cx);
                 } else if matches!(
                     method,
-                    Method::WorkspaceClose | Method::WorktreeCreate | Method::WorktreeRemove
+                    Method::WorkspaceClose
+                        | Method::WorktreeCreate
+                        | Method::WorktreeOpen
+                        | Method::WorktreeRemove
                 ) {
                     crate::menu::workspace_tests::submit_focus_change(view, method, window, cx);
                 } else {
@@ -406,6 +411,13 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
         };
         let request: serde_json::Value = serde_json::from_str(&request).unwrap();
         assert_eq!(request["method"], method.as_str());
+        if method == Method::WorktreeOpen {
+            assert_eq!(
+                request["params"],
+                serde_json::json!({"workspace_id": "w3",
+                "path": "/endpoint/existing checkout ", "focus": true, "trust_repository": false})
+            );
+        }
         if method == Method::TabClose {
             let focused = snapshot().focused_tab_id.unwrap();
             assert_eq!(

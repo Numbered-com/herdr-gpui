@@ -28,6 +28,7 @@ pub(crate) enum WorkspaceAction {
     Rename,
     Close,
     NewWorktree,
+    OpenWorktree,
     DeleteWorktree,
 }
 
@@ -49,6 +50,7 @@ impl WorkspaceMenuAction {
             Self::Dialog(WorkspaceAction::Rename) => "icons/pencil.svg",
             Self::Dialog(WorkspaceAction::Close) => "icons/close.svg",
             Self::Dialog(WorkspaceAction::NewWorktree) => "icons/plus.svg",
+            Self::Dialog(WorkspaceAction::OpenWorktree) => "icons/chevron-down.svg",
             Self::Dialog(WorkspaceAction::DeleteWorktree) => "icons/trash.svg",
             Self::Collapse => "icons/chevron-up.svg",
             Self::Expand => "icons/chevron-down.svg",

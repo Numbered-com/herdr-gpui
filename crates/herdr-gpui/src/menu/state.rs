@@ -22,9 +22,10 @@ pub(crate) struct MenuState {
     pub input: Option<DialogInput>,
     pub(super) error: Option<String>,
     pub(super) deletion: Option<Deletion>,
-    /// The correlated `worktree.create` request, so the dialog can report the
-    /// daemon's answer and follow the checkout it actually created.
+    /// The correlated `worktree.create` or `worktree.open` request, so the dialog
+    /// can report the daemon's answer and follow the returned workspace.
     pub(super) creation: Option<String>,
+    pub(super) worktree_open: Option<super::worktree_open::Picker>,
     pub(super) keybinds_scroll: ScrollHandle,
     pub(crate) keybinds_search: Option<Entity<crate::search_input::SearchInput>>,
     pub(super) _keybinds_subscription: Option<Subscription>,
@@ -163,6 +164,7 @@ impl MenuState {
             error: None,
             deletion: None,
             creation: None,
+            worktree_open: None,
             keybinds_scroll: ScrollHandle::new(),
             keybinds_search: None,
             _keybinds_subscription: None,
@@ -199,6 +201,7 @@ impl MenuState {
         self.error = None;
         self.deletion = None;
         self.creation = None;
+        self.worktree_open = None;
         self.close = None;
         self.worktree = None;
         self.pr.clear();

@@ -204,7 +204,7 @@ and local file paths are not activated.
   Herdr/Ghostty theme folders. Selecting a theme applies and saves it while
   preserving other GUI config settings and comments.
 - Right-click spaces for Rename, Close (Close group on non-linked parents with
-  multiple spaces sharing `worktree.key`), and New worktree on non-linked Git
+  multiple spaces sharing `worktree.key`), and New worktree / Open worktree... on non-linked Git
   parents, including spaces with a known Git branch but no worktree metadata yet.
   With `features.sidebar_hover_menu` enabled, resting the pointer on a
   space of the selected connection opens the same menu, and moving the pointer
@@ -220,6 +220,33 @@ and local file paths are not activated.
   cancels; dialog input never reaches terminals or native creation actions.
   Context menus and dialogs anchor to the pointer and clamp to the viewport.
   Rename trims surrounding whitespace and rejects blank labels inline.
+- Open worktree... asynchronously lists the clicked parent's existing checkouts
+  through `worktree.list`, including already-open and detached checkouts but
+  excluding bare/prunable entries. Use Up/Down and Enter, the Open button, or
+  click a row. A centered modal with the standard dimmed backdrop focuses a native
+  search field, like Color Scheme. Typing immediately filters branch, label, and
+  daemon path case-insensitively, including Unicode text. Selection resets to the
+  first match; no matches is distinct from an empty repository listing. The
+  bounded, scrollable list retains original paths for opening, and IME composition
+  cannot accidentally select or dismiss it. There is no manual-path entry.
+  Rows fill the list width with status labels aligned at the right edge. The
+  top-right ESC control dismisses the modal; Cancel and Open remain in the footer.
+  A bottom status area appears only for errors or an in-flight open, not idle hints.
+  It accepts at most 512 returned entries with 8 KiB per
+  string field, rejecting malformed, duplicate-path, or oversized lists rather
+  than presenting a partial list. Empty results and failures are shown inline;
+  dismiss and reopen to refresh. Both list and open use the clicked
+  `workspace_id` and `trust_repository: false`; open sends the exact returned
+  `path` and `focus: true`, never a locally resolved path or guessed branch.
+  Unadvertised methods are rejected by the client worker. Correlated responses
+  are fenced by endpoint selection/generation, boot, and parent workspace
+  identity. While an open is pending, a branch-only parent may acquire the exact
+  non-linked repository identity returned by its list response; this expected
+  daemon update does not discard the correlated open result. Other identity
+  changes still invalidate the picker. Success selects and reveals the daemon-returned workspace using the
+  same focus flow as creation. Escape/outside click dismisses even while waiting;
+  this does not cancel queued daemon work, but late replies cannot reopen the
+  picker or steal this client's focus. All Git/filesystem work stays in Herdr.
 - Signed-in workspace menus include a compact, divided PR summary. The number/title
   is the last selectable menu action: click it or use arrows and Enter to open the
    validated URL. Cache-only menu opening shows prefetched results immediately,
