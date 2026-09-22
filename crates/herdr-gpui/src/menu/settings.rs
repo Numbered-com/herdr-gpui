@@ -81,6 +81,9 @@ impl HerdrWindow {
                             this.menu.pr.clear();
                             this.menu.pr_connection = None;
                         }
+                        // Replacing the config also discards any session font
+                        // adjustment, so the baseline follows the file again.
+                        this.configured_terminal_size = config.terminal.size;
                         this.config = config;
                         this.theme = theme;
                         crate::log_window::set_appearance(&this.config, &this.theme, cx);
@@ -144,6 +147,9 @@ impl HerdrWindow {
                 | Command::WorkspacePicker => 1,
                 Command::NewWindow
                 | Command::ToggleSidebar
+                | Command::IncreaseFontSize
+                | Command::DecreaseFontSize
+                | Command::ResetFontSize
                 | Command::Settings
                 | Command::Keybinds
                 | Command::Themes

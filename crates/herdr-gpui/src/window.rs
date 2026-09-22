@@ -8,6 +8,8 @@ mod input;
 mod lifecycle;
 mod render;
 
+#[cfg(test)]
+mod font_size_tests;
 #[cfg(all(test, feature = "integration-test"))]
 mod resize_tests;
 #[cfg(test)]
@@ -30,6 +32,10 @@ pub(crate) struct HerdrWindow {
     pub(crate) updater: updater::Updater,
     pub(crate) update_preview: Option<updater::State>,
     pub(crate) config: config::Config,
+    /// The terminal size the last loaded config asked for. Increase/decrease
+    /// write straight to `config.terminal.size`, so this is what Reset Font
+    /// Size restores; a session adjustment never reaches disk.
+    pub(crate) configured_terminal_size: f32,
     pub(crate) theme: config::Theme,
     pub(crate) config_load: Option<Task<()>>,
     pub(crate) endpoints: Vec<endpoint::Endpoint>,
@@ -179,10 +185,12 @@ impl HerdrWindow {
                 }
             }
         });
+        let config = config::Config::default();
         let mut this = Self {
             updater: updater::Updater::default(),
             update_preview: None,
-            config: config::Config::default(),
+            configured_terminal_size: config.terminal.size,
+            config,
             theme: config::Theme::default(),
             config_load: None,
             catalog: endpoint::Catalog::new(&target),

@@ -16,6 +16,8 @@ mod worktree_render;
 mod worktree_source;
 
 #[cfg(test)]
+mod font_size_tests;
+#[cfg(test)]
 pub(crate) mod workspace_tests;
 #[cfg(test)]
 mod worktree_tests;

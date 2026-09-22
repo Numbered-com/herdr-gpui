@@ -96,6 +96,11 @@ GUI settings live in `$XDG_CONFIG_HOME/herdr/config-gpui.toml`, falling back to
 Font sizes use logical pixels (finite 8..48), not typographic points. Restart the
 GUI or invoke GUI config reload after edits; daemon config reload is separate.
 
+The terminal face can also be resized for the current session from the View menu,
+the in-app menu, the command palette, or `cmd-=` / `cmd--` / `cmd-0`. Adjustments
+are clamped to the same 8..48 range, apply to the terminal only, and are never
+written to disk, so a reload or a restart returns to the configured size.
+
 Set top-level `confirm_close_tab = false` to close tabs without confirmation
 (including their running processes), and `show_agents = false` to hide the Agents
 section and give Spaces the full sidebar height. Both default to `true`. Pane

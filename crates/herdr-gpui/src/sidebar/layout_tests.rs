@@ -338,6 +338,7 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         updater: crate::updater::Updater::default(),
         update_preview: None,
         removal: None,
+        configured_terminal_size: crate::config::Config::default().terminal.size,
         config: Default::default(),
         theme: Default::default(),
         config_load: None,
