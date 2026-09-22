@@ -65,7 +65,10 @@ pub(crate) fn open_additional_window(target: ConnectTarget, cx: &mut App) {
         );
         match opened {
             Ok(handle) => {
-                let _ = handle.update(cx, |_, window, _| window.activate_window());
+                let _ = handle.update(cx, |view, window, _| {
+                    view.sound = crate::sound::Service::new();
+                    window.activate_window();
+                });
             }
             Err(_) => tracing::error!("Unable to open an additional Herdr window"),
         }
@@ -159,6 +162,11 @@ pub(crate) fn run() -> std::process::ExitCode {
         );
         match opened {
             Ok(_window) => {
+                if mode == LaunchMode::Normal {
+                    let _ = _window.update(cx, |view, _, _| {
+                        view.sound = crate::sound::Service::new();
+                    });
+                }
                 #[cfg(feature = "integration-test")]
                 if performance_test {
                     performance::start(_window, cx);

@@ -33,6 +33,7 @@ mod pull_request;
 mod repo_items;
 mod search_input;
 mod sidebar;
+mod sound;
 mod state;
 mod tab_menu;
 mod terminal;

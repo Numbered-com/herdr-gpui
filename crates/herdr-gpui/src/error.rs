@@ -9,6 +9,16 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("ui.toast.delay_seconds must be between 0 and 3600")]
+    SoundDelay,
+    #[error("Sound configuration exceeds 1 MiB")]
+    SoundConfigSize,
+    #[error("Audio player exited with {0}")]
+    SoundExit(std::process::ExitStatus),
+    #[error("Audio playback timed out")]
+    SoundTimeout,
+    #[error("Audio playback cancelled")]
+    SoundCancelled,
     #[error(
         "PR lookup requires your owned local session socket. Select Local using its standard socket; SSH and other socket locations are unsupported."
     )]
