@@ -1,8 +1,9 @@
 # cargo-deny configuration. Run locally with `cargo deny check`.
 #
 # Evaluate every shipped target: both macOS architectures and experimental
-# x86_64/ARM64 GNU/Linux. Windows is included because CI type-checks it, even
-# though no Windows binary is published yet.
+# x86_64/ARM64 GNU/Linux. This set is pinned to the release targets by
+# scripts/release/test-release-security.py. Windows-only dependencies still do
+# not reach a shipped binary, even though CI type-checks that target.
 
 [graph]
 targets = [
@@ -10,7 +11,6 @@ targets = [
     "x86_64-apple-darwin",
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
-    "x86_64-pc-windows-msvc",
 ]
 all-features = true
 
