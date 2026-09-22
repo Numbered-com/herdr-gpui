@@ -90,11 +90,16 @@ and its terminals running.
 
 ## Configuration
 
-See [GUI configuration](../../README.md#gui-configuration) for the config path,
-font defaults, theme lookup order, and reload behavior, and
+GUI settings live in `$XDG_CONFIG_HOME/herdr/config-gpui.toml`, falling back to
+`~/.config/herdr/config-gpui.toml`. See
 [`config-gpui.example.toml`](config-gpui.example.toml) for a complete example.
 Font sizes use logical pixels (finite 8..48), not typographic points. Restart the
 GUI or invoke GUI config reload after edits; daemon config reload is separate.
+
+Set top-level `confirm_close_tab = false` to close tabs without confirmation
+(including their running processes), and `show_agents = false` to hide the Agents
+section and give Spaces the full sidebar height. Both default to `true`. Pane
+closures still ask for confirmation. Reload GUI config or restart after editing.
 
 The `src/config.rs` module exposes `Config::load()` and
 `Config::path()`, both returning the crate's typed `Result`. `Config::theme()` resolves
@@ -269,13 +274,14 @@ native-frame appearance also remains unverified by these macOS tests.
 - Right-click any tab without focusing it to open Rename.
   Actions retain the clicked tab/workspace and reject stale connections or targets.
   Rename selects the current label in a native IME-aware field, with inline errors;
-  Close uses the existing cancel-by-default confirmation. Escape or an outside
-  left/right click dismisses the menu without sending terminal input.
+  Close uses the existing cancel-by-default confirmation unless
+  `confirm_close_tab = false`. Escape or an outside left/right click dismisses
+  the menu without sending terminal input.
 - Click workspace, tab, agent, or a visible split pane to focus through the API.
 - Native File/Terminal menus and creation buttons: **+ New Workspace** in the
   sidebar and a persistent 18px SVG **+** in a 44px-wide button beside the horizontally
   scrolling tab strip. Each tab has a 16px SVG close cross in a 24px hit target;
-  it opens the same cancel-by-default confirmation without focusing an inactive tab.
+  it uses the same configurable confirmation without focusing an inactive tab.
   Both icons use the current theme's foreground tint.
 - Cmd-N creates and focuses a workspace; Cmd-T creates and focuses a tab.
   Cmd-D splits the focused pane vertically (new pane on the right);
@@ -287,7 +293,8 @@ native-frame appearance also remains unverified by these macOS tests.
   Cmd-Alt-] / Cmd-Alt-[ cycles next/previous pane within the current tab.
   Cmd-Shift-Enter toggles focused pane zoom.
 - Cmd-W closes the focused pane and Cmd-Shift-W closes the focused tab only after
-  a confirmation dialog. **Cancel is selected by default**: Enter alone cancels;
+  a confirmation dialog (tab confirmation can be disabled with
+  `confirm_close_tab = false`). **Cancel is selected by default**: Enter alone cancels;
   Tab then Enter selects and confirms Close. Closing can terminate running
   processes, unlike quitting the GUI, which only detaches.
 - Cmd-Shift-P opens the command palette with native actions and configured daemon

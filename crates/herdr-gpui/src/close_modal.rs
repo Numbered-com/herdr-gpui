@@ -106,6 +106,9 @@ impl HerdrWindow {
         }
         self.menu.close = Some(close);
         self.menu.page = Some(Page::ConfirmClose);
+        if !self.config.confirm_close_tab {
+            self.confirm_close(window, cx);
+        }
     }
 
     pub(super) fn open_close_confirmation(
@@ -127,6 +130,9 @@ impl HerdrWindow {
         }
         self.menu.close = Some(close);
         self.menu.page = Some(Page::ConfirmClose);
+        if command == Command::CloseTab && !self.config.confirm_close_tab {
+            self.confirm_close(window, cx);
+        }
     }
 
     fn confirm_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -219,6 +225,40 @@ mod tests {
     use super::*;
     use core::prelude::v1::test;
     use std::sync::Arc;
+
+    #[gpui::test]
+    fn skipping_tab_confirmation_keeps_connection_checks_and_pane_prompt(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut view = crate::sidebar::layout_tests::fixture_window(window, cx);
+            view.config.confirm_close_tab = false;
+            view.live.snapshot = Some(Arc::new(
+                serde_json::from_str(include_str!(
+                    "../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json"
+                ))
+                .unwrap(),
+            ));
+            view
+        });
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                let id = view.live.snapshot.as_ref().unwrap().tabs[0].tab_id.clone();
+                view.open_tab_close(&id, window, cx);
+                // The disconnected fixture must attempt the close immediately but refuse to send it.
+                assert!(view.menu.close.as_ref().unwrap().error.is_some());
+                assert!(view.pending_navigation.is_none());
+                view.dismiss_menu(window, cx);
+                view.open_close_confirmation(Command::CloseTab, window, cx);
+                assert!(view.menu.close.as_ref().unwrap().error.is_some());
+                view.dismiss_menu(window, cx);
+                view.open_close_confirmation(Command::ClosePane, window, cx);
+                assert!(view.menu.close.as_ref().unwrap().error.is_none());
+                view.dismiss_menu(window, cx);
+                view.config.confirm_close_tab = true;
+                view.open_tab_close(&id, window, cx);
+                assert!(view.menu.close.as_ref().unwrap().error.is_none());
+            })
+        });
+    }
 
     #[gpui::test]
     fn tab_icon_bounds_and_inactive_cross_confirmation(cx: &mut TestAppContext) {

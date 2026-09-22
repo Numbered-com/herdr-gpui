@@ -296,6 +296,32 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                 return;
             }
         }
+        for show_agents in [false, true] {
+            let result = AnyWindowHandle::from(handle).update(cx, |root, window, cx| {
+                let view = root.downcast::<HerdrWindow>()
+                    .map_err(|_| anyhow!("unexpected root"))?;
+                view.update(cx, |view, cx| {
+                    view.config.show_agents = show_agents;
+                    cx.notify();
+                });
+                cx.default_global::<sidebar::layout_tests::PaintedProbes>().0.clear();
+                window.refresh();
+                window.draw(cx).clear();
+                let probes = &cx.global::<sidebar::layout_tests::PaintedProbes>().0;
+                if probes.contains_key("Claude Code") != show_agents
+                    || !probes.contains_key("herdr")
+                    || !probes.contains_key("menu")
+                {
+                    bail!("native Agents visibility did not follow configuration");
+                }
+                Ok(())
+            });
+            if !matches!(result, Ok(Ok(()))) {
+                eprintln!("SIDEBAR native visibility FAIL: {result:?}");
+                let _ = cx.update(|cx| cx.quit());
+                return;
+            }
+        }
         #[cfg(target_os = "macos")]
         for (width, height) in [(640., 400.), (1200., 780.)] {
             let _ = handle.update(cx, |_, window, _| window.resize(size(px(width), px(height))));

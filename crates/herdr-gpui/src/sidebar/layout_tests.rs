@@ -2088,6 +2088,16 @@ fn preferences_list_feature_flags(cx: &mut gpui::TestAppContext) {
         let body = cx.debug_bounds("preferences-body").unwrap();
         for (id, label, _) in crate::preferences::feature_rows(&Default::default()) {
             let bounds = cx.debug_bounds(id).unwrap_or_else(|| panic!("{label} row"));
+            // Other settings can place feature flags below the initial viewport.
+            cx.update(|window, cx| {
+                let scroll = &view.read(cx).menu.preferences_scroll;
+                scroll.set_offset(
+                    scroll.offset() + point(px(0.), body.center().y - bounds.center().y),
+                );
+                window.refresh();
+                window.draw(cx).clear();
+            });
+            let bounds = cx.debug_bounds(id).unwrap_or_else(|| panic!("{label} row"));
             assert!(
                 body.contains(&bounds.center()),
                 "{label} row outside the body"
@@ -2242,6 +2252,41 @@ fn the_homebrew_update_states_stay_inside_the_panel(cx: &mut gpui::TestAppContex
                 view.update(cx, |view, cx| view.dismiss_menu(window, cx));
                 window.draw(cx).clear();
             });
+        }
+    }
+}
+
+#[cfg(test)]
+#[gpui::test]
+fn hiding_agents_reclaims_sidebar_height(cx: &mut gpui::TestAppContext) {
+    let (view, cx) = cx.add_window_view(fixture_window);
+    for width in [800., 360.] {
+        cx.simulate_resize(size(px(width), px(600.)));
+        let mut visible_height = px(0.);
+        for show_agents in [true, false, true] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.config.show_agents = show_agents;
+                    cx.notify();
+                });
+                cx.default_global::<TextProbes>().0.clear();
+                window.refresh();
+                window.draw(cx).clear();
+            });
+            cx.update(|_, cx| {
+                assert_eq!(
+                    cx.global::<TextProbes>().0.contains_key("Claude Code"),
+                    show_agents
+                );
+            });
+            let spaces = cx.debug_bounds("spaces-scroll").unwrap();
+            if show_agents {
+                visible_height = spaces.size.height;
+            } else {
+                assert!(spaces.size.height > visible_height + px(100.));
+            }
+            assert!(cx.debug_bounds("sidebar-menu").is_some());
+            assert!(cx.debug_bounds("sidebar-resize").is_some());
         }
     }
 }
