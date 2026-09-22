@@ -371,6 +371,8 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         bounds: Bounds::default(),
         title: crate::WINDOW_TITLE.to_owned(),
         cell_width: 9.,
+        hovered_terminal_link: false,
+        pressed_terminal_link: None,
         presentation: Default::default(),
         painter: Default::default(),
         marked: String::new(),

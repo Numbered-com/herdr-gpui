@@ -1,3 +1,6 @@
+mod links;
+pub(crate) use links::link_at;
+
 use crate::config::Theme;
 use gpui::{
     Bounds, KeyDownEvent, Keystroke, Modifiers, Pixels, Point, ScrollDelta, ScrollWheelEvent,
