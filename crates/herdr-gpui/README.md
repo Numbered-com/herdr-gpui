@@ -169,6 +169,73 @@ sources and recovery context while keeping remote diagnostics out of display tex
 Active regression tests cover typed sources, redaction, and recovery failures;
 the standalone updater harness includes these tests without GPUI dependencies.
 
+## Notification Sounds
+
+Sounds share the **local TUI configuration**, not `config-gpui.toml` or a remote
+host's files: `HERDR_CONFIG_PATH` takes precedence, then
+`$XDG_CONFIG_HOME/herdr/config.toml`, then `~/.config/herdr/config.toml`.
+Debug GUI builds and `--dev` still use the production `herdr` sound settings.
+The GUI only reads this file. Daemon `ReloadSoundConfig` messages reload it
+asynchronously; invalid reloads retain the last valid settings.
+
+```toml
+[ui.sound]
+enabled = true
+# path = "sounds/all.mp3"
+# done_path = "sounds/done.mp3"
+# request_path = "sounds/request.mp3"
+
+[ui.sound.agents]
+droid = "off"
+# claude = "off"
+# open_code = "on"
+
+[ui.toast]
+delay_seconds = 1
+```
+
+Sound is enabled by default; Droid alone defaults to off. Agent values are
+`default`, `on`, or `off`; the global switch takes precedence. Per-sound paths
+override `path`, and relative paths resolve beside the local TUI config.
+`HERDR_DISABLE_SOUND` or `NEXTEST`, when present, disables playback entirely.
+
+**QA > Play Sound** explicitly tests Rodio playback with the built-in Done sound
+on the same background worker. No daemon or active pane is needed. This manual
+test bypasses notification mute (including `enabled = false`), agent filters,
+custom sound paths, delay, and focus suppression. Environment/test suppression
+still applies, as do the bounded queue, one-second queue expiry, and playback
+budget below. Closing the window cancels the test; endpoint disconnects do not.
+
+Semantic notifications from all connected endpoints use the TUI's timing:
+`delay_seconds` is 0..3600 (default 1), Custom is immediate, delayed attention
+requires a Blocked agent, and Finished requires projected Done state. Completion
+evidence may wait up to one second from receipt, rechecking every 50 ms. New
+notifications replace pending ones for the same endpoint/pane. Only Finished is
+suppressed for the selected endpoint's active tab while the native window is
+focused (workspace focus is the fallback for events without a tab).
+Legacy `Notify`, terminal BEL, and terminal escape sequences never play audio.
+
+Built-in Done and Request MP3s are the upstream Herdr sounds, attributed in
+[SOUND-NOTICE.md](SOUND-NOTICE.md). Rodio 0.22 uses CPAL native output and
+Symphonia MP3 decoding, with no external players or temporary audio files.
+Custom sounds must be MP3 regular files of at most 16 MiB; unreadable, oversized,
+or undecodable files fall back to the built-in sound. Other codecs are not enabled.
+Embedded bytes and bounded custom-file reads are decoded in memory. Configuration,
+file reads, device initialization, and playback waits stay off the UI thread.
+
+Delivery and pending queues are bounded to 32 events per endpoint; the playback
+worker queues at most eight jobs, dropping overflow and jobs waiting over one
+second rather than playing stale bursts. Each job has a 15-second wall-clock
+budget, checked between setup operations and every 25 ms during playback; sources
+are also limited to 15 seconds. OS file/device setup calls cannot be interrupted.
+The worker opens the current default device per job and releases it afterward.
+Device errors stop the job; later notifications try the current default again,
+without replaying failed audio. Cancellation and timeout never trigger fallback.
+Disconnect,
+reconnect, boot change, endpoint removal, and window closure cancel old sounds.
+Multiple GUI/TUI clients each play their own sounds; there is no cross-client
+audio deduplication. Native playback and device-switch/unplug behavior require manual QA.
+
 ## Title Bar
 
 macOS keeps `Some(TitlebarOptions)` and the native Herdr window title/traffic lights,
@@ -427,8 +494,10 @@ and local file paths are not activated.
   right. Windows under 180px in either dimension hide cards. Menus and undersized
   windows pause visible expiry and prevent queued promotion so cards receive a
   visible lifetime after the obstruction closes.
-  Long text is clipped to keep cards bounded. No sounds, OS notifications,
-  or terminal escapes are performed. Clicking a targeted toast activates its
+  Long text is clipped to keep cards bounded. Toast presentation and previews add
+  no extra sounds; semantic notification audio follows the independent
+  [sound policy](#notification-sounds). No OS notifications or terminal escapes
+  are performed. Clicking a targeted toast activates its
   originating endpoint and focuses its pane, tab, or workspace through the API.
   Targets are checked against the current snapshot, original boot, and connection;
   deleted or reparented targets fail closed, without falling back to another space.

@@ -30,3 +30,17 @@ accepted = ["MPL-2.0"] # 0.28.0, build tool
 # https://crates.io/api/v1/crates/option-ext/0.2.0/download
 [option-ext]
 accepted = ["MPL-2.0"] # 0.2.0, runtime dependency
+
+# Unmodified MP3 decoder, runtime dependencies; exact sources in generated notices.
+# https://crates.io/api/v1/crates/symphonia/0.5.5/download
+[symphonia]
+accepted = ["MPL-2.0"]
+# https://crates.io/api/v1/crates/symphonia-bundle-mp3/0.5.5/download
+[symphonia-bundle-mp3]
+accepted = ["MPL-2.0"]
+# https://crates.io/api/v1/crates/symphonia-core/0.5.5/download
+[symphonia-core]
+accepted = ["MPL-2.0"]
+# https://crates.io/api/v1/crates/symphonia-metadata/0.5.5/download
+[symphonia-metadata]
+accepted = ["MPL-2.0"]

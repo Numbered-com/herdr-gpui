@@ -9,6 +9,7 @@ actions!(
     herdr,
     [
         Quit,
+        PlaySound,
         ShowHerdrNotDetected,
         ShowLogs,
         CheckForUpdates,

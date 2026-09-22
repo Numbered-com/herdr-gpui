@@ -35,6 +35,7 @@ mod pull_request;
 mod repo_items;
 mod search_input;
 mod sidebar;
+mod sound;
 mod state;
 mod tab_menu;
 mod terminal;
@@ -56,8 +57,8 @@ pub use error::{Error, Result};
 
 pub(crate) use {
     actions::{
-        CheckForUpdates, Quit, RunCommand, ShowHerdrNotDetected, ShowLogs, ShowUpdatePreview,
-        bind_keys,
+        CheckForUpdates, PlaySound, Quit, RunCommand, ShowHerdrNotDetected, ShowLogs,
+        ShowUpdatePreview, bind_keys,
     },
     app::open_additional_window,
     constants::{APP_VERSION, RELEASE_BUILD, TAB_HEIGHT, TAB_WIDTH, WINDOW_TITLE},

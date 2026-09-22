@@ -2,8 +2,8 @@
 //! and the keymap use, so a command exists in one place only.
 
 use crate::{
-    CheckForUpdates, Quit, RunCommand, ShowHerdrNotDetected, ShowLogs, ShowUpdatePreview,
-    actions::ShowToastPreview, controls::Command,
+    CheckForUpdates, PlaySound, Quit, RunCommand, ShowHerdrNotDetected, ShowLogs,
+    ShowUpdatePreview, actions::ShowToastPreview, controls::Command,
 };
 use gpui::{Menu, MenuItem};
 use herdr_client::protocol::SemanticNotificationKind;
@@ -176,6 +176,7 @@ pub(crate) fn menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action("Show herdr non-detected modal", ShowHerdrNotDetected),
                 MenuItem::action("Show app update available", ShowUpdatePreview),
+                MenuItem::action("Play Sound", PlaySound),
                 MenuItem::separator(),
                 MenuItem::action(
                     "Show NeedsAttention toast",

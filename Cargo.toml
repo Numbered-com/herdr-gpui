@@ -42,6 +42,7 @@ objc2                = "0.6.4"
 objc2-app-kit        = { default-features = false, features = ["NSApplication", "NSImage", "std"], version = "0.3.2" }
 objc2-foundation     = { default-features = false, features = ["NSBundle", "NSData", "NSProcessInfo", "NSString", "std"], version = "0.3.2" }
 raw-window-handle    = "0.6"
+rodio                = { default-features = false, features = ["playback", "symphonia-mp3", "tracing"], version = "0.22.2" }
 rustix               = { features = ["fs", "process"], version = "=1.1.5" }
 secrecy              = { features = ["serde"], version = "=0.10.3" }
 security-framework   = "=3.7.0"

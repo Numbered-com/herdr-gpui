@@ -13,7 +13,11 @@ ROOT = Path(__file__).resolve().parents[2]
 ABOUT_VERSION = "cargo-about 0.9.2"
 INSTALL = "cargo install cargo-about --version 0.9.2 --locked --features cli"
 # cargo-about package exceptions are name-scoped; require a new version review.
-MPL_VERSIONS = {"cbindgen": "0.28.0", "option-ext": "0.2.0"}
+MPL_VERSIONS = {
+    "cbindgen": "0.28.0", "option-ext": "0.2.0",
+    "symphonia": "0.5.5", "symphonia-bundle-mp3": "0.5.5",
+    "symphonia-core": "0.5.5", "symphonia-metadata": "0.5.5",
+}
 LICENSE_NAME = re.compile(r"^(licen[cs]e|copying)(?:$|[._-])", re.I)
 NOTICE_NAME = re.compile(r"^(notice|copyright)(?:$|[._-])", re.I)
 LICENSE_DIRS = {"license", "licenses", "licence", "licences", "legal"}

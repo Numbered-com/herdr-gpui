@@ -69,6 +69,17 @@ Install the Herdr daemon separately. The app starts an already-installed local
 upgrades a daemon; removing the GUI leaves daemon sessions and shared Herdr
 configuration intact.
 
+### Linux Builds
+
+On Ubuntu 24.04 (x86_64 or ARM64), run `bash scripts/install-linux-deps.sh`
+before building. This installs GPUI's X11/Wayland/font development dependencies
+and `libasound2-dev` for Rodio/CPAL native audio. CI and release builds use the
+same script. Linux binaries require the system ALSA shared library (`libasound2t64`
+on Ubuntu 24.04), a configured default audio device, and Vulkan for rendering.
+Audio normally routes through the desktop's ALSA plugin configuration; no CLI
+audio player is required. Custom notification sounds are MP3 only. See
+[notification sounds](crates/herdr-gpui/README.md#notification-sounds).
+
 ## How it connects
 
 ```mermaid
@@ -92,6 +103,14 @@ The daemon owns the terminals and all session state. The GUI attaches to the
 binary **client** socket, renders the surfaces it is sent, and sends semantic
 input back. Closing or detaching the GUI leaves the daemon and its terminals
 running.
+
+## Audio Test
+
+To manually test native audio, choose **QA > Play Sound**. It plays the built-in
+Done sound on the background Rodio worker, even without a daemon or active pane
+and even with notifications muted. `HERDR_DISABLE_SOUND` and `NEXTEST` still
+suppress playback. See [notification sounds](crates/herdr-gpui/README.md#notification-sounds)
+for queue limits and playback details.
 
 ## Performance
 
