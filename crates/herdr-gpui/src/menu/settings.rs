@@ -351,6 +351,54 @@ fn shortcut_matches(query: &str, keys: &str, description: &str, section: &str) -
 #[cfg(test)]
 mod tests {
     #[gpui::test]
+    fn config_reload_toggles_tab_flags_and_preserves_them_on_failure(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        for (confirm_close_tab, show_agents) in
+            [(false, true), (true, false), (false, false), (true, true)]
+        {
+            view.update(cx, |view, cx| {
+                view.load_gui_config_with(
+                    move || {
+                        let config = crate::config::Config {
+                            confirm_close_tab,
+                            show_agents,
+                            ..Default::default()
+                        };
+                        let theme = config.theme()?;
+                        Ok((config, theme))
+                    },
+                    cx,
+                );
+            });
+            cx.run_until_parked();
+            view.read_with(cx, |view, _| {
+                assert_eq!(
+                    (view.config.confirm_close_tab, view.config.show_agents),
+                    (confirm_close_tab, show_agents)
+                );
+                assert!(view.config_load.is_none());
+                assert!(view.local_error.is_none());
+            });
+            for error in [crate::Error::MissingHome, crate::Error::EmptyTheme] {
+                view.update(cx, |view, cx| {
+                    view.load_gui_config_with(move || Err(error), cx);
+                });
+                cx.run_until_parked();
+                view.read_with(cx, |view, _| {
+                    assert_eq!(
+                        (view.config.confirm_close_tab, view.config.show_agents),
+                        (confirm_close_tab, show_agents)
+                    );
+                    assert!(view.config_load.is_none());
+                    assert!(view.local_error.is_some());
+                });
+            }
+        }
+    }
+
+    #[gpui::test]
     #[allow(clippy::unwrap_used)]
     fn config_load_is_coherent_bounded_and_cancellable(cx: &mut gpui::TestAppContext) {
         let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);

@@ -306,7 +306,7 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
         Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
     });
     let view = fixture.update(cx, |fixture, _| fixture.0.clone());
-    for (command, method) in [
+    for (command, method, confirm_close_tab, explicit_tab) in [
         (Command::SplitRight, Method::PaneSplit),
         (Command::SplitDown, Method::PaneSplit),
         (Command::Tab, Method::TabCreate),
@@ -328,7 +328,13 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
         (Command::Workspace, Method::WorkspaceClose),
         (Command::Workspace, Method::WorktreeCreate),
         (Command::Workspace, Method::WorktreeRemove),
-    ] {
+    ]
+    .into_iter()
+    .map(|(command, method)| (command, method, true, None))
+    .chain([
+        (Command::CloseTab, Method::TabClose, false, None),
+        (Command::CloseTab, Method::TabClose, false, Some("inactive")),
+    ]) {
         let (endpoint, mut server) = connected_endpoint("ssh:fixture");
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
@@ -338,8 +344,17 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
                 view.options = ConnectOptions::default();
                 view.reset_selected();
                 view.activation_deadline = None;
+                view.config.confirm_close_tab = confirm_close_tab;
                 assert!(view.input_ready());
-                if matches!(
+                if let Some(id) = explicit_tab {
+                    let snapshot = Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+                    let mut tab = snapshot.tabs[0].clone();
+                    tab.tab_id = id.into();
+                    tab.focused = false;
+                    snapshot.tabs.push(tab);
+                    assert_ne!(snapshot.focused_tab_id.as_deref(), Some(id));
+                    view.open_tab_close(id, window, cx);
+                } else if matches!(
                     method,
                     Method::WorkspaceClose | Method::WorktreeCreate | Method::WorktreeRemove
                 ) {
@@ -352,7 +367,7 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
                     is_held: false,
                 };
                 match command {
-                    Command::ClosePane | Command::CloseTab => {
+                    Command::ClosePane | Command::CloseTab if confirm_close_tab => {
                         view.close_confirmation_key(&key("tab"), window, cx);
                         view.close_confirmation_key(&key("enter"), window, cx);
                     }
@@ -365,6 +380,9 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
                         view.palette_key(&key("enter"), window, cx);
                     }
                     _ => {}
+                }
+                if !confirm_close_tab {
+                    assert!(view.menu.page.is_none());
                 }
                 assert!(!view.input_ready(), "{method} must fence immediately");
                 assert!(view.activation_deadline.is_some());
@@ -388,6 +406,13 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
         };
         let request: serde_json::Value = serde_json::from_str(&request).unwrap();
         assert_eq!(request["method"], method.as_str());
+        if method == Method::TabClose {
+            let focused = snapshot().focused_tab_id.unwrap();
+            assert_eq!(
+                request["params"],
+                serde_json::json!({"tab_id": explicit_tab.unwrap_or(&focused)})
+            );
+        }
         // herdr-client serializes API requests behind their predecessor's reply.
         server.respond(&request);
         let ClientMessage::ClientShellEndpointRequest { request, .. } = server.receive() else {
@@ -465,6 +490,70 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
         };
         assert_eq!(pane_id, "new-pane");
     }
+}
+
+#[gpui::test]
+fn unconfirmed_tab_close_rejects_invalid_targets_and_unready_input(cx: &mut gpui::TestAppContext) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
+    });
+    let view = fixture.update(cx, |fixture, _| fixture.0.clone());
+    let (endpoint, mut server) = connected_endpoint("ssh:fixture");
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.endpoints.push(endpoint);
+            view.selected_endpoint = 1;
+            view.reset_selected();
+            view.activation_deadline = None;
+            view.config.confirm_close_tab = false;
+            assert!(view.input_ready());
+            let ready = view.live.clone();
+            let tab = ready
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .focused_tab_id
+                .as_ref()
+                .unwrap();
+            for explicit in [true, false] {
+                for rejection in ["missing-tab", "missing-workspace", "unready-input"] {
+                    view.live = ready.clone();
+                    match rejection {
+                        "missing-tab" => Arc::make_mut(view.live.snapshot.as_mut().unwrap())
+                            .tabs
+                            .clear(),
+                        "missing-workspace" => Arc::make_mut(view.live.snapshot.as_mut().unwrap())
+                            .workspaces
+                            .clear(),
+                        _ => {
+                            view.live.surface = None;
+                            assert!(!view.input_ready());
+                        }
+                    }
+                    if explicit {
+                        view.open_tab_close(tab, window, cx);
+                    } else {
+                        view.command(Command::CloseTab, window, cx);
+                    }
+                    assert!(view.activation_deadline.is_none());
+                    assert!(view.pending_navigation.is_none());
+                    view.dismiss_menu(window, cx);
+                }
+            }
+            // FIFO marker proves none of the rejected attempts reached the peer.
+            view.endpoints[1]
+                .connection
+                .handle
+                .as_ref()
+                .unwrap()
+                .set_focus(&ready.snapshot.as_ref().unwrap().boot_id, false)
+                .unwrap();
+        });
+    });
+    assert!(matches!(
+        server.receive(),
+        ClientMessage::ClientShellFocus { focused: false }
+    ));
 }
 
 #[gpui::test]
