@@ -121,6 +121,12 @@ just changelog-release 20260920.3 out/   # exactly the two files CI publishes
 
 - `just changelog*` needs `git-cliff` locally (`cargo install --locked --version
   2.12.0 git-cliff`); CI installs the same pinned version.
+- These rules are enforced, not advisory. `just hooks` installs a `commit-msg`
+  hook that refuses a bad subject before the commit exists, and CI's `commits`
+  job checks every commit in a pull request; it is part of the `Format, lint,
+  and test` gate. Run `just hooks` once per clone, and `just check-commits`
+  to check a branch by hand. Fix a rejected subject with `git commit --amend`
+  rather than `--no-verify`.
 
 ## Verification
 
