@@ -68,7 +68,7 @@ test-perf budget="30":
 build-release:
     cargo build --locked --release -p herdr-gpui
 
-# Regenerate the checked-in artwork on macOS; no third-party image tools required.
+# Regenerate the checked-in artwork on macOS (requires brew install librsvg).
 icons:
     swift scripts/generate-icons.swift
 
