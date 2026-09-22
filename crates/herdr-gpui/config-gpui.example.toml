@@ -19,6 +19,14 @@ confirm_close_tab = true
 # Show the Agents section below Spaces in the sidebar.
 show_agents = true
 
+[notifications]
+# GUI-local in-app delivery only. QA previews bypass delivery policy.
+enabled = false
+# Inclusive 0..3600. Custom notifications are immediate.
+delay_seconds = 1
+# top-left, top-right, bottom-left, bottom-right. Explicit wire corners win.
+position = "bottom-right"
+
 # Spacing, in logical pixels. Omit the table to keep the defaults.
 [layout]
 # Blank space between the sidebar and the terminal beside it, 0 to 64.

@@ -16,20 +16,26 @@ pub(crate) struct ConnectionBridge {
     pub handle: Option<ClientHandle>,
     pub inbox: Arc<Mutex<LiveState>>,
     pub drained: Arc<AtomicBool>,
+    sound_cancel: Arc<AtomicBool>,
 }
 
 impl ConnectionBridge {
     pub fn new(target: ConnectTarget) -> Self {
+        let state = LiveState::default();
         Self {
             target,
             handle: None,
-            inbox: Arc::new(Mutex::new(LiveState::default())),
+            sound_cancel: state.sound_connection_cancel.clone(),
+            inbox: Arc::new(Mutex::new(state)),
             drained: Arc::new(AtomicBool::new(true)),
         }
     }
 
     fn reset(&mut self, status: ConnectionStatus, active: bool) {
-        if let Ok(mut state) = self.inbox.lock() {
+        // Retire audio even when the event reducer holds the inbox. Boot-scoped
+        // cancellation alone cannot be reached without that lock.
+        self.sound_cancel.store(true, Ordering::Release);
+        if let Ok(mut state) = self.inbox.try_lock() {
             state.cancel_sounds();
         }
         if let Some(handle) = self.handle.take() {
@@ -38,6 +44,7 @@ impl ConnectionBridge {
         let mut state = LiveState::default();
         state.status = status;
         state.set_outer_focus(active);
+        self.sound_cancel = state.sound_connection_cancel.clone();
         // Old readers and deferred paint acknowledgements retain only the old inbox.
         self.inbox = Arc::new(Mutex::new(state));
         self.drained = Arc::new(AtomicBool::new(true));
@@ -155,9 +162,13 @@ impl ConnectionBridge {
             .dialog_response
             .as_mut()
             .and_then(|(_, result)| result.take());
+        let notifications = std::mem::take(&mut state.notifications);
+        let notifications_lost = std::mem::take(&mut state.notifications_lost);
         let sounds = std::mem::take(&mut state.sound_events);
         let reload_sound = std::mem::take(&mut state.reload_sound);
         let mut update = state.clone();
+        update.notifications = notifications;
+        update.notifications_lost = notifications_lost;
         update.sound_events = sounds;
         update.reload_sound = reload_sound;
         if let Some((_, result)) = &mut update.dialog_response {
@@ -201,7 +212,8 @@ impl ConnectionBridge {
 
 impl Drop for ConnectionBridge {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.inbox.lock() {
+        self.sound_cancel.store(true, Ordering::Release);
+        if let Ok(mut state) = self.inbox.try_lock() {
             state.cancel_sounds();
         }
         // Detach this client only; never kill a daemon or PTY.
@@ -219,6 +231,85 @@ mod tests {
 
     fn bridge() -> ConnectionBridge {
         ConnectionBridge::new(ConnectTarget::Socket("/unused-connection-test.sock".into()))
+    }
+
+    #[test]
+    fn notifications_move_once_are_bounded_and_fenced_by_replacement() {
+        use crate::notifications::{PENDING_LIMIT, tests::notification};
+        use herdr_client::protocol::ServerMessage;
+        let mut bridge = bridge();
+        let old = bridge.inbox.clone();
+        {
+            let mut state = old.lock().unwrap();
+            state.status = ConnectionStatus::Connected;
+            for id in 0..100 {
+                state.apply(ClientEvent::Message(ServerMessage::SemanticNotification(
+                    notification(&id.to_string()),
+                )));
+            }
+            state.set_outer_focus(true);
+        }
+        let update = bridge.take_update().unwrap();
+        assert_eq!(update.notifications.len(), PENDING_LIMIT);
+        assert_eq!(update.notifications[0].title, "92");
+        assert_eq!(update.notifications[7].title, "99");
+        assert_eq!(update.sound_events.len(), crate::sound::MAX_PENDING);
+        assert_eq!(update.sound_events[0].1.title, "68");
+        assert_eq!(update.sound_events[31].1.title, "99");
+        assert!(bridge.take_update().is_none());
+        old.lock().unwrap().set_outer_focus(false);
+        let next = bridge.take_update().unwrap();
+        assert!(next.notifications.is_empty());
+        assert!(next.sound_events.is_empty());
+        bridge.detach(false);
+        assert!(update.sound_cancel.load(Ordering::Acquire));
+        old.lock()
+            .unwrap()
+            .apply(ClientEvent::Message(ServerMessage::SemanticNotification(
+                notification("late"),
+            )));
+        let detached = bridge.take_update().unwrap();
+        assert!(detached.notifications.is_empty());
+        assert!(detached.sound_events.is_empty());
+        bridge.reset(ConnectionStatus::Connected, false);
+        old.lock()
+            .unwrap()
+            .apply(ClientEvent::Message(ServerMessage::SemanticNotification(
+                notification("late again"),
+            )));
+        let replacement = bridge.take_update().unwrap();
+        assert!(replacement.notifications.is_empty());
+        assert!(replacement.sound_events.is_empty());
+        {
+            let mut state = bridge.inbox.lock().unwrap();
+            state.apply(ClientEvent::Message(ServerMessage::SemanticNotification(
+                notification("discard on disconnect"),
+            )));
+            state.apply(ClientEvent::Disconnected {
+                reason: "test".into(),
+            });
+        }
+        let disconnected = bridge.take_update().unwrap();
+        assert!(disconnected.notifications.is_empty());
+        assert!(disconnected.sound_events.is_empty());
+        assert!(disconnected.sound_cancel.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn contended_retirement_cancels_audio_after_boot_token_replacement() {
+        for detach in [false, true] {
+            let mut bridge = bridge();
+            let inbox = bridge.inbox.clone();
+            let mut held = inbox.lock().unwrap();
+            held.sound_cancel = Arc::new(AtomicBool::new(false));
+            if detach {
+                bridge.detach(false);
+                assert!(!bridge.sound_cancel.load(Ordering::Acquire));
+            } else {
+                drop(bridge);
+            }
+            assert!(held.sound_connection_cancel.load(Ordering::Acquire));
+        }
     }
 
     #[test]

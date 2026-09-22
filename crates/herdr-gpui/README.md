@@ -51,6 +51,17 @@ include desktop integration and notices; updater-only
 `herdr-gpui-VERSION-TARGET-update.tar.gz` archives contain one executable.
 Native two-version update/restart QA remains pending.
 
+The macOS **QA** menu offers **Show NeedsAttention toast**, **Show Finished
+toast**, **Show UpdateInstalled toast**, and **Show Custom toast**. Each adds a
+synthetic in-app toast for the selected endpoint, even when disconnected. Each
+preview replaces the visible card immediately, bypassing disabled delivery,
+delay, active-target suppression, and agent evidence checks. It uses the configured
+corner, normal kind-specific lifetime, and dismiss button.
+NeedsAttention and Finished previews retain the current target,
+when available, so clicking them tests normal navigation; other previews are inert.
+Creating previews does not contact the daemon or updater. Close any in-app
+panel first: toasts remain hidden while a panel is open.
+
 Spaces lists Local first, then saved hosts in the upstream catalog's order.
 Enabled hosts connect in the background with inactive terminal surfaces; disabled
 hosts remain visible. Host and repository collapse state is endpoint-scoped, and
@@ -105,6 +116,27 @@ Set top-level `confirm_close_tab = false` to close tabs without confirmation
 (including their running processes), and `show_agents = false` to hide the Agents
 section and give Spaces the full sidebar height. Both default to `true`. Pane
 closures still ask for confirmation. Reload GUI config or restart after editing.
+
+`[notifications]` controls GUI-local in-app delivery, independently of the daemon:
+
+```toml
+[notifications]
+enabled = false
+delay_seconds = 1
+position = "bottom-right"
+```
+
+Delivery defaults off, matching upstream. The delay accepts integer seconds from
+0 through 3600; Custom notifications always bypass the delay. Corners are
+`top-left`, `top-right`, `bottom-left`, and `bottom-right`; an explicit corner in
+the notification overrides this default. Preferences shows these values read-only,
+following the existing config-file settings pattern. Reload applies them without
+restarting: pending deadlines use the new delay relative to original arrival,
+disabling clears normal pending/queued/visible cards, and re-enabling does not
+replay discarded notifications. Enabling establishes an arrival cutoff, so events
+already waiting in a connection inbox from the disabled period are discarded too.
+Failed reloads preserve current settings. QA
+previews remain available regardless of delivery settings.
 
 The `[layout]` table holds spacing. `sidebar_gap` (finite 0..64 logical pixels,
 default `8`) is blank space between the sidebar and the terminal beside it, so
@@ -390,6 +422,9 @@ and local file paths are not activated.
   Cmd-Shift-D splits horizontally (new pane below). Cmd-Shift-] / Cmd-Shift-[
   cycles next/previous tab within the current workspace, wrapping at the ends.
   These shortcuts are native actions, not bytes sent to a terminal.
+- Cmd-Alt-N runs **Open Notification Target**, also available in Terminal and the
+  command palette. It uses the visible card's safe click path; stale, targetless,
+  queued, or menu-hidden cards do not navigate or change endpoint selection.
 - Cmd-1 through Cmd-9 focuses the corresponding numbered tab in the current
   workspace. Cmd-Alt-Left/Right/Up/Down focuses a pane in that direction;
   Cmd-Alt-] / Cmd-Alt-[ cycles next/previous pane within the current tab.
@@ -432,6 +467,55 @@ and local file paths are not activated.
   the daemon or its terminals. Window activation is reported to the daemon.
 - Resize uses the actual terminal canvas bounds and measured configured font cell width,
   excluding the native sidebar, tabs and status bar.
+- Semantic daemon notifications appear as nonmodal, host-labeled in-app toasts,
+  when enabled, including from background endpoints, without changing focus or
+  selection. A window-wide scheduler orders arrivals across coalesced host inboxes,
+  keeping one visible card, at most eight queued cards, and at most eight delayed
+  pending events. Each connection's ingress mailbox is separately bounded at eight.
+  Presentation-queue overflow drops the oldest waiting entries, not the visible
+  card. Ingress overflow conservatively retires all older cards for that endpoint
+  before delivering the surviving batch: a lost event may have invalidated a pane's
+  prior notification. This uses one loss flag, not an unbounded invalidation ledger.
+  A new event for
+  the same endpoint and pane replaces any pending, queued, or visible predecessor;
+  targetless events are not coalesced. Titles/bodies are inert plain text, stripped
+  of controls and bidi overrides and capped at 160/512 input characters.
+  Lifetimes begin at promotion: NeedsAttention 8 seconds, Finished 5,
+  UpdateInstalled 3, and Custom 5. The close button dismisses independently.
+  Disconnect, detach, replacement, and boot changes clear that endpoint's cards.
+  Finished always requires projected Done evidence, even at zero delay and never
+  without a pane. Working or missing evidence may wait until one second after
+  arrival, with 50ms rechecks on the UI poll loop; other states reject immediately.
+  Delayed NeedsAttention requires Blocked evidence. Grace is measured from arrival,
+  not added to the configured delay. The active endpoint's focused tab (or workspace
+  when no tab is specified) suppresses normal in-app delivery, regardless of outer
+  window focus; an identically focused background endpoint is not suppressed.
+  Requested corners are honored at wide sizes; below 720px all cards use bottom
+  right. Windows under 180px in either dimension hide cards. Menus and undersized
+  windows pause visible expiry and prevent queued promotion so cards receive a
+  visible lifetime after the obstruction closes.
+  Long text is clipped to keep cards bounded. Toast presentation and previews add
+  no extra sounds; semantic notification audio follows the independent
+  [sound policy](#notification-sounds). No OS notifications or terminal escapes
+  are performed. Clicking a targeted toast activates its
+  originating endpoint and focuses its pane, tab, or workspace through the API.
+  Targets are checked against the current snapshot, original boot, and connection;
+  deleted or reparented targets fail closed, without falling back to another space.
+  A target arriving before its snapshot can initialize during the first second,
+  within the same connection and known boot; after that it remains inert. Inferred
+  parents are frozen on initialization, so later snapshots cannot retarget a click.
+  Navigation waits for endpoint activation and dismisses only after the focus
+  request is queued (not daemon acknowledgement). An accepted click pauses that
+  card's expiry while navigation is pending; dismissal, same-pane replacement,
+  ingress loss, removed membership, and connection/boot changes still invalidate it.
+  Targetless Custom toasts stay
+  inert, and the close button only dismisses.
+  A busy connection inbox defers validation without blocking the UI. A contended
+  source inbox also defers focus release; the destination cannot activate before
+  the source release is acknowledged or its transport has drained. Returning to
+  Local remains an escape hatch: an unsent remote release retires that transport
+  without waiting. Pending
+  toast navigation keeps terminal input fenced until validation completes.
 
 Socket I/O belongs to `herdr-client`'s worker. A separate event thread drains all
 ordered events into a bounded latest-state cache. The UI samples changed state
@@ -472,7 +556,9 @@ GPUI native action/menu/keybinding patterns.
   composition appears in the status bar rather than inline. Key releases and
   physical-key/extended keyboard protocol metadata are not reported.
 - Popups have a basic centered text presentation, without native title/border
-  chrome. Server notifications/clipboard writes are not executed.
+  chrome. Only semantic notifications get in-app toasts; legacy notification
+  commands and server clipboard writes are not executed. There is no notification
+  history.
 - Rendering is a simple two-pass cell painter, not an optimized damaged-row
   renderer. Large/high-frequency surfaces can consume significant CPU.
 
@@ -503,6 +589,19 @@ rejection, Unicode composition, and headless right-click/input routing.
 sizes, but does not validate OS IME candidate-window delivery or live daemon
 worktree creation/close.
 They do not replace an interactive smoke test against a live daemon.
+
+Notification policy tests use explicit times for evidence grace, delay changes,
+cross-host arrival order, queue bounds, replacement, promotion lifetimes, and
+hidden-card expiry. Mock-peer navigation tests cover clicks and the native command,
+including inbox contention, handoffs, stale targets, and input fences. To draw all
+four offline previews in an isolated native window at narrow/wide sizes:
+
+```sh
+cargo test --locked -p herdr-gpui --features integration-test --test live_gui native_notifications -- --ignored --nocapture
+```
+
+This native check verifies disabled/delayed policy bypass and inert offline
+commands, not live-daemon navigation or pixel-level notification glyph clipping.
 
 `just test-sidebar` runs isolated, daemon-free native fixtures on the active
 desktop. On macOS it checks exact-window clicks with a decoy key window, host

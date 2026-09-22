@@ -7,6 +7,7 @@ mod commands;
 mod input;
 mod lifecycle;
 mod render;
+mod toasts;
 
 #[cfg(test)]
 mod font_size_tests;
@@ -45,6 +46,8 @@ pub(crate) struct HerdrWindow {
     pub(crate) catalog: endpoint::Catalog,
     pub(crate) activation_deadline: Option<std::time::Instant>,
     pub(crate) pending_navigation: Option<OwnedNavigationTarget>,
+    pub(crate) pending_toast: Option<u64>,
+    pub(crate) toasts_hidden: bool,
     pub(crate) pending_releases: Vec<endpoint::Release>,
     pub(crate) selected_generation: u64,
     pub(crate) live: LiveState,
@@ -206,6 +209,8 @@ impl HerdrWindow {
             selection_epoch: 0,
             activation_deadline: None,
             pending_navigation: None,
+            pending_toast: None,
+            toasts_hidden: false,
             pending_releases: Vec::new(),
             selected_generation: 0,
             live: LiveState::default(),

@@ -28,7 +28,7 @@ pub(super) fn muted() -> bool {
 pub(super) fn play(
     sound: Sound,
     custom: Option<&Path>,
-    cancel: &AtomicBool,
+    cancel: &[&AtomicBool],
     stop: &AtomicBool,
 ) -> Result<()> {
     if muted() {
@@ -106,8 +106,8 @@ fn decode_file(path: &Path) -> Result<SoundDecoder> {
     Ok(Decoder::try_from(Cursor::new(Cow::Owned(bytes)))?)
 }
 
-fn check(deadline: Instant, cancel: &AtomicBool, stop: &AtomicBool, now: Instant) -> Result<()> {
-    if cancel.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
+fn check(deadline: Instant, cancel: &[&AtomicBool], stop: &AtomicBool, now: Instant) -> Result<()> {
+    if cancel.iter().any(|flag| flag.load(Ordering::Acquire)) || stop.load(Ordering::Acquire) {
         return Err(Error::SoundCancelled);
     }
     if now >= deadline {
@@ -120,7 +120,7 @@ fn wait(
     player: &Player,
     errors: &mpsc::Receiver<rodio::cpal::StreamError>,
     deadline: Instant,
-    cancel: &AtomicBool,
+    cancel: &[&AtomicBool],
     stop: &AtomicBool,
     mut now: impl FnMut() -> Instant,
     mut sleep: impl FnMut(),
@@ -215,12 +215,13 @@ mod tests {
 
     #[test]
     fn playback_wait_stops_on_cancel_shutdown_timeout_and_device_loss() {
-        for outcome in 0..4 {
+        for outcome in 0..5 {
             let (player, mut output) = Player::new();
             player.append(rodio::source::SineWave::new(440.0));
             assert!(output.next().is_some());
             let (sender, errors) = mpsc::sync_channel(1);
             let cancel = AtomicBool::new(false);
+            let connection_cancel = AtomicBool::new(false);
             let stop = AtomicBool::new(false);
             let start = Instant::now();
             let now = Cell::new(start);
@@ -228,20 +229,21 @@ mod tests {
                 &player,
                 &errors,
                 start + MAX_DURATION,
-                &cancel,
+                &[&cancel, &connection_cancel],
                 &stop,
                 || now.get(),
                 || match outcome {
                     0 => cancel.store(true, Ordering::Release),
                     1 => stop.store(true, Ordering::Release),
                     2 => now.set(start + MAX_DURATION),
+                    4 => connection_cancel.store(true, Ordering::Release),
                     _ => sender
                         .try_send(rodio::cpal::StreamError::DeviceNotAvailable)
                         .unwrap(),
                 },
             );
             match outcome {
-                0 | 1 => assert!(matches!(result, Err(Error::SoundCancelled))),
+                0 | 1 | 4 => assert!(matches!(result, Err(Error::SoundCancelled))),
                 2 => assert!(matches!(result, Err(Error::SoundTimeout))),
                 _ => {
                     let error = result.unwrap_err();
@@ -273,7 +275,7 @@ mod tests {
                 &player,
                 &errors,
                 now + MAX_DURATION,
-                &AtomicBool::new(false),
+                &[&AtomicBool::new(false)],
                 &AtomicBool::new(false),
                 || now,
                 || {
@@ -286,7 +288,7 @@ mod tests {
         );
         assert!(player.empty());
         assert!(matches!(
-            check(now, &AtomicBool::new(true), &AtomicBool::new(false), now),
+            check(now, &[&AtomicBool::new(true)], &AtomicBool::new(false), now),
             Err(Error::SoundCancelled)
         ));
     }

@@ -40,6 +40,7 @@ fn bridge_moves_bounded_notifications_and_reload_once() {
     let bridge = ConnectionBridge::new(ConnectTarget::Socket("/unused-sound.sock".into()));
     {
         let mut state = bridge.inbox.lock().unwrap();
+        state.status = crate::state::ConnectionStatus::Connected;
         for i in 0..MAX_PENDING + 5 {
             let mut event = event(Kind::Custom);
             event.title = i.to_string();
@@ -52,11 +53,15 @@ fn bridge_moves_bounded_notifications_and_reload_once() {
     let first = bridge.take_update().unwrap();
     assert_eq!(first.sound_events.len(), MAX_PENDING);
     assert_eq!(first.sound_events[0].1.title, "5");
+    // Toast coalescing must not consume the independent sound delivery queue.
+    assert_eq!(first.notifications.len(), 1);
+    assert_eq!(first.notifications[0].title, (MAX_PENDING + 4).to_string());
     assert!(first.reload_sound);
     assert!(bridge.take_update().is_none());
     bridge.inbox.lock().unwrap().set_outer_focus(true);
     let next = bridge.take_update().unwrap();
     assert!(next.sound_events.is_empty());
+    assert!(next.notifications.is_empty());
     assert!(!next.reload_sound);
 }
 
@@ -341,7 +346,7 @@ fn preview_uses_builtin_on_worker_despite_notification_mute() {
         move |sound, path, cancel, stop| {
             assert_ne!(std::thread::current().id(), caller);
             assert!(path.is_none());
-            assert!(!cancel.load(Ordering::Acquire));
+            assert!(cancel.iter().all(|flag| !flag.load(Ordering::Acquire)));
             assert!(!stop.load(Ordering::Acquire));
             sender.send(sound).unwrap();
             Ok(())
@@ -354,6 +359,7 @@ fn preview_uses_builtin_on_worker_despite_notification_mute() {
         .send(Job {
             request: PlaybackRequest::Notification(event(Kind::Custom)),
             cancel: Arc::new(AtomicBool::new(false)),
+            connection_cancel: Arc::new(AtomicBool::new(false)),
             queued: Instant::now(),
         })
         .unwrap();
@@ -416,6 +422,7 @@ fn worker_continues_after_backend_error_without_replaying() {
             .send(Job {
                 request: PlaybackRequest::Notification(notification),
                 cancel: Arc::new(AtomicBool::new(false)),
+                connection_cancel: Arc::new(AtomicBool::new(false)),
                 queued: Instant::now(),
             })
             .unwrap();
@@ -439,6 +446,7 @@ fn worker_drops_cancelled_and_expired_jobs_without_playing_them() {
             .send(Job {
                 request: PlaybackRequest::Notification(event(Kind::Custom)),
                 cancel: Arc::new(AtomicBool::new(cancelled)),
+                connection_cancel: Arc::new(AtomicBool::new(false)),
                 queued: Instant::now() - Duration::from_secs(age),
             })
             .unwrap();

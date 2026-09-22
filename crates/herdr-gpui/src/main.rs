@@ -26,6 +26,7 @@ mod log_window;
 mod menu;
 mod menus;
 mod navigation;
+mod notifications;
 mod palette;
 mod pane_menu;
 mod preferences;

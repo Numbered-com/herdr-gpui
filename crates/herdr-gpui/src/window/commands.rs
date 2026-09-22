@@ -14,21 +14,25 @@ use gpui::{Context, Window};
 use std::time::Duration;
 
 impl HerdrWindow {
-    pub(crate) fn navigate(&mut self, target: NavigationTarget<&str>, cx: &mut Context<Self>) {
+    pub(crate) fn navigate(
+        &mut self,
+        target: NavigationTarget<&str>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if self.menu.page.is_some() || !self.input_ready() {
-            return;
+            return false;
         }
-        self.request_focus_change(
-            "Navigate",
-            Some((&target).into()),
-            |handle, boot| match target {
-                NavigationTarget::Workspace(id) => handle.focus_workspace(boot, id),
-                NavigationTarget::Tab(id) => handle.focus_tab(boot, id),
-                NavigationTarget::Pane(id) => handle.focus_pane(boot, id),
-            },
-        );
+        let queued =
+            self.request_focus_change("Navigate", Some((&target).into()), |handle, boot| {
+                match target {
+                    NavigationTarget::Workspace(id) => handle.focus_workspace(boot, id),
+                    NavigationTarget::Tab(id) => handle.focus_tab(boot, id),
+                    NavigationTarget::Pane(id) => handle.focus_pane(boot, id),
+                }
+            });
         self.marked.clear();
         cx.notify();
+        queued
     }
 
     /// `label` is what a failure is reported as, not a method name: navigation
@@ -41,7 +45,7 @@ impl HerdrWindow {
             &herdr_client::ClientHandle,
             &str,
         ) -> Result<String, herdr_client::SendError>,
-    ) {
+    ) -> bool {
         if let (Some(handle), Some(snapshot)) = (
             &self.endpoints[self.selected_endpoint].connection.handle,
             &self.live.snapshot,
@@ -50,8 +54,10 @@ impl HerdrWindow {
                 self.local_error = Some(format!("{label}: {error}"));
             } else {
                 self.fence_focus_change(focus);
+                return true;
             }
         }
+        false
     }
 
     pub(crate) fn fence_focus_change(&mut self, focus: Option<OwnedNavigationTarget>) {
@@ -132,6 +138,23 @@ impl HerdrWindow {
             self.input_probe.actions += 1;
         }
         match command {
+            Command::OpenNotificationTarget => {
+                if let Some((endpoint, id)) = self.endpoints.iter().find_map(|e| {
+                    e.toasts
+                        .entries
+                        .iter()
+                        .find(|(_, n)| n.visible)
+                        .map(|(id, _)| (e, *id))
+                }) {
+                    let (origin, generation, inbox) = (
+                        endpoint.id.clone(),
+                        endpoint.generation,
+                        endpoint.connection.inbox.clone(),
+                    );
+                    self.click_toast(&origin, generation, &inbox, id, cx);
+                }
+                return;
+            }
             Command::Logs => {
                 log_window::open(cx);
                 return;

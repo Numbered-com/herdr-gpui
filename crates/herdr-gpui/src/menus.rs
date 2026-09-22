@@ -3,9 +3,10 @@
 
 use crate::{
     CheckForUpdates, PlaySound, Quit, RunCommand, ShowHerdrNotDetected, ShowLogs,
-    ShowUpdatePreview, controls::Command,
+    ShowUpdatePreview, actions::ShowToastPreview, controls::Command,
 };
 use gpui::{Menu, MenuItem};
+use herdr_client::protocol::SemanticNotificationKind;
 
 pub(crate) fn menus() -> Vec<Menu> {
     vec![
@@ -137,6 +138,12 @@ pub(crate) fn menus() -> Vec<Menu> {
                     },
                 ),
                 MenuItem::action(
+                    "Open Notification Target",
+                    RunCommand {
+                        command: Command::OpenNotificationTarget,
+                    },
+                ),
+                MenuItem::action(
                     "Toggle Sidebar",
                     RunCommand {
                         command: Command::ToggleSidebar,
@@ -170,6 +177,31 @@ pub(crate) fn menus() -> Vec<Menu> {
                 MenuItem::action("Show herdr non-detected modal", ShowHerdrNotDetected),
                 MenuItem::action("Show app update available", ShowUpdatePreview),
                 MenuItem::action("Play Sound", PlaySound),
+                MenuItem::separator(),
+                MenuItem::action(
+                    "Show NeedsAttention toast",
+                    ShowToastPreview {
+                        kind: SemanticNotificationKind::NeedsAttention,
+                    },
+                ),
+                MenuItem::action(
+                    "Show Finished toast",
+                    ShowToastPreview {
+                        kind: SemanticNotificationKind::Finished,
+                    },
+                ),
+                MenuItem::action(
+                    "Show UpdateInstalled toast",
+                    ShowToastPreview {
+                        kind: SemanticNotificationKind::UpdateInstalled,
+                    },
+                ),
+                MenuItem::action(
+                    "Show Custom toast",
+                    ShowToastPreview {
+                        kind: SemanticNotificationKind::Custom,
+                    },
+                ),
             ],
         },
     ]

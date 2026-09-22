@@ -52,7 +52,10 @@ impl Policy {
             self.incoming.clear();
             self.cancel = Some(live.sound_cancel.clone());
         }
-        if live.sound_cancel.load(Ordering::Acquire) || !live.status.is_connected() {
+        if live.sound_cancel.load(Ordering::Acquire)
+            || live.sound_connection_cancel.load(Ordering::Acquire)
+            || !live.status.is_connected()
+        {
             self.pending.clear();
             self.incoming.clear();
             live.sound_events.clear();
@@ -152,6 +155,7 @@ enum PlaybackRequest {
 struct Job {
     request: PlaybackRequest,
     cancel: Arc<AtomicBool>,
+    connection_cancel: Arc<AtomicBool>,
     queued: Instant,
 }
 
@@ -174,7 +178,7 @@ impl Service {
 
     /// Starts the worker with an injectable playback backend, called serially and
     /// only on that worker. `play` blocks until completion or error, observing
-    /// endpoint cancellation (first flag) and service shutdown (second flag).
+    /// boot/connection cancellation flags and service shutdown.
     /// It must release per-job audio/device resources before returning; no player
     /// or device objects cross this boundary. Return typed errors with their
     /// sources intact: the worker logs failures without replaying or stopping.
@@ -183,7 +187,7 @@ impl Service {
         mut play: impl FnMut(
             herdr_client::protocol::SemanticNotificationSound,
             Option<&std::path::Path>,
-            &AtomicBool,
+            &[&AtomicBool],
             &AtomicBool,
         ) -> crate::Result<()>
         + Send
@@ -220,6 +224,7 @@ impl Service {
                         continue;
                     };
                     if job.cancel.load(Ordering::Acquire)
+                        || job.connection_cancel.load(Ordering::Acquire)
                         || job.queued.elapsed() >= Duration::from_secs(1)
                     {
                         continue;
@@ -238,7 +243,12 @@ impl Service {
                             (herdr_client::protocol::SemanticNotificationSound::Done, None)
                         }
                     };
-                    if let Err(error) = play(sound, path.as_deref(), &job.cancel, &stop) {
+                    if let Err(error) = play(
+                        sound,
+                        path.as_deref(),
+                        &[&job.cancel, &job.connection_cancel],
+                        &stop,
+                    ) {
                         tracing::debug!(%error, "Sound not played");
                     }
                 }
@@ -256,6 +266,7 @@ impl Service {
             let _ = sender.try_send(Job {
                 request: PlaybackRequest::Preview,
                 cancel: self.stop.clone(),
+                connection_cancel: self.stop.clone(),
                 queued: Instant::now(),
             });
         }
@@ -295,6 +306,7 @@ impl Service {
             .ok()
             .and_then(|value| value.clone());
         let cancel = live.sound_cancel.clone();
+        let connection_cancel = live.sound_connection_cancel.clone();
         policy.poll(
             live,
             settings.map(|s| s.ui_delay()),
@@ -305,6 +317,7 @@ impl Service {
                     let _ = sender.try_send(Job {
                         request: PlaybackRequest::Notification(event),
                         cancel: cancel.clone(),
+                        connection_cancel: connection_cancel.clone(),
                         queued: now,
                     });
                 }

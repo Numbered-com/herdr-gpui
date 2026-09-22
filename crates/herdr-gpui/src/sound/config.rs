@@ -365,6 +365,7 @@ mod tests {
                         },
                     ),
                     cancel: Arc::new(AtomicBool::new(false)),
+                    connection_cancel: Arc::new(AtomicBool::new(false)),
                     queued: Instant::now(),
                 })
                 .unwrap();

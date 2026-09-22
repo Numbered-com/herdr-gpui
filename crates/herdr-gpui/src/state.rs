@@ -43,6 +43,7 @@ pub struct LiveState {
     )>,
     pub(crate) reload_sound: bool,
     pub(crate) sound_cancel: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) sound_connection_cancel: Arc<std::sync::atomic::AtomicBool>,
     pub snapshot: Option<Arc<ClientShellSnapshot>>,
     pub surface: Option<Arc<PaneSurfaceFrame>>,
     pub status: ConnectionStatus,
@@ -53,6 +54,8 @@ pub struct LiveState {
     pub(crate) supports_workspace_get: bool,
     pub dirty: bool,
     pub(crate) dialog_response: Option<(String, Option<DialogResponse>)>,
+    pub(crate) notifications: std::collections::VecDeque<crate::notifications::Notice>,
+    pub(crate) notifications_lost: bool,
     outer_focused: Option<bool>,
     pub activation: Option<SurfaceActivation>,
     pub supports_surface: bool,
@@ -84,6 +87,7 @@ impl Default for LiveState {
             sound_events: Default::default(),
             reload_sound: false,
             sound_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            sound_connection_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             snapshot: None,
             surface: None,
             status: ConnectionStatus::Connecting,
@@ -93,6 +97,8 @@ impl Default for LiveState {
             supports_workspace_get: false,
             dirty: true,
             dialog_response: None,
+            notifications: Default::default(),
+            notifications_lost: false,
             outer_focused: None,
             activation: None,
             supports_surface: false,
@@ -174,6 +180,7 @@ impl LiveState {
                     .as_ref()
                     .is_some_and(|old| old.boot_id != snapshot.boot_id)
                 {
+                    self.notifications.clear();
                     self.cancel_sounds();
                     self.sound_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 }
@@ -203,6 +210,7 @@ impl LiveState {
                 }
             }
             ClientEvent::Disconnected { reason } => {
+                self.notifications.clear();
                 self.cancel_sounds();
                 self.status = ConnectionStatus::Disconnected;
                 self.error = Some(reason);
@@ -278,12 +286,29 @@ impl LiveState {
             ClientEvent::Message(ServerMessage::ClientShellError { message }) => {
                 self.error = Some(message)
             }
-            ClientEvent::Message(ServerMessage::SemanticNotification(event)) => {
+            ClientEvent::Message(ServerMessage::SemanticNotification(notification)) => {
+                if !self.status.is_connected() {
+                    return;
+                }
                 if self.sound_events.len() == crate::sound::MAX_PENDING {
                     self.sound_events.pop_front();
                 }
+                let received = std::time::Instant::now();
                 self.sound_events
-                    .push_back((std::time::Instant::now(), event));
+                    .push_back((received, notification.clone()));
+                if let Some(pane) = notification.pane_id.as_ref() {
+                    self.notifications
+                        .retain(|n| n.pane_id.as_ref() != Some(pane));
+                }
+                if self.notifications.len() == crate::notifications::PENDING_LIMIT {
+                    self.notifications.pop_front();
+                    // A dropped event may have invalidated an already displayed pane.
+                    self.notifications_lost = true;
+                }
+                self.notifications.push_back(
+                    crate::notifications::Notice::new(notification, received)
+                        .with_snapshot(self.snapshot.as_deref()),
+                );
             }
             ClientEvent::Message(ServerMessage::ReloadSoundConfig) => self.reload_sound = true,
             _ => return,
