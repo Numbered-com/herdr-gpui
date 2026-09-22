@@ -190,7 +190,10 @@ and local file paths are not activated.
   click flips; an active agent view names itself there instead. Client-local
   and persisted beside the sidebar width, as in the terminal client.
 - Resizable sidebar with width persisted per local daemon socket, shared across
-  host groups. Local workspace titles show repository owner avatars; remote
+  host groups. Drag the divider between Spaces and Agents up or down to resize
+  their sections; double-click it to restore an even split. The split is saved
+  across launches and retained while Agents is hidden.
+  Local workspace titles show repository owner avatars; remote
   workspaces use the GitHub fallback mark without resolving remote paths locally.
   Profile and owner avatars share a bounded public-image disk cache with 24-hour
   stale-while-refresh behavior; see [avatar caching](../../README.md#native-github-sign-in)

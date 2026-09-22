@@ -70,7 +70,9 @@ pub(crate) struct HerdrWindow {
     pub(crate) sidebar_visible: bool,
     pub(crate) wheel: WheelAccumulator,
     pub(crate) sidebar_width: Option<f32>,
-    pub(crate) sidebar_drag: Option<(f32, f32)>,
+    pub(crate) sidebar_drag: Option<sidebar::SidebarDrag>,
+    pub(crate) sidebar_split: Option<f32>,
+    pub(crate) sidebar_split_modified: bool,
     pub(crate) sidebar_preferences: Option<preferences::Preferences>,
     pub(crate) sidebar_modified: bool,
     pub(crate) agent_sort: preferences::AgentSort,
@@ -128,6 +130,9 @@ impl HerdrWindow {
                         {
                             if !this.sidebar_modified {
                                 this.sidebar_width = chrome.sidebar_width;
+                            }
+                            if !this.sidebar_split_modified {
+                                this.sidebar_split = chrome.sidebar_split;
                             }
                             if !this.agent_sort_modified {
                                 this.agent_sort = chrome.agent_sort;
@@ -218,6 +223,8 @@ impl HerdrWindow {
             wheel: WheelAccumulator::default(),
             sidebar_width: None,
             sidebar_drag: None,
+            sidebar_split: None,
+            sidebar_split_modified: false,
             sidebar_preferences: None,
             sidebar_modified: false,
             agent_sort: preferences::AgentSort::default(),
