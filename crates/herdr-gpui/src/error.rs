@@ -227,6 +227,8 @@ pub enum Error {
     EmptyFontFallback(&'static str),
     #[error("{0}.fallback must list at most 8 families")]
     TooManyFontFallbacks(&'static str),
+    #[error("layout.sidebar_gap must be finite and between 0 and 64 logical pixels")]
+    InvalidSidebarGap,
     #[error("theme must be a name, absolute path, or ~/ path")]
     InvalidThemePath,
     #[error("theme {name:?} not found in {directories:?}")]
