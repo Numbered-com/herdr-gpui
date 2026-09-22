@@ -28,6 +28,17 @@ VERSION = "20260920.1"
 
 
 class ReleaseTargets(unittest.TestCase):
+    def test_verifier_uses_one_exact_attestation_identity(self):
+        verifier = (ROOT / "scripts/verify-release.sh").read_text()
+        command = verifier.split('gh attestation verify "$file"', 1)[1].split('\n    if ', 1)[0]
+        self.assertIn('--cert-identity "$identity"', command)
+        for flag in ("--cert-identity-regex", "--signer-repo", "--signer-workflow"):
+            self.assertNotIn(flag, command)
+        for flag in ("--source-digest", "--signer-digest"):
+            self.assertIn(f'{flag} "$sha"', command)
+        self.assertIn('--source-ref refs/heads/main', command)
+        self.assertIn('--deny-self-hosted-runners', command)
+
     def test_ci_platform_checks_keep_owner_policy_and_required_gate(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         sections = re.split(r"^  ([a-z-]+):\n", workflow.split("\njobs:\n", 1)[1], flags=re.M)
