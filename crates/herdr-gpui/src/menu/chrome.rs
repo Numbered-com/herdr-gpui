@@ -148,14 +148,12 @@ impl HerdrWindow {
         let font = &self.config.ui;
         let theme = &self.theme;
         let viewport = window.viewport_size();
+        // Context menus open where the pointer asked for them. A dialog is a
+        // modal decision, not a continuation of the row it came from, so it
+        // centres over a dimmed window the way the Herdr TUI's dialogs do.
         let pointer_anchored = matches!(
             page,
-            Page::Workspace
-                | Page::Dialog(_)
-                | Page::Tab
-                | Page::RenameTab
-                | Page::Git
-                | Page::GitCommit
+            Page::Workspace | Page::Tab | Page::RenameTab | Page::Git | Page::GitCommit
         );
         let mut panel = div()
             .id("menu-panel")
@@ -211,11 +209,14 @@ impl HerdrWindow {
                         .min(px(if page == Page::Tab { 180. } else { 360. })))
                     .max_h((viewport.height - px(24.)).max(px(0.)))
             })
-            .when(page != Page::Menu && !pointer_anchored, |panel| {
-                panel
-                    .w((viewport.width - px(32.)).max(px(0.)).min(px(480.)))
-                    .max_h((viewport.height - px(32.)).max(px(0.)))
-            })
+            .when(
+                page != Page::Menu && !pointer_anchored && !matches!(page, Page::Dialog(_)),
+                |panel| {
+                    panel
+                        .w((viewport.width - px(32.)).max(px(0.)).min(px(480.)))
+                        .max_h((viewport.height - px(32.)).max(px(0.)))
+                },
+            )
             .when(
                 !matches!(
                     page,
