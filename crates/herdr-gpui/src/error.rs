@@ -35,6 +35,10 @@ pub enum Error {
         "PR lookup requires your owned local session socket. Select Local using its standard socket; SSH and other socket locations are unsupported."
     )]
     PrUntrustedEndpoint,
+    #[error("The selected pane is no longer on screen.")]
+    SelectionStale,
+    #[error("Selection is too large to copy.")]
+    SelectionSize,
     #[error("Checkout lookup failed. Dismiss and reopen the menu.")]
     DeletionLookup,
     #[error("Reopen the deletion dialog.")]

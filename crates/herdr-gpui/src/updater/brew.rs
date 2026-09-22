@@ -40,6 +40,8 @@ const UPGRADE: Duration = Duration::from_secs(30 * 60);
 const QUERY: Duration = Duration::from_secs(60);
 const RELAUNCH: Duration = Duration::from_secs(30);
 const DETAIL: usize = 120;
+/// Homebrew's output is unbounded; the diagnostics built from it are not.
+const TAIL: usize = 8;
 /// How long to keep draining the pipes after the process exits.
 const DRAIN: Duration = Duration::from_secs(5);
 
@@ -151,6 +153,15 @@ fn detail(line: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_owned())
 }
 
+/// Keep the last few lines for diagnostics, reporting each one exactly once.
+fn record(tail: &mut Vec<String>, text: String, progress: &mut impl FnMut(String)) {
+    if tail.len() == TAIL {
+        tail.remove(0);
+    }
+    tail.push(text.clone());
+    progress(text);
+}
+
 /// Run Homebrew, reporting progress as it goes.
 ///
 /// `install::output` cannot serve here: it clears the environment, caps at 30
@@ -191,35 +202,28 @@ fn run(
     let start = Instant::now();
     // Only the tail is retained: Homebrew output is unbounded, diagnostics are not.
     let mut tail: Vec<String> = Vec::new();
-    let result: Result<()> = loop {
+    // What ended the run, not yet why: a failure's detail is the last line the
+    // process produced, which the drain below may not have recovered yet.
+    let ended = loop {
         if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
-            break Err(Error::Cancelled);
+            break Ended::Error(Error::Cancelled);
         }
         if start.elapsed() > deadline {
-            break Err(Error::BrewTimeout);
+            break Ended::Error(Error::BrewTimeout);
         }
         while let Ok(line) = receiver.try_recv() {
             let Some(text) = line.as_deref().and_then(detail) else {
                 continue;
             };
-            if tail.len() == 8 {
-                tail.remove(0);
-            }
-            tail.push(text.clone());
-            progress(text);
+            record(&mut tail, text, &mut progress);
         }
         match child.try_wait().map_err(Error::Io)? {
-            Some(status) if !status.success() => {
-                break Err(Error::BrewFailed {
-                    status,
-                    detail: tail.last().cloned().unwrap_or_default(),
-                });
-            }
-            Some(_) => break Ok(()),
+            Some(status) if !status.success() => break Ended::Failed(status),
+            Some(_) => break Ended::Exited,
             None => thread::sleep(Duration::from_millis(50)),
         }
     };
-    if result.is_err() {
+    if !matches!(ended, Ended::Exited) {
         let _ = child.kill();
     }
     let _ = child.wait();
@@ -231,6 +235,10 @@ fn run(
     // disconnects once they reach EOF. Bounded, because a grandchild that
     // inherited the pipes can hold them open after Homebrew itself exits, and a
     // lost line must not become a hung update.
+    //
+    // These lines are reported like any other. A short command can exit with
+    // its whole output still in flight, and whether a line reaches the caller
+    // must not depend on which side of the exit it was read on.
     let drain = Instant::now() + DRAIN;
     loop {
         let remaining = drain.saturating_duration_since(Instant::now());
@@ -243,12 +251,25 @@ fn run(
         let Some(text) = line.as_deref().and_then(detail) else {
             continue;
         };
-        if tail.len() == 8 {
-            tail.remove(0);
-        }
-        tail.push(text);
+        record(&mut tail, text, &mut progress);
     }
-    result.map(|()| tail)
+    match ended {
+        Ended::Exited => Ok(tail),
+        // A command can exit with the line that says why still in the pipe, so
+        // the detail is taken from the drained output, not from the race.
+        Ended::Failed(status) => Err(Error::BrewFailed {
+            status,
+            detail: tail.last().cloned().unwrap_or_default(),
+        }),
+        Ended::Error(error) => Err(error),
+    }
+}
+
+/// How a run ended, before its output has finished arriving.
+enum Ended {
+    Exited,
+    Failed(std::process::ExitStatus),
+    Error(Error),
 }
 
 /// The version Homebrew currently records as installed for the cask.
@@ -468,9 +489,33 @@ mod tests {
         let Err(error) = run(command(&noisy), QUERY, None, |line| seen.push(line)) else {
             anyhow::bail!("a non-zero exit must fail");
         };
-        assert!(seen.len() > 8, "every line is reported as progress");
+        // Every line, whichever side of the child's exit it was read on: a
+        // command this short can exit with all of it still in flight.
+        let mut expected: Vec<String> = (1..=200).map(|i| format!("line {i}")).collect();
+        expected.push("boom".to_owned());
+        seen.sort();
+        expected.sort();
+        assert_eq!(seen, expected, "every line is reported as progress");
         assert!(matches!(&error, Error::BrewFailed { status, detail }
                 if status.code() == Some(3) && !detail.is_empty() && detail.len() <= DETAIL));
+
+        // A line that only reaches the pipe after the process exits is still
+        // that process's output: the grandchild keeps the pipe open past the
+        // exit, so this line can be read only while draining.
+        let late = cask(
+            "#!/bin/sh\n( sleep 1; echo 'after exit' ) &\necho 'before exit'\nexit 3\n",
+            root.path(),
+        )?;
+        let mut seen = Vec::new();
+        let Err(error) = run(command(&late), QUERY, None, |line| seen.push(line)) else {
+            anyhow::bail!("a non-zero exit must fail");
+        };
+        assert_eq!(seen, ["before exit", "after exit"], "drained lines report");
+        assert!(
+            matches!(&error, Error::BrewFailed { detail, .. } if detail == "after exit"),
+            "the detail is the last line produced, not the last one read before \
+             the exit: {error:?}"
+        );
 
         let long = cask(
             &format!("#!/bin/sh\necho '{}'\n", "x".repeat(4096)),

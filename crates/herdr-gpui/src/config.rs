@@ -1,4 +1,6 @@
-//! GUI-only settings; no daemon settings are read or changed.
+//! GUI settings. The daemon's own config is read only where the GUI honors a
+//! preference the user already expressed there, never written and never used
+//! to change daemon behavior; `config-gpui.toml` overrides it key by key.
 use crate::{Error, Result, error::ThemeParseError};
 use gpui::{Font, FontFallbacks};
 use serde::Deserialize;
@@ -31,7 +33,40 @@ pub struct Config {
     pub github: GitHubConfig,
     pub features: Features,
     pub notifications: NotificationConfig,
+    pub clipboard_toast: ClipboardToast,
     pub layout: Layout,
+}
+
+/// Where the "copied to clipboard" flash sits, and whether it appears at all.
+/// Resolved from the daemon's `[ui.toast.clipboard]`, then from this GUI's own
+/// `[clipboard_toast]`, so one terminal preference covers both clients.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClipboardToast {
+    pub enabled: bool,
+    pub position: ClipboardToastPosition,
+}
+
+impl Default for ClipboardToast {
+    fn default() -> Self {
+        // herdr's own defaults, so an unconfigured pair of clients agrees.
+        Self {
+            enabled: true,
+            position: ClipboardToastPosition::BottomCenter,
+        }
+    }
+}
+
+/// From herdr src/config/model.rs.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClipboardToastPosition {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    BottomLeft,
+    #[default]
+    BottomCenter,
+    BottomRight,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -141,6 +176,10 @@ const DEFAULT_SIDEBAR_GAP: f32 = 8.;
 /// terminal needs, so the config file is held to a band a window can afford.
 const MAX_SIDEBAR_GAP: f32 = 64.;
 
+/// The daemon's config is read for a handful of keys, so a file far larger
+/// than any hand-written config is skipped rather than parsed on every load.
+const MAX_DAEMON_CONFIG_BYTES: u64 = 1 << 20;
+
 /// Upper bound on a configured cascade. Every entry is searched for each
 /// uncovered codepoint, so a long list costs shaping time and covers nothing a
 /// short one does not. Names that are not installed are ignored by the platform.
@@ -233,6 +272,7 @@ impl Default for Config {
             show_agents: true,
             features: Features::default(),
             notifications: NotificationConfig::default(),
+            clipboard_toast: ClipboardToast::default(),
             layout: Layout::default(),
             sidebar: font(monospace, 12.0),
             // Tabs are terminal chrome, so they read in the monospace face the
@@ -257,7 +297,26 @@ struct Settings {
     github: GitHubConfig,
     features: Features,
     notifications: NotificationConfig,
+    clipboard_toast: ClipboardToastSettings,
     layout: Layout,
+}
+
+/// Each key overrides the daemon's answer on its own, so naming one of them
+/// here does not silently reset the other to a GUI default.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ClipboardToastSettings {
+    enabled: Option<bool>,
+    position: Option<ClipboardToastPosition>,
+}
+
+impl ClipboardToastSettings {
+    fn resolve(self, base: ClipboardToast) -> ClipboardToast {
+        ClipboardToast {
+            enabled: self.enabled.unwrap_or(base.enabled),
+            position: self.position.unwrap_or(base.position),
+        }
+    }
 }
 
 #[derive(Default, Deserialize)]
@@ -286,6 +345,59 @@ fn config_root() -> Result<PathBuf> {
         }
         None => Ok(home()?.join(".config")),
     }
+}
+
+/// The daemon's own config file, resolved exactly as herdr resolves it. Every
+/// GUI reader of those settings shares this one answer.
+pub(crate) fn daemon_config_path(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
+    if let Some(path) = get("HERDR_CONFIG_PATH") {
+        return path.into();
+    }
+    let root = get("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            get("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".config"))
+                .unwrap_or_else(env::temp_dir)
+        });
+    // Share production TUI settings even in a debug GUI build or SSH session.
+    root.join("herdr/config.toml")
+}
+
+/// A config file the GUI does not own can hold anything, including settings
+/// from a newer herdr, so only the keys read here matter and anything
+/// unreadable, oversized, malformed, or unrecognized leaves the defaults alone.
+fn daemon_clipboard_toast(path: &Path) -> ClipboardToast {
+    let mut resolved = ClipboardToast::default();
+    if fs::metadata(path).is_ok_and(|data| data.len() > MAX_DAEMON_CONFIG_BYTES) {
+        return resolved;
+    }
+    let Some(clipboard) = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .and_then(|table| {
+            table
+                .get("ui")?
+                .get("toast")?
+                .get("clipboard")?
+                .as_table()
+                .cloned()
+        })
+    else {
+        return resolved;
+    };
+    if let Some(enabled) = clipboard.get("enabled").and_then(toml::Value::as_bool) {
+        resolved.enabled = enabled;
+    }
+    if let Some(position) = clipboard
+        .get("position")
+        .cloned()
+        .and_then(|position| position.try_into().ok())
+    {
+        resolved.position = position;
+    }
+    resolved
 }
 
 fn theme_directories() -> Result<Vec<PathBuf>> {
@@ -340,13 +452,16 @@ impl Config {
     }
 
     pub fn load() -> Result<Self> {
-        Self::load_path(&Self::path()?)
+        Self::load_path(&Self::path()?, &daemon_config_path(|key| env::var_os(key)))
     }
 
-    fn load_path(path: &Path) -> Result<Self> {
+    /// `daemon` is the herdr config whose settings this GUI also honors. It is
+    /// read for those keys alone and never written; a missing one is normal.
+    fn load_path(path: &Path, daemon: &Path) -> Result<Self> {
+        let base = daemon_clipboard_toast(daemon);
         let result = (|| {
             match fs::read_to_string(path) {
-                Ok(text) => return Self::parse(&text),
+                Ok(text) => return Self::parse_over(&text, base),
                 Err(error) if error.kind() == ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
@@ -362,12 +477,21 @@ impl Config {
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(error.into()),
             }
-            Self::parse(&fs::read_to_string(path)?)
+            Self::parse_over(&fs::read_to_string(path)?, base)
         })();
         result.map_err(|error| error.at_path(path))
     }
 
+    /// The GUI file on its own, with nothing layered under it: the shape the
+    /// tests below read, since loading also consults the daemon's config.
+    #[cfg(test)]
     fn parse(text: &str) -> Result<Self> {
+        Self::parse_over(text, ClipboardToast::default())
+    }
+
+    /// `base` is what the daemon's own config asked for, which every key this
+    /// file names overrides.
+    fn parse_over(text: &str, base: ClipboardToast) -> Result<Self> {
         let loaded = config_loader::Config::builder()
             .add_source(config_loader::File::from_str(
                 text,
@@ -383,6 +507,7 @@ impl Config {
         config.github = settings.github;
         config.features = settings.features;
         config.notifications = settings.notifications;
+        config.clipboard_toast = settings.clipboard_toast.resolve(base);
         if !settings.layout.sidebar_gap.is_finite()
             || !(0.0..=MAX_SIDEBAR_GAP).contains(&settings.layout.sidebar_gap)
         {
@@ -794,6 +919,149 @@ mod tests {
     use super::*;
     use anyhow::Context as _;
 
+    /// The daemon's own answer is the starting point, each GUI key overrides
+    /// it alone, and the file this GUI writes for a new user pins neither.
+    #[test]
+    fn clipboard_toast_layers_the_daemon_config_under_the_gui_config() -> anyhow::Result<()> {
+        use ClipboardToastPosition::*;
+        let temp = TempDirectory::new()?;
+        let gui = temp.0.join("config-gpui.toml");
+        let daemon = temp.0.join("config.toml");
+
+        // No files at all: herdr's defaults, so both clients agree.
+        fs::write(&gui, "")?;
+        let load = |daemon: &Path| Config::load_path(&gui, daemon);
+        assert_eq!(
+            load(&daemon)?.clipboard_toast,
+            ClipboardToast {
+                enabled: true,
+                position: BottomCenter
+            }
+        );
+
+        // The daemon config alone decides when the GUI config is silent.
+        fs::write(
+            &daemon,
+            "onboarding = false\n[ui]\nstatus_indicators = \"dots\"\n[ui.toast.clipboard]\nenabled = false\nposition = \"top-right\"\n",
+        )?;
+        assert_eq!(
+            load(&daemon)?.clipboard_toast,
+            ClipboardToast {
+                enabled: false,
+                position: TopRight
+            }
+        );
+
+        // Each GUI key overrides on its own, leaving the other one alone.
+        for (text, expected) in [
+            (
+                "[clipboard_toast]\nenabled = true",
+                ClipboardToast {
+                    enabled: true,
+                    position: TopRight,
+                },
+            ),
+            (
+                "[clipboard_toast]\nposition = \"bottom-left\"",
+                ClipboardToast {
+                    enabled: false,
+                    position: BottomLeft,
+                },
+            ),
+            (
+                "[clipboard_toast]\nenabled = true\nposition = \"top-center\"",
+                ClipboardToast {
+                    enabled: true,
+                    position: TopCenter,
+                },
+            ),
+            (
+                "[clipboard_toast]",
+                ClipboardToast {
+                    enabled: false,
+                    position: TopRight,
+                },
+            ),
+        ] {
+            fs::write(&gui, text)?;
+            assert_eq!(load(&daemon)?.clipboard_toast, expected, "{text}");
+        }
+
+        // A daemon config the GUI cannot use leaves herdr's defaults standing:
+        // it belongs to another program and may hold anything.
+        fs::write(&gui, "")?;
+        for text in [
+            "not toml",
+            "[ui.toast.clipboard]\nenabled = \"yes\"\nposition = 3",
+            "[ui.toast.clipboard]\nposition = \"middle\"",
+            "[ui.toast]\nclipboard = 7",
+            "[ui]\ntoast = false",
+            "",
+        ] {
+            fs::write(&daemon, text)?;
+            assert_eq!(
+                load(&daemon)?.clipboard_toast,
+                ClipboardToast::default(),
+                "{text}"
+            );
+        }
+        fs::remove_file(&daemon)?;
+        assert_eq!(load(&daemon)?.clipboard_toast, ClipboardToast::default());
+        assert_eq!(
+            load(&temp.0)?.clipboard_toast,
+            ClipboardToast::default(),
+            "a directory is not a config"
+        );
+
+        // Oversized files are skipped rather than parsed on every config load.
+        let mut oversized = "[ui.toast.clipboard]\nenabled = false\n".to_owned();
+        oversized.push_str(&"# pad\n".repeat(MAX_DAEMON_CONFIG_BYTES as usize / 6));
+        assert!(oversized.len() as u64 > MAX_DAEMON_CONFIG_BYTES);
+        fs::write(&daemon, &oversized)?;
+        assert_eq!(load(&daemon)?.clipboard_toast, ClipboardToast::default());
+
+        // The file written for a new user must not pin either key, or the
+        // daemon config could never reach a GUI that has run once.
+        assert_eq!(
+            ClipboardToastSettings::default().resolve(ClipboardToast {
+                enabled: false,
+                position: TopLeft
+            }),
+            ClipboardToast {
+                enabled: false,
+                position: TopLeft
+            }
+        );
+        fs::write(&gui, DEFAULT_CONFIG)?;
+        fs::write(
+            &daemon,
+            "[ui.toast.clipboard]\nenabled = false\nposition = \"top-left\"\n",
+        )?;
+        assert_eq!(
+            load(&daemon)?.clipboard_toast,
+            ClipboardToast {
+                enabled: false,
+                position: TopLeft
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn clipboard_toast_keys_are_strict() {
+        for text in [
+            "[clipboard_toast]\nenabled = 1",
+            "[clipboard_toast]\nenabled = \"true\"",
+            "[clipboard_toast]\nposition = \"middle\"",
+            "[clipboard_toast]\nposition = \"BottomCenter\"",
+            "[clipboard_toast]\nposition = 1",
+            "[clipboard_toast]\nunknown = true",
+            "clipboard_toast = true",
+        ] {
+            assert!(Config::parse(text).is_err(), "{text}");
+        }
+    }
+
     #[test]
     fn notification_settings_defaults_bounds_corners_and_strict_types() -> anyhow::Result<()> {
         use herdr_client::protocol::ToastHerdrPosition;
@@ -891,7 +1159,7 @@ mod tests {
         let temp = TempDirectory::new()?;
         let path = temp.0.join("invalid.toml");
         fs::write(&path, "theme = [")?;
-        let error = Config::load_path(&path)
+        let error = Config::load_path(&path, &temp.0.join("absent.toml"))
             .err()
             .ok_or_else(|| anyhow::anyhow!("accepted invalid TOML"))?;
         assert!(
@@ -1108,7 +1376,12 @@ mod tests {
         fs::write(&custom, "background=112233")?;
         let new_path = temp.0.join("nested/config.toml");
         config.save_theme_path(custom_name, &new_path)?;
-        assert_eq!(Config::load_path(&new_path)?.theme()?.background, 0x112233);
+        assert_eq!(
+            Config::load_path(&new_path, &temp.0.join("absent.toml"))?
+                .theme()?
+                .background,
+            0x112233
+        );
         assert_eq!(
             fs::read_dir(new_path.parent().context("missing parent")?)?.count(),
             1
@@ -1416,10 +1689,11 @@ mod tests {
             env::temp_dir().join(format!("herdr-config-{}-{unique}", std::process::id()));
         let path = directory.join("config-gpui.toml");
         let result = (|| {
-            Config::load_path(&path)?;
+            let absent = directory.join("config.toml");
+            Config::load_path(&path, &absent)?;
             assert_eq!(fs::read_to_string(&path)?, DEFAULT_CONFIG);
             fs::write(&path, "theme = 'Nord'")?;
-            assert_eq!(Config::load_path(&path)?.theme, "Nord");
+            assert_eq!(Config::load_path(&path, &absent)?.theme, "Nord");
             assert_eq!(fs::read_to_string(&path)?, "theme = 'Nord'");
             let theme_path = directory.join("custom-theme");
             fs::write(&theme_path, "background=112233")?;

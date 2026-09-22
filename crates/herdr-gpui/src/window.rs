@@ -7,6 +7,7 @@ mod commands;
 mod input;
 mod lifecycle;
 mod render;
+mod selection;
 mod toasts;
 
 #[cfg(test)]
@@ -20,8 +21,13 @@ mod tests;
 use crate::smoke;
 use crate::{
     WINDOW_TITLE, avatars, config, endpoint, git, log_window, menu,
-    navigation::OwnedNavigationTarget, preferences, presentation::Presentation, sidebar,
-    state::LiveState, terminal::WheelAccumulator, terminal_painter, updater,
+    navigation::OwnedNavigationTarget,
+    preferences,
+    presentation::Presentation,
+    sidebar,
+    state::LiveState,
+    terminal::{Selection, WheelAccumulator},
+    terminal_painter, updater,
 };
 use gpui::{prelude::*, *};
 use herdr_client::{ConnectOptions, ConnectTarget};
@@ -62,6 +68,11 @@ pub(crate) struct HerdrWindow {
     pub(crate) cell_width: f32,
     pub(crate) hovered_terminal_link: bool,
     pub(crate) pressed_terminal_link: Option<(String, Point<Pixels>)>,
+    /// The terminal cells the pointer is choosing. A release copies them and
+    /// clears this, so a highlight only ever belongs to a drag in progress.
+    pub(crate) selection: Option<Selection>,
+    /// When the "copied to clipboard" flash stops showing.
+    pub(crate) copy_feedback: Option<std::time::Instant>,
     /// The frame on screen, kept across the gap between two projections.
     pub(crate) presentation: Presentation,
     pub(crate) painter: std::rc::Rc<std::cell::RefCell<terminal_painter::TerminalPainter>>,
@@ -158,6 +169,9 @@ impl HerdrWindow {
                         this.update_workspace_dialog(window, cx);
                         this.poll_worktree_source(cx);
                         this.poll_hover_menu(std::time::Instant::now(), window, cx);
+                        if this.tick_copy_feedback(std::time::Instant::now()) {
+                            cx.notify();
+                        }
                         this.poll_tab_rename(window, cx);
                         this.poll_pane_rename(window, cx);
                         if old_pane
@@ -224,6 +238,8 @@ impl HerdrWindow {
             cell_width: 9.,
             hovered_terminal_link: false,
             pressed_terminal_link: None,
+            selection: None,
+            copy_feedback: None,
             presentation: Default::default(),
             painter: Default::default(),
             marked: String::new(),

@@ -1,4 +1,4 @@
-use crate::{Error, Result};
+use crate::{Error, Result, config::daemon_config_path as config_path};
 use herdr_client::protocol::SemanticNotificationSound as Sound;
 use serde::Deserialize;
 use std::{
@@ -127,22 +127,6 @@ impl Default for Settings {
             root: PathBuf::new(),
         }
     }
-}
-
-fn config_path(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
-    if let Some(path) = get("HERDR_CONFIG_PATH") {
-        return path.into();
-    }
-    let root = get("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            get("HOME")
-                .map(PathBuf::from)
-                .map(|home| home.join(".config"))
-                .unwrap_or_else(std::env::temp_dir)
-        });
-    // Share production TUI settings even in a debug GUI build or SSH session.
-    root.join("herdr/config.toml")
 }
 
 impl Settings {

@@ -144,6 +144,26 @@ the first column does not sit against the divider; `0` restores the flush edge.
 The terminal keeps the remaining width, so the daemon is resized to the columns
 it actually has, and the gap is ignored while the sidebar is hidden.
 
+The `[clipboard_toast]` table controls the `copied to clipboard` flash shown
+after a terminal selection is copied. It is the one GUI setting that starts from
+the daemon's own config: `[ui.toast.clipboard]` in `config.toml` (resolved like
+the sound settings below) answers it first, so setting it there covers both
+clients, and each key here overrides that answer on its own.
+
+```toml
+[clipboard_toast]
+enabled = true
+position = "bottom-center"
+```
+
+Positions are `top-left`, `top-center`, `top-right`, `bottom-left`,
+`bottom-center`, and `bottom-right`, measured against the terminal area rather
+than the window. Both keys default to herdr's own defaults, shown at the bottom
+center, and the example file leaves them commented out so an unedited GUI keeps
+following the daemon config. Only these two keys are read from that file, it is
+never written, and an unreadable, oversized, malformed, or unrecognized value
+leaves the defaults standing.
+
 The `src/config.rs` module exposes `Config::load()` and
 `Config::path()`, both returning the crate's typed `Result`. `Config::theme()` resolves
 built-ins or Ghostty files into a `Theme` with packed 24-bit RGB colors and all
@@ -278,12 +298,37 @@ double-click preferences (zoom/minimize/do nothing), fullscreen transitions and
 auto-hidden controls, theme changes, and modal/focus/IME behavior. Windows/Linux
 native-frame appearance also remains unverified by these macOS tests.
 
+## Terminal Selection And Copy
+
+Drag across the terminal to select cells; releasing the button copies them, drops
+the highlight, and shows the `copied to clipboard` flash described under
+[Configuration](#configuration). Selection is client-local: it reads the surface
+the client already has, sends nothing to the daemon, and asks it for nothing.
+
+A selection stays inside the pane it started in, and a drag that leaves the pane
+or the window selects up to its edge rather than into its neighbor. A selection
+inside a popup takes the popup's own cells, never the panes it covers. Because
+each end anchors on the half of a cell the pointer sat in, a single character is
+selectable, while a press that never crosses a midpoint selects nothing.
+
+Copied rows are separated by newlines. Wide graphemes copy once rather than
+twice, concealed cells copy as blanks so hidden content does not reach the
+clipboard, and trailing blanks are dropped only from rows selected through to the
+pane's right edge, where a terminal pads short lines. A copy is bounded, and one
+too large to copy reports in the status bar instead.
+
+The highlight is cleared by the release that copies it, and by a reconnect,
+detach, or endpoint switch. Cmd-V still sends semantic paste; there is no copy
+keystroke, because the release has already copied and nothing stays selected.
+
 ## Terminal Links
 
 Click an explicit terminal hyperlink or a visible `http://` / `https://` URL to
 open it in your default browser. A hand cursor indicates a clickable destination.
 Only HTTP and HTTPS destinations are opened. Links inside a popup target that
-popup, and menus block activation. Dragging does not activate a link.
+popup, and menus block activation. Dragging does not activate a link: a drag
+across a link copies it as text, and the click that opens it is the one that
+never left the half-cell it pressed in.
 
 Plain URL detection is limited to one row within one pane; links that wrap or
 reach the right edge need explicit terminal hyperlink metadata. Other URI schemes
@@ -490,6 +535,9 @@ and local file paths are not activated.
 - Enter, Tab/BackTab, Escape, Backspace, arrows, navigation/editing keys,
   F1-F24, Control characters and modifiers on special keys. Option-printable
   input follows the macOS keyboard layout, including dead keys.
+- Pointer selection of terminal cells, copied to the clipboard on release with
+  a configurable flash. Selections stay within one pane or the popup above it,
+  anchor on half cells, and never reach the daemon.
 - Cmd-V sends semantic Paste; Cmd-Q or window close detaches without killing
   the daemon or its terminals. Window activation is reported to the daemon.
 - Resize uses the actual terminal canvas bounds and measured configured font cell width,

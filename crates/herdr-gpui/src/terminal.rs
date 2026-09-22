@@ -1,5 +1,7 @@
 mod links;
+mod selection;
 pub(crate) use links::link_at;
+pub(crate) use selection::Selection;
 
 use crate::config::Theme;
 use gpui::{
