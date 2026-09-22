@@ -12,6 +12,7 @@ mod pr;
 mod settings;
 mod state;
 mod workspace;
+mod worktree_open;
 mod worktree_render;
 mod worktree_source;
 
@@ -19,6 +20,8 @@ mod worktree_source;
 mod font_size_tests;
 #[cfg(test)]
 pub(crate) mod workspace_tests;
+#[cfg(test)]
+mod worktree_open_tests;
 #[cfg(test)]
 mod worktree_tests;
 

@@ -39,6 +39,12 @@ pub enum Error {
     DeletionLookup,
     #[error("Reopen the deletion dialog.")]
     MissingDeletion,
+    #[error("Invalid or oversized worktree list. Dismiss and reopen the menu.")]
+    WorktreeList,
+    #[error("Malformed worktree list. Dismiss and reopen the menu.")]
+    WorktreeListDecode(#[source] serde_json::Error),
+    #[error("Select a checkout from the daemon's worktree list.")]
+    WorktreeSelection,
     #[error("{method}: {source}")]
     Request {
         method: herdr_client::Method,
