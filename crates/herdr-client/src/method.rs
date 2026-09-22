@@ -30,6 +30,7 @@ pub enum Method {
     WorkspaceRename,
     WorktreeCreate,
     WorktreeList,
+    WorktreeOpen,
     WorktreeRemove,
 }
 
@@ -56,6 +57,7 @@ impl Method {
             Self::WorkspaceRename => "workspace.rename",
             Self::WorktreeCreate => "worktree.create",
             Self::WorktreeList => "worktree.list",
+            Self::WorktreeOpen => "worktree.open",
             Self::WorktreeRemove => "worktree.remove",
         }
     }

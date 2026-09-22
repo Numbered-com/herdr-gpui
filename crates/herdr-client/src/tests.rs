@@ -524,13 +524,16 @@ fn stale_boot_and_unsupported_commands_never_reach_socket() {
             reason: Error::CommandBoot,
         }
     ));
-    let unsupported = client
-        .handle
-        .request("boot-v1", Method::TabCreate, json!({}))
-        .unwrap();
-    assert!(
-        matches!(event(&client), ClientEvent::CommandRejected { request_id: Some(id), reason: Error::UnsupportedMethod } if id == unsupported)
-    );
+    for method in [
+        Method::TabCreate,
+        Method::WorktreeList,
+        Method::WorktreeOpen,
+    ] {
+        let unsupported = client.handle.request("boot-v1", method, json!({})).unwrap();
+        assert!(
+            matches!(event(&client), ClientEvent::CommandRejected { request_id: Some(id), reason: Error::UnsupportedMethod } if id == unsupported)
+        );
+    }
     client.handle.set_focus("boot-v1", true).unwrap();
     assert_eq!(
         receive(&mut server),
