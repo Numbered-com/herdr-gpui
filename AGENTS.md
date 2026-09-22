@@ -92,6 +92,36 @@ Closing or detaching the GUI must leave the daemon and its terminals running.
 - Do not introduce Tokio or another runtime to wrap the existing blocking socket worker.
 - Avoid unrelated lockfile upgrades. Use `--locked` for reproducible verification.
 
+## Changelog
+
+Users learn what changed from the GitHub release body, which is generated from
+git history by `git-cliff` (`cliff.toml`) rather than written by hand. The
+release workflow's `changelog` job runs `scripts/release/generate-changelog.sh`
+and `publish` passes its `RELEASE_NOTES.md` to `gh release create --notes-file`.
+`CHANGELOG.md` is generated for each release and is not tracked in git.
+
+- Commit subjects are the changelog entries, verbatim apart from a capitalized
+  first letter. Write the subject line for a user reading a release page, and
+  put rationale in the body; only the first line is published.
+- The type chooses the section: `feat` becomes Added, `fix` becomes Fixed,
+  `perf`/`refactor`/`revert` become Changed, `docs` becomes Documentation, and a
+  `(security)` scope becomes Security. A scope prints as a `[scope]` prefix, and
+  anything non-conventional falls into Changed.
+- `chore`, `ci`, `build`, `style`, `test`, and merge commits never reach users,
+  so nothing user-visible may ship under those types. A breaking change is the
+  exception: `type!:` or a `BREAKING CHANGE:` footer is always published, under
+  Changed and prefixed `**BREAKING:**`, whatever its type.
+- Preview what a release would say before dispatching one:
+
+```sh
+just changelog-unreleased          # only the commits since the last tag
+just changelog                     # the whole generated changelog
+just changelog-release 20260920.3 out/   # exactly the two files CI publishes
+```
+
+- `just changelog*` needs `git-cliff` locally (`cargo install --locked --version
+  2.12.0 git-cliff`); CI installs the same pinned version.
+
 ## Verification
 
 Prefer the existing `just` recipes. Run focused tests while iterating, then the
