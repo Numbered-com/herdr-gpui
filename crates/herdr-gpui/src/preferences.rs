@@ -321,6 +321,7 @@ impl AgentSort {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Chrome {
     pub sidebar_width: Option<f32>,
+    pub sidebar_split: Option<f32>,
     pub agent_sort: AgentSort,
 }
 
@@ -409,7 +410,7 @@ impl Preferences {
         result
     }
 
-    /// Queues the whole chrome, so saving one field never drops the other.
+    /// Queues the whole chrome, so saving one field never drops the others.
     pub fn save(&self, chrome: Chrome) {
         if let Some(saves) = &self.saves
             && saves.send(chrome).is_err()
@@ -463,8 +464,14 @@ fn read_chrome(path: &Path) -> crate::Result<Chrome> {
             }
         }
     };
+    let sidebar_split = object
+        .get("sidebar_split")
+        .and_then(serde_json::Value::as_f64)
+        .map(|split| split as f32)
+        .filter(|split| split.is_finite() && (0.1..=0.9).contains(split));
     Ok(Chrome {
         sidebar_width,
+        sidebar_split,
         agent_sort,
     })
 }
@@ -497,6 +504,9 @@ fn write_chrome(path: &Path, chrome: Chrome) -> crate::Result<()> {
             &mut file,
             &serde_json::json!({
                 "sidebar_width_px": width,
+                "sidebar_split": chrome.sidebar_split.filter(|split| {
+                    split.is_finite() && (0.1..=0.9).contains(split)
+                }),
                 "agent_sort": chrome.agent_sort.to_string(),
             }),
         )?;
@@ -565,6 +575,7 @@ mod tests {
         for width in 1..=100 {
             preferences.save(Chrome {
                 sidebar_width: Some(width as f32),
+                sidebar_split: Some(0.4),
                 agent_sort: AgentSort::Priority,
             });
         }
@@ -577,6 +588,7 @@ mod tests {
             await_loaded(&mut preferences),
             Chrome {
                 sidebar_width: Some(100.0),
+                sidebar_split: Some(0.4),
                 agent_sort: AgentSort::Priority,
             }
         );
@@ -600,6 +612,7 @@ mod tests {
                 r#"{"sidebar_width_px": 240.0}"#,
                 Chrome {
                     sidebar_width: Some(240.0),
+                    sidebar_split: None,
                     agent_sort: AgentSort::Grouped,
                 },
             ),
@@ -611,6 +624,7 @@ mod tests {
                 r#"{"sidebar_width_px": 200.0, "agent_sort": "priority"}"#,
                 Chrome {
                     sidebar_width: Some(200.0),
+                    sidebar_split: None,
                     agent_sort: AgentSort::Priority,
                 },
             ),
@@ -621,6 +635,7 @@ mod tests {
         // Whatever was read survives a write and read of the same value.
         let chrome = Chrome {
             sidebar_width: Some(321.0),
+            sidebar_split: None,
             agent_sort: AgentSort::Priority,
         };
         write_chrome(&path, chrome).unwrap();
@@ -648,10 +663,12 @@ mod tests {
         let queued = [
             Chrome {
                 sidebar_width: Some(160.),
+                sidebar_split: None,
                 agent_sort: AgentSort::Grouped,
             },
             Chrome {
                 sidebar_width: Some(400.),
+                sidebar_split: Some(0.6),
                 agent_sort: AgentSort::Priority,
             },
             Chrome::default(),
@@ -705,6 +722,7 @@ mod tests {
                     &path,
                     Chrome {
                         sidebar_width: Some(width),
+                        sidebar_split: None,
                         agent_sort: AgentSort::default(),
                     }
                 )
@@ -713,11 +731,71 @@ mod tests {
         }
         let chrome = Chrome {
             sidebar_width: Some(237.5),
+            sidebar_split: None,
             agent_sort: AgentSort::default(),
         };
         write_chrome(&path, chrome).unwrap();
         assert_eq!(read_chrome(&path).unwrap(), chrome);
         assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 1);
+    }
+
+    #[core::prelude::v1::test]
+    fn invalid_sidebar_splits_preserve_other_preferences() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("preferences.json");
+        let expected = Chrome {
+            sidebar_width: Some(240.0),
+            sidebar_split: None,
+            agent_sort: AgentSort::Priority,
+        };
+        for split in [
+            "null", "0", "-1", "0.099", "0.901", "1e100", "1e-100", "\"0.5\"", "true", "[]", "{}",
+        ] {
+            fs::write(
+                &path,
+                format!(
+                    r#"{{"sidebar_width_px":240,"agent_sort":"priority","sidebar_split":{split}}}"#
+                ),
+            )
+            .unwrap();
+            assert_eq!(read_chrome(&path).unwrap(), expected, "{split}");
+        }
+        for split in [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            0.0,
+            0.099,
+            0.901,
+        ] {
+            write_chrome(
+                &path,
+                Chrome {
+                    sidebar_split: Some(split),
+                    ..expected
+                },
+            )
+            .unwrap();
+            assert_eq!(read_chrome(&path).unwrap(), expected, "{split}");
+        }
+    }
+
+    #[core::prelude::v1::test]
+    fn sidebar_split_roundtrips_including_boundaries_and_reset() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("preferences.json");
+        for sidebar_split in [Some(0.1), Some(0.4), Some(0.9), None] {
+            let chrome = Chrome {
+                sidebar_width: Some(240.0),
+                sidebar_split,
+                agent_sort: AgentSort::Priority,
+            };
+            write_chrome(&path, chrome).unwrap();
+            let stored: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(stored["sidebar_split"], serde_json::json!(sidebar_split));
+            assert_eq!(read_chrome(&path).unwrap(), chrome);
+        }
     }
 
     #[core::prelude::v1::test]

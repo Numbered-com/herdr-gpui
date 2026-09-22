@@ -3,7 +3,7 @@
 //! caches only.
 
 use super::{
-    ARROW_RESERVE, HOST_ARROW_WIDTH, HOST_GAP, LABEL_GAP, ROW_PADDING,
+    ARROW_RESERVE, HOST_ARROW_WIDTH, HOST_GAP, LABEL_GAP, ROW_PADDING, SidebarDrag,
     agents::agent_labels,
     agents_sort, label_text, line_height,
     row::first_text,
@@ -25,6 +25,7 @@ impl HerdrWindow {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let width = sidebar_width(self.sidebar_width, f32::from(window.viewport_size().width));
+        let split = self.sidebar_split.unwrap_or(0.5).clamp(0.1, 0.9);
         // Hide secondary status in narrow windows, retaining useful host label space.
         let show_host_status = width >= 200.;
         let host_label_width = (width
@@ -348,9 +349,15 @@ impl HerdrWindow {
             // Zero flex bases keep long workspace lists from displacing agents.
             .child(
                 div()
+                    .debug_selector(|| "spaces-section".into())
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .map(|mut section| {
+                        section.style().flex_grow =
+                            Some(if self.config.show_agents { split } else { 1. });
+                        section
+                    })
                     .min_h_0()
                     .overflow_hidden()
                     .child(header("spaces", font, theme))
@@ -394,12 +401,42 @@ impl HerdrWindow {
             )
             .when(self.config.show_agents, |sidebar| {
                 sidebar
-                    .child(div().h(px(1.)).flex_none().bg(rgb(theme.active)))
                     .child(
                         div()
+                            .id("sidebar-split-resize")
+                            .debug_selector(|| "sidebar-split-resize".into())
+                            .h(px(6.))
+                            .flex_none()
+                            .cursor(CursorStyle::ResizeUpDown)
+                            .border_t_1()
+                            .border_color(rgb(theme.active))
+                            .hover(|s| s.bg(rgba(0x78a9ff44)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    this.sidebar_split_modified = true;
+                                    if event.click_count == 2 {
+                                        this.sidebar_drag = None;
+                                        this.sidebar_split = None;
+                                        this.save_chrome();
+                                    } else {
+                                        this.sidebar_drag = Some(SidebarDrag::Split);
+                                    }
+                                    cx.notify();
+                                }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "agents-section".into())
                             .flex()
                             .flex_col()
                             .flex_1()
+                            .map(|mut section| {
+                                section.style().flex_grow = Some(1. - split);
+                                section
+                            })
                             .min_h_0()
                             .overflow_hidden()
                             .child(
@@ -431,7 +468,10 @@ impl HerdrWindow {
                                 this.sidebar_width = None;
                                 this.save_sidebar_width();
                             } else {
-                                this.sidebar_drag = Some((f32::from(event.position.x), width));
+                                this.sidebar_drag = Some(SidebarDrag::Width {
+                                    start: f32::from(event.position.x),
+                                    width,
+                                });
                             }
                             cx.notify();
                         }),
@@ -440,18 +480,35 @@ impl HerdrWindow {
             .child(
                 canvas(
                     |_, _, _| (),
-                    move |_, _, window, _| {
+                    move |bounds, _, window, _| {
                         // Capture globally so dragging continues outside the narrow divider,
                         // and terminal handlers never receive the resize gesture's release.
                         let moving = view.clone();
                         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                             if phase == DispatchPhase::Capture {
                                 let _ = moving.update(cx, |this, cx| {
-                                    if let Some((start, width)) = this.sidebar_drag {
-                                        this.sidebar_width = Some(sidebar_width(
-                                            Some(width + f32::from(event.position.x) - start),
-                                            f32::from(window.viewport_size().width),
-                                        ));
+                                    if let Some(drag) = this.sidebar_drag {
+                                        match drag {
+                                            SidebarDrag::Width { start, width } => {
+                                                this.sidebar_width = Some(sidebar_width(
+                                                    Some(
+                                                        width + f32::from(event.position.x) - start,
+                                                    ),
+                                                    f32::from(window.viewport_size().width),
+                                                ));
+                                            }
+                                            SidebarDrag::Split => {
+                                                let height =
+                                                    (f32::from(bounds.size.height) - 6.).max(1.);
+                                                this.sidebar_split = Some(
+                                                    ((f32::from(
+                                                        event.position.y - bounds.origin.y,
+                                                    ) - 3.)
+                                                        / height)
+                                                        .clamp(0.1, 0.9),
+                                                );
+                                            }
+                                        }
                                         cx.stop_propagation();
                                         cx.notify();
                                     }
@@ -464,7 +521,7 @@ impl HerdrWindow {
                             {
                                 let _ = released.update(cx, |this, cx| {
                                     if this.sidebar_drag.take().is_some() {
-                                        this.save_sidebar_width();
+                                        this.save_chrome();
                                         cx.stop_propagation();
                                         cx.notify();
                                     }
