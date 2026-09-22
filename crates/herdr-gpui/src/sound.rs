@@ -144,8 +144,13 @@ impl Policy {
     }
 }
 
+enum PlaybackRequest {
+    Notification(SemanticNotification),
+    Preview,
+}
+
 struct Job {
-    event: SemanticNotification,
+    request: PlaybackRequest,
     cancel: Arc<AtomicBool>,
     queued: Instant,
 }
@@ -167,6 +172,12 @@ impl Service {
         Self::start(Settings::load, playback::play)
     }
 
+    /// Starts the worker with an injectable playback backend, called serially and
+    /// only on that worker. `play` blocks until completion or error, observing
+    /// endpoint cancellation (first flag) and service shutdown (second flag).
+    /// It must release per-job audio/device resources before returning; no player
+    /// or device objects cross this boundary. Return typed errors with their
+    /// sources intact: the worker logs failures without replaying or stopping.
     fn start(
         mut load: impl FnMut() -> crate::Result<Settings> + Send + 'static,
         mut play: impl FnMut(
@@ -208,18 +219,27 @@ impl Service {
                     let Some(job) = job else {
                         continue;
                     };
-                    if !job.cancel.load(Ordering::Acquire)
-                        && job.queued.elapsed() < Duration::from_secs(1)
-                        && current.sound.allows(job.event.agent.as_deref())
-                            && let Some(sound) = job.event.sound
-                        && let Err(error) = play(
-                            sound,
-                            current.path_for(sound).as_deref(),
-                            &job.cancel,
-                            &stop,
-                        )
+                    if job.cancel.load(Ordering::Acquire)
+                        || job.queued.elapsed() >= Duration::from_secs(1)
                     {
-                        tracing::debug!(%error, "Notification sound not played");
+                        continue;
+                    }
+                    let (sound, path) = match job.request {
+                        PlaybackRequest::Notification(event) => {
+                            if !current.sound.allows(event.agent.as_deref()) {
+                                continue;
+                            }
+                            let Some(sound) = event.sound else {
+                                continue;
+                            };
+                            (sound, current.path_for(sound))
+                        }
+                        PlaybackRequest::Preview => {
+                            (herdr_client::protocol::SemanticNotificationSound::Done, None)
+                        }
+                    };
+                    if let Err(error) = play(sound, path.as_deref(), &job.cancel, &stop) {
+                        tracing::debug!(%error, "Sound not played");
                     }
                 }
             });
@@ -228,6 +248,17 @@ impl Service {
             Err(error) => tracing::warn!(%error, "Could not start sound worker"),
         }
         service
+    }
+
+    /// Explicit local test, independent of endpoint state and notification settings.
+    pub(crate) fn preview(&self) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.try_send(Job {
+                request: PlaybackRequest::Preview,
+                cancel: self.stop.clone(),
+                queued: Instant::now(),
+            });
+        }
     }
 
     #[cfg(test)]
@@ -272,7 +303,7 @@ impl Service {
             |event| {
                 if let Some(sender) = &self.sender {
                     let _ = sender.try_send(Job {
-                        event,
+                        request: PlaybackRequest::Notification(event),
                         cancel: cancel.clone(),
                         queued: now,
                     });

@@ -4,8 +4,8 @@
 
 use super::HerdrWindow;
 use crate::{
-    APP_VERSION, CheckForUpdates, RunCommand, ShowHerdrNotDetected, ShowUpdatePreview, TAB_HEIGHT,
-    TAB_WIDTH, controls::Command, fonts::StyledFont, navigation::NavigationTarget,
+    APP_VERSION, CheckForUpdates, PlaySound, RunCommand, ShowHerdrNotDetected, ShowUpdatePreview,
+    TAB_HEIGHT, TAB_WIDTH, controls::Command, fonts::StyledFont, navigation::NavigationTarget,
     state::ConnectionStatus, terminal::*, worktree_banner,
 };
 use gpui::{prelude::*, *};
@@ -279,6 +279,9 @@ impl Render for HerdrWindow {
             }))
             .on_action(cx.listener(|this, _: &ShowUpdatePreview, window, cx| {
                 this.open_app_update(true, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &PlaySound, _, _| {
+                this.sound.preview();
             }))
             .size_full()
             .relative()

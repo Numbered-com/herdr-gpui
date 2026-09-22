@@ -351,17 +351,19 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .send(Job {
-                    event: herdr_client::protocol::SemanticNotification {
-                        kind: herdr_client::protocol::SemanticNotificationKind::Custom,
-                        title: String::new(),
-                        body: None,
-                        sound: Some(Sound::Done),
-                        agent: None,
-                        workspace_id: None,
-                        tab_id: None,
-                        pane_id: None,
-                        position: None,
-                    },
+                    request: crate::sound::PlaybackRequest::Notification(
+                        herdr_client::protocol::SemanticNotification {
+                            kind: herdr_client::protocol::SemanticNotificationKind::Custom,
+                            title: String::new(),
+                            body: None,
+                            sound: Some(Sound::Done),
+                            agent: None,
+                            workspace_id: None,
+                            tab_id: None,
+                            pane_id: None,
+                            position: None,
+                        },
+                    ),
                     cancel: Arc::new(AtomicBool::new(false)),
                     queued: Instant::now(),
                 })

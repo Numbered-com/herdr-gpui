@@ -220,6 +220,55 @@ fn connected_endpoint(id: &str) -> (Endpoint, Server) {
 }
 
 #[gpui::test]
+fn qa_play_sound_dispatches_without_daemon_or_pane(cx: &mut gpui::TestAppContext) {
+    let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+    let (sound, played) = crate::sound::Service::recording();
+    view.update(cx, |view, _| {
+        view.sound = sound;
+        for endpoint in &mut view.endpoints {
+            endpoint.stop();
+            endpoint.live = Default::default();
+        }
+    });
+    cx.update(|window, cx| {
+        view.read(cx).focus.focus(window);
+        window.draw(cx).clear();
+        let menus = crate::menus();
+        let qa = menus
+            .iter()
+            .find(|menu| menu.name.as_ref() == "QA")
+            .unwrap();
+        let action = qa
+            .items
+            .iter()
+            .find_map(|item| match item {
+                gpui::MenuItem::Action { name, action, .. } if name.as_ref() == "Play Sound" => {
+                    Some(action)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(action.partial_eq(&crate::PlaySound));
+        window.dispatch_action(action.boxed_clone(), cx);
+    });
+    assert_eq!(
+        played.recv_timeout(Duration::from_secs(3)).unwrap(),
+        SemanticNotificationSound::Done
+    );
+    view.update(cx, |view, _| {
+        for endpoint in &view.endpoints {
+            assert!(endpoint.live.snapshot.is_none());
+            assert!(endpoint.live.sound_events.is_empty());
+        }
+        view.sound = Default::default();
+    });
+    assert!(matches!(
+        played.recv_timeout(Duration::from_secs(3)),
+        Err(mpsc::RecvTimeoutError::Disconnected)
+    ));
+}
+
+#[gpui::test]
 fn inactive_endpoint_semantic_sound_reaches_worker_once(cx: &mut gpui::TestAppContext) {
     let (fixture, cx) = cx.add_window_view(|window, cx| {
         Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))

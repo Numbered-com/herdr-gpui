@@ -325,6 +325,110 @@ fn service_nonblocking_queue_bound_reload_and_move_once() {
 }
 
 #[test]
+fn preview_uses_builtin_on_worker_despite_notification_mute() {
+    let caller = std::thread::current().id();
+    let (sender, played) = mpsc::sync_channel(8);
+    let service = Service::start(
+        move || {
+            assert_ne!(std::thread::current().id(), caller);
+            let mut settings = Settings::default();
+            settings.sound = toml::from_str(
+                "enabled = false\ndone_path = '/unused-custom.mp3'\n[agents]\nclaude = 'off'",
+            )
+            .unwrap();
+            Ok(settings)
+        },
+        move |sound, path, cancel, stop| {
+            assert_ne!(std::thread::current().id(), caller);
+            assert!(path.is_none());
+            assert!(!cancel.load(Ordering::Acquire));
+            assert!(!stop.load(Ordering::Acquire));
+            sender.send(sound).unwrap();
+            Ok(())
+        },
+    );
+    service
+        .sender
+        .as_ref()
+        .unwrap()
+        .send(Job {
+            request: PlaybackRequest::Notification(event(Kind::Custom)),
+            cancel: Arc::new(AtomicBool::new(false)),
+            queued: Instant::now(),
+        })
+        .unwrap();
+    service.preview();
+    assert_eq!(
+        played.recv_timeout(Duration::from_secs(3)).unwrap(),
+        Sound::Done
+    );
+    drop(service);
+    assert!(matches!(
+        played.recv_timeout(Duration::from_secs(3)),
+        Err(mpsc::RecvTimeoutError::Disconnected)
+    ));
+}
+
+#[test]
+fn preview_queue_is_bounded_and_uses_service_cancellation() {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let service = Service {
+        sender: Some(sender),
+        settings: Default::default(),
+        reload: Default::default(),
+        stop: Default::default(),
+    };
+    service.preview();
+    service.preview();
+    let job = receiver.try_recv().unwrap();
+    assert!(matches!(job.request, PlaybackRequest::Preview));
+    assert!(Arc::ptr_eq(&job.cancel, &service.stop));
+    assert!(receiver.try_recv().is_err());
+    drop(service);
+    assert!(job.cancel.load(Ordering::Acquire));
+    // Normal constructors in unit/headless tests must never open a real device.
+    let suppressed = Service::new();
+    suppressed.preview();
+    assert!(suppressed.sender.is_none());
+}
+
+#[test]
+fn worker_continues_after_backend_error_without_replaying() {
+    let (sender, played) = mpsc::sync_channel(8);
+    let mut first = true;
+    let service = Service::start(
+        || Ok(Settings::default()),
+        move |sound, _, _, _| {
+            sender.send(sound).unwrap();
+            if std::mem::take(&mut first) {
+                return Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe).into());
+            }
+            Ok(())
+        },
+    );
+    for sound in [Sound::Done, Sound::Request] {
+        let mut notification = event(Kind::Custom);
+        notification.sound = Some(sound);
+        service
+            .sender
+            .as_ref()
+            .unwrap()
+            .send(Job {
+                request: PlaybackRequest::Notification(notification),
+                cancel: Arc::new(AtomicBool::new(false)),
+                queued: Instant::now(),
+            })
+            .unwrap();
+        assert_eq!(played.recv_timeout(Duration::from_secs(3)).unwrap(), sound);
+    }
+    drop(service);
+    assert!(matches!(
+        played.recv_timeout(Duration::from_secs(3)),
+        Err(mpsc::RecvTimeoutError::Disconnected)
+    ));
+}
+
+#[test]
 fn worker_drops_cancelled_and_expired_jobs_without_playing_them() {
     let (service, played) = Service::recording();
     for (cancelled, age) in [(true, 0), (false, 2), (false, 0)] {
@@ -333,7 +437,7 @@ fn worker_drops_cancelled_and_expired_jobs_without_playing_them() {
             .as_ref()
             .unwrap()
             .send(Job {
-                event: event(Kind::Custom),
+                request: PlaybackRequest::Notification(event(Kind::Custom)),
                 cancel: Arc::new(AtomicBool::new(cancelled)),
                 queued: Instant::now() - Duration::from_secs(age),
             })

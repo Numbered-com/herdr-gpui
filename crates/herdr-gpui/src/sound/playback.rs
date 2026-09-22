@@ -1,17 +1,30 @@
 use crate::{Error, Result};
 use herdr_client::protocol::SemanticNotificationSound as Sound;
+use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 use std::{
-    io::Write,
+    borrow::Cow,
+    io::{Cursor, Read},
+    os::unix::fs::OpenOptionsExt,
     path::Path,
-    process::{Command, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
+
+const MAX_DURATION: Duration = Duration::from_secs(15);
+const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+type SoundDecoder = Decoder<Cursor<Cow<'static, [u8]>>>;
 
 pub(super) fn muted() -> bool {
     std::env::var_os("HERDR_DISABLE_SOUND").is_some() || std::env::var_os("NEXTEST").is_some()
 }
 
+/// Rodio implementation of `Service::start`'s worker-only, serial backend contract.
+/// Blocks until completion or error, checking endpoint `cancel` and service `stop`.
+/// Player/device resources remain local and are released before every return;
+/// typed errors retain their sources, and the service continues without replay.
 pub(super) fn play(
     sound: Sound,
     custom: Option<&Path>,
@@ -21,92 +34,111 @@ pub(super) fn play(
     if muted() {
         return Ok(());
     }
+    let deadline = Instant::now() + MAX_DURATION;
+    check(deadline, cancel, stop, Instant::now())?;
+    let source = decode(sound, custom)?;
+    check(deadline, cancel, stop, Instant::now())?;
+
+    // Worker-owned and scoped to this job: the next notification reselects the
+    // default device, including after unplug/sleep. Failed jobs are never replayed.
+    let (errors, receiver) = mpsc::sync_channel(1);
+    let mut output = DeviceSinkBuilder::from_default_device()?
+        .with_error_callback(move |error| {
+            let _ = errors.try_send(error);
+        })
+        .open_sink_or_fallback()?;
+    output.log_on_drop(false);
+    check(deadline, cancel, stop, Instant::now())?;
+    let player = Player::connect_new(output.mixer());
+    player.append(source.take_duration(MAX_DURATION));
+    wait(
+        &player,
+        &receiver,
+        deadline,
+        cancel,
+        stop,
+        Instant::now,
+        || {
+            std::thread::sleep(Duration::from_millis(25));
+        },
+    )
+}
+
+fn decode(sound: Sound, custom: Option<&Path>) -> Result<SoundDecoder> {
     if let Some(path) = custom {
-        match play_file(path, cancel, stop) {
-            Ok(()) => return Ok(()),
-            Err(error @ (Error::SoundCancelled | Error::SoundTimeout)) => return Err(error),
+        match decode_file(path) {
+            Ok(source) => return Ok(source),
             Err(error) => tracing::debug!(%error, "Custom sound failed; using built-in sound"),
         }
     }
-    let mut file = tempfile::Builder::new()
-        .prefix("herdr-gpui-sound-")
-        .suffix(".mp3")
-        .tempfile()?;
-    file.write_all(match sound {
+    let bytes: &'static [u8] = match sound {
         Sound::Done => include_bytes!("../../../../assets/sounds/done.mp3"),
         Sound::Request => include_bytes!("../../../../assets/sounds/request.mp3"),
-    })?;
-    play_file(file.path(), cancel, stop)
+    };
+    Ok(Decoder::try_from(Cursor::new(Cow::Borrowed(bytes)))?)
 }
 
-fn play_file(path: &Path, cancel: &AtomicBool, stop: &AtomicBool) -> Result<()> {
-    // Absolute arguments cannot be interpreted as player options. Only local config
-    // supplies paths; daemon titles, bodies and terminal escapes never reach here.
-    let path = std::fs::canonicalize(path)?;
-    #[cfg(target_os = "macos")]
-    let players: &[(&str, &[&str])] = &[("/usr/bin/afplay", &[])];
-    #[cfg(not(target_os = "macos"))]
-    let players: &[(&str, &[&str])] = &[
-        ("paplay", &[]),
-        ("pw-play", &[]),
-        ("ffplay", &["-nodisp", "-autoexit", "-loglevel", "quiet"]),
-        ("mpg123", &["-q"]),
-        ("mpv", &["--no-video", "--really-quiet"]),
-    ];
-    let mut last = Error::Io(std::io::Error::new(
-        std::io::ErrorKind::NotFound,
-        "no audio player available",
-    ));
-    let deadline = Instant::now() + Duration::from_secs(15);
-    for (program, args) in players {
-        let mut command = Command::new(program);
-        command.args(*args).arg(&path);
-        match run(&mut command, deadline, cancel, stop) {
-            Ok(()) => return Ok(()),
-            Err(error @ (Error::SoundCancelled | Error::SoundTimeout)) => return Err(error),
-            Err(error) => last = error,
+fn decode_file(path: &Path) -> Result<SoundDecoder> {
+    let read = || -> Result<Vec<u8>> {
+        // Do not let a configured FIFO block the sole sound worker on open.
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+            .open(path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
+            return Err(Error::SoundFileSize);
         }
-    }
-    Err(last)
+        let mut bytes = Vec::new();
+        file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            return Err(Error::SoundFileSize);
+        }
+        Ok(bytes)
+    };
+    let bytes = read().map_err(|error| match error {
+        Error::Io(source) => Error::SoundFile {
+            path: path.into(),
+            source,
+        },
+        error => error,
+    })?;
+    Ok(Decoder::try_from(Cursor::new(Cow::Owned(bytes)))?)
 }
 
-fn run(
-    command: &mut Command,
-    deadline: Instant,
-    cancel: &AtomicBool,
-    stop: &AtomicBool,
-) -> Result<()> {
+fn check(deadline: Instant, cancel: &AtomicBool, stop: &AtomicBool, now: Instant) -> Result<()> {
     if cancel.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
         return Err(Error::SoundCancelled);
     }
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+    if now >= deadline {
+        return Err(Error::SoundTimeout);
+    }
+    Ok(())
+}
+
+fn wait(
+    player: &Player,
+    errors: &mpsc::Receiver<rodio::cpal::StreamError>,
+    deadline: Instant,
+    cancel: &AtomicBool,
+    stop: &AtomicBool,
+    mut now: impl FnMut() -> Instant,
+    mut sleep: impl FnMut(),
+) -> Result<()> {
     let result = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                return if status.success() {
-                    Ok(())
-                } else {
-                    Err(Error::SoundExit(status))
-                };
-            }
-            Ok(None) => {}
-            Err(error) => break Err(Error::Io(error)),
+        if let Err(error) = check(deadline, cancel, stop, now()) {
+            break Err(error);
         }
-        if cancel.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
-            break Err(Error::SoundCancelled);
+        if let Ok(error) = errors.try_recv() {
+            break Err(Error::SoundStream(error));
         }
-        if Instant::now() >= deadline {
-            break Err(Error::SoundTimeout);
+        if player.empty() {
+            break Ok(());
         }
-        std::thread::sleep(Duration::from_millis(25));
+        sleep();
     };
-    // Worker-only cleanup: no UI joins, inherited pipes, or unreaped children.
-    let _ = child.kill();
-    child.wait()?;
+    // Stop also on errors; dropping the enclosing output discards buffered audio.
+    player.stop();
     result
 }
 
@@ -114,99 +146,148 @@ fn run(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
-    fn player_results_are_typed_without_playing_audio() {
-        let cancel = AtomicBool::new(false);
-        let stop = AtomicBool::new(false);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        assert!(
-            run(
-                Command::new("/bin/sh").args(["-c", "exit 0"]),
-                deadline,
-                &cancel,
-                &stop
-            )
-            .is_ok()
-        );
-        assert!(
-            matches!(run(Command::new("/bin/sh").args(["-c", "exit 7"]), deadline, &cancel, &stop), Err(Error::SoundExit(status)) if status.code() == Some(7))
-        );
-        let error = run(
-            &mut Command::new("/nonexistent-herdr-audio-player"),
-            deadline,
-            &cancel,
-            &stop,
+    fn embedded_and_custom_mp3_decode_without_a_device() {
+        for sound in [Sound::Done, Sound::Request] {
+            let source = decode(sound, None).unwrap();
+            let max_samples =
+                source.sample_rate().get() as usize * source.channels().get() as usize * 15;
+            let samples: Vec<_> = source.take(max_samples + 1).collect();
+            assert!(!samples.is_empty() && samples.len() <= max_samples);
+            assert!(samples.iter().all(|sample| sample.is_finite()));
+            assert!(samples.iter().any(|sample| sample.abs() > 0.001));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("custom.mp3");
+        std::fs::write(
+            &path,
+            include_bytes!("../../../../assets/sounds/request.mp3"),
         )
-        .unwrap_err();
-        assert!(matches!(error, Error::Io(_)));
-        assert!(std::error::Error::source(&error).is_some());
-        cancel.store(true, Ordering::Release);
-        assert!(matches!(
-            run(
-                &mut Command::new("/must-not-spawn"),
-                deadline,
-                &cancel,
-                &stop
-            ),
-            Err(Error::SoundCancelled)
-        ));
+        .unwrap();
+        assert_eq!(
+            decode(Sound::Done, Some(&path))
+                .unwrap()
+                .collect::<Vec<_>>(),
+            decode(Sound::Request, None).unwrap().collect::<Vec<_>>()
+        );
     }
 
     #[test]
-    fn timeout_kills_and_reaps_only_owned_child() {
+    fn custom_failures_preserve_sources_and_fall_back() {
         let dir = tempfile::tempdir().unwrap();
-        let pid = dir.path().join("pid");
-        let mut command = Command::new("/bin/sh");
-        command
-            .args([
-                "-c",
-                "printf '%s' \"$$\" > \"$1\"; exec sleep 10",
-                "sound-test",
-            ])
-            .arg(&pid);
-        let result = run(
-            &mut command,
-            Instant::now() + Duration::from_millis(200),
-            &AtomicBool::new(false),
-            &AtomicBool::new(false),
-        );
-        assert!(matches!(result, Err(Error::SoundTimeout)));
-        let pid = std::fs::read_to_string(pid).unwrap();
+        let path = dir.path().join("custom.mp3");
+        let error = decode_file(&path).err().unwrap();
         assert!(
-            !Command::new("/bin/kill")
-                .args(["-0", &pid])
-                .stderr(Stdio::null())
+            matches!(&error, Error::SoundFile { path: failed, source } if failed == &path && source.kind() == std::io::ErrorKind::NotFound)
+        );
+        assert!(std::error::Error::source(&error).is_some());
+        for bytes in [b"".as_slice(), b"not an MP3"] {
+            std::fs::write(&path, bytes).unwrap();
+            let error = decode_file(&path).err().unwrap();
+            assert!(matches!(error, Error::SoundDecode(_)));
+            assert!(std::error::Error::source(&error).is_some());
+            assert_eq!(
+                decode(Sound::Done, Some(&path))
+                    .unwrap()
+                    .collect::<Vec<_>>(),
+                decode(Sound::Done, None).unwrap().collect::<Vec<_>>()
+            );
+        }
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_FILE_BYTES + 1)
+            .unwrap();
+        assert!(matches!(decode_file(&path), Err(Error::SoundFileSize)));
+        assert!(matches!(decode_file(dir.path()), Err(Error::SoundFileSize)));
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
                 .status()
                 .unwrap()
                 .success()
         );
+        assert!(matches!(decode_file(&path), Err(Error::SoundFileSize)));
+        assert!(decode(Sound::Request, Some(&path)).is_ok());
     }
 
     #[test]
-    fn cancellation_stops_running_player() {
-        let cancel = AtomicBool::new(false);
-        let stop = AtomicBool::new(false);
-        let dir = tempfile::tempdir().unwrap();
-        let marker = dir.path().join("started");
-        std::thread::scope(|scope| {
-            let worker = scope.spawn(|| {
-                run(
-                    Command::new("/bin/sh")
-                        .args(["-c", "printf started > \"$1\"; exec sleep 10", "sound-test"])
-                        .arg(&marker),
-                    Instant::now() + Duration::from_secs(5),
-                    &cancel,
-                    &stop,
-                )
-            });
-            let deadline = Instant::now() + Duration::from_secs(3);
-            while !marker.exists() && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(5));
+    fn playback_wait_stops_on_cancel_shutdown_timeout_and_device_loss() {
+        for outcome in 0..4 {
+            let (player, mut output) = Player::new();
+            player.append(rodio::source::SineWave::new(440.0));
+            assert!(output.next().is_some());
+            let (sender, errors) = mpsc::sync_channel(1);
+            let cancel = AtomicBool::new(false);
+            let stop = AtomicBool::new(false);
+            let start = Instant::now();
+            let now = Cell::new(start);
+            let result = wait(
+                &player,
+                &errors,
+                start + MAX_DURATION,
+                &cancel,
+                &stop,
+                || now.get(),
+                || match outcome {
+                    0 => cancel.store(true, Ordering::Release),
+                    1 => stop.store(true, Ordering::Release),
+                    2 => now.set(start + MAX_DURATION),
+                    _ => sender
+                        .try_send(rodio::cpal::StreamError::DeviceNotAvailable)
+                        .unwrap(),
+                },
+            );
+            match outcome {
+                0 | 1 => assert!(matches!(result, Err(Error::SoundCancelled))),
+                2 => assert!(matches!(result, Err(Error::SoundTimeout))),
+                _ => {
+                    let error = result.unwrap_err();
+                    assert!(matches!(error, Error::SoundStream(_)));
+                    assert!(std::error::Error::source(&error).is_some());
+                }
             }
-            assert!(marker.exists());
-            stop.store(true, Ordering::Release);
-            assert!(matches!(worker.join().unwrap(), Err(Error::SoundCancelled)));
-        });
+            // Consume the control interval, without a device or wall-clock sleep.
+            for _ in 0..100_000 {
+                let _ = output.next();
+            }
+            assert!(player.empty());
+        }
+    }
+
+    #[test]
+    fn normal_completion_and_source_duration_are_bounded() {
+        let source = rodio::source::SineWave::new(440.0).take_duration(MAX_DURATION);
+        let rate = source.sample_rate().get() as usize;
+        // Rodio rounds each sample duration down to whole nanoseconds.
+        let count = source.take(rate * 16).count();
+        assert!((rate * 15..=rate * 15 + rate / 1000).contains(&count));
+        let (player, mut output) = Player::new();
+        player.append(decode(Sound::Done, None).unwrap());
+        let (_sender, errors) = mpsc::sync_channel(1);
+        let now = Instant::now();
+        assert!(
+            wait(
+                &player,
+                &errors,
+                now + MAX_DURATION,
+                &AtomicBool::new(false),
+                &AtomicBool::new(false),
+                || now,
+                || {
+                    for _ in 0..1024 {
+                        let _ = output.next();
+                    }
+                }
+            )
+            .is_ok()
+        );
+        assert!(player.empty());
+        assert!(matches!(
+            check(now, &AtomicBool::new(true), &AtomicBool::new(false), now),
+            Err(Error::SoundCancelled)
+        ));
     }
 }
