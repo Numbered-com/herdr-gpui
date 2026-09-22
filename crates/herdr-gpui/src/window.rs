@@ -51,7 +51,7 @@ pub(crate) struct HerdrWindow {
     pub(crate) title: String,
     pub(crate) cell_width: f32,
     pub(crate) hovered_terminal_link: bool,
-    pub(crate) pressed_terminal_link: Option<String>,
+    pub(crate) pressed_terminal_link: Option<(String, Point<Pixels>)>,
     /// The frame on screen, kept across the gap between two projections.
     pub(crate) presentation: Presentation,
     pub(crate) painter: std::rc::Rc<std::cell::RefCell<terminal_painter::TerminalPainter>>,

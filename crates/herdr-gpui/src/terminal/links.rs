@@ -109,6 +109,11 @@ fn frame_link(frame: &FrameData, column: u16, row: u16, start: u16, end: u16) ->
                 c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | '"' | '\'' | '`')
             })
             .unwrap_or(tail.len());
+        // Check the original token: punctuation at the edge may be part of a
+        // destination continuing off-screen or on the next row.
+        if end == tail.len() {
+            return None;
+        }
         let mut candidate = tail[..end].trim_end_matches(['.', ',', ';', ':', '!', '?']);
         for (open, close) in [('(', ')'), ('[', ']'), ('{', '}')] {
             let excess = candidate
@@ -121,11 +126,6 @@ fn frame_link(frame: &FrameData, column: u16, row: u16, start: u16, end: u16) ->
                 };
                 candidate = trimmed;
             }
-        }
-        // A URL touching the right edge might continue off-screen or on the
-        // next row. Do not launch a potentially truncated destination.
-        if start + candidate.len() == text.len() {
-            return None;
         }
         if hit < start + candidate.len() {
             return web_url(candidate);
@@ -307,6 +307,14 @@ mod tests {
         assert!(link_at(&s, 1., 1., 10., 20.).is_none());
         let wrapped = frame("https://example.com/long", 12, 2);
         assert!(frame_link(&wrapped, 0, 0, 0, 12).is_none());
+        for punctuation in ['.', ',', ';', ':', '!', '?', ')', ']', '}'] {
+            let text = format!("https://example{punctuation}com/path");
+            let wrapped = frame(&text, 16, 2);
+            assert!(frame_link(&wrapped, 0, 0, 0, 16).is_none(), "{text}");
+            let mut s = surface(&text);
+            s.panes[0].inner_rect.width = 16;
+            assert!(link_at(&s, 1., 1., 10., 20.).is_none(), "{text}");
+        }
         let unicode = frame("界 https://example.com ", 40, 1);
         assert_eq!(
             frame_link(&unicode, 3, 0, 0, 40).as_deref(),
@@ -337,14 +345,26 @@ mod tests {
                 event.down.position = position;
                 event.up.position = position + point(px(20.), px(0.));
                 event.down.click_count = 1;
-                view.pressed_terminal_link = Some("https://example.com/click".into());
+                view.pressed_terminal_link = Some(("https://example.com/click".into(), position));
                 view.open_terminal_link(&gpui::ClickEvent::Mouse(event.clone()), window, cx);
                 event.up.position = position;
-                view.pressed_terminal_link = Some("https://different.example/".into());
+                view.pressed_terminal_link = Some(("https://different.example/".into(), position));
                 view.open_terminal_link(&gpui::ClickEvent::Mouse(event), window, cx);
             })
         });
         assert!(cx.opened_url().is_none());
+        for away in [
+            position + point(px(20.), px(0.)),
+            position + point(px(0.), px(20.)),
+            position - point(px(20.), px(20.)),
+        ] {
+            cx.simulate_mouse_down(position, gpui::MouseButton::Left, Default::default());
+            cx.simulate_mouse_move(away, gpui::MouseButton::Left, Default::default());
+            cx.simulate_mouse_move(position, gpui::MouseButton::Left, Default::default());
+            cx.simulate_mouse_up(position, gpui::MouseButton::Left, Default::default());
+            assert!(cx.opened_url().is_none());
+            view.read_with(cx, |view, _| assert!(view.pressed_terminal_link.is_none()));
+        }
         cx.simulate_click(position, Default::default());
         assert_eq!(
             cx.opened_url().as_deref(),

@@ -158,7 +158,9 @@ impl Render for HerdrWindow {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    this.pressed_terminal_link = this.terminal_link_at(event.position);
+                    this.pressed_terminal_link = this
+                        .terminal_link_at(event.position)
+                        .map(|url| (url, event.position));
                     if this.menu.page.is_some() {
                         return;
                     }
@@ -211,6 +213,23 @@ impl Render for HerdrWindow {
                         });
                     },
                     move |bounds, _, window, cx| {
+                        // Capture movement outside the terminal too, before any
+                        // element can stop propagation of a drag-away event.
+                        let entity = paint_entity.clone();
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                            if phase == DispatchPhase::Capture {
+                                entity.update(cx, |this, _| {
+                                    if this.pressed_terminal_link.as_ref().is_some_and(
+                                        |(_, position)| {
+                                            (event.position.x - position.x).abs() > px(4.)
+                                                || (event.position.y - position.y).abs() > px(4.)
+                                        },
+                                    ) {
+                                        this.pressed_terminal_link = None;
+                                    }
+                                });
+                            }
+                        });
                         window.handle_input(
                             &focus,
                             ElementInputHandler::new(bounds, paint_entity.clone()),

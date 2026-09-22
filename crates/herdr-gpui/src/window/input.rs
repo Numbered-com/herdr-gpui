@@ -29,7 +29,9 @@ impl HerdrWindow {
             return;
         }
         if let Some(url) = self.terminal_link_at(event.up.position)
-            && pressed.as_ref() == Some(&url)
+            && pressed
+                .as_ref()
+                .is_some_and(|(destination, _)| destination == &url)
         {
             cx.stop_propagation();
             cx.open_url(&url);
