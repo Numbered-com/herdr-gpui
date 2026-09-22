@@ -152,6 +152,10 @@ cargo test --locked --workspace --all-features
   feature and runs the protocol/client suites. Keep the `cfg(unix)`/`cfg(windows)`
   split honest and say plainly what a platform cannot do instead of stubbing
   behavior that appears to work.
+- A `cfg` gate is only proven on the platform it names. Before handing off a
+  change that touches one, run `just lint-linux` and `just lint-windows` as well
+  as `just ci`: a macOS run cannot see a Linux-only gate, and neither can the
+  Windows cross-check.
 - Documentation-only changes need command/path/link review and `git diff --check`; do not claim a code test run that did not happen.
 - Add deterministic tests for invariants: ordering, cancellation, fragmentation, revision fencing, error paths, geometry, and cleanup. Prefer explicit coordination and bounded waits over timing guesses.
 - Test pure session/CLI/geometry logic without a socket or window where possible. Exercise public behavior with mock peers and headless GPUI tests where integration matters.

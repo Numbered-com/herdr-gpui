@@ -628,7 +628,10 @@ the daemon survives the GUI and no console window appears.
 
 Cross type-check it from a Mac or Linux machine with `just lint-windows`, which
 targets `x86_64-pc-windows-gnu` because those hosts cannot supply the MSVC C
-toolchain; CI lints the MSVC target on a Windows runner.
+toolchain; CI lints the MSVC target on a Windows runner. `just lint-linux` is
+the matching check for Linux, in the Ubuntu 24.04 container CI uses, because a
+`cfg` gate that is wrong only on Linux is invisible from both macOS and the
+Windows cross-check.
 
 ## Build And Test
 

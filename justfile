@@ -107,6 +107,13 @@ lint-windows:
     cargo clippy --locked --workspace --all-targets --all-features \
         --target x86_64-pc-windows-gnu -- -D warnings
 
+# Clippy for Linux in the Ubuntu 24.04 that CI uses, from any host with Docker.
+# A cfg gate that is wrong only on Linux is invisible from macOS, and
+# lint-windows only covers Windows. The container runs the host architecture;
+# pass a platform, for example linux/amd64 on Apple Silicon, for the other one.
+lint-linux platform="":
+    bash scripts/lint-linux.sh {{platform}}
+
 # Audit the GitHub workflows for injection, over-broad permissions, and unpinned actions.
 audit-workflows:
     zizmor .github/
