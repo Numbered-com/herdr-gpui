@@ -9,6 +9,9 @@ pub(crate) fn target_id(view: &HerdrWindow) -> Option<&str> {
     view.menu.target.as_ref().map(|target| target.id.as_str())
 }
 
+// Drives the workspace menu for `endpoint::lifecycle_tests`, which needs POSIX
+// sockets and processes and is therefore compiled there only.
+#[cfg(unix)]
 pub(crate) fn submit_focus_change(
     view: &mut HerdrWindow,
     method: Method,

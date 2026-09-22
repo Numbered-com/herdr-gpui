@@ -327,13 +327,24 @@ struct FontSettings {
     fallback: Option<Vec<String>>,
 }
 
+/// Windows sets `USERPROFILE` rather than `HOME`, and upstream Herdr reads both.
 fn home() -> Result<PathBuf> {
-    env::var_os("HOME")
-        .filter(|value| !value.is_empty())
+    let variable = |name| env::var_os(name).filter(|value: &std::ffi::OsString| !value.is_empty());
+    variable("HOME")
+        .or_else(|| {
+            if cfg!(windows) {
+                variable("USERPROFILE")
+            } else {
+                None
+            }
+        })
         .map(PathBuf::from)
         .ok_or(Error::MissingHome)
 }
 
+/// The directory holding this app's `herdr` configuration directory. Upstream
+/// Herdr puts it under `%APPDATA%` on Windows, and the GUI config lives beside
+/// the daemon's, so the same root has to be used on both sides.
 fn config_root() -> Result<PathBuf> {
     match env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
         Some(value) => {
@@ -343,7 +354,16 @@ fn config_root() -> Result<PathBuf> {
             }
             Ok(path)
         }
-        None => Ok(home()?.join(".config")),
+        None => {
+            #[cfg(windows)]
+            if let Some(roaming) = env::var_os("APPDATA").filter(|value| !value.is_empty()) {
+                return Ok(PathBuf::from(roaming));
+            }
+            #[cfg(windows)]
+            return Ok(home()?.join("AppData").join("Roaming"));
+            #[cfg(not(windows))]
+            Ok(home()?.join(".config"))
+        }
     }
 }
 

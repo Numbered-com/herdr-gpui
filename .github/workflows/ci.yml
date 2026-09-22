@@ -126,6 +126,42 @@ jobs:
       - name: Test integration-feature build and executable CLI
         run: cargo test --locked --workspace --all-features
 
+  # Windows has no runner in `checks`: the GUI is unproven there and its tests
+  # need a desktop session. This job type-checks every target and feature for
+  # Windows and runs the two platform-independent crates' suites, which is what
+  # keeps the `cfg` split honest as the code changes. It does not link the
+  # executable; add `cargo build --locked --release -p herdr-gpui` here once a
+  # Windows release is actually shipped.
+  windows:
+    if: >-
+      github.repository == 'penso/herdr-gpui' &&
+      github.actor == 'penso' && github.triggering_actor == 'penso' &&
+      ((github.event_name == 'pull_request' &&
+        github.event.pull_request.user.login == 'penso' &&
+        github.event.pull_request.head.repo.full_name == 'penso/herdr-gpui') ||
+       ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+        github.ref == 'refs/heads/main'))
+    name: Windows check
+    needs: zizmor
+    runs-on: windows-2025
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Lint every target and feature
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Test the protocol and client crates
+        run: cargo test --locked -p herdr-protocol -p herdr-client
+
   # Keep the branch-protection context stable while requiring every platform.
   checks-passed:
     name: Format, lint, and test

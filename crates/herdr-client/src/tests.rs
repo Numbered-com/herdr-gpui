@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(unix)]
+use crate::transport::Listener;
 use crate::{
     Error, Result,
     frame::FrameReader,
@@ -10,15 +12,15 @@ use crate::{
     options::validate_options,
     protocol::{endpoint::*, *},
     session::{Health, Pending, Session, run_connection},
+    transport::Stream,
 };
 use crossbeam_channel::bounded;
 use serde_json::{Value, json};
 use std::{
     io::{self, Read, Write},
-    os::unix::net::{UnixListener, UnixStream},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64},
     },
     thread,
     time::{Duration, Instant},
@@ -27,17 +29,17 @@ const SNAPSHOT: &str =
     include_str!("../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json");
 const WELCOME: &str = include_str!("../../herdr-protocol/tests/fixtures/endpoint-welcome-v1.json");
 
-fn send(stream: &mut UnixStream, message: ServerMessage) {
+fn send(stream: &mut Stream, message: ServerMessage) {
     write_message(stream, &message, MAX_GRAPHICS_FRAME_SIZE).unwrap();
 }
-fn receive(stream: &mut UnixStream) -> ClientMessage {
+fn receive(stream: &mut Stream) -> ClientMessage {
     read_message(stream, MAX_FRAME_SIZE).unwrap()
 }
 fn event(client: &Client) -> ClientEvent {
     client.events.recv_timeout(Duration::from_secs(3)).unwrap()
 }
 
-fn handshake(stream: &mut UnixStream) {
+fn handshake(stream: &mut Stream) {
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();
@@ -95,7 +97,7 @@ fn baseline() -> PaneSurfaceFrame {
     }
 }
 
-fn test_client() -> (Client, UnixStream, thread::JoinHandle<Result<()>>) {
+fn test_client() -> (Client, Stream, thread::JoinHandle<Result<()>>) {
     test_client_mode(true, false)
 }
 
@@ -103,10 +105,13 @@ fn test_client() -> (Client, UnixStream, thread::JoinHandle<Result<()>>) {
 fn errors_preserve_sources_and_retry_categories() {
     use std::error::Error as _;
 
+    // The same refusal: EACCES on POSIX, ERROR_ACCESS_DENIED on Windows. The
+    // point is that a real OS code keeps both its category and its raw value.
+    const DENIED: i32 = if cfg!(windows) { 5 } else { 13 };
     struct Denied;
     impl Read for Denied {
         fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-            Err(io::Error::from_raw_os_error(13))
+            Err(io::Error::from_raw_os_error(DENIED))
         }
     }
     let error = FrameReader::new().poll(&mut Denied).unwrap_err();
@@ -119,7 +124,7 @@ fn errors_preserve_sources_and_retry_categories() {
             .downcast_ref::<io::Error>()
             .unwrap()
             .raw_os_error(),
-        Some(13)
+        Some(DENIED)
     );
 
     let mut reader = FrameReader::new();
@@ -155,6 +160,7 @@ fn errors_preserve_sources_and_retry_categories() {
         (Error::HandshakeTimeout, io::ErrorKind::InvalidData),
         (Error::RequestTimeout, io::ErrorKind::InvalidData),
         (Error::InvalidSession, io::ErrorKind::InvalidInput),
+        (Error::SshUnsupported, io::ErrorKind::Unsupported),
     ] {
         assert_eq!(error.kind(), kind, "{error}");
     }
@@ -179,8 +185,8 @@ fn disconnect_presentation_is_sanitized_and_bounded() {
 fn test_client_mode(
     active: bool,
     remote: bool,
-) -> (Client, UnixStream, thread::JoinHandle<Result<()>>) {
-    let (stream, server) = UnixStream::pair().unwrap();
+) -> (Client, Stream, thread::JoinHandle<Result<()>>) {
+    let (stream, server) = Stream::pair().unwrap();
     let (commands, rx) = bounded(COMMAND_CAPACITY);
     let (tx, events) = bounded(EVENT_CAPACITY);
     let stop = Arc::new(AtomicBool::new(false));
@@ -560,7 +566,7 @@ fn stale_boot_and_unsupported_commands_never_reach_socket() {
 
 #[test]
 fn fragmented_frames_survive_timeout_between_every_byte() {
-    let (mut client, mut server) = UnixStream::pair().unwrap();
+    let (mut client, mut server) = Stream::pair().unwrap();
     client
         .set_read_timeout(Some(Duration::from_millis(1)))
         .unwrap();
@@ -669,8 +675,12 @@ fn cancellation_interrupts_full_event_queue_and_idle_read() {
     worker.join().unwrap().unwrap();
 }
 
+// Binds the endpoint and then deletes it. A Windows named pipe has no such
+// filesystem identity: removing the path leaves the pipe listening.
+#[cfg(unix)]
 #[test]
 fn public_connect_delivers_shutdown_and_socket_failure() {
+    use std::sync::atomic::Ordering;
     static NEXT: AtomicU64 = AtomicU64::new(0);
     // Deep worktree paths can exceed the Unix socket address limit on macOS.
     let path = std::env::temp_dir().join(format!(
@@ -678,7 +688,7 @@ fn public_connect_delivers_shutdown_and_socket_failure() {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    let listener = UnixListener::bind(&path).unwrap();
+    let listener = Listener::bind(&path).unwrap();
     let client = connect(
         ConnectTarget::Socket(path.clone()),
         ConnectOptions::default(),
@@ -963,7 +973,7 @@ fn geometry_and_frame_reader_limits() {
             .is_err()
         );
     }
-    let (mut client, mut server) = UnixStream::pair().unwrap();
+    let (mut client, mut server) = Stream::pair().unwrap();
     server
         .write_all(&((MAX_GRAPHICS_FRAME_SIZE + 1) as u32).to_le_bytes())
         .unwrap();

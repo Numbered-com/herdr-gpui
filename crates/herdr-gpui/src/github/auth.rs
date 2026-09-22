@@ -199,8 +199,13 @@ impl Auth {
                 "No secure credential store is configured for GitHub sign-in"
             );
             self.failed = true;
-            self.message =
-                Some("No secure credential store configured. To accept unencrypted token storage, set [github] allow_plaintext_credentials = true and reload GUI config. Otherwise use GH_TOKEN / GITHUB_TOKEN.".into());
+            // The plaintext opt-in only exists where a private file can be kept
+            // private, so platforms without one must not be told to set it.
+            self.message = Some(if super::store::FILE {
+                "No secure credential store configured. To accept unencrypted token storage, set [github] allow_plaintext_credentials = true and reload GUI config. Otherwise use GH_TOKEN / GITHUB_TOKEN.".into()
+            } else {
+                "No GitHub credential store is available on this platform. Sign in by setting GH_TOKEN or GITHUB_TOKEN.".into()
+            });
             return;
         }
         let client = match config.github.client_id() {

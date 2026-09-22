@@ -174,6 +174,10 @@ pub enum Error {
         "No secure credential store configured. Explicitly opt in with [github] allow_plaintext_credentials = true, or use GH_TOKEN / GITHUB_TOKEN."
     )]
     CredentialPolicy,
+    #[error(
+        "No GitHub credential store is available on this platform. Use GH_TOKEN / GITHUB_TOKEN."
+    )]
+    CredentialUnsupported,
     #[error("PR lookup cancelled.")]
     PrCancelled,
     #[error("PR lookup timed out (15 seconds).")]

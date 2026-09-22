@@ -77,6 +77,9 @@ pub(crate) enum Store {
 // so macOS would re-prompt for the Keychain item's ACL on every run. Only the
 // signed release pipeline sets `HERDR_RELEASE_VERSION`, so only it uses Keychain.
 pub(super) const KEYCHAIN: bool = cfg!(target_os = "macos") && crate::RELEASE_BUILD;
+// The private file relies on POSIX ownership and mode bits, so platforms
+// without them keep the environment as their only source of a saved token.
+pub(super) const FILE: bool = cfg!(unix);
 // Those development builds have no other secure store to fall back on, so the
 // private file is their default. Every other platform keeps it an explicit opt-in.
 pub(super) const FILE_DEFAULT: bool = cfg!(target_os = "macos") && !KEYCHAIN;
@@ -86,7 +89,7 @@ const _: () = assert!(!KEYCHAIN || crate::RELEASE_BUILD);
 impl Store {
     pub(crate) fn select(config: &crate::config::Config) -> Self {
         Self::choose(
-            config.github.allow_plaintext_credentials,
+            config.github.allow_plaintext_credentials && FILE,
             KEYCHAIN,
             FILE_DEFAULT,
         )

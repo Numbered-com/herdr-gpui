@@ -738,11 +738,11 @@ fn open_worktree_branch_only_parent_membership_preserves_correlated_navigation(
 ) {
     use gpui::AppContext;
     use herdr_client::{
-        ClientEvent, ConnectOptions, ConnectTarget, Method, connect_with_connector,
+        ClientEvent, ConnectOptions, ConnectTarget, Method, Stream, connect_with_connector,
         protocol::{endpoint::*, *},
     };
-    use std::{os::unix::net::UnixStream, time::Duration};
-    let (stream, mut server) = UnixStream::pair().unwrap();
+    use std::time::Duration;
+    let (stream, mut server) = Stream::pair().unwrap();
     server
         .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();

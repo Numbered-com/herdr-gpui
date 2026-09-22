@@ -1,4 +1,6 @@
 //! Requires an active native desktop and an explicitly selected daemon executable.
+//! The daemon and its sandbox are POSIX, so the harness compiles on Unix only.
+#![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "../../test-support/sandbox.rs"]
 mod sandbox;

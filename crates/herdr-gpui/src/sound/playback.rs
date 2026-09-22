@@ -1,10 +1,11 @@
 use crate::{Error, Result};
 use herdr_client::protocol::SemanticNotificationSound as Sound;
 use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::{
     borrow::Cow,
     io::{Cursor, Read},
-    os::unix::fs::OpenOptionsExt,
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -80,11 +81,12 @@ fn decode(sound: Sound, custom: Option<&Path>) -> Result<SoundDecoder> {
 
 fn decode_file(path: &Path) -> Result<SoundDecoder> {
     let read = || -> Result<Vec<u8>> {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
         // Do not let a configured FIFO block the sole sound worker on open.
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
-            .open(path)?;
+        #[cfg(unix)]
+        options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
+        let file = options.open(path)?;
         let metadata = file.metadata()?;
         if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
             return Err(Error::SoundFileSize);

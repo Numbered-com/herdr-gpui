@@ -2,9 +2,11 @@
 
 use super::{Auth, Device, Note, Profile, Reply, SETUP_MESSAGE, Store, VERIFY_URL};
 use super::{
+    credentials,
     device::TokenResponse,
     http::{LIMIT, authorization, graphql, pr_cooldown, response},
     log::{header, kind, public_sso},
+    store,
     store::{KEYCHAIN, credential_bytes, resolve_token},
 };
 use crate::{Error, Result};
@@ -87,7 +89,21 @@ fn only_a_signed_release_build_uses_the_keychain() {
         assert_eq!(Store::select(&config), Store::File);
     }
     config.github.allow_plaintext_credentials = true;
-    assert_eq!(Store::select(&config), Store::choose(true, KEYCHAIN, false));
+    assert_eq!(
+        Store::select(&config),
+        Store::choose(store::FILE, KEYCHAIN, false)
+    );
+    // Platforms without POSIX ownership and mode bits cannot keep the file
+    // private, so opting in must not select it there.
+    assert_eq!(store::FILE, cfg!(unix));
+    if !store::FILE {
+        assert_eq!(Store::select(&config), Store::Environment);
+        assert!(matches!(
+            credentials::store(std::path::Path::new("."), Some(&"token".into()), true),
+            Err(Error::CredentialUnsupported)
+        ));
+        assert!(credentials::store(std::path::Path::new("."), None, false).is_ok());
+    }
 }
 #[test]
 fn credential_notes_state_where_tokens_are_kept() {

@@ -1,15 +1,20 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+// `lookup_pr` is exercised through a POSIX mock executable, so it has no caller
+// in this binary elsewhere.
+#[cfg_attr(not(unix), allow(dead_code))]
 #[path = "../build_identity.rs"]
 mod build_identity;
 
+#[cfg_attr(not(unix), allow(unused_imports))]
 use build_identity::*;
+#[cfg(unix)]
+use std::time::{Duration, Instant};
 use std::{
     fs,
     path::PathBuf,
     process::Command,
     sync::atomic::{AtomicUsize, Ordering},
-    time::{Duration, Instant},
 };
 
 struct Sandbox(PathBuf);
