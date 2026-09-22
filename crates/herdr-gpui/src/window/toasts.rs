@@ -5,10 +5,120 @@ use crate::{
 };
 use gpui::{prelude::*, *};
 use herdr_client::protocol::{SemanticNotification, SemanticNotificationKind, ToastHerdrPosition};
-use std::time::Instant;
+use std::{sync::TryLockError, task::Poll, time::Instant};
 
 impl HerdrWindow {
-    pub(super) fn show_toast_preview(
+    pub(crate) fn click_toast(
+        &mut self,
+        endpoint_id: &str,
+        generation: u64,
+        inbox: &std::sync::Arc<std::sync::Mutex<crate::state::LiveState>>,
+        id: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if self.menu.page.is_some() || self.toasts_hidden {
+            return;
+        }
+        let Some(index) = self.endpoints.iter().position(|e| {
+            e.id == endpoint_id
+                && e.generation == generation
+                && std::sync::Arc::ptr_eq(&e.connection.inbox, inbox)
+        }) else {
+            return;
+        };
+        let target = match self.toast_target(index, id) {
+            Poll::Ready(target) => target,
+            Poll::Pending => {
+                // The displayed target can start a handoff, but only a fresh
+                // inbox validation may queue navigation after contention ends.
+                let endpoint = &self.endpoints[index];
+                endpoint.live.snapshot.as_deref().and_then(|snapshot| {
+                    endpoint
+                        .toasts
+                        .entries
+                        .iter()
+                        .find(|(entry, _)| *entry == id)
+                        .and_then(|(_, notice)| notice.target(snapshot))
+                        .map(|target| (&target).into())
+                })
+            }
+        };
+        let Some(target) = target else {
+            return;
+        };
+        if !self.select_endpoint(endpoint_id, cx) {
+            return;
+        }
+        self.pending_navigation = Some(target);
+        self.pending_toast = Some(id);
+        self.navigate_toast(id, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn toast_target(
+        &self,
+        index: usize,
+        id: u64,
+    ) -> Poll<Option<crate::navigation::OwnedNavigationTarget>> {
+        let endpoint = &self.endpoints[index];
+        if !endpoint.enabled || endpoint.connection.handle.is_none() {
+            return Poll::Ready(None);
+        }
+        let Some((_, notice)) = endpoint
+            .toasts
+            .entries
+            .iter()
+            .find(|(entry, _)| *entry == id)
+        else {
+            return Poll::Ready(None);
+        };
+        let accepted = index == self.selected_endpoint && self.pending_toast == Some(id);
+        if !notice.visible || (!accepted && notice.expires <= Instant::now()) {
+            return Poll::Ready(None);
+        }
+        let state = match endpoint.connection.inbox.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::WouldBlock) => return Poll::Pending,
+            Err(TryLockError::Poisoned(_)) => return Poll::Ready(None),
+        };
+        if !state.status.is_connected()
+            || state.notifications_lost
+            || notice.pane_id.as_ref().is_some_and(|pane| {
+                state
+                    .notifications
+                    .iter()
+                    .any(|new| new.pane_id.as_ref() == Some(pane))
+            })
+        {
+            return Poll::Ready(None);
+        }
+        Poll::Ready(
+            state
+                .snapshot
+                .as_deref()
+                .and_then(|snapshot| notice.target(snapshot))
+                .map(|target| (&target).into()),
+        )
+    }
+
+    pub(crate) fn navigate_toast(&mut self, id: u64, cx: &mut Context<Self>) {
+        if self.menu.page.is_some() || !self.navigation_ready() {
+            return;
+        }
+        let Poll::Ready(target) = self.toast_target(self.selected_endpoint, id) else {
+            return;
+        };
+        self.pending_toast = None;
+        self.pending_navigation = None;
+        if let Some(target) = target
+            && self.navigate(target.as_deref(), cx)
+        {
+            self.endpoints[self.selected_endpoint].toasts.dismiss(id);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn show_toast_preview(
         &mut self,
         kind: SemanticNotificationKind,
         cx: &mut Context<Self>,
@@ -30,27 +140,64 @@ impl HerdrWindow {
                 "QA preview: a custom notification message.",
             ),
         };
+        let snapshot = self.endpoints[self.selected_endpoint].live.snapshot.clone();
+        let target = snapshot.as_ref().filter(|_| {
+            matches!(
+                kind,
+                SemanticNotificationKind::NeedsAttention | SemanticNotificationKind::Finished
+            )
+        });
+        let mut notice = Notice::new(
+            SemanticNotification {
+                kind,
+                title: title.into(),
+                body: Some(body.into()),
+                sound: None,
+                agent: None,
+                workspace_id: target.and_then(|s| s.focused_workspace_id.clone()),
+                tab_id: target.and_then(|s| s.focused_tab_id.clone()),
+                pane_id: target.and_then(|s| s.focused_pane_id.clone()),
+                position: None,
+            },
+            Instant::now(),
+        )
+        .with_snapshot(snapshot.as_deref())
+        .preview();
+        // Each QA action immediately presents its own card, even offline.
+        for endpoint in &mut self.endpoints {
+            endpoint.toasts.entries.retain(|(_, n)| !n.visible);
+        }
+        notice.position = self.config.notifications.position;
+        notice.promote(Instant::now());
         self.endpoints[self.selected_endpoint]
             .toasts
-            .receive([Notice::new(
-                SemanticNotification {
-                    kind,
-                    title: title.into(),
-                    body: Some(body.into()),
-                    sound: None,
-                    agent: None,
-                    workspace_id: None,
-                    tab_id: None,
-                    pane_id: None,
-                    position: None,
-                },
-                Instant::now(),
-            )]);
+            .receive([notice]);
+        self.tick_toasts(false, Instant::now());
         cx.notify();
     }
 
-    pub(super) fn render_toasts(&self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        // Menus keep their existing input isolation; expiration continues while hidden.
+    pub(crate) fn tick_toasts(&mut self, hidden: bool, now: Instant) -> bool {
+        crate::notifications::tick(
+            &mut self.endpoints,
+            self.selected_endpoint,
+            self.config.notifications,
+            hidden,
+            self.pending_toast,
+            now,
+        )
+    }
+
+    pub(super) fn render_toasts(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let viewport = window.viewport_size();
+        self.toasts_hidden = viewport.height < px(180.) || viewport.width < px(180.);
+        self.tick_toasts(
+            self.menu.page.is_some() || self.toasts_hidden,
+            Instant::now(),
+        );
         if self.menu.page.is_some() {
             return Vec::new();
         }
@@ -70,6 +217,7 @@ impl HerdrWindow {
                     .toasts
                     .entries
                     .iter()
+                    .filter(|(_, notice)| notice.visible)
                     .map(move |(id, notice)| (endpoint, *id, notice))
             })
             .take(visible_limit)
@@ -129,6 +277,23 @@ impl HerdrWindow {
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                        .when(
+                            endpoint
+                                .live
+                                .snapshot
+                                .as_deref()
+                                .and_then(|s| notice.target(s))
+                                .is_some(),
+                            |d| d.cursor_pointer(),
+                        )
+                        .on_click({
+                            let endpoint_id = endpoint_id.clone();
+                            let inbox = inbox.clone();
+                            cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.click_toast(&endpoint_id, generation, &inbox, id, cx);
+                            })
+                        })
                         .child(
                             div()
                                 .flex_1()
@@ -173,6 +338,7 @@ impl HerdrWindow {
                                     cx.stop_propagation();
                                     if let Some(endpoint) = this.endpoints.iter_mut().find(|e| {
                                         e.id == endpoint_id
+                                            && e.generation == generation
                                             && std::sync::Arc::ptr_eq(&e.connection.inbox, &inbox)
                                     }) {
                                         endpoint.toasts.dismiss(id);
@@ -239,6 +405,36 @@ mod tests {
     use std::time::Instant;
 
     #[gpui::test]
+    fn targeted_previews_use_only_current_snapshot_ids(cx: &mut TestAppContext) {
+        use herdr_client::protocol::{ClientShellSnapshot, SemanticNotificationKind};
+        let (view, cx) = cx.add_window_view(fixture_window);
+        let snapshot: ClientShellSnapshot = serde_json::from_str(include_str!(
+            "../../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json"
+        ))
+        .unwrap();
+        view.update(cx, |view, cx| {
+            view.endpoints[0].live.snapshot = Some(std::sync::Arc::new(snapshot.clone()));
+            view.config.notifications.delay_seconds = 3600;
+            for kind in [
+                SemanticNotificationKind::NeedsAttention,
+                SemanticNotificationKind::Finished,
+                SemanticNotificationKind::Custom,
+            ] {
+                view.show_toast_preview(kind, cx);
+                let notice = &view.endpoints[0].toasts.entries.back().unwrap().1;
+                if kind == SemanticNotificationKind::Custom {
+                    assert!(notice.target(&snapshot).is_none());
+                } else {
+                    assert_eq!(
+                        notice.target(&snapshot),
+                        Some(crate::navigation::NavigationTarget::Pane("w1:p1"))
+                    );
+                }
+            }
+        });
+    }
+
+    #[gpui::test]
     fn toast_preview_actions_use_normal_state_without_a_connection(cx: &mut TestAppContext) {
         use crate::actions::ShowToastPreview;
         use herdr_client::protocol::{SemanticNotificationKind, ToastHerdrPosition};
@@ -281,7 +477,7 @@ mod tests {
                 assert!(!notice.title.is_empty());
                 assert!(notice.body.as_ref().unwrap().starts_with("QA preview"));
                 assert_eq!(notice.position, ToastHerdrPosition::BottomRight);
-                assert_eq!(endpoint.toasts.entries.len(), (index + 1).min(3));
+                assert_eq!(endpoint.toasts.entries.len(), 1);
                 assert!(endpoint.connection.handle.is_none());
                 assert!(view.endpoints[0].toasts.entries.is_empty());
                 assert_eq!(view.selected_endpoint, 1);
@@ -304,11 +500,7 @@ mod tests {
         let dismiss = cx.debug_bounds("toast-dismiss-preview-3").unwrap();
         cx.simulate_click(dismiss.center(), Default::default());
         view.update(cx, |view, _| {
-            let toasts = &mut view.endpoints[1].toasts;
-            assert_eq!(toasts.entries.len(), 2);
-            let deadline = toasts.entries.back().unwrap().1.expires;
-            assert!(toasts.expire(deadline));
-            assert!(toasts.entries.is_empty());
+            assert!(view.endpoints[1].toasts.entries.is_empty());
         });
     }
 
@@ -322,7 +514,7 @@ mod tests {
                 view.endpoints[0].toasts.receive((0..3).map(|_| {
                     let mut wire = notification(&"long title ".repeat(100));
                     wire.body = Some("body ".repeat(200));
-                    Notice::new(wire, Instant::now())
+                    Notice::new(wire, Instant::now()).preview()
                 }));
                 let mut remote = crate::endpoint::Endpoint::new(
                     "remote".into(),
@@ -332,7 +524,7 @@ mod tests {
                 );
                 remote
                     .toasts
-                    .receive([Notice::new(notification("Remote"), Instant::now())]);
+                    .receive([Notice::new(notification("Remote"), Instant::now()).preview()]);
                 view.endpoints.push(remote);
             });
         });
@@ -347,7 +539,7 @@ mod tests {
             let mut bottom = px(0.);
             for selector in ["toast-local-0", "toast-local-1", "toast-local-2"]
                 .into_iter()
-                .take(if height < 300. { 1 } else { 3 })
+                .take(1)
             {
                 let bounds = cx.debug_bounds(selector).unwrap();
                 assert!(bounds.left() >= px(0.) && bounds.right() <= px(width));
@@ -363,7 +555,7 @@ mod tests {
         // Use a full-height card for the dismissal hit target.
         cx.simulate_resize(size(px(1000.), px(600.)));
         cx.update(|window, cx| window.draw(cx).clear());
-        let dismiss = cx.debug_bounds("toast-dismiss-local-1").unwrap();
+        let dismiss = cx.debug_bounds("toast-dismiss-local-0").unwrap();
         cx.simulate_click(dismiss.center(), Default::default());
         cx.update(|window, cx| {
             assert!(view.read(cx).focus.is_focused(window));
@@ -396,7 +588,7 @@ mod tests {
                     wire.position = Some(position);
                     view.endpoints[0]
                         .toasts
-                        .receive([Notice::new(wire, Instant::now())]);
+                        .receive([Notice::new(wire, Instant::now()).preview()]);
                 });
                 window.draw(cx).clear();
             });
@@ -429,21 +621,21 @@ mod tests {
                     );
                     endpoint
                         .toasts
-                        .receive([Notice::new(notification(id), Instant::now())]);
+                        .receive([Notice::new(notification(id), Instant::now()).preview()]);
                     view.endpoints.push(endpoint);
                 }
             });
             window.draw(cx).clear();
         });
         assert!(cx.debug_bounds("toast-local-0").is_some());
-        assert!(cx.debug_bounds("toast-one-0").is_some());
-        assert!(cx.debug_bounds("toast-two-0").is_some());
+        assert!(cx.debug_bounds("toast-one-0").is_none());
+        assert!(cx.debug_bounds("toast-two-0").is_none());
         assert!(cx.debug_bounds("toast-three-0").is_none());
-        let dismiss = cx.debug_bounds("toast-dismiss-two-0").unwrap();
+        let dismiss = cx.debug_bounds("toast-dismiss-local-0").unwrap();
         cx.simulate_click(dismiss.center(), Default::default());
         view.read_with(cx, |view, _| {
-            assert_eq!(view.endpoints[0].toasts.entries.len(), 1);
-            assert!(view.endpoints[2].toasts.entries.is_empty());
+            assert!(view.endpoints[0].toasts.entries.is_empty());
+            assert_eq!(view.endpoints[2].toasts.entries.len(), 1);
             assert_eq!(view.selected_endpoint, 0);
         });
     }

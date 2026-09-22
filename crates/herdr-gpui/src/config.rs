@@ -22,6 +22,38 @@ pub struct Config {
     pub ui: FontConfig,
     pub github: GitHubConfig,
     pub features: Features,
+    pub notifications: NotificationConfig,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct NotificationConfig {
+    pub enabled: bool,
+    #[serde(deserialize_with = "notification_delay")]
+    pub delay_seconds: u64,
+    pub position: herdr_client::protocol::ToastHerdrPosition,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            delay_seconds: 1,
+            position: herdr_client::protocol::ToastHerdrPosition::BottomRight,
+        }
+    }
+}
+
+fn notification_delay<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<u64, D::Error> {
+    let seconds = u64::deserialize(d)?;
+    if seconds > 3600 {
+        return Err(serde::de::Error::custom(
+            "notifications.delay_seconds must be between 0 and 3600",
+        ));
+    }
+    Ok(seconds)
 }
 
 /// Optional behaviors the config file turns on. Every flag is off by default,
@@ -164,6 +196,7 @@ impl Default for Config {
             confirm_close_tab: true,
             show_agents: true,
             features: Features::default(),
+            notifications: NotificationConfig::default(),
             sidebar: font(monospace, 12.0),
             // Tabs are terminal chrome, so they read in the monospace face the
             // sidebar and terminal use, as they do in the reference UI.
@@ -186,6 +219,7 @@ struct Settings {
     ui: FontSettings,
     github: GitHubConfig,
     features: Features,
+    notifications: NotificationConfig,
 }
 
 #[derive(Default, Deserialize)]
@@ -310,6 +344,7 @@ impl Config {
         settings.github.client_id_with_override(None)?;
         config.github = settings.github;
         config.features = settings.features;
+        config.notifications = settings.notifications;
         if let Some(theme) = settings.theme {
             if theme.trim().is_empty() {
                 return Err(Error::EmptyTheme);
@@ -714,6 +749,55 @@ impl Theme {
 mod tests {
     use super::*;
     use anyhow::Context as _;
+
+    #[test]
+    fn notification_settings_defaults_bounds_corners_and_strict_types() -> anyhow::Result<()> {
+        use herdr_client::protocol::ToastHerdrPosition;
+        use std::error::Error as _;
+        for text in ["", "[notifications]", DEFAULT_CONFIG] {
+            assert_eq!(
+                Config::parse(text)?.notifications,
+                NotificationConfig::default()
+            );
+        }
+        for delay in [0, 1, 3600] {
+            for (name, position) in [
+                ("top-left", ToastHerdrPosition::TopLeft),
+                ("top-right", ToastHerdrPosition::TopRight),
+                ("bottom-left", ToastHerdrPosition::BottomLeft),
+                ("bottom-right", ToastHerdrPosition::BottomRight),
+            ] {
+                let config = Config::parse(&format!(
+                    "[notifications]\nenabled=true\ndelay_seconds={delay}\nposition=\"{name}\""
+                ))?;
+                assert_eq!(
+                    config.notifications,
+                    NotificationConfig {
+                        enabled: true,
+                        delay_seconds: delay,
+                        position
+                    }
+                );
+            }
+        }
+        for field in [
+            "enabled=1",
+            "enabled=\"true\"",
+            "delay_seconds=-1",
+            "delay_seconds=3601",
+            "delay_seconds=1.5",
+            "delay_seconds=\"1\"",
+            "position=\"center\"",
+            "unknown=true",
+        ] {
+            let error = Config::parse(&format!("[notifications]\n{field}"))
+                .err()
+                .ok_or_else(|| anyhow::anyhow!("accepted {field}"))?;
+            assert!(matches!(error, Error::Toml(_)), "{field}: {error:?}");
+            assert!(error.source().is_some());
+        }
+        Ok(())
+    }
 
     #[test]
     fn primary_selection_text_contrasts_in_every_builtin_theme() {

@@ -114,6 +114,12 @@ pub(crate) fn menus() -> Vec<Menu> {
                     },
                 ),
                 MenuItem::action(
+                    "Open Notification Target",
+                    RunCommand {
+                        command: Command::OpenNotificationTarget,
+                    },
+                ),
+                MenuItem::action(
                     "Toggle Sidebar",
                     RunCommand {
                         command: Command::ToggleSidebar,

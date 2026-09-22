@@ -126,6 +126,11 @@ impl HerdrWindow {
             ));
         }
         body = body
+            .child(section("NOTIFICATIONS"))
+            .child(row("preferences-notifications-enabled", "In-app toasts", self.config.notifications.enabled.to_string()))
+            .child(row("preferences-notifications-delay", "Delay (seconds)", self.config.notifications.delay_seconds.to_string()))
+            .child(row("preferences-notifications-position", "Corner", format!("{:?}", self.config.notifications.position)))
+            .child(note("Edit [notifications] in the GUI config file, then reload. In-app notifications default off; QA previews always work. No sounds or OS notifications."))
             .child(note(
                 "Font families and sizes are read-only here. Sizes are logical pixels, independent of display scaling.",
             ))

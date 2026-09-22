@@ -153,8 +153,10 @@ impl ConnectionBridge {
             .as_mut()
             .and_then(|(_, result)| result.take());
         let notifications = std::mem::take(&mut state.notifications);
+        let notifications_lost = std::mem::take(&mut state.notifications_lost);
         let mut update = state.clone();
         update.notifications = notifications;
+        update.notifications_lost = notifications_lost;
         if let Some((_, result)) = &mut update.dialog_response {
             *result = response;
         }

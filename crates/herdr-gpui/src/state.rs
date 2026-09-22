@@ -48,6 +48,7 @@ pub struct LiveState {
     pub dirty: bool,
     pub(crate) dialog_response: Option<(String, Option<DialogResponse>)>,
     pub(crate) notifications: std::collections::VecDeque<crate::notifications::Notice>,
+    pub(crate) notifications_lost: bool,
     outer_focused: Option<bool>,
     pub activation: Option<SurfaceActivation>,
     pub supports_surface: bool,
@@ -84,6 +85,7 @@ impl Default for LiveState {
             dirty: true,
             dialog_response: None,
             notifications: Default::default(),
+            notifications_lost: false,
             outer_focused: None,
             activation: None,
             supports_surface: false,
@@ -265,14 +267,19 @@ impl LiveState {
                 if !self.status.is_connected() {
                     return;
                 }
+                if let Some(pane) = notification.pane_id.as_ref() {
+                    self.notifications
+                        .retain(|n| n.pane_id.as_ref() != Some(pane));
+                }
                 if self.notifications.len() == crate::notifications::PENDING_LIMIT {
                     self.notifications.pop_front();
+                    // A dropped event may have invalidated an already displayed pane.
+                    self.notifications_lost = true;
                 }
-                self.notifications
-                    .push_back(crate::notifications::Notice::new(
-                        notification,
-                        std::time::Instant::now(),
-                    ));
+                self.notifications.push_back(
+                    crate::notifications::Notice::new(notification, std::time::Instant::now())
+                        .with_snapshot(self.snapshot.as_deref()),
+                );
             }
             _ => return,
         }

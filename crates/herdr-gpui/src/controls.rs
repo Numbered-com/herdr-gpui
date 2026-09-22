@@ -30,6 +30,7 @@ pub enum Command {
     Quit,
     Logs,
     About,
+    OpenNotificationTarget,
 }
 
 pub struct CommandInfo {
@@ -39,6 +40,11 @@ pub struct CommandInfo {
 }
 
 pub const COMMANDS: &[CommandInfo] = &[
+    CommandInfo {
+        command: Command::OpenNotificationTarget,
+        label: "Open Notification Target",
+        shortcut: "cmd-alt-n",
+    },
     CommandInfo {
         command: Command::Logs,
         label: "GPUI Logs",
@@ -322,7 +328,8 @@ pub fn request(command: Command, snapshot: &ClientShellSnapshot) -> Option<(Meth
         | Command::Reconnect
         | Command::Quit
         | Command::Logs
-        | Command::About => return None,
+        | Command::About
+        | Command::OpenNotificationTarget => return None,
     })
 }
 
@@ -342,6 +349,7 @@ mod tests {
     fn catalog_has_all_native_commands_and_gpui_shortcuts() {
         use Command::*;
         let expected = [
+            (OpenNotificationTarget, "cmd-alt-n"),
             (Logs, ""),
             (NewWindow, "cmd-shift-n"),
             (Workspace, "cmd-n"),
@@ -379,6 +387,18 @@ mod tests {
             (About, ""),
         ];
         assert_eq!(COMMANDS.len(), expected.len());
+        let shortcuts: std::collections::HashSet<_> = COMMANDS
+            .iter()
+            .filter(|info| !info.shortcut.is_empty())
+            .map(|info| info.shortcut)
+            .collect();
+        assert_eq!(
+            shortcuts.len(),
+            COMMANDS
+                .iter()
+                .filter(|info| !info.shortcut.is_empty())
+                .count()
+        );
         for (info, (command, shortcut)) in COMMANDS.iter().zip(expected) {
             assert_eq!(info.command, command);
             assert_eq!(info.shortcut, shortcut);
@@ -395,6 +415,7 @@ mod tests {
     fn gui_commands_never_send_daemon_requests() {
         let s = snapshot();
         for command in [
+            Command::OpenNotificationTarget,
             Command::Logs,
             Command::NewWindow,
             Command::ToggleSidebar,
