@@ -358,6 +358,12 @@ native-frame appearance also remains unverified by these macOS tests.
 
 ## Terminal Selection And Copy
 
+Mouse-aware applications receive clicks, button releases, drags, and pointer
+motion. Hold Shift to select/copy locally instead, or Shift-right-click for the
+GUI pane menu. In applications without mouse reporting, selection and the pane
+menu work without Shift. A forwarded drag stays in the pane or popup where it
+started, including when the pointer moves outside it.
+
 Drag across the terminal to select cells; releasing the button copies them, drops
 the highlight, and shows the `copied to clipboard` flash described under
 [Configuration](#configuration). Selection is client-local: it reads the surface
@@ -379,10 +385,110 @@ The highlight is cleared by the release that copies it, and by a reconnect,
 detach, or endpoint switch. Cmd-V still sends semantic paste; there is no copy
 keystroke, because the release has already copied and nothing stays selected.
 
+## File Drops
+
+Drop files from your file manager onto a terminal pane or popup to paste their
+paths there, even if another pane is focused. Paths are quoted as POSIX shell
+words, separated by spaces; the drop never presses Enter. Local drops only paste
+paths; SSH drops read and transfer the selected files.
+Drops are limited to 256 paths and 64 KiB of quoted text. Non-UTF-8 paths and
+paths containing control characters are rejected rather than altered.
+
+On an SSH endpoint, a single supported image is transferred as described below.
+Other regular files and multiple-file drops are streamed using the SSH file-copy
+path below. POSIX quoting is not intended for Windows command shells.
+
+## SSH File Copies
+
+Drop regular files onto an SSH pane or popup to copy them to that host. A
+`Copying...` card shows the filename (or file count), transferred bytes, percentage,
+progress bar, and Cancel button. Once all files are received and the SSH processes
+exit successfully, their quoted remote paths are pasted into the original target.
+No partial list is pasted on failure. Directories and special files are rejected;
+symlinks to regular files are followed. A single recognized image uses the image
+bridge below instead; multiple-file drops copy their originals unchanged.
+
+One file-copy batch runs per window. Files are streamed in bounded 64 KiB chunks
+with 64-bit byte counters, so a 4 GiB ISO does not require a 4 GiB allocation.
+Progress counts bytes written to the SSH stream; `Finalizing copy...` waits for
+remote byte-count verification and SSH completion. This is not a checksum or
+durability guarantee. Files changing size during transfer are rejected.
+
+Copies use a separate noninteractive SSH connection with the same host-key and
+authentication policy as the terminal. Terminal input remains responsive, and
+typing is not queued behind a multi-gigabyte copy: wait for completion before
+submitting a command that needs its path. Switching hosts, losing the target,
+reconnecting, or closing the window cancels the copy. Cancel only terminates the
+copy process, never the Herdr daemon or its terminal connection.
+
+Each file keeps its basename inside a unique private `herdr-upload.*` directory
+under the remote `${TMPDIR:-/tmp}`. Existing files are never overwritten. Partial
+and cancelled copies are removed where possible; cleanup failures display a
+warning identifying the original host. Successfully pasted files remain until
+you remove them or the remote OS cleans its temporary directory: unlike image
+bridge files, they are not owned or deleted by Herdr on disconnect. Network loss
+can prevent cleanup, and kernel-blocked local filesystem operations cannot be
+forcibly interrupted. A copy stalls out after 30 seconds without progress.
+
+## Remote Images
+
+On a selected SSH endpoint, drop one PNG, JPEG, GIF, WebP, or BMP image onto a pane
+or popup to send it through Herdr's existing image bridge. Clipboard images use
+Cmd-V (normal paste, with text taking precedence) or Ctrl-V (Herdr TUI's default
+image-paste shortcut). Ctrl-V retains its normal terminal meaning when the
+clipboard has no image. A pasted absolute image-file path is also recognized,
+including the quoted/backslash-escaped paths used by terminal file drops.
+
+The remote daemon writes a temporary file and pastes its remote path into the
+target terminal. OpenCode or another agent can recognize that path as an image;
+the GUI never presses Enter or claims that the agent accepted an attachment.
+Files are connection-owned and Herdr removes them when the client disconnects.
+
+Images are limited to 16 MiB, with one queued/sending image per connection and
+at most four clipboard preparations per window. File reads, remote clipboard
+acquisition, and encoding run in the background. A FIFO reservation keeps
+subsequent typing and Enter behind the paste. Images within 16 MiB pass through
+unchanged. Larger static images are recompressed, then downscaled if necessary,
+to fit that same daemon limit. Transparency and EXIF orientation are preserved;
+the original file is never modified. A notification reports that the smaller
+copy was queued, not that an agent accepted it.
+
+Automatic resizing accepts at most 128 MiB of encoded source data and a bounded
+64-megapixel / 256-MiB decoded raster. Oversized GIF, WebP, and APNG images are
+rejected instead of silently losing animation. Invalid, too-large-to-process,
+and unsupported images show an `Image discarded` notification with the reason;
+no fallback local path is pasted for resize failures. Unreadable, empty, or
+nonregular image-file candidates retain the TUI's original path-paste fallback.
+TIFF, HEIC, and SVG are not image-bridge formats but can be dropped as ordinary
+files using SSH file copy.
+
+Switching endpoints, reconnecting, or invalidating the target cancels pending
+work. Cancelling an image already partially written closes that client connection
+to avoid corrupting framing; it does not stop the daemon. Slow/stalled transfers
+have a 60-second deadline. There is no upload acknowledgement or progress API.
+
+macOS uses the native pasteboard on a background executor; AppKit may materialize
+its data before the client can check its size. Linux uses `wl-paste` (Wayland) or
+`xclip` (X11) for explicit Ctrl-V image acquisition, with bounded output and a
+three-second acquisition deadline. Ordinary Linux paste retains GPUI's native
+clipboard reader and needs no helper; that existing synchronous API can still
+materialize image data on the UI thread. Install the matching utility for
+background image paste. Regular-file reads use bounded
+chunks and a three-second deadline between reads, but an OS-blocked network/FUSE
+filesystem operation cannot be forcibly interrupted. Such a read stays isolated
+from the UI and holds its bounded preparation slot until it returns.
+
+Local terminals retain text/path paste behavior, as in Herdr's remote-only image
+bridge. Windows SSH and image uploads remain unsupported. Native clipboard/drop
+and real SSH behavior require explicit desktop/host verification in addition to
+the mock-peer and headless tests.
+
 ## Terminal Links
 
 Click an explicit terminal hyperlink or a visible `http://` / `https://` URL to
 open it in your default browser. A hand cursor indicates a clickable destination.
+In a mouse-aware application, hold Shift while clicking to open a link locally
+instead of sending the click to the application.
 Only HTTP and HTTPS destinations are opened. Links inside a popup target that
 popup, and menus block activation. Dragging does not activate a link: a drag
 across a link copies it as text, and the click that opens it is the one that
@@ -695,9 +801,9 @@ GPUI native action/menu/keybinding patterns.
   and DejaVu Sans. No bundled Nerd Font.
   Private-use icons may be missing. Fonts and palettes are configured locally,
   not synchronized from the host terminal's theme.
-- No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
+- No draggable scrollback UI, split dragging,
   image rendering, or animated blinking.
-- No right-click passthrough or horizontal wheel handling,
+- No horizontal wheel handling,
   server-owned keybindings, session picker, saved-host editing, or daemon
   stop/upgrade management.
 - IME uses a minimal transient buffer, not a local editable terminal document;
