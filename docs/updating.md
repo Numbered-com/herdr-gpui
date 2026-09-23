@@ -10,9 +10,10 @@ both executables into a universal app, and Linux on native Ubuntu 24.04 x86_64 a
 ARM64 runners. Linux remains experimental. Package-managed installs are updated
 through their package manager, never by overwriting managed files: a macOS
 Homebrew cask is upgraded by running Homebrew (see [Homebrew Casks](#homebrew-casks)),
-and Linux AppImage, Snap, and Flatpak containers are refused outright. The
-`.deb`, `.rpm` and Arch packages install under `/usr`, outside HOME, so the updater
-refuses them too; the Nix flake embeds no update key and never runs it.
+and Linux AppImage, Snap, and Flatpak containers are refused outright. An
+executable under `/usr` (other than `/usr/local`) or in `/nix/store` is reported
+as package-managed too, which covers the `.deb`, `.rpm` and Arch packages; the
+Nix flake also embeds no update key, so it never offers an update.
 
 ## Repository Configuration
 
