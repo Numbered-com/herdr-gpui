@@ -5,13 +5,17 @@ use super::HerdrWindow;
 use crate::{
     connection::ConnectionBridge,
     navigation::NavigationTarget,
-    terminal::{InputTarget, WheelTarget, wheel_target},
+    terminal::{InputTarget, Scrollbar, WheelTarget, wheel_target},
 };
 use gpui::{
     Context, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
     Window,
 };
-use herdr_client::protocol::{ClientMouseButton, ClientMouseKind};
+use herdr_client::{
+    Method,
+    protocol::{ClientMouseButton, ClientMouseKind},
+};
+use serde_json::json;
 
 pub(crate) struct Gesture {
     hit: WheelTarget,
@@ -19,6 +23,16 @@ pub(crate) struct Gesture {
     boot: String,
     epoch: u64,
     generation: u64,
+}
+
+/// A drag of a pane's native scrollbar. `grab` keeps the pointer's place on
+/// the thumb; `want` is the latest offset not yet sent to the daemon.
+pub(crate) struct ScrollbarDrag {
+    pane: String,
+    boot: String,
+    grab: f32,
+    held: bool,
+    want: Option<u64>,
 }
 
 fn button(button: MouseButton) -> Option<ClientMouseButton> {
@@ -275,6 +289,154 @@ impl HerdrWindow {
             != Some(id)
         {
             self.navigate(NavigationTarget::Pane(id), cx);
+        }
+    }
+
+    fn scrollbar(&self, pane: &str) -> Option<Scrollbar> {
+        let pane = self
+            .live
+            .surface
+            .as_deref()?
+            .panes
+            .iter()
+            .find(|p| p.pane_id == pane)?;
+        Scrollbar::new(pane, self.cell_width, self.config.terminal.line_height())
+    }
+
+    /// Grabs the thumb where pressed, or jumps it under the pointer when the
+    /// press lands on the track.
+    pub(crate) fn scrollbar_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.menu.page.is_some() || !self.input_ready() {
+            return false;
+        }
+        let (Some(surface), Some(snapshot)) = (self.live.surface.as_deref(), &self.live.snapshot)
+        else {
+            return false;
+        };
+        if surface.popup.is_some() {
+            return false;
+        }
+        let local = event.position - self.bounds.origin;
+        let cell_height = self.config.terminal.line_height();
+        let Some((pane, bar)) = surface.panes.iter().find_map(|pane| {
+            Scrollbar::new(pane, self.cell_width, cell_height)
+                .filter(|bar| bar.track.contains(&local))
+                .map(|bar| (pane.pane_id.clone(), bar))
+        }) else {
+            return false;
+        };
+        let grab = if bar.thumb.contains(&local) {
+            f32::from(local.y - bar.thumb.top())
+        } else {
+            f32::from(bar.thumb.size.height) / 2.
+        };
+        self.scrollbar_drag = Some(ScrollbarDrag {
+            pane,
+            boot: snapshot.boot_id.clone(),
+            grab,
+            held: true,
+            want: None,
+        });
+        self.drag_scrollbar(event.position, cx);
+        cx.stop_propagation();
+        true
+    }
+
+    pub(crate) fn scrollbar_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(drag) = self.scrollbar_drag.as_mut().filter(|drag| drag.held) else {
+            return false;
+        };
+        if event.pressed_button != Some(MouseButton::Left) {
+            drag.held = false;
+            return false;
+        }
+        self.drag_scrollbar(event.position, cx);
+        true
+    }
+
+    pub(crate) fn scrollbar_mouse_up(
+        &mut self,
+        event: &MouseUpEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(drag) = self
+            .scrollbar_drag
+            .as_mut()
+            .filter(|drag| drag.held && event.button == MouseButton::Left)
+        else {
+            return false;
+        };
+        drag.held = false;
+        self.flush_scrollbar(cx);
+        true
+    }
+
+    fn drag_scrollbar(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(drag) = &self.scrollbar_drag else {
+            return;
+        };
+        let Some(bar) = self.scrollbar(&drag.pane) else {
+            self.scrollbar_drag = None;
+            return;
+        };
+        let top = f32::from(position.y - self.bounds.origin.y) - drag.grab;
+        if let Some(drag) = &mut self.scrollbar_drag {
+            drag.want = Some(bar.offset_at(top));
+        }
+        self.flush_scrollbar(cx);
+    }
+
+    /// Sends the latest wanted offset once the previous request has answered,
+    /// and retires a released drag when nothing is left to send.
+    pub(crate) fn flush_scrollbar(&mut self, cx: &mut Context<Self>) {
+        let Some(drag) = &mut self.scrollbar_drag else {
+            return;
+        };
+        if self.live.scroll_request.is_some() {
+            return;
+        }
+        let Some(offset) = drag.want.take() else {
+            if !drag.held {
+                self.scrollbar_drag = None;
+            }
+            return;
+        };
+        let connection = &self.endpoints[self.selected_endpoint].connection;
+        let (Some(handle), Some(snapshot)) = (&connection.handle, &self.live.snapshot) else {
+            self.scrollbar_drag = None;
+            return;
+        };
+        if snapshot.boot_id != drag.boot {
+            self.scrollbar_drag = None;
+            return;
+        }
+        // Registered under the inbox lock so the response cannot be applied
+        // before the request is known, which would leave the drag waiting.
+        let Ok(mut state) = connection.inbox.lock() else {
+            return;
+        };
+        match handle.request(
+            &drag.boot,
+            Method::PaneScroll,
+            json!({"pane_id": drag.pane, "offset_from_bottom": offset}),
+        ) {
+            Ok(request) => {
+                state.scroll_request = Some(request.clone());
+                self.live.scroll_request = Some(request);
+            }
+            Err(error) => {
+                drop(state);
+                self.local_error = Some(format!("Scroll not sent: {error}"));
+                cx.notify();
+            }
         }
     }
 }

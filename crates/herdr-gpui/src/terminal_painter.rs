@@ -4,7 +4,7 @@ use self::graphics::Graphic;
 use crate::config::Theme;
 use crate::terminal::*;
 use gpui::*;
-use herdr_client::protocol::{CellData, FrameData};
+use herdr_client::protocol::{CellData, FrameData, PaneSurfacePane, SurfaceRect};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -15,6 +15,8 @@ const CACHE_LIMIT: usize = 4096;
 const SELECTION_ALPHA: u32 = 0x59;
 const REPORT_INTERVAL: Duration = Duration::from_secs(5);
 const SLOW_PAINT: Duration = Duration::from_millis(16);
+const SCROLLBAR_INSET: f32 = 1.;
+const SCROLLBAR_ALPHA: u32 = 0xc0;
 
 #[derive(Default)]
 struct PaintTiming {
@@ -106,6 +108,39 @@ fn decoration_offsets(cell: &CellData, cell_height: f32) -> impl Iterator<Item =
     ]
     .into_iter()
     .filter_map(|(modifier, y)| (cell.modifier & modifier != 0).then_some(y))
+}
+
+/// `ShapedLine::paint` without its per-call layer, whose BoundsTree insert
+/// would otherwise run once per cell. Glyph placement matches GPUI's.
+fn paint_glyphs(
+    line: &ShapedLine,
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    color: Rgba,
+    window: &mut Window,
+) -> Result<()> {
+    let baseline = origin
+        + point(
+            px(0.),
+            (line_height - line.ascent - line.descent) / 2. + line.ascent,
+        );
+    for run in &line.runs {
+        for glyph in &run.glyphs {
+            let position = baseline + point(glyph.position.x, px(0.));
+            if glyph.is_emoji {
+                window.paint_emoji(position, run.font_id, glyph.id, line.font_size)?;
+            } else {
+                window.paint_glyph(
+                    position,
+                    run.font_id,
+                    glyph.id,
+                    line.font_size,
+                    color.into(),
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn style(cell: &CellData, theme: &Theme) -> (u32, u16) {
@@ -237,6 +272,7 @@ impl TerminalPainter {
         cell_width: f32,
         font: &Font,
         selection: &[(u16, std::ops::Range<u16>)],
+        panes: &[PaneSurfacePane],
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -252,182 +288,238 @@ impl TerminalPainter {
         let cached = cached && !self.uncached;
         #[cfg(feature = "integration-test")]
         let mut counts = crate::performance::Counts::default();
-        // Backgrounds precede all glyphs, including wide graphemes' skip cells.
-        for (y, row) in frame.cells.chunks(usize::from(frame.width)).enumerate() {
-            let mut paint = |start: usize, end: usize, color| {
+        let grid = Bounds::new(
+            origin,
+            size(
+                px(f32::from(frame.width) * cell_width),
+                px(f32::from(frame.height) * self.cell_height),
+            ),
+        );
+        // The daemon's cell scrollbar is replaced by the pixel thumb painted below.
+        let bars: Vec<SurfaceRect> = panes.iter().filter_map(|p| p.scrollbar_rect).collect();
+        let in_bar = |index: usize| {
+            let width = usize::from(frame.width);
+            bars.iter()
+                .any(|r| in_rect(*r, (index % width) as u16, (index / width) as u16))
+        };
+        // A layer gives all its primitives one draw order, skipping GPUI's
+        // per-primitive BoundsTree insert that dominates large grids. Within a
+        // layer quads draw before glyphs, so decorations and the cursor take a
+        // second layer above the text.
+        window.paint_layer(grid, |window| {
+            // Backgrounds precede all glyphs, including wide graphemes' skip cells.
+            for (y, row) in frame.cells.chunks(usize::from(frame.width)).enumerate() {
+                let mut paint = |start: usize, end: usize, color| {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            origin
+                                + point(
+                                    px(start as f32 * cell_width),
+                                    px(y as f32 * self.cell_height),
+                                ),
+                            size(px((end - start) as f32 * cell_width), px(self.cell_height)),
+                        ),
+                        rgb(color),
+                    ));
+                    #[cfg(feature = "integration-test")]
+                    {
+                        counts.quads += 1;
+                    }
+                };
+                if cached {
+                    for (start, end, color) in background_spans(row, &self.theme) {
+                        paint(start, end, color);
+                    }
+                } else {
+                    for (x, cell) in row.iter().enumerate() {
+                        paint(x, x + 1, cell_colors(cell, &self.theme).1);
+                    }
+                }
+            }
+            // Between the backgrounds and the glyphs, so the tint reads as chosen
+            // without hiding either.
+            for (row, columns) in selection {
+                let (start, end) = (columns.start.min(frame.width), columns.end.min(frame.width));
+                if *row >= frame.height || start >= end {
+                    continue;
+                }
                 window.paint_quad(fill(
                     Bounds::new(
                         origin
                             + point(
-                                px(start as f32 * cell_width),
-                                px(y as f32 * self.cell_height),
+                                px(f32::from(start) * cell_width),
+                                px(f32::from(*row) * self.cell_height),
                             ),
-                        size(px((end - start) as f32 * cell_width), px(self.cell_height)),
+                        size(
+                            px(f32::from(end - start) * cell_width),
+                            px(self.cell_height),
+                        ),
                     ),
-                    rgb(color),
+                    rgba((self.theme.primary() << 8) | SELECTION_ALPHA),
                 ));
                 #[cfg(feature = "integration-test")]
                 {
                     counts.quads += 1;
                 }
-            };
-            if cached {
-                for (start, end, color) in background_spans(row, &self.theme) {
-                    paint(start, end, color);
+            }
+            for (index, cell) in frame.cells.iter().enumerate() {
+                if cell.skip
+                    || cell.symbol.is_empty()
+                    || cell.symbol == " "
+                    || in_bar(index)
+                    || Graphic::from_symbol(&cell.symbol).is_some()
+                {
+                    continue;
                 }
-            } else {
-                for (x, cell) in row.iter().enumerate() {
-                    paint(x, x + 1, cell_colors(cell, &self.theme).1);
-                }
-            }
-        }
-        // Between the backgrounds and the glyphs, so the tint reads as chosen
-        // without hiding either.
-        for (row, columns) in selection {
-            let (start, end) = (columns.start.min(frame.width), columns.end.min(frame.width));
-            if *row >= frame.height || start >= end {
-                continue;
-            }
-            window.paint_quad(fill(
-                Bounds::new(
-                    origin
-                        + point(
-                            px(f32::from(start) * cell_width),
-                            px(f32::from(*row) * self.cell_height),
-                        ),
-                    size(
-                        px(f32::from(end - start) * cell_width),
-                        px(self.cell_height),
-                    ),
-                ),
-                rgba((self.theme.primary() << 8) | SELECTION_ALPHA),
-            ));
-            #[cfg(feature = "integration-test")]
-            {
-                counts.quads += 1;
-            }
-        }
-        for (index, cell) in frame.cells.iter().enumerate() {
-            if cell.skip || cell.symbol.is_empty() || cell.symbol == " " {
-                continue;
-            }
-            let key = style(cell, &self.theme);
-            let position = origin
-                + point(
-                    px((index % usize::from(frame.width)) as f32 * cell_width),
-                    px((index / usize::from(frame.width)) as f32 * self.cell_height),
-                );
-            if let Some(graphic) = Graphic::from_symbol(&cell.symbol) {
-                graphic.rectangles(
-                    Bounds::new(position, size(px(cell_width), px(self.cell_height))),
-                    window.scale_factor(),
-                    |bounds| {
-                        window.paint_quad(fill(bounds, rgb(key.0)));
-                        #[cfg(feature = "integration-test")]
-                        {
-                            counts.quads += 1;
-                        }
-                    },
-                );
-                continue;
-            }
-            let mut overflow = HashMap::new();
-            let lines = if self.entries < CACHE_LIMIT || self.lines.contains_key(&key) {
-                self.lines.entry(key).or_default()
-            } else {
-                &mut overflow
-            };
-            let existing = cached.then(|| lines.get(cell.symbol.as_str())).flatten();
-            let newly_shaped;
-            let shaped = if let Some(line) = existing {
-                line
-            } else {
-                let mut font = font.clone();
-                if key.1 & BOLD != 0 {
-                    font.weight = FontWeight::BOLD;
-                }
-                if key.1 & ITALIC != 0 {
-                    font.style = FontStyle::Italic;
-                }
+                let key = style(cell, &self.theme);
+                let mut overflow = HashMap::new();
+                let lines = if self.entries < CACHE_LIMIT || self.lines.contains_key(&key) {
+                    self.lines.entry(key).or_default()
+                } else {
+                    &mut overflow
+                };
+                let existing = cached.then(|| lines.get(cell.symbol.as_str())).flatten();
+                let newly_shaped;
+                let shaped = if let Some(line) = existing {
+                    line
+                } else {
+                    let mut font = font.clone();
+                    if key.1 & BOLD != 0 {
+                        font.weight = FontWeight::BOLD;
+                    }
+                    if key.1 & ITALIC != 0 {
+                        font.style = FontStyle::Italic;
+                    }
+                    #[cfg(feature = "integration-test")]
+                    {
+                        counts.shapes += 1;
+                    }
+                    newly_shaped = window.text_system().shape_line(
+                        cell.symbol.clone().into(),
+                        px(self.font_size),
+                        &[TextRun {
+                            len: cell.symbol.len(),
+                            font,
+                            color: rgb(key.0).into(),
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        }],
+                        None,
+                    );
+                    if cached && self.entries < CACHE_LIMIT {
+                        self.entries += 1;
+                        lines.entry(cell.symbol.clone()).or_insert(newly_shaped)
+                    } else {
+                        &newly_shaped
+                    }
+                };
+                let position = origin
+                    + point(
+                        px((index % usize::from(frame.width)) as f32 * cell_width),
+                        px((index / usize::from(frame.width)) as f32 * self.cell_height),
+                    );
+                let result =
+                    paint_glyphs(shaped, position, px(self.cell_height), rgb(key.0), window);
+                paint_errors += u64::from(result.is_err());
                 #[cfg(feature = "integration-test")]
                 {
-                    counts.shapes += 1;
+                    counts.glyphs += shaped.runs.iter().map(|r| r.glyphs.len()).sum::<usize>();
+                    counts.paint_errors += usize::from(result.is_err());
                 }
-                newly_shaped = window.text_system().shape_line(
-                    cell.symbol.clone().into(),
-                    px(self.font_size),
-                    &[TextRun {
-                        len: cell.symbol.len(),
-                        font,
-                        color: rgb(key.0).into(),
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    }],
-                    None,
-                );
-                if cached && self.entries < CACHE_LIMIT {
-                    self.entries += 1;
-                    lines.entry(cell.symbol.clone()).or_insert(newly_shaped)
-                } else {
-                    &newly_shaped
-                }
-            };
-            let result = shaped.paint(position, px(self.cell_height), window, cx);
-            paint_errors += u64::from(result.is_err());
-            #[cfg(feature = "integration-test")]
-            {
-                counts.glyphs += shaped.runs.iter().map(|r| r.glyphs.len()).sum::<usize>();
-                counts.paint_errors += usize::from(result.is_err());
             }
-        }
-        // Decorations cover the grid, including spaces and wide-glyph continuation cells.
-        for (index, cell) in frame.cells.iter().enumerate() {
-            let position = origin
-                + point(
-                    px((index % usize::from(frame.width)) as f32 * cell_width),
-                    px((index / usize::from(frame.width)) as f32 * self.cell_height),
-                );
-            for y in decoration_offsets(cell, self.cell_height) {
-                window.paint_quad(fill(
-                    Bounds::new(
-                        position + point(px(0.), px(y)),
-                        size(px(cell_width), px(1.)),
+        });
+        window.paint_layer(grid, |window| {
+            // Box and block graphics are quads, so they share this layer to stay
+            // above the backgrounds. Decorations cover the grid, including spaces
+            // and wide-glyph continuation cells.
+            for (index, cell) in frame.cells.iter().enumerate() {
+                if in_bar(index) {
+                    continue;
+                }
+                let position = origin
+                    + point(
+                        px((index % usize::from(frame.width)) as f32 * cell_width),
+                        px((index / usize::from(frame.width)) as f32 * self.cell_height),
+                    );
+                if let Some(graphic) = (!cell.skip)
+                    .then(|| Graphic::from_symbol(&cell.symbol))
+                    .flatten()
+                {
+                    let color = rgb(style(cell, &self.theme).0);
+                    graphic.rectangles(
+                        Bounds::new(position, size(px(cell_width), px(self.cell_height))),
+                        window.scale_factor(),
+                        |bounds| {
+                            window.paint_quad(fill(bounds, color));
+                            #[cfg(feature = "integration-test")]
+                            {
+                                counts.quads += 1;
+                            }
+                        },
+                    );
+                }
+                for y in decoration_offsets(cell, self.cell_height) {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            position + point(px(0.), px(y)),
+                            size(px(cell_width), px(1.)),
+                        ),
+                        rgb(cell_colors(cell, &self.theme).0),
+                    ));
+                    #[cfg(feature = "integration-test")]
+                    {
+                        counts.decorations += 1;
+                    }
+                }
+            }
+            if let Some(cursor) = frame
+                .cursor
+                .as_ref()
+                .filter(|c| c.visible && c.x < frame.width && c.y < frame.height)
+            {
+                let position = origin + cursor_offset(cursor, cell_width, self.cell_height);
+                let (offset, dimensions) = match cursor.shape {
+                    3 | 4 => (
+                        point(px(0.), px(self.cell_height - 2.)),
+                        size(px(cell_width), px(2.)),
                     ),
-                    rgb(cell_colors(cell, &self.theme).0),
+                    5 | 6 => (point(px(0.), px(0.)), size(px(2.), px(self.cell_height))),
+                    _ => (
+                        point(px(0.), px(0.)),
+                        size(px(cell_width), px(self.cell_height)),
+                    ),
+                };
+                window.paint_quad(fill(
+                    Bounds::new(position + offset, dimensions),
+                    rgba((self.theme.cursor << 8) | 0x80),
                 ));
                 #[cfg(feature = "integration-test")]
                 {
                     counts.decorations += 1;
                 }
             }
-        }
-        if let Some(cursor) = frame
-            .cursor
-            .as_ref()
-            .filter(|c| c.visible && c.x < frame.width && c.y < frame.height)
-        {
-            let position = origin + cursor_offset(cursor, cell_width, self.cell_height);
-            let (offset, dimensions) = match cursor.shape {
-                3 | 4 => (
-                    point(px(0.), px(self.cell_height - 2.)),
-                    size(px(cell_width), px(2.)),
-                ),
-                5 | 6 => (point(px(0.), px(0.)), size(px(2.), px(self.cell_height))),
-                _ => (
-                    point(px(0.), px(0.)),
-                    size(px(cell_width), px(self.cell_height)),
-                ),
-            };
-            window.paint_quad(fill(
-                Bounds::new(position + offset, dimensions),
-                rgba((self.theme.cursor << 8) | 0x80),
-            ));
-            #[cfg(feature = "integration-test")]
+            for bar in panes
+                .iter()
+                .filter_map(|pane| Scrollbar::new(pane, cell_width, self.cell_height))
             {
-                counts.decorations += 1;
+                let width = (f32::from(bar.track.size.width) - 2. * SCROLLBAR_INSET).clamp(2., 6.);
+                window.paint_quad(
+                    fill(
+                        Bounds::new(
+                            origin
+                                + point(
+                                    bar.track.right() - px(width + SCROLLBAR_INSET),
+                                    bar.thumb.top(),
+                                ),
+                            size(px(width), bar.thumb.size.height),
+                        ),
+                        rgba((self.theme.muted << 8) | SCROLLBAR_ALPHA),
+                    )
+                    .corner_radii(px(width / 2.)),
+                );
             }
-        }
+        });
         #[cfg(feature = "integration-test")]
         {
             let total = cx.default_global::<crate::performance::Counts>();
@@ -606,6 +698,7 @@ mod tests {
                             8.5,
                             &font("Menlo"),
                             &[],
+                            &[],
                             window,
                             cx,
                         );
@@ -716,6 +809,7 @@ mod tests {
                             12.81,
                             &font(family),
                             &[],
+                            &[],
                             window,
                             cx,
                         );
@@ -733,6 +827,7 @@ mod tests {
                         bounds.origin,
                         12.81,
                         &font("Menlo"),
+                        &[],
                         &[],
                         window,
                         cx,
@@ -780,6 +875,7 @@ mod tests {
                             bounds.origin,
                             cell_width,
                             &font,
+                            &[],
                             &[],
                             window,
                             cx,

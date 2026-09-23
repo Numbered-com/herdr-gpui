@@ -63,6 +63,9 @@ pub struct LiveState {
     // worktree operation whose dialog has already closed.
     pub tab_rename: Option<RenameResult>,
     pub pane_rename: Option<RenameResult>,
+    /// The one scrollbar drag request in flight; the next waits for it so a
+    /// slow link coalesces to the latest offset instead of queueing a backlog.
+    pub scroll_request: Option<String>,
 }
 
 #[derive(Clone)]
@@ -104,6 +107,7 @@ impl Default for LiveState {
             supports_surface: false,
             tab_rename: None,
             pane_rename: None,
+            scroll_request: None,
         }
     }
 }
@@ -228,6 +232,9 @@ impl LiveState {
                 self.surface = None;
             }
             ClientEvent::CommandRejected { request_id, reason } => {
+                if request_id.is_some() && request_id == self.scroll_request {
+                    self.scroll_request = None;
+                }
                 if !request_id
                     .as_deref()
                     .is_some_and(|id| self.has_operation_result(id))
@@ -258,6 +265,9 @@ impl LiveState {
                 request_id,
                 response,
             } => {
+                if self.scroll_request.as_ref() == Some(&request_id) {
+                    self.scroll_request = None;
+                }
                 for rename in [&mut self.tab_rename, &mut self.pane_rename]
                     .into_iter()
                     .flatten()

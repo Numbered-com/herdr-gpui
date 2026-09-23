@@ -150,6 +150,11 @@ impl ConnectionBridge {
         }
     }
 
+    /// Cheap enough to call every display frame: never blocks the UI thread.
+    pub fn has_update(&self) -> bool {
+        self.inbox.try_lock().is_ok_and(|state| state.dirty)
+    }
+
     pub fn take_update(&self) -> Option<LiveState> {
         let mut state = self.inbox.try_lock().ok()?;
         if !state.dirty {
