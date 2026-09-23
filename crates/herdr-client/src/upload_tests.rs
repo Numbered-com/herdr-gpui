@@ -394,14 +394,24 @@ fn cleanup_failure_retains_primary_error_and_never_returns_partial_paths() {
         },
         |s| {
             calls += 1;
-            temp.remote(if calls == 1 { s } else { "exit 19" })
+            // Drain the cleanup paths before failing: closing a socket with
+            // unread input produces ECONNRESET on Linux instead of an exit error.
+            temp.remote(if calls == 1 {
+                s
+            } else {
+                "cat >/dev/null; exit 19"
+            })
         },
     )
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-    assert!(
-        matches!(error, Error::UploadCleanup { cleanup, .. } if matches!(*cleanup, Error::UploadExit { .. }))
-    );
+    assert!(matches!(
+        error,
+        Error::UploadCleanup { source, cleanup }
+            if matches!(*source, Error::UploadCancelled)
+                && matches!(*cleanup, Error::UploadExit { status } if status.code() == Some(19))
+    ));
+    assert_eq!(calls, 2);
 }
 
 struct ShortWriter {
