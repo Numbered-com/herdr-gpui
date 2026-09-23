@@ -182,18 +182,25 @@ already waiting in a connection inbox from the disabled period are discarded too
 Failed reloads preserve current settings. QA
 previews remain available regardless of delivery settings.
 
-Enable a TUI-like compact sidebar with a top-level setting in `config-gpui.local.toml`
+Choose sidebar density with a top-level setting in `config-gpui.local.toml`
 (before any table headers):
 
 ```toml
 layout = "compact"
 ```
 
-The default is `layout = "normal"`. Compact mode hides workspace branch lines and PR change
-counts, removes row padding above and below labels, and tightens horizontal and
-heading spacing in both Spaces and Agents. PR numbers, status indicators, tree
-guides, and agent-name lines remain visible; font sizes and terminal spacing are
-unchanged. Saved edits apply automatically; there is no UI toggle yet.
+Three modes are available:
+
+- `normal` (default): TUI-like spacing, with branch lines beneath root workspaces,
+  single-line worktree children, and two-line agents. Modest horizontal and heading
+  spacing keeps the sidebar readable without padding every row.
+- `compact`: the tightest spacing, hiding all workspace branch lines.
+- `comfortable`: the previous Normal layout, with roomier padding, branch lines
+  on all workspace rows, and PR addition/deletion counts.
+
+Normal and Compact show PR numbers without change counts. Status indicators, tree
+guides, and agent-name lines remain visible in every mode; font sizes and terminal
+spacing are unchanged. Saved edits apply automatically; there is no UI toggle yet.
 
 To customize spacing too, use a `[layout]` table **instead of** the top-level
 string. Existing spacing-only tables remain supported and use normal mode:

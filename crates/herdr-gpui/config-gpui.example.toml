@@ -22,7 +22,8 @@ theme = "Default"
 confirm_close_tab = true
 # Show the Agents section below Spaces in the sidebar.
 show_agents = true
-# "normal" or "compact". Compact hides workspace branch lines and PR change
+# "normal" (TUI-like), "comfortable" (the previous roomy Normal), or "compact".
+# Compact hides workspace branch lines and PR change
 # counts, and tightens Spaces and Agents spacing without changing font sizes.
 layout = "normal"
 
