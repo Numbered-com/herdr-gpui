@@ -889,6 +889,10 @@ fn actions_target_clicked_workspace_and_match_daemon_schemas() {
         }
         assert_eq!(params, expected);
     }
+    assert!(matches!(
+        target.request(&snapshot, WorkspaceAction::NewWorktree, "config reload"),
+        Err(crate::Error::InvalidBranchName)
+    ));
     for index in [0, 4, 5] {
         let target = WorkspaceTarget::new(&snapshot, &snapshot.workspaces[index]);
         assert_eq!(target.close_label(), "Close");
