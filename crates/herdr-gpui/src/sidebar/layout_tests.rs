@@ -468,6 +468,8 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         config: Default::default(),
         theme: Default::default(),
         config_load: None,
+        config_watch: None,
+        config_load_revision: 0,
         git: Default::default(),
         sidebar_visible: true,
         endpoints: vec![crate::endpoint::Endpoint::new(

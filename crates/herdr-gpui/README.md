@@ -134,8 +134,12 @@ on reload. The daemon's config is never modified.
 
 See
 [`config-gpui.example.toml`](config-gpui.example.toml) for a complete example.
-Font sizes use logical pixels (finite 8..48), not typographic points. Restart the
-GUI or invoke GUI config reload after edits; daemon config reload is separate.
+Font sizes use logical pixels (finite 8..48), not typographic points. Saving
+`config-gpui.local.toml` automatically reloads every open GUI window, usually
+within half a second. Font family, font size, theme, and layout changes apply
+together; invalid edits keep the last valid settings and show a load error.
+Reload waits while a theme preview/save is active. The manual GUI config reload
+action remains available; daemon config reload is separate.
 
 The terminal face can also be resized for the current session from the View menu,
 the in-app menu, the command palette, or `cmd-=` / `cmd--` / `cmd-0`. Adjustments
@@ -145,7 +149,7 @@ written to disk, so a reload or a restart returns to the configured size.
 Set top-level `confirm_close_tab = false` to close tabs without confirmation
 (including their running processes), and `show_agents = false` to hide the Agents
 section and give Spaces the full sidebar height. Both default to `true`. Pane
-closures still ask for confirmation. Reload GUI config or restart after editing.
+closures still ask for confirmation. Saved edits apply automatically.
 
 `[notifications]` controls GUI-local in-app delivery, independently of the daemon:
 
@@ -179,7 +183,7 @@ The default is `layout = "normal"`. Compact mode hides workspace branch lines an
 counts, removes row padding above and below labels, and tightens horizontal and
 heading spacing in both Spaces and Agents. PR numbers, status indicators, tree
 guides, and agent-name lines remain visible; font sizes and terminal spacing are
-unchanged. Reload GUI config or restart to apply it; there is no UI toggle yet.
+unchanged. Saved edits apply automatically; there is no UI toggle yet.
 
 To customize spacing too, use a `[layout]` table **instead of** the top-level
 string. Existing spacing-only tables remain supported and use normal mode:

@@ -7,6 +7,43 @@ use crate::{HerdrWindow, config::Config};
 use gpui::{prelude::*, *};
 
 impl HerdrWindow {
+    pub(crate) fn watch_gui_config(&mut self, cx: &mut Context<Self>) {
+        let Ok(path) = Config::local_path() else {
+            return;
+        };
+        let executor = cx.background_executor().clone();
+        self.config_watch = Some(cx.spawn(async move |this, cx| {
+            let mut watch = crate::config::watch::Watch::default();
+            let mut pending = None;
+            loop {
+                let path = path.clone();
+                let sample = executor
+                    .spawn(async move { crate::config::watch::fingerprint(&path) })
+                    .await;
+                let updated = this.update(cx, |this, cx| {
+                    if let Some((sample, revision)) = pending
+                        && this.config_load_revision != revision
+                    {
+                        watch.accept(sample);
+                        pending = None;
+                    }
+                    if watch.observe(sample)
+                        && this.config_load.is_none()
+                        && this.menu.page != Some(Page::Themes)
+                        && !this.theme_save_in_flight()
+                    {
+                        this.load_gui_config(cx);
+                        pending = Some((sample, this.config_load_revision));
+                    }
+                });
+                if updated.is_err() {
+                    break;
+                }
+                executor.timer(std::time::Duration::from_millis(250)).await;
+            }
+        }));
+    }
+
     pub(crate) fn open_keybinds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.open_menu(window, cx) {
             return;
@@ -73,6 +110,7 @@ impl HerdrWindow {
             let loaded = load.await;
             let _ = this.update(cx, |this, cx| {
                 this.config_load = None;
+                this.config_load_revision = this.config_load_revision.wrapping_add(1);
                 // Apply a coherent pair only after both have loaded successfully.
                 match loaded {
                     Ok((config, theme)) => {
@@ -585,6 +623,7 @@ mod tests {
             assert_eq!(view.config.theme, "Nord");
             assert_eq!(view.theme, view.config.theme().unwrap());
             assert!(view.config_load.is_none());
+            assert_eq!(view.config_load_revision, 1);
             view.load_gui_config_with(|| Err(crate::Error::EmptyTheme), cx);
         });
         cx.run_until_parked();
@@ -592,6 +631,7 @@ mod tests {
             view.update(cx, |view, cx| {
                 assert_eq!(view.config.theme, "Nord");
                 assert_eq!(view.theme, view.config.theme().unwrap());
+                assert_eq!(view.config_load_revision, 2);
                 assert!(
                     view.local_error
                         .as_deref()
@@ -604,7 +644,13 @@ mod tests {
             });
         });
         cx.run_until_parked();
-        view.update(cx, |view, _| assert_eq!(view.config.theme, "Nord"));
+        view.update(cx, |view, _| {
+            assert_eq!(view.config.theme, "Nord");
+            assert_eq!(
+                view.config_load_revision, 2,
+                "cancelled loads are not acknowledged"
+            );
+        });
     }
 
     #[test]
