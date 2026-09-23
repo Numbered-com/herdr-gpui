@@ -3,14 +3,18 @@
 //! split by responsibility across the submodules below; the fields live here
 //! because every one of them describes this window's own presentation state.
 
+mod clipboard;
 mod commands;
 mod file_drop;
+mod image_source;
+mod images;
 mod input;
 mod lifecycle;
 mod mouse;
 mod render;
 mod selection;
 mod toasts;
+mod transfers;
 
 #[cfg(test)]
 mod font_size_tests;
@@ -71,6 +75,8 @@ pub(crate) struct HerdrWindow {
     pub(crate) hovered_terminal_link: bool,
     pub(crate) pressed_terminal_link: Option<(String, Point<Pixels>)>,
     pub(crate) terminal_mouse: Option<mouse::Gesture>,
+    pub(crate) pending_images: Vec<images::PendingImage>,
+    pub(crate) file_transfer: Option<transfers::FileTransfer>,
     /// The terminal cells the pointer is choosing. A release copies them and
     /// clears this, so a highlight only ever belongs to a drag in progress.
     pub(crate) selection: Option<Selection>,
@@ -169,6 +175,8 @@ impl HerdrWindow {
                             .as_ref()
                             .and_then(|s| s.focused_pane_id.clone());
                         this.poll_endpoints(cx);
+                        this.cancel_stale_image();
+                        this.poll_file_transfer(cx);
                         this.update_workspace_dialog(window, cx);
                         this.poll_worktree_source(cx);
                         this.poll_hover_menu(std::time::Instant::now(), window, cx);
@@ -242,6 +250,8 @@ impl HerdrWindow {
             hovered_terminal_link: false,
             pressed_terminal_link: None,
             terminal_mouse: None,
+            pending_images: Vec::new(),
+            file_transfer: None,
             selection: None,
             copy_feedback: None,
             presentation: Default::default(),

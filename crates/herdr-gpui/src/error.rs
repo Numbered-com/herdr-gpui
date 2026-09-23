@@ -47,6 +47,44 @@ pub enum Error {
     FileDropControl,
     #[error("Dropped paths must not be empty.")]
     FileDropEmptyPath,
+    #[error("Could not {operation} the local image file.")]
+    ImageFile {
+        operation: &'static str,
+        #[source]
+        source: io::Error,
+    },
+    #[error("The local image must be a regular file.")]
+    ImageFileType,
+    #[error("The image must not be empty.")]
+    ImageSize,
+    #[error("The image exceeds Herdr's {limit}-byte upload limit.")]
+    ImageTooLarge { limit: usize },
+    #[error("The image exceeds the {limit}-byte resize input limit.")]
+    ImageInputTooLarge { limit: usize },
+    #[error("The image exceeds the resize pixel or decoded-memory limit.")]
+    ImageDecodeLimit,
+    #[error("Oversized GIF, WebP, and animated PNG images cannot be resized safely.")]
+    ImageAnimationResize,
+    #[error("Could not decode the oversized image.")]
+    ImageDecode(#[source] image::ImageError),
+    #[error("Could not encode the resized image.")]
+    ImageEncode(#[source] image::ImageError),
+    #[error("Reading the local image timed out (3 seconds).")]
+    ImageReadTimeout,
+    #[error("TIFF and SVG clipboard images are not supported. Use PNG, JPEG, GIF, WebP, or BMP.")]
+    ImageFormat,
+    #[error("Clipboard content exceeds the {limit}-byte limit.")]
+    ClipboardSize { limit: usize },
+    #[error("Clipboard text is not valid UTF-8.")]
+    ClipboardEncoding(#[source] std::str::Utf8Error),
+    #[error("The clipboard changed while reading. Try pasting again.")]
+    ClipboardChanged,
+    #[error("Clipboard acquisition timed out.")]
+    ClipboardTimeout,
+    #[error("Could not read the clipboard using wl-paste or xclip.")]
+    ClipboardProcess(#[source] io::Error),
+    #[error("Remote clipboard acquisition is not supported on this platform.")]
+    ClipboardUnsupported,
     #[error("Checkout lookup failed. Dismiss and reopen the menu.")]
     DeletionLookup,
     #[error("Reopen the deletion dialog.")]

@@ -334,13 +334,99 @@ keystroke, because the release has already copied and nothing stays selected.
 
 Drop files from your file manager onto a terminal pane or popup to paste their
 paths there, even if another pane is focused. Paths are quoted as POSIX shell
-words, separated by spaces; the drop never presses Enter or reads file contents.
+words, separated by spaces; the drop never presses Enter. Local drops only paste
+paths; SSH drops read and transfer the selected files.
 Drops are limited to 256 paths and 64 KiB of quoted text. Non-UTF-8 paths and
 paths containing control characters are rejected rather than altered.
 
-On an SSH endpoint this pastes local path strings, not files: there is no upload
-or remote path translation. This does not add image attachment or image clipboard
-support, and POSIX quoting is not intended for Windows command shells.
+On an SSH endpoint, a single supported image is transferred as described below.
+Other regular files and multiple-file drops are streamed using the SSH file-copy
+path below. POSIX quoting is not intended for Windows command shells.
+
+## SSH File Copies
+
+Drop regular files onto an SSH pane or popup to copy them to that host. A
+`Copying...` card shows the filename (or file count), transferred bytes, percentage,
+progress bar, and Cancel button. Once all files are received and the SSH processes
+exit successfully, their quoted remote paths are pasted into the original target.
+No partial list is pasted on failure. Directories and special files are rejected;
+symlinks to regular files are followed. A single recognized image uses the image
+bridge below instead; multiple-file drops copy their originals unchanged.
+
+One file-copy batch runs per window. Files are streamed in bounded 64 KiB chunks
+with 64-bit byte counters, so a 4 GiB ISO does not require a 4 GiB allocation.
+Progress counts bytes written to the SSH stream; `Finalizing copy...` waits for
+remote byte-count verification and SSH completion. This is not a checksum or
+durability guarantee. Files changing size during transfer are rejected.
+
+Copies use a separate noninteractive SSH connection with the same host-key and
+authentication policy as the terminal. Terminal input remains responsive, and
+typing is not queued behind a multi-gigabyte copy: wait for completion before
+submitting a command that needs its path. Switching hosts, losing the target,
+reconnecting, or closing the window cancels the copy. Cancel only terminates the
+copy process, never the Herdr daemon or its terminal connection.
+
+Each file keeps its basename inside a unique private `herdr-upload.*` directory
+under the remote `${TMPDIR:-/tmp}`. Existing files are never overwritten. Partial
+and cancelled copies are removed where possible; cleanup failures display a
+warning identifying the original host. Successfully pasted files remain until
+you remove them or the remote OS cleans its temporary directory: unlike image
+bridge files, they are not owned or deleted by Herdr on disconnect. Network loss
+can prevent cleanup, and kernel-blocked local filesystem operations cannot be
+forcibly interrupted. A copy stalls out after 30 seconds without progress.
+
+## Remote Images
+
+On a selected SSH endpoint, drop one PNG, JPEG, GIF, WebP, or BMP image onto a pane
+or popup to send it through Herdr's existing image bridge. Clipboard images use
+Cmd-V (normal paste, with text taking precedence) or Ctrl-V (Herdr TUI's default
+image-paste shortcut). Ctrl-V retains its normal terminal meaning when the
+clipboard has no image. A pasted absolute image-file path is also recognized,
+including the quoted/backslash-escaped paths used by terminal file drops.
+
+The remote daemon writes a temporary file and pastes its remote path into the
+target terminal. OpenCode or another agent can recognize that path as an image;
+the GUI never presses Enter or claims that the agent accepted an attachment.
+Files are connection-owned and Herdr removes them when the client disconnects.
+
+Images are limited to 16 MiB, with one queued/sending image per connection and
+at most four clipboard preparations per window. File reads, remote clipboard
+acquisition, and encoding run in the background. A FIFO reservation keeps
+subsequent typing and Enter behind the paste. Images within 16 MiB pass through
+unchanged. Larger static images are recompressed, then downscaled if necessary,
+to fit that same daemon limit. Transparency and EXIF orientation are preserved;
+the original file is never modified. A notification reports that the smaller
+copy was queued, not that an agent accepted it.
+
+Automatic resizing accepts at most 128 MiB of encoded source data and a bounded
+64-megapixel / 256-MiB decoded raster. Oversized GIF, WebP, and APNG images are
+rejected instead of silently losing animation. Invalid, too-large-to-process,
+and unsupported images show an `Image discarded` notification with the reason;
+no fallback local path is pasted for resize failures. Unreadable, empty, or
+nonregular image-file candidates retain the TUI's original path-paste fallback.
+TIFF, HEIC, and SVG are not image-bridge formats but can be dropped as ordinary
+files using SSH file copy.
+
+Switching endpoints, reconnecting, or invalidating the target cancels pending
+work. Cancelling an image already partially written closes that client connection
+to avoid corrupting framing; it does not stop the daemon. Slow/stalled transfers
+have a 60-second deadline. There is no upload acknowledgement or progress API.
+
+macOS uses the native pasteboard on a background executor; AppKit may materialize
+its data before the client can check its size. Linux uses `wl-paste` (Wayland) or
+`xclip` (X11) for explicit Ctrl-V image acquisition, with bounded output and a
+three-second acquisition deadline. Ordinary Linux paste retains GPUI's native
+clipboard reader and needs no helper; that existing synchronous API can still
+materialize image data on the UI thread. Install the matching utility for
+background image paste. Regular-file reads use bounded
+chunks and a three-second deadline between reads, but an OS-blocked network/FUSE
+filesystem operation cannot be forcibly interrupted. Such a read stays isolated
+from the UI and holds its bounded preparation slot until it returns.
+
+Local terminals retain text/path paste behavior, as in Herdr's remote-only image
+bridge. Windows SSH and image uploads remain unsupported. Native clipboard/drop
+and real SSH behavior require explicit desktop/host verification in addition to
+the mock-peer and headless tests.
 
 ## Terminal Links
 

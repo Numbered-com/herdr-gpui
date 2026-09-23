@@ -1,5 +1,5 @@
-//! External files are pasted as local path text, even for SSH endpoints. No
-//! contents are read or uploaded, and a drop never submits the terminal command.
+//! External paths paste locally; one supported image on SSH uses the daemon's
+//! image bridge. A drop never submits the terminal command.
 
 use super::HerdrWindow;
 use crate::{
@@ -31,6 +31,17 @@ impl HerdrWindow {
             return;
         }
         let result = quote_paths(paths.paths()).and_then(|text| {
+            if self.accepts_remote_images()
+                && let [path] = paths.paths()
+                && let Some(source) = super::image_source::from_path(path)
+            {
+                self.start_remote_image(target.clone(), source, Some(text), cx);
+                return Ok(());
+            }
+            if self.accepts_remote_images() {
+                self.start_file_transfer(target.clone(), paths.paths().to_vec(), cx);
+                return Ok(());
+            }
             let endpoint = &self.endpoints[self.selected_endpoint];
             let handle = endpoint
                 .connection
@@ -76,7 +87,7 @@ impl HerdrWindow {
 
 /// POSIX shell words, separated by spaces without a trailing newline. Validate
 /// the whole drop before allocating its output so failures never paste a prefix.
-fn quote_paths(paths: &[PathBuf]) -> Result<String> {
+pub(super) fn quote_paths(paths: &[PathBuf]) -> Result<String> {
     if paths.len() > MAX_PATHS {
         return Err(Error::FileDropSize);
     }

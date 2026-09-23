@@ -380,6 +380,8 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         hovered_terminal_link: false,
         pressed_terminal_link: None,
         terminal_mouse: None,
+        pending_images: Vec::new(),
+        file_transfer: None,
         presentation: Default::default(),
         painter: Default::default(),
         marked: String::new(),

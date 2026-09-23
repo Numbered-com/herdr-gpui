@@ -31,7 +31,7 @@ pub(crate) struct Notice {
     arrived: Instant,
     order: u64,
     explicit_position: bool,
-    pub(crate) preview: bool,
+    client_local: bool,
     ready: bool,
     pub(crate) visible: bool,
     checked: Option<Instant>,
@@ -48,8 +48,16 @@ pub(crate) fn safe_text(text: &str, limit: usize) -> String {
 
 impl Notice {
     pub fn preview(mut self) -> Self {
-        self.preview = true;
+        self.client_local = true;
         self
+    }
+
+    /// Feedback for a user action is not governed by daemon notification mutes,
+    /// activity evidence, or focused-pane suppression. It still uses the queue.
+    pub fn local_feedback(notification: SemanticNotification, now: Instant) -> Self {
+        let mut notice = Self::new(notification, now);
+        notice.client_local = true;
+        notice
     }
 
     pub fn promote(&mut self, now: Instant) {
@@ -98,7 +106,7 @@ impl Notice {
             arrived: now,
             order: ARRIVAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             explicit_position: notification.position.is_some(),
-            preview: false,
+            client_local: false,
             ready: false,
             visible: false,
             checked: None,
@@ -207,7 +215,7 @@ pub(crate) struct Toasts {
 impl Toasts {
     pub fn receive(&mut self, notices: impl IntoIterator<Item = Notice>) {
         for notice in notices {
-            if !notice.preview
+            if !notice.client_local
                 && self
                     .enabled_since
                     .is_some_and(|cutoff| notice.arrived <= cutoff)
@@ -249,7 +257,7 @@ pub(crate) fn tick(
         let snapshot = endpoint.live.snapshot.as_deref();
         endpoint.toasts.entries.retain_mut(|(id, n)| {
             let keep = (|| {
-                if !n.preview
+                if !n.client_local
                     && (!config.enabled
                         || endpoint
                             .toasts
@@ -281,7 +289,7 @@ pub(crate) fn tick(
                 if n.ready {
                     return true;
                 }
-                if !n.preview {
+                if !n.client_local {
                     let delay = if n.kind == Kind::Custom {
                         0
                     } else {

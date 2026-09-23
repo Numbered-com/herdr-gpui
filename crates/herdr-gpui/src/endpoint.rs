@@ -375,6 +375,12 @@ impl HerdrWindow {
     }
 
     fn reset_selected(&mut self) {
+        if let Some(transfer) = &self.file_transfer {
+            transfer.cancel();
+        }
+        for image in &self.pending_images {
+            image.cancel();
+        }
         self.menu.reset();
         self.selection_epoch += 1;
         let endpoint = &self.endpoints[self.selected_endpoint];

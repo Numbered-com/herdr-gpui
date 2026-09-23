@@ -636,6 +636,7 @@ impl Render for HerdrWindow {
                     ),
             )
             .children(self.render_toasts(window, cx))
+            .children(self.render_file_transfer(window, cx))
             .when(self.menu.page.is_some(), |root| {
                 root.child(self.render_menu(window, cx))
             })
