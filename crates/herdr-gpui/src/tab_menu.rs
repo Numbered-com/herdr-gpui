@@ -79,11 +79,20 @@ mod tests {
             MouseButton::Right,
             Modifiers::default(),
         );
+        cx.update(|window, cx| window.draw(cx).clear());
+        // A second press before release must not dismiss the menu just opened.
+        cx.simulate_mouse_down(
+            tab_bounds.center(),
+            MouseButton::Right,
+            Modifiers::default(),
+        );
+        assert!(view.read_with(cx, |v, _| v.menu.page == Some(Page::Tab)));
         cx.simulate_mouse_up(
             tab_bounds.center(),
             MouseButton::Right,
             Modifiers::default(),
         );
+        assert!(view.read_with(cx, |v, _| !v.menu.opening_right_click));
         view.read_with(cx, |view, _| {
             let tab = view.menu.tab.as_ref().unwrap();
             assert_eq!(tab.target.tab, "inactive");
