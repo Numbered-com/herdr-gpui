@@ -563,7 +563,8 @@ attention can keep the badge visible. This QA setting is not saved.
   right-click stays until it is dismissed. Close requires
   confirmation and terminates terminals, not checkout files or branches. New
   worktree proposes the branch name the daemon would generate, previews the
-  checkout path derived from it, reports the daemon's own failures, and selects
+  checkout path derived from it, rejects invalid Git branch names before submission,
+  reports the daemon's own failures in the dialog rather than the connection status, and selects
   and reveals the created checkout once the daemon reports it. Rename and branch
   dialogs support Unicode/IME, grapheme
   editing, Shift-arrow selection, Home/End, and Cmd-A/C/X/V. Escape/outside click
