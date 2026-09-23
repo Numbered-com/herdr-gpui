@@ -177,7 +177,7 @@ pub(crate) fn menus() -> Vec<Menu> {
                     },
                 ),
                 MenuItem::separator(),
-                MenuItem::action("GPUI Logs", ShowLogs),
+                MenuItem::action("Logs", ShowLogs),
             ],
         },
         #[cfg(feature = "qa-menu")]

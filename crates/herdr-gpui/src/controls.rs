@@ -56,7 +56,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         command: Command::Logs,
         name: "logs",
-        label: "GPUI Logs",
+        label: "Logs",
         shortcuts: &[],
     },
     CommandInfo {

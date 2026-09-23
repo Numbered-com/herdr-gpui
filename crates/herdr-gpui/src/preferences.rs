@@ -353,16 +353,9 @@ pub struct Preferences {
 
 impl Preferences {
     pub fn new(socket: &Path) -> Self {
-        let root = env::var_os("XDG_STATE_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| {
-                env::var_os("HOME")
-                    .filter(|value| !value.is_empty())
-                    .map(|home| PathBuf::from(home).join(".local/state"))
-            });
         Self::start(
-            root.map(|root| endpoint_path(&root, socket))
+            state_dir()
+                .map(|dir| endpoint_path(&dir, socket))
                 .ok_or(crate::Error::MissingStateRoot),
         )
     }
@@ -452,14 +445,26 @@ impl Drop for Preferences {
     }
 }
 
-fn endpoint_path(root: &Path, socket: &Path) -> PathBuf {
+/// The GPUI client's own state directory, shared by preferences and logs.
+pub(crate) fn state_dir() -> Option<PathBuf> {
+    env::var_os("XDG_STATE_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(|home| PathBuf::from(home).join(".local/state"))
+        })
+        .map(|root| root.join("herdr/gpui"))
+}
+
+fn endpoint_path(dir: &Path, socket: &Path) -> PathBuf {
     let mut hash = 0xcbf29ce484222325_u64;
     for byte in socket.as_os_str().as_encoded_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    root.join("herdr/gpui")
-        .join(format!("local-{hash:016x}.json"))
+    dir.join(format!("local-{hash:016x}.json"))
 }
 
 fn read_chrome(path: &Path) -> crate::Result<Chrome> {
@@ -820,7 +825,7 @@ mod tests {
 
     #[core::prelude::v1::test]
     fn endpoint_paths_use_stable_fnv1a() {
-        let root = Path::new("/state");
+        let root = Path::new("/state/herdr/gpui");
         assert_eq!(
             endpoint_path(root, Path::new("hello")),
             Path::new("/state/herdr/gpui/local-a430d84680aabd0b.json")
