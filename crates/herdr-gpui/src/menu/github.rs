@@ -8,6 +8,66 @@ mod tests {
     use gpui::TestAppContext;
 
     #[gpui::test]
+    fn successful_signin_dismisses_only_the_signin_panel_and_restores_focus(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.github_fixture(false, window, cx);
+                view.menu
+                    .github
+                    .complete_profile_fixture(Ok(crate::github::Auth::connected_fixture().profile));
+                view.poll_github(window, cx);
+                assert!(view.menu.github.connected());
+                assert!(view.menu.page.is_none());
+                assert!(view.focus.is_focused(window));
+
+                // Reopening the account panel and renewing an active session
+                // must not dismiss a panel the user deliberately opened.
+                view.open_menu(window, cx);
+                view.menu.page = Some(crate::menu::Page::GitHub);
+                view.menu
+                    .github
+                    .complete_profile_fixture(Ok(crate::github::Auth::connected_fixture().profile));
+                view.poll_github(window, cx);
+                assert!(view.menu.page == Some(crate::menu::Page::GitHub));
+
+                view.menu.github = crate::github::Auth::default();
+                view.menu.page = Some(crate::menu::Page::Menu);
+                view.menu
+                    .github
+                    .complete_profile_fixture(Ok(crate::github::Auth::connected_fixture().profile));
+                view.poll_github(window, cx);
+                assert!(view.menu.page == Some(crate::menu::Page::Menu));
+
+                view.github_fixture(false, window, cx);
+                view.menu
+                    .github
+                    .complete_profile_fixture(Err(crate::Error::GitHubAuthentication));
+                view.poll_github(window, cx);
+                assert!(view.menu.page == Some(crate::menu::Page::GitHub));
+                assert!(!view.menu.github.connected());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn signout_uses_the_theme_danger_color(cx: &mut TestAppContext) {
+        use gpui::Styled;
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                let mut button = view.github_button(Action::SignOut, "Sign out", cx);
+                assert_eq!(
+                    button.text_style().as_ref().unwrap().color,
+                    Some(crate::menu::danger(&view.theme).into())
+                );
+            })
+        });
+    }
+
+    #[gpui::test]
     fn connected_panel_is_content_sized_with_only_header_close(cx: &mut TestAppContext) {
         let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
         for (width, height) in [(320., 400.), (640., 780.), (1200., 1000.)] {
@@ -104,6 +164,19 @@ impl Action {
 }
 
 impl HerdrWindow {
+    pub(crate) fn poll_github(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let connected = self.menu.github.connected();
+        if self.menu.github.poll() {
+            if !connected
+                && self.menu.github.connected()
+                && self.menu.page == Some(super::Page::GitHub)
+            {
+                self.dismiss_menu(window, cx);
+            }
+            cx.notify();
+        }
+    }
+
     fn github_actions(&self) -> Vec<Action> {
         let auth = &self.menu.github;
         let mut actions = Vec::new();
@@ -228,7 +301,12 @@ impl HerdrWindow {
     ) -> Stateful<Div> {
         let theme = &self.theme;
         let primary = matches!(action, Action::Open | Action::Start);
-        let accent = rgb(theme.foreground).blend(rgba((theme.palette[4] << 8) | 0x70));
+        let danger = action == Action::SignOut;
+        let accent = if danger {
+            super::danger(theme)
+        } else {
+            super::accent(theme)
+        };
         let selected = self.menu.github_selected == Some(action);
         div()
             .id(action.id())
@@ -239,7 +317,11 @@ impl HerdrWindow {
             .rounded(px(5.))
             .border_1()
             .border_color(if selected {
-                rgb(theme.foreground)
+                if danger {
+                    accent
+                } else {
+                    rgb(theme.foreground)
+                }
             } else {
                 rgb(theme.active)
             })
@@ -250,6 +332,8 @@ impl HerdrWindow {
             })
             .text_color(if primary {
                 rgb(theme.background)
+            } else if danger {
+                accent
             } else {
                 rgb(theme.foreground)
             })

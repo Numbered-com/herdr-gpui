@@ -148,6 +148,96 @@ fn load_fixture_profile(auth: &mut Auth, store: Store, profile: Option<Profile>)
 }
 
 #[test]
+fn live_session_renews_off_thread_without_restart_and_preserves_token_identity() {
+    let mut auth = Auth::connected_fixture();
+    auth.store = Store::File;
+    let now = Instant::now();
+    auth.next_session_check = Some(now + Duration::from_secs(1));
+    assert!(!auth.poll_at(now, |_| panic!(), |_, _| panic!("not due")));
+    let old = auth.profile.as_ref().unwrap().token.clone();
+    assert!(auth.poll_at(
+        now + Duration::from_secs(1),
+        |_| panic!(),
+        |token, store| {
+            assert!(token.is_none(), "resolve the latest saved credential");
+            assert_eq!(store, Store::File);
+            assert_eq!(thread::current().name(), Some("herdr-github-profile"));
+            let loaded =
+                Credential::new("expired-access".into(), Some("refresh".into()), "client")?
+                    .profile_with(
+                        |token| {
+                            if token.expose_secret() == "expired-access" {
+                                return Err(Error::GitHubAuthentication);
+                            }
+                            let mut profile = Auth::connected_fixture().profile.unwrap();
+                            profile.token = token;
+                            Ok(profile)
+                        },
+                        |_| {
+                            Credential::new(
+                                "rotated-access".into(),
+                                Some("rotated-refresh".into()),
+                                "client",
+                            )
+                        },
+                        |_| Ok(()),
+                    )?;
+            Ok(Some(loaded))
+        },
+    ));
+    assert!(auth.connected(), "renewal must not flash the signed-out UI");
+    let result = auth
+        .profile_incoming
+        .take()
+        .unwrap()
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+    let (tx, rx) = mpsc::sync_channel(1);
+    tx.send(result).ok().unwrap();
+    auth.profile_incoming = Some(rx);
+    assert!(auth.poll_at(now, |_| panic!(), |_, _| panic!("one worker only")));
+    let rotated = auth.profile.as_ref().unwrap().token.clone();
+    assert!(!Arc::ptr_eq(&old, &rotated));
+    assert_eq!(rotated.expose_secret(), "rotated-access");
+    assert!(!auth.poll_at(now, |_| panic!(), |_, _| panic!("bounded check interval")));
+
+    let mut same = Auth::connected_fixture().profile.unwrap();
+    same.token = Arc::new("rotated-access".into());
+    let (tx, rx) = mpsc::sync_channel(1);
+    tx.send(Ok(Some(same))).ok().unwrap();
+    auth.profile_incoming = Some(rx);
+    auth.poll_at(now, |_| panic!(), |_, _| panic!());
+    assert!(Arc::ptr_eq(&rotated, &auth.profile.as_ref().unwrap().token));
+}
+
+#[test]
+fn live_session_transient_failures_preserve_account_and_retry_but_rejection_disconnects() {
+    for error in [
+        Error::GitHubStatus(503),
+        Error::GitHubRateLimit,
+        Error::GitHubForbidden,
+        Error::CredentialPolicy,
+    ] {
+        let mut auth = Auth::connected_fixture();
+        let now = Instant::now();
+        let (tx, rx) = mpsc::sync_channel(1);
+        tx.send(Err(error)).ok().unwrap();
+        auth.profile_incoming = Some(rx);
+        auth.poll_at(now, |_| panic!(), |_, _| panic!());
+        assert!(auth.connected());
+        assert!(auth.failed);
+        assert!(auth.next_session_check.unwrap() > now);
+        assert!(!auth.poll_at(now, |_| panic!(), |_, _| panic!("no tight retry")));
+    }
+    let mut auth = Auth::connected_fixture();
+    let (tx, rx) = mpsc::sync_channel(1);
+    tx.send(Err(Error::GitHubAuthentication)).ok().unwrap();
+    auth.profile_incoming = Some(rx);
+    auth.poll_at(Instant::now(), |_| panic!(), |_, _| panic!());
+    assert!(!auth.connected());
+}
+
+#[test]
 fn enabling_plaintext_reloads_saved_token_but_explicit_signout_stays_suppressed() {
     let mut auth = Auth::default();
     // Drive the backend directly: which one a configuration selects depends on
