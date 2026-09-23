@@ -9,6 +9,7 @@ use super::{HIDDEN, InputTarget, popup_origin, wheel_target};
 use crate::error::{Error, Result};
 use herdr_client::protocol::PaneSurfaceFrame;
 use std::ops::Range;
+use unicode_width::UnicodeWidthStr;
 
 /// Terminal content is untrusted and one cell's symbol carries as many bytes as
 /// it likes, so a copy is bounded rather than trusted to be screen-sized.
@@ -272,6 +273,7 @@ impl Selection {
             InputTarget::Pane(_) => &surface.frame,
         };
         let edge = region.columns.end;
+        let left = region.columns.start;
         let mut text = String::new();
         let mut line = String::new();
         for (index, (row, columns)) in self.spans(region).enumerate() {
@@ -281,19 +283,31 @@ impl Selection {
             let offset = usize::from(row) * usize::from(frame.width);
             let cells = frame
                 .cells
-                .get(offset + usize::from(columns.start)..offset + usize::from(columns.end))
+                .get(offset + usize::from(left)..offset + usize::from(columns.end))
                 .ok_or(Error::SelectionStale)?;
             if index > 0 {
                 text.push('\n');
             }
             line.clear();
-            for cell in cells {
-                // Wide graphemes carry their text in the first cell only, and
-                // concealed cells copy as blanks: what the screen does not show
-                // must not reach the clipboard.
+            let mut covered = 0;
+            for (column, cell) in cells.iter().enumerate() {
+                if column < covered {
+                    continue;
+                }
                 if cell.skip {
                     continue;
                 }
+                // The wire skip flag is not a wide-cell marker: continuation
+                // cells can be ordinary blanks. Scan from the region's left
+                // edge so a drag starting on a continuation recognizes it too.
+                if cell.symbol.len() > MAX_SELECTION_BYTES {
+                    return Err(Error::SelectionSize);
+                }
+                covered = column + cell.symbol.width().max(1).min(cells.len() - column);
+                if column < usize::from(columns.start - left) {
+                    continue;
+                }
+                // Concealed cells copy as blanks, never their hidden text.
                 let symbol = if cell.modifier & HIDDEN != 0 || cell.symbol.is_empty() {
                     " "
                 } else {
@@ -532,6 +546,60 @@ mod tests {
             selection.text(&replaced, CELL_WIDTH, CELL_HEIGHT),
             Err(Error::SelectionStale)
         ));
+    }
+
+    #[test]
+    fn chinese_continuations_without_skip_do_not_become_spaces() {
+        let mut s = surface("你 好 世 界 ");
+        for (from, to) in [((1., 1.), (76., 1.)), ((76., 1.), (1., 1.))] {
+            assert_eq!(text(&s, &drag(&s, from, to)), "你好世界");
+        }
+        // Real spaces after a wide glyph must survive a partial-row selection.
+        assert_eq!(text(&s, &drag(&s, (1., 1.), (86., 1.))), "你好世界 ");
+        // A selection starting on a continuation needs the preceding lead cell
+        // to identify it, but must not copy that unselected lead cell.
+        assert_eq!(text(&s, &drag(&s, (11., 1.), (36., 1.))), "好");
+        assert_eq!(text(&s, &drag(&s, (1., 1.), (6., 1.))), "你");
+        for i in [1, 3, 5, 7] {
+            s.frame.cells[i].symbol.clear();
+        }
+        assert_eq!(text(&s, &drag(&s, (1., 1.), (76., 1.))), "你好世界");
+    }
+
+    #[test]
+    fn wide_symbols_preserve_real_spaces_graphemes_and_row_boundaries() {
+        let mut s = surface("A你  B     好  x");
+        s.frame.cells[5].symbol = "👩‍💻".into();
+        s.frame.cells[7].symbol = "e\u{301}".into();
+        assert_eq!(text(&s, &drag(&s, (1., 1.), (86., 1.))), "A你 B👩‍💻e\u{301} ");
+        assert_eq!(
+            text(&s, &drag(&s, (1., 1.), (36., 21.))),
+            "A你 B👩‍💻e\u{301}\n好 x"
+        );
+        s.frame.cells[1].modifier = HIDDEN;
+        assert_eq!(text(&s, &drag(&s, (1., 1.), (46., 1.))), "A  B");
+
+        // A wide glyph in the neighboring pane cannot consume our first cell.
+        s.panes[0].inner_rect.x = 2;
+        s.panes[0].inner_rect.width = 8;
+        assert_eq!(text(&s, &drag(&s, (21., 1.), (46., 1.))), "  B");
+    }
+
+    #[test]
+    fn popup_wide_continuations_are_not_copied() {
+        let mut s = surface("abcdefghij");
+        s.popup = Some(Box::new(ClientShellPopupSurface {
+            terminal_id: "popup".into(),
+            title: String::new(),
+            width: None,
+            height: None,
+            frame: frame("你 好 世 界 ", 8, 1),
+            mouse_reporting: false,
+            sgr_pixel_mouse: false,
+            pixel_width: 80,
+            pixel_height: 20,
+        }));
+        assert_eq!(text(&s, &drag(&s, (11., 21.), (86., 21.))), "你好世界");
     }
 
     #[test]

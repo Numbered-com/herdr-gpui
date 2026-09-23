@@ -383,8 +383,10 @@ inside a popup takes the popup's own cells, never the panes it covers. Because
 each end anchors on the half of a cell the pointer sat in, a single character is
 selectable, while a press that never crosses a midpoint selects nothing.
 
-Copied rows are separated by newlines. Wide graphemes copy once rather than
-twice, concealed cells copy as blanks so hidden content does not reach the
+Copied rows are separated by newlines. Wide graphemes copy once, without spaces
+from their continuation cells; actual selected spaces are preserved. A partial
+wide grapheme copies only when its leading cell is selected.
+Concealed cells copy as blanks so hidden content does not reach the
 clipboard, and trailing blanks are dropped only from rows selected through to the
 pane's right edge, where a terminal pads short lines. A copy is bounded, and one
 too large to copy reports in the status bar instead.
@@ -930,6 +932,14 @@ rejection, Unicode composition, and headless right-click/input routing.
 sizes, but does not validate OS IME candidate-window delivery or live daemon
 worktree creation/close.
 They do not replace an interactive smoke test against a live daemon.
+
+Selection regressions cover unflagged CJK continuation cells, real spaces,
+partial wide characters, emoji/combining text, popup/pane boundaries, and headless
+mouse-to-clipboard routing. On macOS, `just test-gui /absolute/path/to/herdr`
+also prints CJK text through the isolated daemon, drags forward/backward using
+exact-window native mouse events, checks the OS clipboard, and pastes through
+Cmd-V to verify the UTF-8 bytes returned by the shell. This opt-in test requires
+an active desktop; normal CI compiles it but does not run the native scenario.
 
 Notification policy tests use explicit times for evidence grace, delay changes,
 cross-host arrival order, queue bounds, replacement, promotion lifetimes, and
