@@ -19,7 +19,7 @@ use std::{path::Path, sync::atomic::AtomicBool};
 const READY: &[u8] = b"herdr-remote-output-ready:1\n";
 
 #[cfg(unix)]
-pub(crate) struct SshChild(Child);
+pub(crate) struct SshChild(pub(super) Child);
 #[cfg(unix)]
 impl Drop for SshChild {
     fn drop(&mut self) {
@@ -33,7 +33,7 @@ impl Drop for SshChild {
 pub(crate) enum SshChild {}
 
 #[cfg(unix)]
-fn quote(value: &str) -> String {
+pub(super) fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
@@ -63,7 +63,7 @@ exit 127"#,
 }
 
 #[cfg(unix)]
-fn command(target: &str, session: &str) -> Command {
+pub(super) fn command(target: &str, remote_command: &str) -> Command {
     let mut command = Command::new("ssh");
     command.args([
         "-T",
@@ -95,7 +95,7 @@ fn command(target: &str, session: &str) -> Command {
         "--",
         target,
     ]);
-    command.arg(bridge_command(session));
+    command.arg(remote_command);
     command
 }
 
@@ -110,7 +110,7 @@ pub(crate) fn connect(
     let (mut stream, child_stream) = Stream::pair()?;
     stream.set_read_timeout(Some(POLL))?;
     stream.set_write_timeout(Some(Duration::from_secs(1)))?;
-    let mut command = command(target, session);
+    let mut command = command(target, &bridge_command(session));
     command
         .stdin(Stdio::from(OwnedFd::from(child_stream.try_clone()?)))
         .stdout(Stdio::from(OwnedFd::from(child_stream)))

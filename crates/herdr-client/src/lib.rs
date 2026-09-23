@@ -4,6 +4,7 @@
 #![doc = include_str!("../README.md")]
 
 mod catalog;
+mod clipboard;
 mod connect;
 mod discovery;
 mod error;
@@ -16,6 +17,7 @@ mod options;
 mod session;
 mod ssh;
 mod transport;
+mod upload;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -27,6 +29,7 @@ pub use herdr_protocol as protocol;
 pub use catalog::{
     SavedHost, load_saved_host_selection, load_saved_hosts, store_saved_host_selection,
 };
+pub use clipboard::{ClipboardImageCancellation, ClipboardImageUpload};
 pub use connect::{connect, connect_with_connector, connect_with_surface_active};
 pub use discovery::{ConnectTarget, session_socket};
 /// Error returned when queueing commands; also available as the crate's `Error`.
@@ -37,3 +40,4 @@ pub use handle::{Client, ClientHandle};
 pub use method::Method;
 pub use options::ConnectOptions;
 pub use transport::Stream;
+pub use upload::{remove_uploaded_files, upload_files};

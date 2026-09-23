@@ -3,12 +3,18 @@
 //! split by responsibility across the submodules below; the fields live here
 //! because every one of them describes this window's own presentation state.
 
+mod clipboard;
 mod commands;
+mod file_drop;
+mod image_source;
+mod images;
 mod input;
 mod lifecycle;
+mod mouse;
 mod render;
 mod selection;
 mod toasts;
+mod transfers;
 
 #[cfg(test)]
 mod font_size_tests;
@@ -68,6 +74,9 @@ pub(crate) struct HerdrWindow {
     pub(crate) cell_width: f32,
     pub(crate) hovered_terminal_link: bool,
     pub(crate) pressed_terminal_link: Option<(String, Point<Pixels>)>,
+    pub(crate) terminal_mouse: Option<mouse::Gesture>,
+    pub(crate) pending_images: Vec<images::PendingImage>,
+    pub(crate) file_transfer: Option<transfers::FileTransfer>,
     /// The terminal cells the pointer is choosing. A release copies them and
     /// clears this, so a highlight only ever belongs to a drag in progress.
     pub(crate) selection: Option<Selection>,
@@ -172,6 +181,8 @@ impl HerdrWindow {
                             &this.endpoints,
                             cx,
                         );
+                        this.cancel_stale_image();
+                        this.poll_file_transfer(cx);
                         this.update_workspace_dialog(window, cx);
                         this.poll_worktree_source(cx);
                         this.poll_hover_menu(std::time::Instant::now(), window, cx);
@@ -252,6 +263,9 @@ impl HerdrWindow {
             cell_width: 9.,
             hovered_terminal_link: false,
             pressed_terminal_link: None,
+            terminal_mouse: None,
+            pending_images: Vec::new(),
+            file_transfer: None,
             selection: None,
             copy_feedback: None,
             presentation: Default::default(),
@@ -283,6 +297,11 @@ impl HerdrWindow {
             _poll: poll,
             _activation: cx.observe_window_activation(window, |this, window, cx| {
                 this.active = window.is_window_active();
+                if !this.active {
+                    this.cancel_terminal_mouse(cx);
+                    this.selection = None;
+                    this.pressed_terminal_link = None;
+                }
                 this.report_focus();
                 cx.notify();
             }),

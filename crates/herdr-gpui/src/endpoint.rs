@@ -375,6 +375,12 @@ impl HerdrWindow {
     }
 
     fn reset_selected(&mut self) {
+        if let Some(transfer) = &self.file_transfer {
+            transfer.cancel();
+        }
+        for image in &self.pending_images {
+            image.cancel();
+        }
         self.menu.reset();
         self.selection_epoch += 1;
         let endpoint = &self.endpoints[self.selected_endpoint];
@@ -387,6 +393,8 @@ impl HerdrWindow {
         // detach, or a switch of endpoint starts from an empty terminal area.
         self.presentation.clear();
         self.selection = None;
+        self.terminal_mouse = None;
+        self.pressed_terminal_link = None;
         self.copy_feedback = None;
         self.local_error = None;
         self.marked.clear();
