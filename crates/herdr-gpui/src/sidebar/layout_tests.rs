@@ -828,11 +828,17 @@ fn check_sidebar(
             assert!(panel.left() >= px(0.) && panel.right() <= px(width));
             assert!(panel.bottom() <= px(600.));
             let open_row = cx.debug_bounds("workspace-menu-Open worktree...").unwrap();
-            // Preserve the previous content budget, plus the one new action row.
+            // Preserve the content budget apart from the action row and target header.
             let row_height = cx.update(|_, cx| px(view.read(cx).config.ui.line_height() + 12.));
+            let header_height = cx
+                .debug_bounds("workspace-menu-header")
+                .unwrap()
+                .size
+                .height
+                + px(4.);
             assert!((open_row.size.height - row_height).abs() <= px(1.));
             assert!(
-                panel.size.height < px(320.) + row_height,
+                panel.size.height < px(320.) + row_height + header_height,
                 "PR menu should size to its content: {panel:?}"
             );
             assert!(cx.debug_bounds("workspace-pr").is_some());
@@ -1733,6 +1739,180 @@ fn worktree_rows_mark_uncommitted_work(cx: &mut gpui::TestAppContext) {
             .is_none(),
         "a clean checkout is not marked"
     );
+}
+
+#[gpui::test]
+fn workspace_right_click_survives_redraw_release_and_pointer_movement(
+    cx: &mut gpui::TestAppContext,
+) {
+    use gpui::MouseButton;
+
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        crate::bind_keys(cx);
+        let mut view = fixture_window(window, cx);
+        view.live.status = crate::state::ConnectionStatus::Connected;
+        view
+    });
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.run_until_parked();
+    for (redraw, release) in [
+        (true, MouseButton::Right),
+        (false, MouseButton::Right),
+        // macOS can deliver Left when Control is released before the mouse.
+        (true, MouseButton::Left),
+    ] {
+        cx.update(|window, cx| window.draw(cx).clear());
+        let position = cx.debug_bounds("row-agent-launcher").unwrap().center();
+        cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+        cx.update(|window, cx| {
+            if redraw {
+                window.draw(cx).clear();
+            }
+            assert_eq!(view.read(cx).menu.page, Some(crate::menu::Page::Workspace));
+        });
+        // A second press before release must not dismiss the menu just opened.
+        cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+        cx.update(|_, cx| {
+            assert_eq!(view.read(cx).menu.page, Some(crate::menu::Page::Workspace));
+        });
+        cx.simulate_mouse_up(position, release, Modifiers::default());
+        cx.simulate_mouse_move(point(px(700.), px(500.)), None, Modifiers::default());
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.update_workspace_dialog(window, cx);
+                view.poll_hover_menu(std::time::Instant::now(), window, cx);
+                view.poll_tab_rename(window, cx);
+                view.poll_pane_rename(window, cx);
+            });
+            window.draw(cx).clear();
+            assert_eq!(view.read(cx).menu.page, Some(crate::menu::Page::Workspace));
+            assert!(view.read(cx).menu.focus.is_focused(window));
+            assert!(!view.read(cx).menu.opening_right_click);
+        });
+        cx.simulate_mouse_down(
+            point(px(700.), px(500.)),
+            MouseButton::Right,
+            Modifiers::default(),
+        );
+        cx.update(|_, cx| assert!(view.read(cx).menu.page.is_none()));
+        cx.simulate_mouse_up(
+            point(px(700.), px(500.)),
+            MouseButton::Right,
+            Modifiers::default(),
+        );
+    }
+}
+
+#[gpui::test]
+fn workspace_popover_header_and_right_click_retargeting(cx: &mut gpui::TestAppContext) {
+    use crate::menu::{Page, workspace_tests::target_id};
+    use gpui::MouseButton;
+
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        crate::bind_keys(cx);
+        let mut view = fixture_window(window, cx);
+        view.live.status = crate::state::ConnectionStatus::Connected;
+        view
+    });
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.run_until_parked();
+    for (index, (selector, id, label, branch)) in [
+        ("row-agent-launcher", "w3", "agent-launcher", "develop"),
+        ("row-herdr", "w0", "herdr", "main"),
+        (
+            "row-sidebar-child",
+            "w4",
+            "agent-launcher",
+            "worktree/sidebar-child",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        cx.update(|window, cx| window.draw(cx).clear());
+        let row = cx.debug_bounds(selector).unwrap();
+        let position = point(px(200. - index as f32 * 80.), row.center().y);
+        if let Some(panel) = cx.debug_bounds("menu-panel") {
+            assert!(
+                !panel.contains(&position),
+                "{selector}: {panel:?} {position:?}"
+            );
+        }
+        cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+            assert_eq!(view.read(cx).menu.page, Some(Page::Workspace));
+            assert_eq!(target_id(view.read(cx)), Some(id));
+            assert_eq!(
+                view.read(cx).pending_navigation,
+                Some(crate::NavigationTarget::Workspace(id.to_owned()))
+            );
+            assert!(view.read(cx).menu.focus.is_focused(window));
+        });
+        cx.simulate_mouse_up(position, MouseButton::Right, Modifiers::default());
+        let header = cx.debug_bounds("workspace-menu-header").unwrap();
+        let name = cx.debug_bounds("workspace-menu-name").unwrap();
+        let detail = cx.debug_bounds("workspace-menu-branch").unwrap();
+        assert!(header.bottom() <= cx.debug_bounds("workspace-menu-Rename").unwrap().top());
+        cx.update(|_, cx| {
+            let probes = &cx.global::<TextProbes>().0;
+            assert!(name.contains(&probes[label].0.center()));
+            assert!(detail.contains(&probes[branch].0.center()));
+        });
+    }
+    // The panel itself must not retarget to the row underneath it.
+    let header = cx.debug_bounds("workspace-menu-header").unwrap();
+    cx.simulate_mouse_down(header.center(), MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(header.center(), MouseButton::Right, Modifiers::default());
+    cx.update(|_, cx| assert_eq!(target_id(view.read(cx)), Some("w4")));
+    // Left clicks still dismiss instead of navigating or reopening.
+    let row = cx.debug_bounds("row-herdr").unwrap();
+    cx.simulate_click(point(px(5.), row.center().y), Modifiers::default());
+    cx.update(|_, cx| {
+        assert!(view.read(cx).menu.page.is_none());
+        assert_eq!(
+            view.read(cx).pending_navigation,
+            Some(crate::NavigationTarget::Workspace("w4".into()))
+        );
+    });
+    // Long labels and branch names stay inside a narrow popup.
+    cx.simulate_resize(size(px(320.), px(600.)));
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.open_workspace_menu("w1", point(px(20.), px(100.)), window, cx)
+        });
+        window.draw(cx).clear();
+    });
+    let panel = cx.debug_bounds("menu-panel").unwrap();
+    for selector in ["workspace-menu-name", "workspace-menu-branch"] {
+        let bounds = cx.debug_bounds(selector).unwrap();
+        assert!(bounds.left() >= panel.left() && bounds.right() <= panel.right());
+    }
+    // Once an action opens a dialog, outside right-clicks only dismiss it.
+    cx.simulate_keystrokes("down enter");
+    cx.update(|window, cx| window.draw(cx).clear());
+    let row = cx.debug_bounds("row-herdr").unwrap();
+    let position = point(px(5.), row.center().y);
+    cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(position, MouseButton::Right, Modifiers::default());
+    cx.update(|_, cx| assert!(view.read(cx).menu.page.is_none()));
+    // Non-Git workspaces have a name-only header, not an empty second line.
+    cx.update(|window, cx| {
+        cx.default_global::<TextProbes>().0.clear();
+        view.update(cx, |view, cx| {
+            Arc::make_mut(view.live.snapshot.as_mut().unwrap()).workspaces[0].branch = None;
+            view.open_workspace_menu("w0", point(px(20.), px(100.)), window, cx);
+        });
+        window.refresh();
+        window.draw(cx).clear();
+    });
+    let header = cx.debug_bounds("workspace-menu-header").unwrap();
+    let name = cx.debug_bounds("workspace-menu-name").unwrap();
+    assert!(header.size.height < name.size.height * 2.);
+    cx.update(|_, cx| {
+        assert!(!cx.global::<TextProbes>().0.contains_key("main"));
+        assert_eq!(target_id(view.read(cx)), Some("w0"));
+    });
 }
 
 #[gpui::test]

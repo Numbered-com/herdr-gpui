@@ -367,6 +367,10 @@ and local file paths are not activated.
 - Right-click spaces for Rename, Close (Close group on non-linked parents with
   multiple spaces sharing `worktree.key`), and New worktree / Open worktree... on non-linked Git
   parents, including spaces with a known Git branch but no worktree metadata yet.
+  Right-click also selects the space, switching the terminal and sidebar highlight
+  when the daemon confirms the selection. A compact header repeats the target name
+  and Git branch. Right-clicking another visible space while this menu is open
+  selects it and switches the menu in one click.
   With `features.sidebar_hover_menu` enabled, resting the pointer on a
   space of the selected connection opens the same menu, and moving the pointer
   anywhere but into that menu closes it again; the flag is off by default, so

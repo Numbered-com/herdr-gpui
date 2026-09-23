@@ -233,12 +233,68 @@ impl HerdrWindow {
                         MouseButton::Right,
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                             cx.stop_propagation();
-                            if this.menu.page.is_none()
-                                && this.select_endpoint(&context_endpoint, cx)
-                            {
+                            if this.navigate_endpoint(
+                                &context_endpoint,
+                                NavigationTarget::Workspace(&context_id),
+                                cx,
+                            ) {
                                 this.open_workspace_menu(&context_id, event.position, window, cx);
+                                this.menu.opening_right_click =
+                                    this.menu.page == Some(crate::menu::Page::Workspace);
                             }
                         }),
+                    )
+                    .when(
+                        self.menu.page == Some(crate::menu::Page::Workspace),
+                        |row| {
+                            let view = cx.entity().downgrade();
+                            let endpoint = endpoint_id.clone();
+                            let workspace = id.clone();
+                            row.child(
+                                canvas(
+                                    |_, _, _| (),
+                                    move |bounds, _, window, _| {
+                                        let bounds =
+                                            bounds.intersect(&window.content_mask().bounds);
+                                        window.on_mouse_event(
+                                            move |event: &MouseDownEvent, phase, window, cx| {
+                                                // The overlay dismisses first in bubble order. Use
+                                                // clipped row geometry because it occludes our hitbox.
+                                                if phase == DispatchPhase::Bubble
+                                                    && event.button == MouseButton::Right
+                                                    && bounds.contains(&event.position)
+                                                {
+                                                    let _ = view.update(cx, |this, cx| {
+                                                        cx.stop_propagation();
+                                                        if this.navigate_endpoint(
+                                                            &endpoint,
+                                                            NavigationTarget::Workspace(&workspace),
+                                                            cx,
+                                                        ) {
+                                                            this.open_workspace_menu(
+                                                                &workspace,
+                                                                event.position,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                            this.menu.opening_right_click = this
+                                                                .menu
+                                                                .page
+                                                                == Some(
+                                                                    crate::menu::Page::Workspace,
+                                                                );
+                                                        }
+                                                    });
+                                                }
+                                            },
+                                        );
+                                    },
+                                )
+                                .absolute()
+                                .inset_0()
+                                .size_full(),
+                            )
+                        },
                     )
                     .id(SharedString::from(format!("workspace-{endpoint_id}-{id}")))
                     .when(multi, |row| {

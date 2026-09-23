@@ -369,6 +369,40 @@ impl HerdrWindow {
         } else if page == Page::GitHub {
             panel = panel.child(self.render_github_auth(cx));
         } else if page == Page::Workspace {
+            if let Some(target) = &self.menu.target {
+                panel = panel.child(
+                    div()
+                        .debug_selector(|| "workspace-menu-header".into())
+                        .px(px(8.))
+                        .py(px(6.))
+                        .mb(px(4.))
+                        .border_b_1()
+                        .border_color(rgb(theme.active))
+                        .child(
+                            div()
+                                .debug_selector(|| "workspace-menu-name".into())
+                                .truncate()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(crate::sidebar::label_text(&target.label)),
+                        )
+                        .when_some(
+                            target
+                                .branch
+                                .as_deref()
+                                .filter(|branch| !branch.trim().is_empty()),
+                            |header, branch| {
+                                header.child(
+                                    div()
+                                        .debug_selector(|| "workspace-menu-branch".into())
+                                        .truncate()
+                                        .text_color(rgb(theme.muted))
+                                        .text_size(px(font.size * 0.9))
+                                        .child(crate::sidebar::label_text(branch)),
+                                )
+                            },
+                        ),
+                );
+            }
             for (action, label) in self.workspace_items() {
                 panel = panel.child(
                     div()
@@ -541,7 +575,15 @@ impl HerdrWindow {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, _, window, cx| {
-                    cx.stop_propagation();
+                    if this.menu.opening_right_click {
+                        cx.stop_propagation();
+                        return;
+                    }
+                    // Only workspace rows may retarget this gesture. The overlay
+                    // still occludes ordinary terminal and chrome handlers.
+                    if this.menu.page != Some(Page::Workspace) {
+                        cx.stop_propagation();
+                    }
                     this.dismiss_menu(window, cx);
                 }),
             )
