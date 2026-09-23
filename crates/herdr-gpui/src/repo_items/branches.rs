@@ -1,6 +1,6 @@
 //! Branches a new checkout could be made from: local branches no worktree has
-//! checked out, and `origin` branches this clone has no local branch for. Read
-//! from the repository's own refs with one bounded Git call off the UI thread.
+//! checked out. Read from the repository's own refs with one bounded Git call
+//! off the UI thread.
 
 use super::model::branch_name;
 use crate::{
@@ -20,12 +20,10 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 const LIMIT: usize = 500;
 const FORMAT: &str = "%(refname)%00%(worktreepath)";
 
-/// A branch without a checkout.
+/// A local branch without a checkout.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Branch {
     pub name: String,
-    /// Only `origin/<name>` exists, so the checkout starts from that ref.
-    pub remote: bool,
 }
 
 impl Branch {
@@ -44,7 +42,7 @@ pub(crate) fn list(input: &Input, cancelled: &impl Fn() -> bool) -> crate::Resul
         .args(["-c", "core.fsmonitor=false", "--git-dir", &input.repo_key])
         .args(["for-each-ref", "--sort=-committerdate"])
         .arg(format!("--format={FORMAT}"))
-        .args(["refs/heads", "refs/remotes/origin"]);
+        .arg("refs/heads");
     let (ok, output) = run(&mut command, Instant::now() + TIMEOUT, cancelled)?;
     if !ok {
         return Err(Error::GitFailed {
@@ -55,33 +53,20 @@ pub(crate) fn list(input: &Input, cancelled: &impl Fn() -> bool) -> crate::Resul
     Ok(parse(&output))
 }
 
-/// Keep what a new checkout could use. A local branch that some worktree has
-/// checked out is already somewhere, and Git refuses a second checkout of it;
-/// a remote branch with a local namesake is the local branch's business.
+/// Keep what a new checkout could use. A branch that some worktree has checked
+/// out is already somewhere, and Git refuses a second checkout of it.
 pub(super) fn parse(output: &str) -> Vec<Branch> {
-    let refs: Vec<(&str, bool)> = output
+    let mut seen = HashSet::new();
+    output
         .lines()
         .filter_map(|line| {
             let (name, worktree) = line.split_once('\0')?;
-            Some((name, !worktree.is_empty()))
+            let name = name.strip_prefix("refs/heads/")?;
+            worktree.is_empty().then_some(name)
         })
-        .collect();
-    let local: HashSet<&str> = refs
-        .iter()
-        .filter_map(|(name, _)| name.strip_prefix("refs/heads/"))
-        .collect();
-    let mut seen = HashSet::new();
-    refs.iter()
-        .filter_map(|&(name, checked_out)| {
-            if let Some(name) = name.strip_prefix("refs/heads/") {
-                return (!checked_out).then_some((name, false));
-            }
-            let name = name.strip_prefix("refs/remotes/origin/")?;
-            (name != "HEAD" && !local.contains(name)).then_some((name, true))
-        })
-        .filter_map(|(name, remote)| {
+        .filter_map(|name| {
             let name = branch_name(name)?;
-            seen.insert(name.clone()).then_some(Branch { name, remote })
+            seen.insert(name.clone()).then_some(Branch { name })
         })
         .take(LIMIT)
         .collect()
@@ -98,9 +83,6 @@ mod tests {
             "refs/heads/main\0/repo",
             "refs/heads/feature/login\0",
             "refs/heads/worktree/brave-river\0/worktrees/brave-river",
-            "refs/remotes/origin/HEAD\0",
-            "refs/remotes/origin/main\0",
-            "refs/remotes/origin/feature/login\0",
             "refs/remotes/origin/fix/crash\0",
             "refs/heads/-hostile\0",
             "not a ref line",
@@ -108,16 +90,9 @@ mod tests {
         .join("\n");
         assert_eq!(
             parse(&output),
-            vec![
-                Branch {
-                    name: "feature/login".into(),
-                    remote: false
-                },
-                Branch {
-                    name: "fix/crash".into(),
-                    remote: true
-                },
-            ]
+            vec![Branch {
+                name: "feature/login".into()
+            }]
         );
     }
 
@@ -164,8 +139,7 @@ mod tests {
         assert_eq!(
             branches,
             vec![Branch {
-                name: "idle".into(),
-                remote: false
+                name: "idle".into()
             }]
         );
     }

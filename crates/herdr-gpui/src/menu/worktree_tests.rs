@@ -368,11 +368,9 @@ fn branches() -> Vec<Branch> {
     vec![
         Branch {
             name: "feature/login".into(),
-            remote: false,
         },
         Branch {
             name: "fix/crash".into(),
-            remote: true,
         },
     ]
 }
@@ -453,36 +451,39 @@ fn existing_checkouts_not_open_in_herdr_are_offered_for_opening(cx: &mut gpui::T
     });
 }
 
-/// A local branch is checked out as it is; a branch only `origin` has starts
-/// from its remote-tracking ref.
+/// A local branch is checked out as it is, and its row is only its name, one
+/// line tall where a checkout also shows its path.
 #[gpui::test]
-fn branches_without_a_checkout_create_one_from_the_right_base(cx: &mut gpui::TestAppContext) {
+fn local_branches_without_a_checkout_are_one_line_rows(cx: &mut gpui::TestAppContext) {
     let (view, cx) = cx.add_window_view(sidebar::layout_tests::fixture_window);
     cx.simulate_resize(gpui::size(gpui::px(900.), gpui::px(700.)));
     open_dialog(&view, cx, false, Tab::New);
     install_local_listings(&view, cx);
-    cx.update(|window, cx| {
-        view.update(cx, |view, cx| {
-            view.select_worktree_tab(Tab::Branches, window, cx);
+    let row_height = |tab: Tab, cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| view.select_worktree_tab(tab, window, cx));
         });
-    });
-    draw(cx);
+        draw(cx);
+        cx.debug_bounds("worktree-row-0").unwrap().size.height
+    };
+    let checkout = row_height(Tab::Existing, cx);
+    let branch = row_height(Tab::Branches, cx);
+    let line = cx.update(|_, cx| gpui::px(view.read(cx).config.ui.line_height()));
+    // Layout rounds to device pixels, so allow a pixel either way.
+    assert!(
+        (checkout - branch - line).abs() <= gpui::px(1.),
+        "{checkout:?} {branch:?} {line:?}"
+    );
     assert!(cx.debug_bounds("worktree-row-1").is_some());
     cx.update(|_, cx| {
         let view = view.read(cx);
         let target = view.menu.target.as_ref().unwrap();
         let snapshot = view.live.snapshot.as_ref().unwrap();
-        let [local, remote] = &branches()[..] else {
-            unreachable!()
-        };
         let (method, params) =
-            pick_request(target, snapshot, &Pending::Branch(local.clone())).unwrap();
+            pick_request(target, snapshot, &Pending::Branch(branches()[0].clone())).unwrap();
         assert_eq!(method, herdr_client::Method::WorktreeCreate);
         assert_eq!(params["branch"], "feature/login");
         assert_eq!(params["base"], "HEAD");
-        let (_, params) = pick_request(target, snapshot, &Pending::Branch(remote.clone())).unwrap();
-        assert_eq!(params["branch"], "fix/crash");
-        assert_eq!(params["base"], "origin/fix/crash");
     });
 }
 

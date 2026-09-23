@@ -21,7 +21,7 @@ pub(crate) enum Tab {
     New,
     /// Checkouts of this repository that no Herdr workspace has open.
     Existing,
-    /// Branches no checkout has, local or only on `origin`.
+    /// Local branches no checkout has.
     Branches,
     /// A listing of the repository's open pull requests or issues.
     Items(Kind),
@@ -774,7 +774,9 @@ pub(super) fn pick_request(
 ) -> crate::Result<(Method, serde_json::Value)> {
     match pending {
         Pending::Item(item) => item_request(target, snapshot, item),
-        Pending::Branch(branch) => branch_request(target, snapshot, branch),
+        Pending::Branch(branch) => {
+            target.request(snapshot, WorkspaceAction::NewWorktree, &branch.name)
+        }
         Pending::Checkout(path) => target.request(snapshot, WorkspaceAction::OpenWorktree, path),
     }
 }
@@ -799,21 +801,6 @@ pub(super) fn item_request(
     }
     // The checkout is named for what it is for, so the sidebar shows it too.
     params["label"] = item.label().into();
-    Ok((method, params))
-}
-
-/// A local branch is checked out as it is. A branch only `origin` has starts
-/// from its remote-tracking ref, which this clone already holds.
-pub(super) fn branch_request(
-    target: &super::WorkspaceTarget,
-    snapshot: &herdr_client::protocol::ClientShellSnapshot,
-    branch: &Branch,
-) -> crate::Result<(Method, serde_json::Value)> {
-    let (method, mut params) =
-        target.request(snapshot, WorkspaceAction::NewWorktree, &branch.name)?;
-    if branch.remote {
-        params["base"] = format!("origin/{}", branch.name).into();
-    }
     Ok((method, params))
 }
 

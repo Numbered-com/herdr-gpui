@@ -120,7 +120,7 @@ impl HerdrWindow {
                 },
             ),
             Tab::Branches => (
-                "branches without a checkout",
+                "local branches without a checkout",
                 source.branches.loading,
                 source.branches.message.as_ref(),
                 if total > 0 {
@@ -160,7 +160,7 @@ impl HerdrWindow {
         } else {
             match source.tab {
                 Tab::Existing => "Opening adds the checkout to Herdr; nothing is created.".into(),
-                Tab::Branches => "The checkout uses the branch as it is.".into(),
+                Tab::Branches => "The checkout uses the local branch as it is.".into(),
                 _ => source
                     .lookup
                     .origin
@@ -233,31 +233,23 @@ impl HerdrWindow {
         let Some(listed) = source.row(row) else {
             return div().into_any_element();
         };
-        // Every row is a title line, an optional muted tag, and a detail line.
+        // A row is a title line with an optional muted tag, and a detail line
+        // when there is more to say than the title. A branch is only its name.
         let (number, title, tag, detail) = match listed {
             Row::Checkout(entry) => (
                 None,
                 entry.branch.clone().unwrap_or_else(|| entry.label.clone()),
                 entry.is_detached.then_some("detached"),
-                entry.path.clone(),
+                Some(entry.path.clone()),
             ),
-            Row::Branch(branch) => (
-                None,
-                branch.name.clone(),
-                branch.remote.then_some("remote"),
-                if branch.remote {
-                    format!("new local branch from origin/{}", branch.name)
-                } else {
-                    "local branch".to_owned()
-                },
-            ),
+            Row::Branch(branch) => (None, branch.name.clone(), None, None),
             Row::Item(item) => (
                 Some(format!("#{}", item.number)),
                 item.title.clone(),
                 item.draft.then_some("draft"),
                 // A fork's head branch has no ref on `origin`, so the row says
                 // why it cannot be picked rather than failing once it is.
-                if item.fork_owner.is_some() {
+                Some(if item.fork_owner.is_some() {
                     "from a fork - check out manually".to_owned()
                 } else {
                     let branch = item.branch();
@@ -265,15 +257,16 @@ impl HerdrWindow {
                         true => branch,
                         false => format!("{} - {branch}", item.author),
                     }
-                },
+                }),
             ),
         };
+        let lines = if detail.is_some() { 2. } else { 1. };
         let selected = row == source.selected;
         div()
             .id(row)
             .debug_selector(move || format!("worktree-row-{row}"))
             .w_full()
-            .h(px(font.line_height() * 2. + 14.))
+            .h(px(font.line_height() * lines + 14.))
             .px(px(16.))
             .py(px(5.))
             .flex()
@@ -295,13 +288,15 @@ impl HerdrWindow {
                         line.child(div().flex_none().text_color(rgb(theme.muted)).child(tag))
                     }),
             )
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(rgb(theme.muted))
-                    .child(detail),
-            )
+            .when_some(detail, |row, detail| {
+                row.child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(rgb(theme.muted))
+                        .child(detail),
+                )
+            })
             .on_hover(cx.listener(move |this, hovered, _, cx| {
                 if *hovered && let Some(source) = &mut this.menu.worktree {
                     source.selected = row;
