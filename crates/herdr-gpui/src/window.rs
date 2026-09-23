@@ -209,14 +209,22 @@ impl HerdrWindow {
                 }
             }
         });
-        let config = config::Config::default();
+        let appearance = cx
+            .try_global::<crate::app::InitialAppearance>()
+            .cloned()
+            .unwrap_or_default();
+        let crate::app::InitialAppearance {
+            config,
+            theme,
+            error,
+        } = appearance;
         let mut this = Self {
             sound: crate::sound::Service::default(),
             updater: updater::Updater::default(),
             update_preview: None,
             configured_terminal_size: config.terminal.size,
             config,
-            theme: config::Theme::default(),
+            theme,
             config_load: None,
             catalog: endpoint::Catalog::new(&target),
             endpoints: vec![endpoint::Endpoint::new(
@@ -251,7 +259,7 @@ impl HerdrWindow {
             marked: String::new(),
             hover: None,
             hover_menu: None,
-            local_error: None,
+            local_error: error,
             menu: menu::MenuState::new(cx),
             removal: None,
             git: git::Git::default(),

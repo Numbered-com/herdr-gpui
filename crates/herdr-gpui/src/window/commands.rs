@@ -19,7 +19,19 @@ impl HerdrWindow {
         target: NavigationTarget<&str>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.menu.page.is_some() || !self.input_ready() {
+        if self.menu.page.is_some() {
+            return false;
+        }
+        self.dispatch_navigation(target, cx)
+    }
+
+    /// Complete an accepted navigation even if its context menu has since opened.
+    pub(crate) fn dispatch_navigation(
+        &mut self,
+        target: NavigationTarget<&str>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.input_ready() {
             return false;
         }
         let queued =

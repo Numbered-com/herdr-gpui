@@ -3,6 +3,7 @@
 
 mod agents;
 mod hover;
+mod layout;
 mod metrics;
 mod render;
 mod row;

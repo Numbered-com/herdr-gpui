@@ -485,12 +485,12 @@ impl HerdrWindow {
         endpoint: &str,
         target: NavigationTarget<&str>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         if self.menu.page.is_some() {
-            return;
+            return false;
         }
         if !self.select_endpoint(endpoint, cx) {
-            return;
+            return false;
         }
         self.pending_toast = None;
         self.pending_navigation = None;
@@ -499,6 +499,7 @@ impl HerdrWindow {
         } else {
             self.pending_navigation = Some((&target).into());
         }
+        true
     }
 
     pub(super) fn input_ready(&self) -> bool {
@@ -627,7 +628,7 @@ impl HerdrWindow {
             if let Some(id) = self.pending_toast {
                 self.navigate_toast(id, cx);
             } else if let Some(target) = self.pending_navigation.take() {
-                self.navigate(target.as_deref(), cx);
+                self.dispatch_navigation(target.as_deref(), cx);
             }
         } else if self
             .activation_deadline

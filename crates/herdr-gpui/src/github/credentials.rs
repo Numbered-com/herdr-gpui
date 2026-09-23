@@ -7,7 +7,7 @@ use secrecy::SecretString;
 use std::path::Path;
 
 #[cfg(unix)]
-use super::valid_token;
+use super::token::{Credential, LIMIT};
 #[cfg(unix)]
 use rustix::fs::{AtFlags, Mode, OFlags, open, openat, renameat, unlinkat};
 #[cfg(unix)]
@@ -80,7 +80,7 @@ fn existing(dir: &File) -> Result<Option<File>> {
         || metadata.uid() != geteuid().as_raw()
         || metadata.mode() & 0o777 != 0o600
         || metadata.nlink() != 1
-        || metadata.len() > 4096
+        || metadata.len() > LIMIT as u64
     {
         return Err(Error::CredentialPermissions);
     }
@@ -93,15 +93,14 @@ pub(super) fn read(path: &Path) -> Result<Option<SecretString>> {
     let Some(file) = existing(&dir)? else {
         return Ok(None);
     };
-    let mut bytes = Zeroizing::new(Vec::with_capacity(4097));
-    file.take(4097)
+    let mut bytes = Zeroizing::new(Vec::with_capacity(LIMIT + 1));
+    file.take((LIMIT + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(Error::CredentialIo)?;
     let text = std::str::from_utf8(&bytes).map_err(Error::GitHubEncoding)?;
-    if !valid_token(text) {
-        return Err(Error::GitHubToken);
-    }
-    Ok(Some(text.into()))
+    let value = SecretString::from(text);
+    Credential::decode(&value)?;
+    Ok(Some(value))
 }
 
 #[cfg(unix)]
@@ -124,9 +123,7 @@ fn write(path: &Path, token: Option<&SecretString>) -> Result<()> {
         }
         return dir.sync_all().map_err(Error::CredentialIo);
     };
-    if !valid_token(token.expose_secret()) {
-        return Err(Error::GitHubToken);
-    }
+    Credential::decode(token)?;
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let name = format!(
         ".github-credentials-{}-{}",
@@ -161,6 +158,47 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn refresh_record_roundtrips_maximum_escaped_tokens_in_a_private_file() {
+        let path = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(path.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let access = "\"\\".repeat(2048);
+        let refresh = "\\\"".repeat(2048);
+        let client = "c".repeat(256);
+        let credential = Credential::new(
+            access.as_str().into(),
+            Some(refresh.as_str().into()),
+            &client,
+        )
+        .unwrap();
+        let encoded = credential.encode().unwrap();
+        // Every token character needs JSON escaping; the issuing client is also maximal.
+        assert!(encoded.expose_secret().len() > 2 * 4096 * 2);
+        assert!(encoded.expose_secret().len() <= LIMIT);
+        store(path.path(), Some(&encoded), true).unwrap();
+        let file = path.path().join("github-credentials");
+        let metadata = std::fs::metadata(&file).unwrap();
+        assert_eq!(metadata.mode() & 0o777, 0o600);
+        assert_eq!(metadata.uid(), geteuid().as_raw());
+        assert_eq!(metadata.nlink(), 1);
+        assert_eq!(metadata.len(), encoded.expose_secret().len() as u64);
+        let saved = read(path.path()).unwrap().unwrap();
+        assert_eq!(saved.expose_secret(), encoded.expose_secret());
+        let restored = Credential::decode(&saved).unwrap();
+        assert_eq!(restored.access_token.expose_secret(), access);
+        assert_eq!(
+            restored.refresh_token.as_ref().unwrap().expose_secret(),
+            refresh
+        );
+        let record: serde_json::Value = serde_json::from_str(saved.expose_secret()).unwrap();
+        assert_eq!(record["client_id"], client);
+        assert_eq!(record["version"], 1);
+        store(path.path(), None, false).unwrap();
+        assert!(read(path.path()).unwrap().is_none());
+        assert!(!file.exists());
+    }
+
     #[test]
     fn private_atomic_roundtrip_and_unsafe_files_rejected() {
         let path =
@@ -206,7 +244,7 @@ mod tests {
         assert!(read(&path).is_err());
         assert!(write(&path, Some(&token)).is_err());
         std::fs::remove_file(&hardlink).unwrap();
-        std::fs::write(&file, vec![b'x'; 4097]).unwrap();
+        std::fs::write(&file, vec![b'x'; LIMIT + 1]).unwrap();
         assert!(read(&path).is_err());
         assert!(write(&path, Some(&token)).is_err());
         std::fs::remove_file(&file).unwrap();

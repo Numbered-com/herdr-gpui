@@ -24,7 +24,7 @@ fn section_headings_use_the_configured_sidebar_font_size() {
             fallbacks: None,
         };
         for label in ["spaces", "agents"] {
-            let mut heading = header(label, &font, &Theme::default());
+            let mut heading = header(label, &font, &Theme::default(), &super::layout::Normal);
             assert_eq!(
                 heading.text_style().as_ref().unwrap().font_size,
                 Some(px(size).into())

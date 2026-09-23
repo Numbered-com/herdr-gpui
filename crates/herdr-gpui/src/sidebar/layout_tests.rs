@@ -2,7 +2,6 @@
 //! Headless NoopTextSystem ignores font-run lengths, so only the native smoke
 //! test can catch GPUI's stale truncation runs. Keep headless checks for geometry.
 #![allow(clippy::unwrap_used)]
-#[cfg(test)]
 use crate::HerdrWindow;
 #[cfg(test)]
 use crate::{LiveState, WheelAccumulator};
@@ -25,6 +24,10 @@ impl Global for TextProbes {}
 #[derive(Default)]
 pub(crate) struct PaintedProbes(pub std::collections::BTreeMap<String, PaintedText>);
 impl Global for PaintedProbes {}
+
+#[derive(Default)]
+pub(crate) struct VerifyChildGeometry(pub bool);
+impl Global for VerifyChildGeometry {}
 
 #[derive(Debug)]
 #[cfg_attr(not(feature = "integration-test"), allow(dead_code))]
@@ -149,20 +152,35 @@ impl Element for ProbeText {
         }
         // These extra fixture rows leave the original smoke/performance labels
         // untouched. Check their native glyphs whenever the whole row is visible.
-        if matches!(
-            self.0.as_ref(),
-            "sidebar-child" | "sidebar-child-with-a-long-readable-branch-name"
-        ) && bounds.top() >= mask.top()
+        if cx.default_global::<VerifyChildGeometry>().0
+            && matches!(
+                self.0.as_ref(),
+                "sidebar-child" | "sidebar-child-with-a-long-readable-branch-name"
+            )
+            && bounds.top() >= mask.top()
             && bounds.bottom() <= mask.bottom()
         {
-            let parent = &cx.global::<TextProbes>().0["agent-launcher"].0;
+            let mode = window
+                .root::<HerdrWindow>()
+                .flatten()
+                .map(|view| view.read(cx).config.layout.mode)
+                .unwrap_or_default();
+            let layout = super::layout::for_mode(mode);
+            // Compute the sidebar column directly: menu labels share text keys,
+            // and retained paint probes can still describe the previous layout.
             assert_eq!(
                 bounds.left(),
-                parent.left() + px(super::CHILD_INDENT - super::ICON_RESERVE)
+                px(layout.padding() + layout.child_indent() + super::STATUS_WIDTH + layout.gap())
             );
             assert_eq!(
                 bounds.size.width,
-                px(super::LABEL_WIDTH - super::CHILD_INDENT - super::ARROW_RESERVE)
+                px(super::SIDEBAR_WIDTH
+                    - 1.
+                    - 2. * layout.padding()
+                    - super::STATUS_WIDTH
+                    - layout.gap()
+                    - layout.child_indent()
+                    - super::ARROW_RESERVE)
             );
             assert_eq!(mask.size.width, bounds.size.width);
             assert_eq!(glyph_text, state.wrapped_text());
@@ -247,6 +265,105 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     });
     let result = check_sidebar(fixture, cx);
     assert!(result.is_ok(), "sidebar layout failed: {result:#?}");
+}
+
+#[gpui::test]
+fn compact_sidebar_hides_branches_and_keeps_badges_inside_single_line_rows(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::config::LayoutMode;
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut view = fixture_window(window, cx);
+        view.live.snapshot = Some(Arc::new(snapshot(6)));
+        let input = crate::pull_request::Input {
+            checkout: None,
+            repo_key: "/fixture/agent-launcher/.git".into(),
+            branch: "worktree/sidebar-child".into(),
+        };
+        let now = std::time::Instant::now();
+        let mut pr = crate::pull_request::fixture().unwrap();
+        pr.number = 7;
+        pr.additions = 234;
+        pr.deletions = 567;
+        view.menu.pr_cache.seed(input.clone(), pr, now);
+        view.git.seed_probe(input, true, now);
+        view
+    });
+    cx.simulate_resize(size(px(800.), px(900.)));
+    cx.run_until_parked();
+    for font_size in [12., 18.] {
+        for width in [160., 232.] {
+            // Return to normal too: config reload must restore details and spacing.
+            for mode in [LayoutMode::Compact, LayoutMode::Normal] {
+                let compact = mode == LayoutMode::Compact;
+                view.update(cx, |view, cx| {
+                    view.config.layout.mode = mode;
+                    view.config.sidebar.size = font_size;
+                    view.sidebar_width = Some(width);
+                    cx.notify();
+                });
+                cx.update(|window, cx| {
+                    cx.default_global::<TextProbes>().0.clear();
+                    window.refresh();
+                    window.draw(cx).clear();
+                    let probes = &cx.global::<TextProbes>().0;
+                    for text in ["main", "worktree/sidebar-child", "+234", "-567"] {
+                        assert_eq!(probes.contains_key(text), !compact, "{text}");
+                    }
+                    for text in ["Claude Code", "#7"] {
+                        assert!(probes.contains_key(text), "{text}");
+                    }
+                });
+                let line = font_size * 4. / 3.;
+                let padding = if compact { 6. } else { 12. };
+                for (row, name, detail) in [
+                    ("row-herdr", "name-herdr", "detail-herdr"),
+                    (
+                        "row-agent-launcher",
+                        "name-agent-launcher",
+                        "detail-agent-launcher",
+                    ),
+                    (
+                        "row-sidebar-child",
+                        "name-sidebar-child",
+                        "detail-sidebar-child",
+                    ),
+                ] {
+                    let row = cx.debug_bounds(row).unwrap();
+                    let name = cx.debug_bounds(name).unwrap();
+                    assert_eq!(
+                        row.size.height,
+                        px(if compact { line } else { 2. * line + 8. })
+                    );
+                    assert_eq!(name.top(), row.top() + px(if compact { 0. } else { 4. }));
+                    assert!(name.right() <= row.right() - px(padding));
+                    if !compact {
+                        assert!(cx.debug_bounds(detail).is_some());
+                    }
+                }
+                let agent = cx.debug_bounds("row-agent-p0").unwrap();
+                assert_eq!(
+                    agent.size.height,
+                    px(2. * line + if compact { 0. } else { 8. })
+                );
+                assert!(cx.debug_bounds("detail-agent-p0").is_some());
+                let row = cx.debug_bounds("row-sidebar-child").unwrap();
+                let badge = cx.debug_bounds("pr-sidebar-child").unwrap();
+                assert_eq!(badge.right(), row.right() - px(padding));
+                assert!(badge.bottom() <= row.bottom());
+                assert!(cx.debug_bounds("name-sidebar-child").unwrap().right() <= badge.left());
+                assert!(cx.debug_bounds("dirty-sidebar-child").is_some());
+                let gutter = cx.debug_bounds("tree-sidebar-child").unwrap();
+                assert_eq!(
+                    gutter.left(),
+                    cx.debug_bounds("column-agent-launcher").unwrap().left()
+                );
+                let arrow = cx.debug_bounds("collapse-3").unwrap();
+                let parent = cx.debug_bounds("row-agent-launcher").unwrap();
+                assert!(arrow.top() >= parent.top() && arrow.bottom() <= parent.bottom());
+            }
+        }
+    }
 }
 
 #[gpui::test]
@@ -828,11 +945,17 @@ fn check_sidebar(
             assert!(panel.left() >= px(0.) && panel.right() <= px(width));
             assert!(panel.bottom() <= px(600.));
             let open_row = cx.debug_bounds("workspace-menu-Open worktree...").unwrap();
-            // Preserve the previous content budget, plus the one new action row.
+            // Preserve the content budget apart from the action row and target header.
             let row_height = cx.update(|_, cx| px(view.read(cx).config.ui.line_height() + 12.));
+            let header_height = cx
+                .debug_bounds("workspace-menu-header")
+                .unwrap()
+                .size
+                .height
+                + px(4.);
             assert!((open_row.size.height - row_height).abs() <= px(1.));
             assert!(
-                panel.size.height < px(320.) + row_height,
+                panel.size.height < px(320.) + row_height + header_height,
                 "PR menu should size to its content: {panel:?}"
             );
             assert!(cx.debug_bounds("workspace-pr").is_some());
@@ -1736,6 +1859,180 @@ fn worktree_rows_mark_uncommitted_work(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+fn workspace_right_click_survives_redraw_release_and_pointer_movement(
+    cx: &mut gpui::TestAppContext,
+) {
+    use gpui::MouseButton;
+
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        crate::bind_keys(cx);
+        let mut view = fixture_window(window, cx);
+        view.live.status = crate::state::ConnectionStatus::Connected;
+        view
+    });
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.run_until_parked();
+    for (redraw, release) in [
+        (true, MouseButton::Right),
+        (false, MouseButton::Right),
+        // macOS can deliver Left when Control is released before the mouse.
+        (true, MouseButton::Left),
+    ] {
+        cx.update(|window, cx| window.draw(cx).clear());
+        let position = cx.debug_bounds("row-agent-launcher").unwrap().center();
+        cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+        cx.update(|window, cx| {
+            if redraw {
+                window.draw(cx).clear();
+            }
+            assert_eq!(view.read(cx).menu.page, Some(crate::menu::Page::Workspace));
+        });
+        // A second press before release must not dismiss the menu just opened.
+        cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+        cx.update(|_, cx| {
+            assert_eq!(view.read(cx).menu.page, Some(crate::menu::Page::Workspace));
+        });
+        cx.simulate_mouse_up(position, release, Modifiers::default());
+        cx.simulate_mouse_move(point(px(700.), px(500.)), None, Modifiers::default());
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.update_workspace_dialog(window, cx);
+                view.poll_hover_menu(std::time::Instant::now(), window, cx);
+                view.poll_tab_rename(window, cx);
+                view.poll_pane_rename(window, cx);
+            });
+            window.draw(cx).clear();
+            assert_eq!(view.read(cx).menu.page, Some(crate::menu::Page::Workspace));
+            assert!(view.read(cx).menu.focus.is_focused(window));
+            assert!(!view.read(cx).menu.opening_right_click);
+        });
+        cx.simulate_mouse_down(
+            point(px(700.), px(500.)),
+            MouseButton::Right,
+            Modifiers::default(),
+        );
+        cx.update(|_, cx| assert!(view.read(cx).menu.page.is_none()));
+        cx.simulate_mouse_up(
+            point(px(700.), px(500.)),
+            MouseButton::Right,
+            Modifiers::default(),
+        );
+    }
+}
+
+#[gpui::test]
+fn workspace_popover_header_and_right_click_retargeting(cx: &mut gpui::TestAppContext) {
+    use crate::menu::{Page, workspace_tests::target_id};
+    use gpui::MouseButton;
+
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        crate::bind_keys(cx);
+        let mut view = fixture_window(window, cx);
+        view.live.status = crate::state::ConnectionStatus::Connected;
+        view
+    });
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.run_until_parked();
+    for (index, (selector, id, label, branch)) in [
+        ("row-agent-launcher", "w3", "agent-launcher", "develop"),
+        ("row-herdr", "w0", "herdr", "main"),
+        (
+            "row-sidebar-child",
+            "w4",
+            "agent-launcher",
+            "worktree/sidebar-child",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        cx.update(|window, cx| window.draw(cx).clear());
+        let row = cx.debug_bounds(selector).unwrap();
+        let position = point(px(200. - index as f32 * 80.), row.center().y);
+        if let Some(panel) = cx.debug_bounds("menu-panel") {
+            assert!(
+                !panel.contains(&position),
+                "{selector}: {panel:?} {position:?}"
+            );
+        }
+        cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+            assert_eq!(view.read(cx).menu.page, Some(Page::Workspace));
+            assert_eq!(target_id(view.read(cx)), Some(id));
+            assert_eq!(
+                view.read(cx).pending_navigation,
+                Some(crate::NavigationTarget::Workspace(id.to_owned()))
+            );
+            assert!(view.read(cx).menu.focus.is_focused(window));
+        });
+        cx.simulate_mouse_up(position, MouseButton::Right, Modifiers::default());
+        let header = cx.debug_bounds("workspace-menu-header").unwrap();
+        let name = cx.debug_bounds("workspace-menu-name").unwrap();
+        let detail = cx.debug_bounds("workspace-menu-branch").unwrap();
+        assert!(header.bottom() <= cx.debug_bounds("workspace-menu-Rename").unwrap().top());
+        cx.update(|_, cx| {
+            let probes = &cx.global::<TextProbes>().0;
+            assert!(name.contains(&probes[label].0.center()));
+            assert!(detail.contains(&probes[branch].0.center()));
+        });
+    }
+    // The panel itself must not retarget to the row underneath it.
+    let header = cx.debug_bounds("workspace-menu-header").unwrap();
+    cx.simulate_mouse_down(header.center(), MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(header.center(), MouseButton::Right, Modifiers::default());
+    cx.update(|_, cx| assert_eq!(target_id(view.read(cx)), Some("w4")));
+    // Left clicks still dismiss instead of navigating or reopening.
+    let row = cx.debug_bounds("row-herdr").unwrap();
+    cx.simulate_click(point(px(5.), row.center().y), Modifiers::default());
+    cx.update(|_, cx| {
+        assert!(view.read(cx).menu.page.is_none());
+        assert_eq!(
+            view.read(cx).pending_navigation,
+            Some(crate::NavigationTarget::Workspace("w4".into()))
+        );
+    });
+    // Long labels and branch names stay inside a narrow popup.
+    cx.simulate_resize(size(px(320.), px(600.)));
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.open_workspace_menu("w1", point(px(20.), px(100.)), window, cx)
+        });
+        window.draw(cx).clear();
+    });
+    let panel = cx.debug_bounds("menu-panel").unwrap();
+    for selector in ["workspace-menu-name", "workspace-menu-branch"] {
+        let bounds = cx.debug_bounds(selector).unwrap();
+        assert!(bounds.left() >= panel.left() && bounds.right() <= panel.right());
+    }
+    // Once an action opens a dialog, outside right-clicks only dismiss it.
+    cx.simulate_keystrokes("down enter");
+    cx.update(|window, cx| window.draw(cx).clear());
+    let row = cx.debug_bounds("row-herdr").unwrap();
+    let position = point(px(5.), row.center().y);
+    cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(position, MouseButton::Right, Modifiers::default());
+    cx.update(|_, cx| assert!(view.read(cx).menu.page.is_none()));
+    // Non-Git workspaces have a name-only header, not an empty second line.
+    cx.update(|window, cx| {
+        cx.default_global::<TextProbes>().0.clear();
+        view.update(cx, |view, cx| {
+            Arc::make_mut(view.live.snapshot.as_mut().unwrap()).workspaces[0].branch = None;
+            view.open_workspace_menu("w0", point(px(20.), px(100.)), window, cx);
+        });
+        window.refresh();
+        window.draw(cx).clear();
+    });
+    let header = cx.debug_bounds("workspace-menu-header").unwrap();
+    let name = cx.debug_bounds("workspace-menu-name").unwrap();
+    assert!(header.size.height < name.size.height * 2.);
+    cx.update(|_, cx| {
+        assert!(!cx.global::<TextProbes>().0.contains_key("main"));
+        assert_eq!(target_id(view.read(cx)), Some("w0"));
+    });
+}
+
+#[gpui::test]
 fn the_workspace_menu_folds_and_unfolds_a_worktree_group(cx: &mut gpui::TestAppContext) {
     use gpui::{Modifiers, MouseButton};
     let (fixture, cx) = cx.add_window_view(|window, cx| {
@@ -1812,7 +2109,7 @@ fn child_gutter_lines_land_on_whole_device_pixels() {
         let device = |value: Pixels| f32::from(value) * scale;
         let whole = |value: Pixels| (device(value) - device(value).round()).abs() < 0.001;
         for tree in [RowTree::Child, RowTree::LastChild] {
-            let [trunk, tick] = tree_lines(row, tree, &font, scale);
+            let [trunk, tick] = tree_lines(row, tree, &font, 4., scale);
             // Both lines carry the same weight and start on the device grid, so
             // neither is drawn thinner or blurrier than the other.
             assert!(
