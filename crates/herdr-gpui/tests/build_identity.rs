@@ -27,7 +27,9 @@ impl Sandbox {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&path).unwrap();
-        Self(path.canonicalize().unwrap())
+        // Git cannot create worktrees through Windows verbatim (\\?\) paths.
+        // Canonicalize only when comparing existing paths, not before passing args.
+        Self(path)
     }
 
     fn git(&self, args: &[&str]) {
