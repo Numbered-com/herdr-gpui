@@ -122,9 +122,9 @@ impl RowBadge {
 
     pub(super) fn width(&self, font: &FontConfig, layout: &dyn SidebarLayout) -> f32 {
         let pr = self.pr.as_ref().map_or(0., |pr| pr.width(font, layout));
-        // The dot sits on the number's line, a glyph of space ahead of it.
+        // Reserve the icon and the gap before the PR number, even at small fonts.
         pr + if self.dirty {
-            2. * glyph_width(font)
+            line_height(font).min(18.) + glyph_width(font)
         } else {
             0.
         }
@@ -155,7 +155,7 @@ impl PrBadge {
     /// a wider face truncates the counts rather than eating the label.
     pub(super) fn width(&self, font: &FontConfig, layout: &dyn SidebarLayout) -> f32 {
         let mut glyphs = self.number.chars().count();
-        if layout.workspace_details() {
+        if layout.pr_counts() {
             glyphs =
                 glyphs.max(self.additions.chars().count() + self.deletions.chars().count() + 1);
         }
@@ -244,6 +244,7 @@ pub(super) fn row(
     detail: &str,
     kind: RowKind,
     status: AgentStatus,
+    removing: bool,
     focused: bool,
     tree: RowTree,
     reserve_arrow: bool,
@@ -258,7 +259,12 @@ pub(super) fn row(
     let padding = layout.padding();
     let gap = layout.gap();
     let vertical_padding = layout.row_padding();
-    let show_detail = layout.workspace_details() || kind == RowKind::Agent;
+    let show_detail = kind == RowKind::Agent
+        || if tree == RowTree::None {
+            layout.workspace_details()
+        } else {
+            layout.child_details()
+        };
     let (name_color, weight, detail_color) = row_text(kind, focused, theme);
     let icon_reserve = match workspace_icon {
         RowIcon::None => 0.,
@@ -336,7 +342,28 @@ pub(super) fn row(
                     ),
             )
         })
-        .child(status_indicator(status, font))
+        .child(if removing {
+            div()
+                .debug_selector(|| "worktree-removing".into())
+                .size(px(STATUS_WIDTH))
+                .mt(px((line_height(font) - STATUS_WIDTH) / 2.))
+                .flex_none()
+                .child(
+                    div()
+                        .size_full()
+                        .rounded_full()
+                        .bg(rgb(theme.primary()))
+                        .with_animation(
+                            "worktree-removing-pulse",
+                            Animation::new(std::time::Duration::from_secs(1)).repeat(),
+                            |dot, delta| {
+                                dot.opacity(0.3 + 0.7 * (delta * std::f32::consts::PI).sin())
+                            },
+                        ),
+                )
+        } else {
+            status_indicator(status, font)
+        })
         .child(
             div()
                 .flex()
@@ -429,11 +456,8 @@ pub(super) fn row(
                             // pull request's, not the working tree's.
                             .when(dirty, |line| {
                                 line.child(
-                                    div()
-                                        .debug_selector(|| format!("dirty-{key}"))
-                                        .flex_none()
-                                        .text_color(rgb(theme.foreground))
-                                        .child(label_text("\u{2022}")),
+                                    crate::icons::uncommitted(theme, line_height(font).min(18.))
+                                        .debug_selector(|| format!("dirty-{key}")),
                                 )
                             })
                             .when_some(pr.as_ref(), |line, badge| {
@@ -446,35 +470,32 @@ pub(super) fn row(
                                 )
                             }),
                     )
-                    .when_some(
-                        pr.filter(|_| layout.workspace_details()),
-                        |column, badge| {
-                            column.child(
-                                div()
-                                    .flex()
-                                    .flex_none()
-                                    .overflow_hidden()
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .text_color(rgb(theme.palette[2]))
-                                            .child(label_text(&badge.additions)),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .text_color(rgb(theme.muted))
-                                            .child(label_text("/")),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .text_color(rgb(theme.palette[1]))
-                                            .child(label_text(&badge.deletions)),
-                                    ),
-                            )
-                        },
-                    ),
+                    .when_some(pr.filter(|_| layout.pr_counts()), |column, badge| {
+                        column.child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(rgb(theme.palette[2]))
+                                        .child(label_text(&badge.additions)),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(rgb(theme.muted))
+                                        .child(label_text("/")),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(rgb(theme.palette[1]))
+                                        .child(label_text(&badge.deletions)),
+                                ),
+                        )
+                    }),
             )
         })
 }

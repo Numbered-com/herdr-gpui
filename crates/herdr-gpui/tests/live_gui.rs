@@ -194,6 +194,11 @@ fn native_gui_live() {
         log.contains("GUI input pipeline verified:"),
         "GUI did not verify native action, key, and text delivery"
     );
+    #[cfg(target_os = "macos")]
+    assert!(
+        log.contains("GUI CJK selection verified:"),
+        "GUI did not verify CJK native drag, clipboard, and paste byte readback"
+    );
     assert!(
         log.contains("GUI second window verified:") && log.contains("windows=2 first_space="),
         "GUI did not verify a second window on its own space"

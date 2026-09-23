@@ -1,3 +1,6 @@
+mod graphics;
+
+use self::graphics::Graphic;
 use crate::config::Theme;
 use crate::terminal::*;
 use gpui::*;
@@ -360,7 +363,12 @@ impl TerminalPainter {
                 }
             }
             for (index, cell) in frame.cells.iter().enumerate() {
-                if cell.skip || cell.symbol.is_empty() || cell.symbol == " " || in_bar(index) {
+                if cell.skip
+                    || cell.symbol.is_empty()
+                    || cell.symbol == " "
+                    || in_bar(index)
+                    || Graphic::from_symbol(&cell.symbol).is_some()
+                {
                     continue;
                 }
                 let key = style(cell, &self.theme);
@@ -422,7 +430,9 @@ impl TerminalPainter {
             }
         });
         window.paint_layer(grid, |window| {
-            // Decorations cover the grid, including spaces and wide-glyph continuation cells.
+            // Box and block graphics are quads, so they share this layer to stay
+            // above the backgrounds. Decorations cover the grid, including spaces
+            // and wide-glyph continuation cells.
             for (index, cell) in frame.cells.iter().enumerate() {
                 if in_bar(index) {
                     continue;
@@ -432,6 +442,23 @@ impl TerminalPainter {
                         px((index % usize::from(frame.width)) as f32 * cell_width),
                         px((index / usize::from(frame.width)) as f32 * self.cell_height),
                     );
+                if let Some(graphic) = (!cell.skip)
+                    .then(|| Graphic::from_symbol(&cell.symbol))
+                    .flatten()
+                {
+                    let color = rgb(style(cell, &self.theme).0);
+                    graphic.rectangles(
+                        Bounds::new(position, size(px(cell_width), px(self.cell_height))),
+                        window.scale_factor(),
+                        |bounds| {
+                            window.paint_quad(fill(bounds, color));
+                            #[cfg(feature = "integration-test")]
+                            {
+                                counts.quads += 1;
+                            }
+                        },
+                    );
+                }
                 for y in decoration_offsets(cell, self.cell_height) {
                     window.paint_quad(fill(
                         Bounds::new(
@@ -733,6 +760,86 @@ mod tests {
         assert_eq!(style(&base, &theme), style(&changed, &theme));
         changed.fg = 0x02123456;
         assert_ne!(style(&base, &theme), style(&changed, &theme));
+    }
+
+    #[cfg(feature = "integration-test")]
+    #[gpui::test]
+    fn terminal_graphics_bypass_fonts_but_keep_decorations_and_skip_cells(cx: &mut TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, _| Empty);
+        cx.draw(Point::default(), size(px(800.), px(600.)), |_, _| {
+            canvas(
+                |_, _, _| (),
+                |bounds, _, window, cx| {
+                    let mut frame = FrameData {
+                        width: 5,
+                        height: 1,
+                        cells: vec![
+                            CellData {
+                                modifier: UNDERLINE | STRIKETHROUGH,
+                                ..cell("▏")
+                            },
+                            CellData {
+                                modifier: REVERSED,
+                                ..cell("█")
+                            },
+                            CellData {
+                                modifier: DIM,
+                                ..cell("▀")
+                            },
+                            CellData {
+                                modifier: HIDDEN,
+                                ..cell("┼")
+                            },
+                            CellData {
+                                skip: true,
+                                ..cell("█")
+                            },
+                        ],
+                        cursor: None,
+                        hyperlinks: vec![],
+                        graphics: vec![],
+                    };
+                    let mut painter = TerminalPainter::default();
+                    for family in ["Menlo", "Courier"] {
+                        painter.set_appearance(21.35, 30.5, Theme::default());
+                        let before = *cx.default_global::<crate::performance::Counts>();
+                        painter.paint_frame(
+                            &frame,
+                            bounds.origin,
+                            12.81,
+                            &font(family),
+                            &[],
+                            &[],
+                            window,
+                            cx,
+                        );
+                        let after = cx.default_global::<crate::performance::Counts>();
+                        assert_eq!(painter.entries, 0);
+                        assert_eq!(after.shapes, before.shapes);
+                        assert_eq!(after.glyphs, before.glyphs);
+                        assert_eq!(after.decorations - before.decorations, 2);
+                        let backgrounds = background_spans(&frame.cells, &painter.theme).count();
+                        assert_eq!(after.quads - before.quads, backgrounds + 7);
+                    }
+                    frame.cells[0] = cell("a");
+                    painter.paint_frame(
+                        &frame,
+                        bounds.origin,
+                        12.81,
+                        &font("Menlo"),
+                        &[],
+                        &[],
+                        window,
+                        cx,
+                    );
+                    assert_eq!(
+                        painter.entries, 1,
+                        "ordinary text still uses the glyph cache"
+                    );
+                },
+            )
+            .size_full()
+        });
     }
 
     #[gpui::test]

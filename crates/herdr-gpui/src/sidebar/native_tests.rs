@@ -61,25 +61,37 @@ impl Target {
     }
 
     pub(crate) fn click(&self, x: f64, y: f64) -> Result<()> {
+        self.pointer_events(&[(1, x, y), (2, x, y)])
+    }
+
+    pub(crate) fn drag(&self, from: (f64, f64), to: (f64, f64)) -> Result<()> {
+        self.pointer_events(&[(1, from.0, from.1), (6, to.0, to.1), (2, to.0, to.1)])
+    }
+
+    fn pointer_events(&self, events: &[(usize, f64, f64)]) -> Result<()> {
+        // The retained view/window belong to this UI-thread fixture. Dispatch
+        // outside GPUI updates because AppKit callbacks reenter the window.
         unsafe {
             let bounds: NSRect = msg_send![self.view, bounds];
             let flipped: bool = msg_send![self.view, isFlipped];
-            let point = NSPoint::new(
-                bounds.origin.x + x,
-                bounds.origin.y + if flipped { y } else { bounds.size.height - y },
-            );
-            let location: NSPoint = msg_send![self.view, convertPoint: point toView: nil];
             let number: isize = msg_send![self.window, windowNumber];
-            for kind in [1_usize, 2] {
+            for &(kind, x, y) in events {
+                let point = NSPoint::new(
+                    bounds.origin.x + x,
+                    bounds.origin.y + if flipped { y } else { bounds.size.height - y },
+                );
+                let location: NSPoint = msg_send![self.view, convertPoint: point toView: nil];
                 let event: id = msg_send![class!(NSEvent), mouseEventWithType: kind
                     location: location modifierFlags: 0_usize timestamp: 0_f64
                     windowNumber: number context: nil eventNumber: 0_isize
                     clickCount: 1_isize pressure: 1_f32];
                 if event == nil {
-                    bail!("cannot create fixture click");
+                    bail!("cannot create fixture pointer event");
                 }
                 if kind == 1 {
                     let _: () = msg_send![self.view, mouseDown: event];
+                } else if kind == 6 {
+                    let _: () = msg_send![self.view, mouseDragged: event];
                 } else {
                     let _: () = msg_send![self.view, mouseUp: event];
                 }

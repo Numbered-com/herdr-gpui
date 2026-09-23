@@ -329,6 +329,30 @@ pub enum Error {
     InvalidSidebarGap,
     #[error("theme must be a name, absolute path, or ~/ path")]
     InvalidThemePath,
+    #[error("keybindings.{0} is not a command; see the keybindings list in config-gpui.toml")]
+    UnknownKeybinding(String),
+    #[error("keybindings.{command}: invalid keystroke {keystroke:?}")]
+    InvalidKeystroke {
+        command: &'static str,
+        keystroke: String,
+        #[source]
+        source: gpui::InvalidKeystrokeError,
+    },
+    #[error(
+        "keybindings.{command}: {keystroke:?} needs a cmd, ctrl, alt, or fn modifier so typing still reaches the terminal"
+    )]
+    KeystrokeWithoutModifier {
+        command: &'static str,
+        keystroke: String,
+    },
+    #[error("keybindings.{0} must list at most 8 keystrokes")]
+    TooManyKeystrokes(&'static str),
+    #[error("keybindings: {keystroke:?} is bound to both {first} and {second}")]
+    DuplicateKeystroke {
+        keystroke: String,
+        first: &'static str,
+        second: &'static str,
+    },
     #[error("theme {name:?} not found in {directories:?}")]
     ThemeNotFound {
         name: String,

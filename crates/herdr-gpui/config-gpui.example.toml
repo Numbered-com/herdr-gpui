@@ -22,7 +22,8 @@ theme = "Default"
 confirm_close_tab = true
 # Show the Agents section below Spaces in the sidebar.
 show_agents = true
-# "normal" or "compact". Compact hides workspace branch lines and PR change
+# "normal" (TUI-like), "comfortable" (the previous roomy Normal), or "compact".
+# Compact hides workspace branch lines and PR change
 # counts, and tightens Spaces and Agents spacing without changing font sizes.
 layout = "normal"
 
@@ -42,6 +43,7 @@ position = "bottom-right"
 # [clipboard_toast]
 # enabled = true
 # top-left, top-center, top-right, bottom-left, bottom-center, bottom-right.
+# The position also places the note saying why New Worktree opened no dialog.
 # position = "bottom-center"
 
 # To customize spacing too, REPLACE the top-level layout above with this table:
@@ -51,6 +53,41 @@ position = "bottom-right"
 # The terminal keeps the remaining width, so a wide gap costs columns.
 # Ignored while the sidebar is hidden. Set 0 to sit against the divider.
 # sidebar_gap = 8
+
+# Native shortcuts. Each key is a command; the value is one keystroke or a list,
+# primary first. "" or [] unbinds it. Assigning a keystroke here takes it away
+# from its default command. Modifiers: cmd (super on Linux), ctrl, alt, shift,
+# fn; keystrokes need at least one of cmd, ctrl, alt, or fn.
+# [keybindings]
+# new_tab = "cmd-t"
+# new_workspace = "cmd-shift-n"
+# new_worktree = "cmd-n"
+# new_window = "cmd-alt-shift-n"
+# split_right = "cmd-d"
+# split_down = "cmd-shift-d"
+# next_tab = "cmd-shift-]"
+# previous_tab = "cmd-shift-["
+# focus_left = "cmd-alt-left"
+# focus_right = "cmd-alt-right"
+# focus_up = "cmd-alt-up"
+# focus_down = "cmd-alt-down"
+# next_pane = "cmd-alt-]"
+# previous_pane = "cmd-alt-["
+# toggle_zoom = "cmd-shift-enter"
+# close_pane = "cmd-w"
+# close_tab = "cmd-shift-w"
+# focus_tab_1 = "cmd-1"   # through focus_tab_9 = "cmd-9"
+# toggle_sidebar = "cmd-b"
+# increase_font_size = ["cmd-=", "cmd-+"]
+# decrease_font_size = "cmd--"
+# reset_font_size = "cmd-0"
+# settings = "cmd-,"
+# keybindings = "cmd-/"
+# workspace_picker = "cmd-p"
+# command_palette = "cmd-shift-p"
+# open_notification_target = "cmd-alt-n"
+# quit = "cmd-q"
+# Unbound by default: themes, reconnect, logs, about.
 
 [sidebar]
 # Default: "Menlo" on macOS, "DejaVu Sans Mono" on Linux.

@@ -24,6 +24,7 @@ pub(crate) struct MenuState {
     pub input: Option<DialogInput>,
     pub(super) error: Option<String>,
     pub(super) deletion: Option<Deletion>,
+    pub(super) close_check: Option<super::workspace_close::CloseCheck>,
     /// The correlated `worktree.create` or `worktree.open` request, so the dialog
     /// can report the daemon's answer and follow the returned workspace.
     pub(super) creation: Option<String>,
@@ -68,8 +69,8 @@ impl Deletion {
 /// A queued `worktree.remove`. The dialog closes as soon as the request is
 /// queued, because the daemon's own snapshot drops the workspace once the
 /// removal lands; holding the popover open adds nothing. What still needs a
-/// home is a refusal, which becomes the window's local error, and a dirty
-/// checkout, which arms the next dialog with force.
+/// home is sidebar progress and a refusal, which becomes the window's local
+/// error. A dirty checkout arms the next dialog with force.
 pub(crate) struct Removal {
     /// Same fence as the menu target: a response from a replaced connection is
     /// not this removal's.
@@ -80,6 +81,15 @@ pub(crate) struct Removal {
     pub(super) pending: Option<String>,
     /// Set once the daemon refused the checkout as dirty.
     pub(super) force: bool,
+}
+
+impl Removal {
+    pub(crate) fn pending_for(&self, endpoint: (u64, u64), boot_id: &str, workspace: &str) -> bool {
+        self.pending.is_some()
+            && self.endpoint == endpoint
+            && self.boot_id == boot_id
+            && self.workspace == workspace
+    }
 }
 
 /// What a submitted dialog did, which decides whether it stays open.
@@ -167,6 +177,7 @@ impl MenuState {
             input: None,
             error: None,
             deletion: None,
+            close_check: None,
             creation: None,
             worktree_open: None,
             keybinds_scroll: ScrollHandle::new(),
@@ -207,6 +218,7 @@ impl MenuState {
         self.input = None;
         self.error = None;
         self.deletion = None;
+        self.close_check = None;
         self.creation = None;
         self.worktree_open = None;
         self.close = None;

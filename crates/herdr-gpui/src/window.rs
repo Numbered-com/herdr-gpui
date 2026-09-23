@@ -6,6 +6,8 @@
 mod clipboard;
 mod commands;
 mod file_drop;
+mod flash;
+pub(crate) use flash::Flash;
 mod image_source;
 mod images;
 mod input;
@@ -84,8 +86,8 @@ pub(crate) struct HerdrWindow {
     /// The terminal cells the pointer is choosing. A release copies them and
     /// clears this, so a highlight only ever belongs to a drag in progress.
     pub(crate) selection: Option<Selection>,
-    /// When the "copied to clipboard" flash stops showing.
-    pub(crate) copy_feedback: Option<std::time::Instant>,
+    /// The brief message over the terminal, and when it stops showing.
+    pub(crate) flash: Option<(Flash, std::time::Instant)>,
     /// The frame on screen, kept across the gap between two projections.
     pub(crate) presentation: Presentation,
     pub(crate) painter: std::rc::Rc<std::cell::RefCell<terminal_painter::TerminalPainter>>,
@@ -185,7 +187,7 @@ impl HerdrWindow {
         self.update_workspace_dialog(window, cx);
         self.poll_worktree_source(cx);
         self.poll_hover_menu(std::time::Instant::now(), window, cx);
-        if self.tick_copy_feedback(std::time::Instant::now()) {
+        if self.tick_flash(std::time::Instant::now()) {
             cx.notify();
         }
         self.poll_tab_rename(window, cx);
@@ -291,7 +293,7 @@ impl HerdrWindow {
             pending_images: Vec::new(),
             file_transfer: None,
             selection: None,
-            copy_feedback: None,
+            flash: None,
             presentation: Default::default(),
             painter: Default::default(),
             marked: String::new(),

@@ -13,6 +13,12 @@ Runtime dependencies include GPUI, `herdr-client`, `serde_json` for API paramete
 as `config_loader`, TOML-only) for GUI configuration. `toml` preserves strict
 field types during deserialization; `toml_edit` preserves comments on theme saves.
 
+Solid light/heavy box-drawing characters and block elements (including fractional
+blocks and quadrants) are drawn on the terminal cell grid, with device-pixel-aligned
+edges. Borders and block-art logos remain joined across rows and columns regardless
+of font line spacing. Dashed, double, rounded and diagonal lines, shading characters,
+and graphemes with combining marks continue to use font rendering.
+
 ```sh
 cargo run -p herdr-gpui
 cargo run -p herdr-gpui -- --session default
@@ -176,18 +182,25 @@ already waiting in a connection inbox from the disabled period are discarded too
 Failed reloads preserve current settings. QA
 previews remain available regardless of delivery settings.
 
-Enable a TUI-like compact sidebar with a top-level setting in `config-gpui.local.toml`
+Choose sidebar density with a top-level setting in `config-gpui.local.toml`
 (before any table headers):
 
 ```toml
 layout = "compact"
 ```
 
-The default is `layout = "normal"`. Compact mode hides workspace branch lines and PR change
-counts, removes row padding above and below labels, and tightens horizontal and
-heading spacing in both Spaces and Agents. PR numbers, status indicators, tree
-guides, and agent-name lines remain visible; font sizes and terminal spacing are
-unchanged. Saved edits apply automatically; there is no UI toggle yet.
+Three modes are available:
+
+- `normal` (default): TUI-like spacing, with branch lines beneath root workspaces,
+  single-line worktree children, and two-line agents. Modest horizontal and heading
+  spacing keeps the sidebar readable without padding every row.
+- `compact`: the tightest spacing, hiding all workspace branch lines.
+- `comfortable`: the previous Normal layout, with roomier padding, branch lines
+  on all workspace rows, and PR addition/deletion counts.
+
+Normal and Compact show PR numbers without change counts. Status indicators, tree
+guides, and agent-name lines remain visible in every mode; font sizes and terminal
+spacing are unchanged. Saved edits apply automatically; there is no UI toggle yet.
 
 To customize spacing too, use a `[layout]` table **instead of** the top-level
 string. Existing spacing-only tables remain supported and use normal mode:
@@ -383,8 +396,10 @@ inside a popup takes the popup's own cells, never the panes it covers. Because
 each end anchors on the half of a cell the pointer sat in, a single character is
 selectable, while a press that never crosses a midpoint selects nothing.
 
-Copied rows are separated by newlines. Wide graphemes copy once rather than
-twice, concealed cells copy as blanks so hidden content does not reach the
+Copied rows are separated by newlines. Wide graphemes copy once, without spaces
+from their continuation cells; actual selected spaces are preserved. A partial
+wide grapheme copies only when its leading cell is selected.
+Concealed cells copy as blanks so hidden content does not reach the
 clipboard, and trailing blanks are dropped only from rows selected through to the
 pane's right edge, where a terminal pads short lines. A copy is bounded, and one
 too large to copy reports in the status bar instead.
@@ -569,7 +584,13 @@ attention can keep the badge visible. This QA setting is not saved.
   anywhere but into that menu closes it again; the flag is off by default, so
   spaces normally open their menu only on right-click, and a menu opened by
   right-click stays until it is dismissed. Close requires
-  confirmation and terminates terminals, not checkout files or branches. New
+  confirmation and terminates terminals, not checkout files or branches. Before
+  enabling Close, the dialog checks every affected local checkout for uncommitted
+  files (including staged, untracked, and submodule changes) and commits absent
+  from all local remote-tracking refs. It does not fetch. If either is present,
+  type `close` to consent explicitly. Unverifiable status, including remote
+  endpoints and missing Git metadata, also requires this consent. Cancel keeps
+  the workspaces open. New
   worktree proposes the branch name the daemon would generate, previews the
   checkout path derived from it, rejects invalid Git branch names before submission,
   reports the daemon's own failures in the dialog rather than the connection status, and selects
@@ -712,7 +733,12 @@ attention can keep the badge visible. This QA setting is not saved.
   scrolling tab strip. Each tab has a 16px SVG close cross in a 24px hit target;
   it uses the same configurable confirmation without focusing an inactive tab.
   Both icons use the current theme's foreground tint.
-- Cmd-N creates and focuses a workspace; Cmd-T creates and focuses a tab.
+- Cmd-T creates and focuses a tab; Cmd-Shift-N creates and focuses
+  a workspace. Cmd-N opens the New worktree dialog for the focused workspace
+  (for a linked worktree, its repository's main checkout). When there is none,
+  because the workspace is not a Git repository, the main checkout is not open,
+  nothing is focused, or the window is disconnected, a two-second flash in the
+  clipboard toast's position says why.
   Cmd-D splits the focused pane vertically (new pane on the right);
   Cmd-Shift-D splits horizontally (new pane below). Cmd-Shift-] / Cmd-Shift-[
   cycles next/previous tab within the current workspace, wrapping at the ends.
@@ -732,10 +758,18 @@ attention can keep the badge visible. This QA setting is not saved.
 - Cmd-Shift-P opens the command palette with native actions and configured daemon
   command entries, including native Themes and Reconnect actions without dedicated
   shortcuts. Cmd-P opens the workspace picker instead.
+- Every native shortcut can be rebound in `config-gpui.local.toml` under
+  `[keybindings]`, keyed by command name (`new_tab`, `new_workspace`,
+  `split_right`, `focus_tab_1`, `quit`, ...). A value is one keystroke or a list;
+  an empty string or list unbinds the command. A keystroke assigned there moves
+  away from its default command, keystrokes need a cmd, ctrl, alt, or fn
+  modifier, and unknown names, unparseable keys, or one key on two configured
+  commands reject the config. Saved changes rebind the keymap and menu bar live.
 - Cmd-B toggles sidebar visibility locally without changing daemon state.
   Cmd-, opens Settings; Cmd-/ opens the grouped native shortcut reference.
   Native shortcut labels and keycaps come from the shared `controls::COMMANDS`
-  catalog, with Cmd-V semantic paste shown separately. Search filters by action,
+  catalog, overridden by the config's `[keybindings]` table, with Cmd-V semantic
+  paste shown separately. Search filters by action,
   section, or key combination. Preferences, keybinds, theme/palette pickers, and
   close confirmations use themed centered modals and configured UI fonts;
   modal input does not reach the terminal.
@@ -930,6 +964,14 @@ rejection, Unicode composition, and headless right-click/input routing.
 sizes, but does not validate OS IME candidate-window delivery or live daemon
 worktree creation/close.
 They do not replace an interactive smoke test against a live daemon.
+
+Selection regressions cover unflagged CJK continuation cells, real spaces,
+partial wide characters, emoji/combining text, popup/pane boundaries, and headless
+mouse-to-clipboard routing. On macOS, `just test-gui /absolute/path/to/herdr`
+also prints CJK text through the isolated daemon, drags forward/backward using
+exact-window native mouse events, checks the OS clipboard, and pastes through
+Cmd-V to verify the UTF-8 bytes returned by the shell. This opt-in test requires
+an active desktop; normal CI compiles it but does not run the native scenario.
 
 Notification policy tests use explicit times for evidence grace, delay changes,
 cross-host arrival order, queue bounds, replacement, promotion lifetimes, and

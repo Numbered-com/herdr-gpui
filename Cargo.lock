@@ -2749,6 +2749,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-segmentation",
+ "unicode-width",
  "ureq",
  "url",
  "zeroize",

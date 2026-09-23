@@ -1,10 +1,11 @@
 use herdr_client::{Method, protocol::ClientShellSnapshot};
 use serde_json::{Value, json};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize)]
 pub enum Command {
     NewWindow,
     Workspace,
+    NewWorktree,
     Tab,
     SplitRight,
     SplitDown,
@@ -38,205 +39,253 @@ pub enum Command {
 
 pub struct CommandInfo {
     pub command: Command,
+    /// The key naming this command in the config file's `[keybindings]`.
+    pub name: &'static str,
     pub label: &'static str,
-    pub shortcut: &'static str,
+    /// Default keystrokes, primary first. The config can replace each list.
+    pub shortcuts: &'static [&'static str],
 }
 
 pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         command: Command::OpenNotificationTarget,
+        name: "open_notification_target",
         label: "Open Notification Target",
-        shortcut: "cmd-alt-n",
+        shortcuts: &["cmd-alt-n"],
     },
     CommandInfo {
         command: Command::Logs,
+        name: "logs",
         label: "GPUI Logs",
-        shortcut: "",
+        shortcuts: &[],
     },
     CommandInfo {
         command: Command::NewWindow,
+        name: "new_window",
         label: "New Window",
-        shortcut: "cmd-shift-n",
+        shortcuts: &["cmd-alt-shift-n"],
     },
     CommandInfo {
         command: Command::Workspace,
+        name: "new_workspace",
         label: "New Workspace",
-        shortcut: "cmd-n",
+        shortcuts: &["cmd-shift-n"],
+    },
+    CommandInfo {
+        command: Command::NewWorktree,
+        name: "new_worktree",
+        label: "New Worktree",
+        shortcuts: &["cmd-n"],
     },
     CommandInfo {
         command: Command::Tab,
+        name: "new_tab",
         label: "New Tab",
-        shortcut: "cmd-t",
+        shortcuts: &["cmd-t"],
     },
     CommandInfo {
         command: Command::SplitRight,
+        name: "split_right",
         label: "Split Right",
-        shortcut: "cmd-d",
+        shortcuts: &["cmd-d"],
     },
     CommandInfo {
         command: Command::SplitDown,
+        name: "split_down",
         label: "Split Down",
-        shortcut: "cmd-shift-d",
+        shortcuts: &["cmd-shift-d"],
     },
     CommandInfo {
         command: Command::NextTab,
+        name: "next_tab",
         label: "Next Tab",
-        shortcut: "cmd-shift-]",
+        shortcuts: &["cmd-shift-]"],
     },
     CommandInfo {
         command: Command::PreviousTab,
+        name: "previous_tab",
         label: "Previous Tab",
-        shortcut: "cmd-shift-[",
+        shortcuts: &["cmd-shift-["],
     },
     CommandInfo {
         command: Command::FocusLeft,
+        name: "focus_left",
         label: "Focus Left",
-        shortcut: "cmd-alt-left",
+        shortcuts: &["cmd-alt-left"],
     },
     CommandInfo {
         command: Command::FocusRight,
+        name: "focus_right",
         label: "Focus Right",
-        shortcut: "cmd-alt-right",
+        shortcuts: &["cmd-alt-right"],
     },
     CommandInfo {
         command: Command::FocusUp,
+        name: "focus_up",
         label: "Focus Up",
-        shortcut: "cmd-alt-up",
+        shortcuts: &["cmd-alt-up"],
     },
     CommandInfo {
         command: Command::FocusDown,
+        name: "focus_down",
         label: "Focus Down",
-        shortcut: "cmd-alt-down",
+        shortcuts: &["cmd-alt-down"],
     },
     CommandInfo {
         command: Command::NextPane,
+        name: "next_pane",
         label: "Next Pane",
-        shortcut: "cmd-alt-]",
+        shortcuts: &["cmd-alt-]"],
     },
     CommandInfo {
         command: Command::PreviousPane,
+        name: "previous_pane",
         label: "Previous Pane",
-        shortcut: "cmd-alt-[",
+        shortcuts: &["cmd-alt-["],
     },
     CommandInfo {
         command: Command::Zoom,
+        name: "toggle_zoom",
         label: "Toggle Pane Zoom",
-        shortcut: "cmd-shift-enter",
+        shortcuts: &["cmd-shift-enter"],
     },
     CommandInfo {
         command: Command::ClosePane,
+        name: "close_pane",
         label: "Close Pane",
-        shortcut: "cmd-w",
+        shortcuts: &["cmd-w"],
     },
     CommandInfo {
         command: Command::CloseTab,
+        name: "close_tab",
         label: "Close Tab",
-        shortcut: "cmd-shift-w",
+        shortcuts: &["cmd-shift-w"],
     },
     CommandInfo {
         command: Command::TabNumber(1),
+        name: "focus_tab_1",
         label: "Focus Tab 1",
-        shortcut: "cmd-1",
+        shortcuts: &["cmd-1"],
     },
     CommandInfo {
         command: Command::TabNumber(2),
+        name: "focus_tab_2",
         label: "Focus Tab 2",
-        shortcut: "cmd-2",
+        shortcuts: &["cmd-2"],
     },
     CommandInfo {
         command: Command::TabNumber(3),
+        name: "focus_tab_3",
         label: "Focus Tab 3",
-        shortcut: "cmd-3",
+        shortcuts: &["cmd-3"],
     },
     CommandInfo {
         command: Command::TabNumber(4),
+        name: "focus_tab_4",
         label: "Focus Tab 4",
-        shortcut: "cmd-4",
+        shortcuts: &["cmd-4"],
     },
     CommandInfo {
         command: Command::TabNumber(5),
+        name: "focus_tab_5",
         label: "Focus Tab 5",
-        shortcut: "cmd-5",
+        shortcuts: &["cmd-5"],
     },
     CommandInfo {
         command: Command::TabNumber(6),
+        name: "focus_tab_6",
         label: "Focus Tab 6",
-        shortcut: "cmd-6",
+        shortcuts: &["cmd-6"],
     },
     CommandInfo {
         command: Command::TabNumber(7),
+        name: "focus_tab_7",
         label: "Focus Tab 7",
-        shortcut: "cmd-7",
+        shortcuts: &["cmd-7"],
     },
     CommandInfo {
         command: Command::TabNumber(8),
+        name: "focus_tab_8",
         label: "Focus Tab 8",
-        shortcut: "cmd-8",
+        shortcuts: &["cmd-8"],
     },
     CommandInfo {
         command: Command::TabNumber(9),
+        name: "focus_tab_9",
         label: "Focus Tab 9",
-        shortcut: "cmd-9",
+        shortcuts: &["cmd-9"],
     },
     CommandInfo {
         command: Command::ToggleSidebar,
+        name: "toggle_sidebar",
         label: "Toggle Sidebar",
-        shortcut: "cmd-b",
+        shortcuts: &["cmd-b"],
     },
     CommandInfo {
         command: Command::IncreaseFontSize,
+        name: "increase_font_size",
         label: "Increase Font Size",
-        shortcut: "cmd-=",
+        shortcuts: &["cmd-=", "cmd-+"],
     },
     CommandInfo {
         command: Command::DecreaseFontSize,
+        name: "decrease_font_size",
         label: "Decrease Font Size",
-        shortcut: "cmd--",
+        shortcuts: &["cmd--"],
     },
     CommandInfo {
         command: Command::ResetFontSize,
+        name: "reset_font_size",
         label: "Reset Font Size",
-        shortcut: "cmd-0",
+        shortcuts: &["cmd-0"],
     },
     CommandInfo {
         command: Command::Settings,
+        name: "settings",
         label: "Settings",
-        shortcut: "cmd-,",
+        shortcuts: &["cmd-,"],
     },
     CommandInfo {
         command: Command::Keybinds,
+        name: "keybindings",
         label: "Keybindings",
-        shortcut: "cmd-/",
+        shortcuts: &["cmd-/"],
     },
     CommandInfo {
         command: Command::Themes,
+        name: "themes",
         label: "Themes",
-        shortcut: "",
+        shortcuts: &[],
     },
     CommandInfo {
         command: Command::WorkspacePicker,
+        name: "workspace_picker",
         label: "Workspace Picker",
-        shortcut: "cmd-p",
+        shortcuts: &["cmd-p"],
     },
     CommandInfo {
         command: Command::Palette,
+        name: "command_palette",
         label: "Command Palette",
-        shortcut: "cmd-shift-p",
+        shortcuts: &["cmd-shift-p"],
     },
     CommandInfo {
         command: Command::Reconnect,
+        name: "reconnect",
         label: "Reconnect",
-        shortcut: "",
+        shortcuts: &[],
     },
     CommandInfo {
         command: Command::Quit,
+        name: "quit",
         label: "Quit",
-        shortcut: "cmd-q",
+        shortcuts: &["cmd-q"],
     },
     CommandInfo {
         command: Command::About,
+        name: "about",
         label: "About Herdr",
-        shortcut: "",
+        shortcuts: &[],
     },
 ];
 
@@ -337,6 +386,7 @@ pub fn request(command: Command, snapshot: &ClientShellSnapshot) -> Option<(Meth
             (Method::TabFocus, json!({"tab_id": target.tab_id}))
         }
         Command::NewWindow
+        | Command::NewWorktree
         | Command::ToggleSidebar
         | Command::IncreaseFontSize
         | Command::DecreaseFontSize
@@ -369,63 +419,64 @@ mod tests {
     #[test]
     fn catalog_has_all_native_commands_and_gpui_shortcuts() {
         use Command::*;
-        let expected = [
-            (OpenNotificationTarget, "cmd-alt-n"),
-            (Logs, ""),
-            (NewWindow, "cmd-shift-n"),
-            (Workspace, "cmd-n"),
-            (Tab, "cmd-t"),
-            (SplitRight, "cmd-d"),
-            (SplitDown, "cmd-shift-d"),
-            (NextTab, "cmd-shift-]"),
-            (PreviousTab, "cmd-shift-["),
-            (FocusLeft, "cmd-alt-left"),
-            (FocusRight, "cmd-alt-right"),
-            (FocusUp, "cmd-alt-up"),
-            (FocusDown, "cmd-alt-down"),
-            (NextPane, "cmd-alt-]"),
-            (PreviousPane, "cmd-alt-["),
-            (Zoom, "cmd-shift-enter"),
-            (ClosePane, "cmd-w"),
-            (CloseTab, "cmd-shift-w"),
-            (TabNumber(1), "cmd-1"),
-            (TabNumber(2), "cmd-2"),
-            (TabNumber(3), "cmd-3"),
-            (TabNumber(4), "cmd-4"),
-            (TabNumber(5), "cmd-5"),
-            (TabNumber(6), "cmd-6"),
-            (TabNumber(7), "cmd-7"),
-            (TabNumber(8), "cmd-8"),
-            (TabNumber(9), "cmd-9"),
-            (ToggleSidebar, "cmd-b"),
-            (IncreaseFontSize, "cmd-="),
-            (DecreaseFontSize, "cmd--"),
-            (ResetFontSize, "cmd-0"),
-            (Settings, "cmd-,"),
-            (Keybinds, "cmd-/"),
-            (Themes, ""),
-            (WorkspacePicker, "cmd-p"),
-            (Palette, "cmd-shift-p"),
-            (Reconnect, ""),
-            (Quit, "cmd-q"),
-            (About, ""),
+        let expected: [(Command, &[&str]); 40] = [
+            (OpenNotificationTarget, &["cmd-alt-n"]),
+            (Logs, &[]),
+            (NewWindow, &["cmd-alt-shift-n"]),
+            (Workspace, &["cmd-shift-n"]),
+            (NewWorktree, &["cmd-n"]),
+            (Tab, &["cmd-t"]),
+            (SplitRight, &["cmd-d"]),
+            (SplitDown, &["cmd-shift-d"]),
+            (NextTab, &["cmd-shift-]"]),
+            (PreviousTab, &["cmd-shift-["]),
+            (FocusLeft, &["cmd-alt-left"]),
+            (FocusRight, &["cmd-alt-right"]),
+            (FocusUp, &["cmd-alt-up"]),
+            (FocusDown, &["cmd-alt-down"]),
+            (NextPane, &["cmd-alt-]"]),
+            (PreviousPane, &["cmd-alt-["]),
+            (Zoom, &["cmd-shift-enter"]),
+            (ClosePane, &["cmd-w"]),
+            (CloseTab, &["cmd-shift-w"]),
+            (TabNumber(1), &["cmd-1"]),
+            (TabNumber(2), &["cmd-2"]),
+            (TabNumber(3), &["cmd-3"]),
+            (TabNumber(4), &["cmd-4"]),
+            (TabNumber(5), &["cmd-5"]),
+            (TabNumber(6), &["cmd-6"]),
+            (TabNumber(7), &["cmd-7"]),
+            (TabNumber(8), &["cmd-8"]),
+            (TabNumber(9), &["cmd-9"]),
+            (ToggleSidebar, &["cmd-b"]),
+            (IncreaseFontSize, &["cmd-=", "cmd-+"]),
+            (DecreaseFontSize, &["cmd--"]),
+            (ResetFontSize, &["cmd-0"]),
+            (Settings, &["cmd-,"]),
+            (Keybinds, &["cmd-/"]),
+            (Themes, &[]),
+            (WorkspacePicker, &["cmd-p"]),
+            (Palette, &["cmd-shift-p"]),
+            (Reconnect, &[]),
+            (Quit, &["cmd-q"]),
+            (About, &[]),
         ];
         assert_eq!(COMMANDS.len(), expected.len());
-        let shortcuts: std::collections::HashSet<_> = COMMANDS
-            .iter()
-            .filter(|info| !info.shortcut.is_empty())
-            .map(|info| info.shortcut)
-            .collect();
+        let shortcuts: std::collections::HashSet<_> =
+            COMMANDS.iter().flat_map(|info| info.shortcuts).collect();
         assert_eq!(
             shortcuts.len(),
             COMMANDS
                 .iter()
-                .filter(|info| !info.shortcut.is_empty())
-                .count()
+                .map(|info| info.shortcuts.len())
+                .sum::<usize>()
         );
-        for (info, (command, shortcut)) in COMMANDS.iter().zip(expected) {
+        let names: std::collections::HashSet<_> = COMMANDS.iter().map(|info| info.name).collect();
+        assert_eq!(names.len(), COMMANDS.len());
+        for (info, (command, shortcuts)) in COMMANDS.iter().zip(expected) {
             assert_eq!(info.command, command);
-            assert_eq!(info.shortcut, shortcut);
+            assert_eq!(info.shortcuts, shortcuts);
+            assert!(!info.name.is_empty());
             assert!(!info.label.is_empty());
             let value = match command {
                 TabNumber(number) => json!({"TabNumber": number}),
@@ -440,10 +491,10 @@ mod tests {
     /// keystroke would fail at startup rather than here.
     #[test]
     fn every_catalog_shortcut_parses_as_a_keystroke() {
-        for info in COMMANDS.iter().filter(|info| !info.shortcut.is_empty()) {
-            let keystroke = gpui::Keystroke::parse(info.shortcut)
-                .unwrap_or_else(|error| panic!("{}: {error}", info.shortcut));
-            assert!(keystroke.modifiers.platform, "{}", info.shortcut);
+        for shortcut in COMMANDS.iter().flat_map(|info| info.shortcuts) {
+            let keystroke = gpui::Keystroke::parse(shortcut)
+                .unwrap_or_else(|error| panic!("{shortcut}: {error}"));
+            assert!(keystroke.modifiers.platform, "{shortcut}");
         }
         let minus = gpui::Keystroke::parse("cmd--").unwrap();
         assert_eq!(minus.key, "-");
@@ -457,6 +508,7 @@ mod tests {
             Command::OpenNotificationTarget,
             Command::Logs,
             Command::NewWindow,
+            Command::NewWorktree,
             Command::ToggleSidebar,
             Command::IncreaseFontSize,
             Command::DecreaseFontSize,

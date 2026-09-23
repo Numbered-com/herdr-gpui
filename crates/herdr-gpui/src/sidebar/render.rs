@@ -219,6 +219,15 @@ impl HerdrWindow {
                         first_text([workspace.branch.as_deref()], ""),
                         RowKind::Workspace,
                         workspace.agent_status,
+                        selected
+                            && self.live.status.is_connected()
+                            && self.removal.as_ref().is_some_and(|removal| {
+                                removal.pending_for(
+                                    (self.selection_epoch, endpoint.generation),
+                                    &snapshot.boot_id,
+                                    &workspace.workspace_id,
+                                )
+                            }),
                         selected && workspace.focused,
                         tree,
                         reserve_arrow,
@@ -350,6 +359,7 @@ impl HerdrWindow {
                         detail,
                         RowKind::Agent,
                         agent.agent_status,
+                        false,
                         selected && agent.focused,
                         RowTree::None,
                         false,
@@ -380,7 +390,17 @@ impl HerdrWindow {
             if self.sidebar_revealed[list].get() != Some(row)
                 && self.sidebar_scroll[list].bounds().size.height > px(0.)
             {
-                self.sidebar_scroll[list].scroll_to_item(row);
+                let scroll = &self.sidebar_scroll[list];
+                let visible = scroll.bounds_for_item(row).is_some_and(|bounds| {
+                    let offset = scroll.offset().y;
+                    bounds.bottom() + offset > scroll.bounds().top()
+                        && bounds.top() + offset < scroll.bounds().bottom()
+                });
+                // Even a partially visible worktree is already seen. GPUI's
+                // reveal also moves clipped rows, so only request it off-screen.
+                if !visible {
+                    scroll.scroll_to_item(row);
+                }
                 self.sidebar_revealed[list].set(Some(row));
             }
         }

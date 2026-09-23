@@ -24,6 +24,7 @@ mod git;
 mod github;
 mod icons;
 mod input;
+mod keymap;
 mod log_window;
 mod menu;
 mod menus;

@@ -277,6 +277,48 @@ impl HerdrWindow {
         }
     }
 
+    fn render_git_summary(&self) -> Div {
+        let theme = &self.theme;
+        let row = div()
+            .debug_selector(|| "git-menu-summary".into())
+            .px(px(8.))
+            .pb(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .text_color(rgb(theme.muted));
+        let Some(status) = self.git.status().filter(|status| status.dirty()) else {
+            return row.child(summary(self.git.status()));
+        };
+        row.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child("Not yet committed")
+                .when(status.untracked > 0, |label| {
+                    label.child(format!(" ({} untracked)", status.untracked))
+                }),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .debug_selector(|| "git-menu-uncommitted-additions".into())
+                        .text_color(rgb(theme.palette[2]))
+                        .child(format!("+{}", crate::sidebar::compact(status.additions))),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "git-menu-uncommitted-deletions".into())
+                        .text_color(rgb(theme.palette[1]))
+                        .child(format!("-{}", crate::sidebar::compact(status.deletions))),
+                ),
+        )
+    }
+
     pub(super) fn render_git_menu(&self, cx: &mut Context<Self>) -> Div {
         let theme = &self.theme;
         let font = &self.config.ui;
@@ -287,32 +329,65 @@ impl HerdrWindow {
                     .debug_selector(|| "git-menu-branch".into())
                     .px(px(8.))
                     .pt(px(4.))
+                    .pb(px(8.))
+                    .text_color(rgb(theme.muted))
                     .truncate()
                     .child(input.branch.clone()),
             );
         }
         if let Some(pr) = self.git_pull_request() {
+            let url = pr.url.clone();
+            panel = panel.child(
+                div()
+                    .id("git-menu-pr-title")
+                    .debug_selector(|| "git-menu-pr-title".into())
+                    .px(px(8.))
+                    .py(px(6.))
+                    .mb(px(4.))
+                    .rounded(px(4.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .cursor_pointer()
+                    .hover(|link| link.bg(rgb(theme.active)))
+                    .child(pr.title.clone())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        cx.open_url(&url);
+                        this.dismiss_menu(window, cx);
+                    })),
+            );
             panel = panel.child(
                 div()
                     .debug_selector(|| "git-menu-pr".into())
                     .px(px(8.))
+                    .pb(px(10.))
                     .flex()
-                    .gap(px(6.))
+                    .items_center()
+                    .gap(px(8.))
                     .child(
                         div()
                             .text_color(rgb(pr.color(theme)))
                             .child(format!("#{}", pr.number)),
                     )
-                    .child(div().text_color(rgb(theme.muted)).child(pr.lifecycle()))
                     .child(
                         div()
+                            .px(px(6.))
+                            .py(px(2.))
+                            .rounded(px(4.))
+                            .bg(rgb(theme.active))
+                            .text_color(rgb(pr.color(theme)))
+                            .child(pr.lifecycle()),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .debug_selector(|| "git-menu-pr-counts".into())
                             .flex()
                             .child(
                                 div()
                                     .text_color(rgb(theme.palette[2]))
                                     .child(format!("+{}", crate::sidebar::compact(pr.additions))),
                             )
-                            .child(div().text_color(rgb(theme.muted)).child("/"))
+                            .gap(px(6.))
                             .child(
                                 div()
                                     .text_color(rgb(theme.palette[1]))
@@ -320,11 +395,13 @@ impl HerdrWindow {
                             ),
                     ),
             );
+            panel = panel.child(self.render_git_summary());
             if pr.state == PrState::Open {
                 panel = panel.child(
                     div()
                         .debug_selector(|| "git-menu-pr-readiness".into())
                         .px(px(8.))
+                        .pb(px(8.))
                         .child(if pr.is_draft {
                             "Draft — not ready for review"
                         } else {
@@ -332,30 +409,37 @@ impl HerdrWindow {
                         }),
                 );
             }
-            for (selector, label) in [
-                ("git-menu-pr-review", pr.review().to_owned()),
-                ("git-menu-pr-merge", pr.merge_status().to_owned()),
-                (
-                    "git-menu-pr-checks",
-                    format!("Checks: {}", pr.checks_summary),
-                ),
+            for (selector, heading, label) in [
+                ("git-menu-pr-review", "Review", pr.review().to_owned()),
+                ("git-menu-pr-merge", "Merge", pr.merge_status().to_owned()),
+                ("git-menu-pr-checks", "Checks", pr.checks_summary.clone()),
             ] {
                 panel = panel.child(
                     div()
                         .debug_selector(move || selector.into())
                         .px(px(8.))
-                        .text_color(rgb(theme.muted))
-                        .child(label),
+                        .pb(px(6.))
+                        .flex()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .w(px(48.))
+                                .flex_none()
+                                .text_color(rgb(theme.muted))
+                                .child(heading),
+                        )
+                        .child(div().flex_1().min_w_0().child(label)),
                 );
             }
+        } else {
+            panel = panel.child(self.render_git_summary());
         }
         panel = panel.child(
             div()
-                .debug_selector(|| "git-menu-summary".into())
-                .px(px(8.))
-                .pb(px(4.))
-                .text_color(rgb(theme.muted))
-                .child(summary(self.git.status())),
+                .mt(px(4.))
+                .mb(px(4.))
+                .border_t_1()
+                .border_color(rgb(theme.active)),
         );
         let running = self.git.running().is_some();
         for (row, label) in self.git_rows() {
@@ -660,7 +744,7 @@ mod tests {
         };
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
-                view.git = crate::git::Git::fixture(input.clone(), status(0, 0, 0));
+                view.git = crate::git::Git::fixture(input.clone(), status(146, 42, 0));
                 assert!(
                     view.git_pull_request().is_none(),
                     "a signed-out client shows no pull request"
@@ -683,14 +767,20 @@ mod tests {
             let _ = window.draw(cx);
         });
         assert!(cx.debug_bounds("git-menu-pr").is_some());
-        for width in [1200., 360.] {
-            cx.simulate_resize(size(px(width), px(600.)));
+        for (width, height) in [(1200., 600.), (360., 600.), (360., 400.)] {
+            cx.simulate_resize(size(px(width), px(height)));
             cx.update(|window, cx| {
                 window.refresh();
                 let _ = window.draw(cx);
             });
             let panel = cx.debug_bounds("menu-panel").unwrap();
+            let chrome = crate::titlebar::HEIGHT
+                + crate::worktree_banner::reserved(env!("HERDR_BUILD_WORKTREE") == "1");
+            assert!(panel.top() >= px(chrome + 6.));
+            assert!(panel.bottom() <= px(height - 12.));
+            assert!(panel.left() >= px(12.) && panel.right() <= px(width - 12.));
             for selector in [
+                "git-menu-pr-title",
                 "git-menu-pr-readiness",
                 "git-menu-pr-review",
                 "git-menu-pr-merge",
@@ -701,7 +791,28 @@ mod tests {
                 assert!(row.left() >= panel.left() && row.right() <= panel.right());
                 assert!(row.top() >= panel.top() && row.bottom() <= panel.bottom());
             }
+            let title = cx.debug_bounds("git-menu-pr-title").unwrap();
+            let identity = cx.debug_bounds("git-menu-pr").unwrap();
+            let summary = cx.debug_bounds("git-menu-summary").unwrap();
+            let action = cx.debug_bounds("git-menu-Commit...").unwrap();
+            assert!(title.bottom() <= identity.top());
+            assert!(identity.bottom() <= summary.top());
+            assert!(summary.bottom() <= cx.debug_bounds("git-menu-pr-readiness").unwrap().top());
+            let pr_counts = cx.debug_bounds("git-menu-pr-counts").unwrap();
+            let additions = cx.debug_bounds("git-menu-uncommitted-additions").unwrap();
+            let deletions = cx.debug_bounds("git-menu-uncommitted-deletions").unwrap();
+            assert_eq!(pr_counts.right(), deletions.right());
+            assert!(additions.right() < deletions.left());
+            assert!(additions.top() >= summary.top() && additions.bottom() <= summary.bottom());
+            assert!(summary.bottom() <= action.top());
         }
+        let title = cx.debug_bounds("git-menu-pr-title").unwrap();
+        cx.simulate_click(title.center(), Default::default());
+        assert_eq!(
+            cx.opened_url(),
+            Some(crate::pull_request::fixture().unwrap().url)
+        );
+        cx.update(|_, cx| assert_eq!(view.read(cx).menu.page, None));
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 view.dismiss_menu(window, cx);

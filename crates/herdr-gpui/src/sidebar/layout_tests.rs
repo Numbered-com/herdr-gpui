@@ -304,7 +304,8 @@ struct SidebarFixture(Entity<HerdrWindow>);
 fn native_child_probe_reports_geometry_and_glyph_failures_without_panicking() {
     use crate::config::LayoutMode;
     for (mode, left, width) in [
-        (LayoutMode::Normal, 56., 145.),
+        (LayoutMode::Comfortable, 56., 145.),
+        (LayoutMode::Normal, 44., 161.),
         (LayoutMode::Compact, 38., 169.),
     ] {
         let bounds = Bounds::new(point(px(left), px(100.)), size(px(width), px(16.)));
@@ -436,9 +437,7 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn compact_sidebar_hides_branches_and_keeps_badges_inside_single_line_rows(
-    cx: &mut gpui::TestAppContext,
-) {
+fn sidebar_densities_keep_details_and_badges_within_their_rows(cx: &mut gpui::TestAppContext) {
     use crate::config::LayoutMode;
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut view = fixture_window(window, cx);
@@ -461,9 +460,14 @@ fn compact_sidebar_hides_branches_and_keeps_badges_inside_single_line_rows(
     cx.run_until_parked();
     for font_size in [12., 18.] {
         for width in [160., 232.] {
-            // Return to normal too: config reload must restore details and spacing.
-            for mode in [LayoutMode::Compact, LayoutMode::Normal] {
+            // Switching density must restore the corresponding details and spacing.
+            for mode in [
+                LayoutMode::Compact,
+                LayoutMode::Normal,
+                LayoutMode::Comfortable,
+            ] {
                 let compact = mode == LayoutMode::Compact;
+                let comfortable = mode == LayoutMode::Comfortable;
                 view.update(cx, |view, cx| {
                     view.config.layout.mode = mode;
                     view.config.sidebar.size = font_size;
@@ -475,15 +479,21 @@ fn compact_sidebar_hides_branches_and_keeps_badges_inside_single_line_rows(
                     window.refresh();
                     window.draw(cx).clear();
                     let probes = &cx.global::<TextProbes>().0;
-                    for text in ["main", "worktree/sidebar-child", "+234", "-567"] {
-                        assert_eq!(probes.contains_key(text), !compact, "{text}");
+                    assert_eq!(probes.contains_key("main"), !compact);
+                    for text in ["worktree/sidebar-child", "+234", "-567"] {
+                        assert_eq!(probes.contains_key(text), comfortable, "{text}");
                     }
                     for text in ["Claude Code", "#7"] {
                         assert!(probes.contains_key(text), "{text}");
                     }
                 });
                 let line = font_size * 4. / 3.;
-                let padding = if compact { 6. } else { 12. };
+                let padding = match mode {
+                    LayoutMode::Compact => 6.,
+                    LayoutMode::Normal => 8.,
+                    LayoutMode::Comfortable => 12.,
+                };
+                let vertical_padding = if comfortable { 4. } else { 0. };
                 for (row, name, detail) in [
                     ("row-herdr", "name-herdr", "detail-herdr"),
                     (
@@ -497,23 +507,21 @@ fn compact_sidebar_hides_branches_and_keeps_badges_inside_single_line_rows(
                         "detail-sidebar-child",
                     ),
                 ] {
+                    let show_detail = !compact && (comfortable || row != "row-sidebar-child");
                     let row = cx.debug_bounds(row).unwrap();
                     let name = cx.debug_bounds(name).unwrap();
                     assert_eq!(
                         row.size.height,
-                        px(if compact { line } else { 2. * line + 8. })
+                        px(line * if show_detail { 2. } else { 1. } + 2. * vertical_padding)
                     );
-                    assert_eq!(name.top(), row.top() + px(if compact { 0. } else { 4. }));
+                    assert_eq!(name.top(), row.top() + px(vertical_padding));
                     assert!(name.right() <= row.right() - px(padding));
-                    if !compact {
+                    if show_detail {
                         assert!(cx.debug_bounds(detail).is_some());
                     }
                 }
                 let agent = cx.debug_bounds("row-agent-p0").unwrap();
-                assert_eq!(
-                    agent.size.height,
-                    px(2. * line + if compact { 0. } else { 8. })
-                );
+                assert_eq!(agent.size.height, px(2. * line + 2. * vertical_padding));
                 assert!(cx.debug_bounds("detail-agent-p0").is_some());
                 let row = cx.debug_bounds("row-sidebar-child").unwrap();
                 let badge = cx.debug_bounds("pr-sidebar-child").unwrap();
@@ -625,9 +633,17 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         update_preview: None,
         removal: None,
         selection: None,
-        copy_feedback: None,
+        flash: None,
         configured_terminal_size: crate::config::Config::default().terminal.size,
-        config: Default::default(),
+        // Keep the original geometry fixture explicit; density-switching tests
+        // above exercise all three modes independently of the default.
+        config: crate::config::Config {
+            layout: crate::config::Layout {
+                mode: crate::config::LayoutMode::Comfortable,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
         theme: Default::default(),
         config_load: None,
         config_watch: None,
@@ -1863,6 +1879,46 @@ fn the_sidebar_follows_the_selection_without_undoing_manual_scrolling(
         assert!(row.top() + offset >= spaces.bounds().top(), "{row:?}");
         assert!(row.bottom() + offset <= spaces.bounds().bottom(), "{row:?}");
     });
+
+    // Selecting a visible neighbor must not move the list. A selection above or
+    // below the viewport should land at the nearest edge, not always the bottom.
+    for (id, row, edge) in [
+        ("w19", 19, None),
+        ("w0", 0, Some(false)),
+        ("w4", 4, None),
+        ("w5", 5, None),
+        ("w30", 30, Some(true)),
+        ("w4", 4, Some(false)),
+        ("w5", 5, None),
+    ] {
+        let before = cx.update(|_, cx| view.read(cx).sidebar_scroll[0].offset());
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                let snapshot = Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+                snapshot.focused_workspace_id = Some(id.into());
+                for workspace in &mut snapshot.workspaces {
+                    workspace.focused = workspace.workspace_id == id;
+                }
+                cx.notify();
+            });
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear();
+        });
+        cx.update(|_, cx| {
+            let spaces = &view.read(cx).sidebar_scroll[0];
+            let bounds = spaces.bounds_for_item(row).unwrap();
+            match edge {
+                None => assert_eq!(spaces.offset(), before, "visible {id} must not scroll"),
+                Some(false) => assert_eq!(bounds.top() + spaces.offset().y, spaces.bounds().top()),
+                Some(true) => assert_eq!(
+                    bounds.bottom() + spaces.offset().y,
+                    spaces.bounds().bottom()
+                ),
+            }
+        });
+    }
 }
 
 #[gpui::test]
@@ -2004,6 +2060,8 @@ fn worktree_rows_mark_uncommitted_work(cx: &mut gpui::TestAppContext) {
     let row = cx.debug_bounds("row-sidebar-child").unwrap();
     let badge = cx.debug_bounds("pr-sidebar-child").unwrap();
     let dot = cx.debug_bounds("dirty-sidebar-child").unwrap();
+    assert_eq!(dot.size.width, px(16.));
+    assert_eq!(dot.size.height, px(16.));
     // The mark leads the badge column, still flush against the row's edge.
     assert!(badge.left() <= dot.left() && dot.right() <= badge.right());
     assert_eq!(badge.right(), row.right() - px(12.));

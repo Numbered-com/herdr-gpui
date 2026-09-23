@@ -12,6 +12,7 @@ mod pr;
 mod settings;
 mod state;
 mod workspace;
+mod workspace_close;
 mod worktree_open;
 mod worktree_render;
 mod worktree_source;

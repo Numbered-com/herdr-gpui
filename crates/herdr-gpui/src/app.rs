@@ -284,7 +284,11 @@ mod tests {
     #[cfg(feature = "integration-test")]
     #[gpui::test]
     fn first_window_frame_uses_startup_layout(cx: &mut gpui::TestAppContext) {
-        for mode in [LayoutMode::Compact, LayoutMode::Normal] {
+        for mode in [
+            LayoutMode::Compact,
+            LayoutMode::Normal,
+            LayoutMode::Comfortable,
+        ] {
             let (view, cx) = cx.add_window_view(|window, cx| {
                 let mut appearance = InitialAppearance::load(|| {
                     Ok(Config {
@@ -314,10 +318,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing first-frame row"));
             assert_eq!(
                 row.size.height,
-                px(if mode == LayoutMode::Compact {
-                    16.
-                } else {
-                    40.
+                px(match mode {
+                    LayoutMode::Compact => 16.,
+                    LayoutMode::Normal => 32.,
+                    LayoutMode::Comfortable => 40.,
                 })
             );
         }

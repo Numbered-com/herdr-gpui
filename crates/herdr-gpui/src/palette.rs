@@ -178,7 +178,7 @@ impl HerdrWindow {
                     .filter(|info| info.command != Command::Palette)
                     .map(|info| Entry {
                         label: info.label.into(),
-                        detail: info.shortcut.into(),
+                        detail: self.config.keybindings.primary(info.command).into(),
                         badge: "",
                         action: Action::Native(info.command),
                     }),
