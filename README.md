@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icons/herdr-ui-icon-clean.png" alt="Herdr ram on a simple ivory tile" width="160" height="160">
+  <img src="assets/icons/herdr-ui-icon-badge.png" alt="Herdr ram on a simple ivory tile with a red notification badge showing 1" width="176" height="176">
 </p>
 
 <h1 align="center">Herdr GPUI</h1>
