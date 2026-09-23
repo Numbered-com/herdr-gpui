@@ -1861,6 +1861,46 @@ fn the_sidebar_follows_the_selection_without_undoing_manual_scrolling(
         assert!(row.top() + offset >= spaces.bounds().top(), "{row:?}");
         assert!(row.bottom() + offset <= spaces.bounds().bottom(), "{row:?}");
     });
+
+    // Selecting a visible neighbor must not move the list. A selection above or
+    // below the viewport should land at the nearest edge, not always the bottom.
+    for (id, row, edge) in [
+        ("w19", 19, None),
+        ("w0", 0, Some(false)),
+        ("w4", 4, None),
+        ("w5", 5, None),
+        ("w30", 30, Some(true)),
+        ("w4", 4, Some(false)),
+        ("w5", 5, None),
+    ] {
+        let before = cx.update(|_, cx| view.read(cx).sidebar_scroll[0].offset());
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                let snapshot = Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+                snapshot.focused_workspace_id = Some(id.into());
+                for workspace in &mut snapshot.workspaces {
+                    workspace.focused = workspace.workspace_id == id;
+                }
+                cx.notify();
+            });
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear();
+        });
+        cx.update(|_, cx| {
+            let spaces = &view.read(cx).sidebar_scroll[0];
+            let bounds = spaces.bounds_for_item(row).unwrap();
+            match edge {
+                None => assert_eq!(spaces.offset(), before, "visible {id} must not scroll"),
+                Some(false) => assert_eq!(bounds.top() + spaces.offset().y, spaces.bounds().top()),
+                Some(true) => assert_eq!(
+                    bounds.bottom() + spaces.offset().y,
+                    spaces.bounds().bottom()
+                ),
+            }
+        });
+    }
 }
 
 #[gpui::test]
