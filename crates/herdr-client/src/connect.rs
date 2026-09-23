@@ -115,6 +115,7 @@ pub fn connect_with_connector(
                 commands,
                 stop,
                 next_request: AtomicU64::new(1),
+                image_busy: Arc::new(AtomicBool::new(false)),
             }),
         },
         events,

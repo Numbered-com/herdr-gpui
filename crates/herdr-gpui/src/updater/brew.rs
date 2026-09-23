@@ -173,6 +173,10 @@ fn run(
     cancel: Option<&AtomicBool>,
     mut progress: impl FnMut(String),
 ) -> Result<Vec<String>> {
+    if deadline.is_zero() {
+        return Err(Error::BrewTimeout);
+    }
+    let start = Instant::now();
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -199,7 +203,6 @@ fn run(
         });
     }
     drop(sender);
-    let start = Instant::now();
     // Only the tail is retained: Homebrew output is unbounded, diagnostics are not.
     let mut tail: Vec<String> = Vec::new();
     // What ended the run, not yet why: a failure's detail is the last line the
@@ -273,10 +276,10 @@ enum Ended {
 }
 
 /// The version Homebrew currently records as installed for the cask.
-pub(super) fn installed(cask: &Cask) -> Result<String> {
+fn installed(cask: &Cask, timeout: Duration) -> Result<String> {
     let mut command = command(cask);
     command.args(["list", "--cask", "--versions", TOKEN]);
-    let lines = run(command, QUERY, None, |_| ())?;
+    let lines = run(command, timeout.min(QUERY), None, |_| ())?;
     lines
         .iter()
         .rev()
@@ -290,39 +293,64 @@ pub(super) fn installed(cask: &Cask) -> Result<String> {
         .ok_or(Error::BrewVersion)
 }
 
-/// Upgrade through Homebrew and confirm it really installed something newer.
+/// Upgrade through Homebrew and confirm it reached at least the offered release
+/// and is newer than the running app. Refresh stale metadata and retry once.
 ///
 /// Homebrew is not interrupted once it starts, so cancellation is only honoured
-/// before the process is spawned.
+/// before the first mutation is spawned. All attempts share one time budget.
 pub(super) fn upgrade(
     cask: &Cask,
     current: &str,
+    expected: &str,
     cancel: &AtomicBool,
     mut progress: impl FnMut(String),
 ) -> Result<String> {
     if cancel.load(Ordering::Acquire) {
         return Err(Error::Cancelled);
     }
-    let mut command = command(cask);
-    // The tap has to be refreshed, or Homebrew cannot know about the release
-    // yet; auto-update is therefore deliberately left enabled.
-    command.args(["upgrade", "--cask", TOKEN]);
-    progress("Asking Homebrew to upgrade the cask...".to_owned());
-    run(command, UPGRADE, None, &mut progress)?;
-    let installed = installed(cask)?;
-    let (Some(new), Some(old)) = (
-        release::parse_version(&installed),
-        release::parse_version(current),
-    ) else {
-        return Err(Error::BrewVersion);
-    };
-    // Homebrew succeeds and changes nothing when the tap still points at the
-    // running version: the release exists on GitHub but the cask is not updated
-    // yet. Reporting that as an installed update would be a lie.
-    if new <= old {
-        return Err(Error::BrewStale(installed));
+    let old = release::parse_version(current).ok_or(Error::CurrentVersion)?;
+    let offered = release::parse_version(expected).ok_or(Error::ReleaseVersion)?;
+    let start = Instant::now();
+    let remaining = || UPGRADE.saturating_sub(start.elapsed());
+    let mut refreshed = false;
+    loop {
+        progress(if refreshed {
+            "Retrying Homebrew cask upgrade after refresh...".to_owned()
+        } else {
+            "Asking Homebrew to upgrade the cask...".to_owned()
+        });
+        if !refreshed && cancel.load(Ordering::Acquire) {
+            return Err(Error::Cancelled);
+        }
+        let mut upgrade = command(cask);
+        // Keep the initial auto-update enabled. On retry the explicit refresh
+        // has already run, so do not ask Homebrew to refresh a second time.
+        if refreshed {
+            upgrade.env("HOMEBREW_NO_AUTO_UPDATE", "1");
+        }
+        upgrade.args(["upgrade", "--cask", TOKEN]);
+        run(upgrade, remaining(), None, &mut progress)?;
+        progress("Checking the installed Homebrew cask version...".to_owned());
+        let installed = installed(cask, remaining())?;
+        let new = release::parse_version(&installed).ok_or(Error::BrewVersion)?;
+        if new > old && new >= offered {
+            return Ok(installed);
+        }
+        if refreshed {
+            return Err(Error::BrewStale {
+                installed,
+                current: current.to_owned(),
+                expected: expected.to_owned(),
+            });
+        }
+        // A successful upgrade can still use cached metadata or a tap that has
+        // not published the offer yet. Command failures never reach this retry.
+        progress("Refreshing Homebrew metadata with brew update...".to_owned());
+        let mut update = command(cask);
+        update.arg("update");
+        run(update, remaining(), None, &mut progress)?;
+        refreshed = true;
     }
-    Ok(installed)
 }
 
 /// Start the upgraded app, leaving the caller to quit once it is up. `open -n`
@@ -396,7 +424,18 @@ mod tests {
 
     fn cask(script: &str, root: &Path) -> anyhow::Result<Cask> {
         let brew = root.join("brew");
-        fs::write(&brew, script)?;
+        // Write in a single-threaded child: a concurrent test's fork must not
+        // inherit a writable handle to this executable (Linux ETXTBSY).
+        let status = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "printf '%s' \"$1\" > \"$2\"",
+                "write-brew-fixture",
+                script,
+            ])
+            .arg(&brew)
+            .status()?;
+        anyhow::ensure!(status.success(), "writing brew fixture failed: {status}");
         fs::set_permissions(&brew, fs::Permissions::from_mode(0o755))?;
         Ok(Cask {
             brew,
@@ -418,7 +457,7 @@ mod tests {
         );
         let uid = super::super::install::effective_uid()?;
         let cask = detect(&bundle, uid).context("Homebrew does not own this bundle")?;
-        let version = installed(&cask)?;
+        let version = installed(&cask, QUERY)?;
         assert!(
             release::parse_version(&version).is_some(),
             "{version} is a release version"
@@ -444,7 +483,7 @@ mod tests {
     // sweep it up; `just test-brew-upgrade` runs it on purpose.
     #[cfg(target_os = "macos")]
     #[test]
-    #[ignore = "upgrades the installed app; set HERDR_TEST_BREW_UPGRADE and HERDR_TEST_BUNDLE"]
+    #[ignore = "upgrades the installed app; set HERDR_TEST_BREW_UPGRADE, HERDR_TEST_BUNDLE and HERDR_TEST_BREW_EXPECTED"]
     fn homebrew_really_installs_a_newer_release() -> anyhow::Result<()> {
         let bundle = PathBuf::from(
             env::var_os("HERDR_TEST_BUNDLE")
@@ -452,12 +491,14 @@ mod tests {
         );
         env::var_os("HERDR_TEST_BREW_UPGRADE")
             .context("set HERDR_TEST_BREW_UPGRADE=1 to really upgrade this installation")?;
+        let expected = env::var("HERDR_TEST_BREW_EXPECTED")
+            .context("set HERDR_TEST_BREW_EXPECTED to the offered YYYYMMDD.COUNTER release")?;
         let uid = super::super::install::effective_uid()?;
         let cask = detect(&bundle, uid).context("Homebrew does not own this bundle")?;
-        let before = installed(&cask)?;
+        let before = installed(&cask, QUERY)?;
         let cancel = AtomicBool::new(false);
         let mut lines = 0;
-        let after = upgrade(&cask, &before, &cancel, |line| {
+        let after = upgrade(&cask, &before, &expected, &cancel, |line| {
             lines += 1;
             println!("{line}");
         })?;
@@ -466,14 +507,19 @@ mod tests {
             release::parse_version(&after) > release::parse_version(&before),
             "{before} -> {after}"
         );
-        assert_eq!(installed(&cask)?, after, "Homebrew records the new version");
+        assert!(release::parse_version(&after) >= release::parse_version(&expected));
+        assert_eq!(
+            installed(&cask, QUERY)?,
+            after,
+            "Homebrew records the new version"
+        );
         // Homebrew owns the same bundle afterwards, so the next check still
         // delegates instead of falling back to replacing a managed install.
         assert!(detect(&bundle, uid).is_some());
         // Running it again cannot claim a second update.
         assert!(matches!(
-            upgrade(&cask, &after, &cancel, |_| ()),
-            Err(Error::BrewStale(version)) if version == after
+            upgrade(&cask, &after, &expected, &cancel, |_| ()),
+            Err(Error::BrewStale { installed, .. }) if installed == after
         ));
         Ok(())
     }
@@ -548,7 +594,7 @@ mod tests {
             Err(Error::Cancelled)
         ));
         assert!(matches!(
-            upgrade(&slow, "20260921.1", &cancel, |_| ()),
+            upgrade(&slow, "20260921.1", "20260921.2", &cancel, |_| ()),
             Err(Error::Cancelled)
         ));
 
@@ -556,32 +602,204 @@ mod tests {
             &format!("#!/bin/sh\necho 'other 1.2'\necho '{TOKEN} 20260921.2'\n"),
             root.path(),
         )?;
-        assert_eq!(installed(&listed)?, "20260921.2");
+        assert_eq!(installed(&listed, QUERY)?, "20260921.2");
         let empty = cask("#!/bin/sh\necho 'nothing here'\n", root.path())?;
-        assert!(matches!(installed(&empty), Err(Error::BrewVersion)));
+        assert!(matches!(installed(&empty, QUERY), Err(Error::BrewVersion)));
+        Ok(())
+    }
+
+    /// State is private to the fixture HOME; no shell environment is inherited
+    /// and no real Homebrew command can be reached.
+    fn fake_brew(root: &Path, first: &str, refreshed: &str, fail: &str) -> anyhow::Result<Cask> {
+        cask(
+            &format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$HOME/commands"
+[ "$PATH" = "$HOME/bin:/usr/bin:/bin:/usr/sbin:/sbin" ] || exit 90
+[ "$LC_ALL" = C ] || exit 91
+[ "$HOMEBREW_NO_ANALYTICS" = 1 ] || exit 92
+phase="$1"
+if [ "$1" = upgrade ]; then
+    if [ -f "$HOME/refreshed" ]; then
+        phase=retry
+        [ "${{HOMEBREW_NO_AUTO_UPDATE:-}}" = 1 ] || exit 93
+    else
+        [ -z "${{HOMEBREW_NO_AUTO_UPDATE:-}}" ] || exit 94
+    fi
+fi
+if [ "$phase" = '{fail}' ]; then
+    printf '%s failed\n' "$phase" >&2
+    exit 3
+fi
+case "$*" in
+    'upgrade --cask {TOKEN}') printf 'upgrade output\n' ;;
+    update) : > "$HOME/refreshed" ;;
+    'list --cask --versions {TOKEN}')
+        if [ -f "$HOME/refreshed" ]; then
+            printf '{TOKEN} {refreshed}\n'
+        else
+            printf '{TOKEN} {first}\n'
+        fi ;;
+    *) exit 95 ;;
+esac
+"#
+            ),
+            root,
+        )
+    }
+
+    const FIRST_ATTEMPT: &str = "upgrade --cask herdr-gpui\nlist --cask --versions herdr-gpui\n";
+    const RECOVERY: &str = "upgrade --cask herdr-gpui\nlist --cask --versions herdr-gpui\nupdate\nupgrade --cask herdr-gpui\nlist --cask --versions herdr-gpui\n";
+
+    #[test]
+    fn reaching_or_exceeding_the_offer_needs_no_refresh() -> anyhow::Result<()> {
+        for version in ["20260921.3", "20260921.10", "20260922.1"] {
+            let root = tempfile::tempdir()?;
+            let cask = fake_brew(root.path(), version, "unused", "")?;
+            assert_eq!(
+                upgrade(
+                    &cask,
+                    "20260921.1",
+                    "20260921.3",
+                    &AtomicBool::new(false),
+                    |_| ()
+                )?,
+                version
+            );
+            assert_eq!(
+                fs::read_to_string(root.path().join("commands"))?,
+                FIRST_ATTEMPT
+            );
+        }
         Ok(())
     }
 
     #[test]
-    fn an_unchanged_cask_is_never_reported_as_updated() -> anyhow::Result<()> {
+    fn stale_or_intermediate_versions_refresh_and_retry_once() -> anyhow::Result<()> {
+        for first in ["20260921.1", "20260921.2"] {
+            let root = tempfile::tempdir()?;
+            let cask = fake_brew(root.path(), first, "20260921.3", "")?;
+            let mut progress = Vec::new();
+            assert_eq!(
+                upgrade(
+                    &cask,
+                    "20260921.1",
+                    "20260921.3",
+                    &AtomicBool::new(false),
+                    |line| progress.push(line)
+                )?,
+                "20260921.3"
+            );
+            assert_eq!(fs::read_to_string(root.path().join("commands"))?, RECOVERY);
+            assert_eq!(
+                progress,
+                [
+                    "Asking Homebrew to upgrade the cask...",
+                    "upgrade output",
+                    "Checking the installed Homebrew cask version...",
+                    "Refreshing Homebrew metadata with brew update...",
+                    "Retrying Homebrew cask upgrade after refresh...",
+                    "upgrade output",
+                    "Checking the installed Homebrew cask version...",
+                ]
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn persistent_staleness_reports_the_final_version_and_offer() -> anyhow::Result<()> {
+        for (current, first, final_version, expected) in [
+            ("20260921.1", "20260921.1", "20260921.1", "20260921.3"),
+            ("20260921.1", "20260921.1", "20260921.2", "20260921.3"),
+            ("20260921.3", "20260921.3", "20260921.3", "20260921.3"),
+        ] {
+            let root = tempfile::tempdir()?;
+            let cask = fake_brew(root.path(), first, final_version, "")?;
+            let result = upgrade(&cask, current, expected, &AtomicBool::new(false), |_| ());
+            assert!(
+                matches!(result, Err(Error::BrewStale { installed, current: old, expected: offer })
+                if installed == final_version && old == current && offer == expected)
+            );
+            assert_eq!(fs::read_to_string(root.path().join("commands"))?, RECOVERY);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn command_failures_never_trigger_recovery_or_another_retry() -> anyhow::Result<()> {
+        for (fail, commands) in [
+            ("upgrade", "upgrade --cask herdr-gpui\n".to_owned()),
+            ("list", FIRST_ATTEMPT.to_owned()),
+            ("update", format!("{FIRST_ATTEMPT}update\n")),
+            (
+                "retry",
+                format!("{FIRST_ATTEMPT}update\nupgrade --cask herdr-gpui\n"),
+            ),
+        ] {
+            let root = tempfile::tempdir()?;
+            let cask = fake_brew(root.path(), "20260921.1", "20260921.3", fail)?;
+            let result = upgrade(
+                &cask,
+                "20260921.1",
+                "20260921.3",
+                &AtomicBool::new(false),
+                |_| (),
+            );
+            assert!(
+                matches!(&result, Err(Error::BrewFailed { status, detail })
+                if status.code() == Some(3) && detail == &format!("{fail} failed")),
+                "{fail}: {result:?}"
+            );
+            assert_eq!(fs::read_to_string(root.path().join("commands"))?, commands);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cancellation_before_spawn_runs_nothing_but_mutation_is_not_interrupted() -> anyhow::Result<()>
+    {
+        for already_cancelled in [true, false] {
+            let root = tempfile::tempdir()?;
+            let cask = fake_brew(root.path(), "20260921.1", "20260921.3", "")?;
+            let cancel = AtomicBool::new(already_cancelled);
+            let result = upgrade(&cask, "20260921.1", "20260921.3", &cancel, |_| {
+                cancel.store(true, Ordering::Release);
+            });
+            assert!(matches!(result, Err(Error::Cancelled)));
+            assert!(!root.path().join("commands").exists());
+        }
+
         let root = tempfile::tempdir()?;
+        let cask = fake_brew(root.path(), "20260921.1", "20260921.3", "")?;
         let cancel = AtomicBool::new(false);
-        let stale = cask(
-            &format!("#!/bin/sh\necho 'already installed'\necho '{TOKEN} 20260921.1'\n"),
-            root.path(),
-        )?;
-        assert!(matches!(
-            upgrade(&stale, "20260921.1", &cancel, |_| ()),
-            Err(Error::BrewStale(version)) if version == "20260921.1"
-        ));
-        let upgraded = cask(
-            &format!("#!/bin/sh\necho '{TOKEN} 20260921.2'\n"),
-            root.path(),
-        )?;
         assert_eq!(
-            upgrade(&upgraded, "20260921.1", &cancel, |_| ())?,
-            "20260921.2"
+            upgrade(&cask, "20260921.1", "20260921.3", &cancel, |line| {
+                if line == "upgrade output" {
+                    cancel.store(true, Ordering::Release);
+                }
+            })?,
+            "20260921.3"
         );
+        assert!(cancel.load(Ordering::Acquire));
+        assert_eq!(fs::read_to_string(root.path().join("commands"))?, RECOVERY);
+        Ok(())
+    }
+
+    #[test]
+    fn exhausted_budget_does_not_spawn_another_command() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let cask = fake_brew(root.path(), "20260921.1", "20260921.3", "")?;
+        assert!(matches!(
+            run(command(&cask), Duration::ZERO, None, |_| ()),
+            Err(Error::BrewTimeout)
+        ));
+        assert!(matches!(
+            installed(&cask, Duration::ZERO),
+            Err(Error::BrewTimeout)
+        ));
+        assert!(!root.path().join("commands").exists());
         Ok(())
     }
 }

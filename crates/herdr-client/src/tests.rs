@@ -29,6 +29,9 @@ const SNAPSHOT: &str =
     include_str!("../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json");
 const WELCOME: &str = include_str!("../../herdr-protocol/tests/fixtures/endpoint-welcome-v1.json");
 
+#[path = "clipboard_tests.rs"]
+mod clipboard_tests;
+
 fn send(stream: &mut Stream, message: ServerMessage) {
     write_message(stream, &message, MAX_GRAPHICS_FRAME_SIZE).unwrap();
 }
@@ -209,6 +212,7 @@ fn test_client_mode(
                     commands,
                     stop,
                     next_request: AtomicU64::new(1),
+                    image_busy: Arc::new(AtomicBool::new(false)),
                 }),
             },
             events,
@@ -632,6 +636,7 @@ fn bounded_command_queue_and_outbound_limit_are_explicit() {
             commands,
             stop: Arc::new(AtomicBool::new(false)),
             next_request: AtomicU64::new(1),
+            image_busy: Arc::new(AtomicBool::new(false)),
         }),
     };
     assert!(matches!(
