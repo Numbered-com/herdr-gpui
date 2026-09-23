@@ -61,7 +61,7 @@ impl HerdrWindow {
     pub(super) fn menu_items(&self) -> Vec<&'static str> {
         let mut items = vec![
             "settings",
-            "keybinds",
+            "shortcuts",
             "themes",
             "increase font size",
             "decrease font size",
@@ -109,7 +109,7 @@ impl HerdrWindow {
             "GitHub sign-in" => self.menu.page = Some(Page::GitHub),
             "about" => self.open_about(window, cx),
             "settings" => self.open_preferences(window, cx),
-            "keybinds" => self.open_keybinds(window, cx),
+            "shortcuts" => self.open_keybinds(window, cx),
             "themes" => self.open_theme_picker(window, cx),
             "increase font size" | "decrease font size" | "reset font size" => {
                 use crate::config::FONT_SIZE_STEP;

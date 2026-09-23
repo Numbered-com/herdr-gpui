@@ -578,9 +578,19 @@ impl Render for HerdrWindow {
                             .id("status-theme")
                             .debug_selector(|| "status-theme".into())
                             .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.))
                             .px_2()
                             .cursor_pointer()
                             .hover(|s| s.bg(rgb(self.theme.active)))
+                            .child(
+                                svg()
+                                    .path("icons/theme.svg")
+                                    .size(px(12.))
+                                    .flex_none()
+                                    .text_color(rgb(self.theme.foreground)),
+                            )
                             .child("Theme")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_theme_picker(window, cx);
@@ -591,10 +601,20 @@ impl Render for HerdrWindow {
                             .id("status-keybinds")
                             .debug_selector(|| "status-keybinds".into())
                             .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.))
                             .px_2()
                             .cursor_pointer()
                             .hover(|s| s.bg(rgb(self.theme.active)))
-                            .child("? Keybinds")
+                            .child(
+                                svg()
+                                    .path("icons/keyboard.svg")
+                                    .size(px(12.))
+                                    .flex_none()
+                                    .text_color(rgb(self.theme.foreground)),
+                            )
+                            .child("Shortcuts")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_keybinds(window, cx);
                             })),

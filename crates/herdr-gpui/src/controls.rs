@@ -248,7 +248,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         command: Command::Keybinds,
         name: "keybindings",
-        label: "Keybindings",
+        label: "Keyboard Shortcuts",
         shortcuts: &["cmd-/"],
     },
     CommandInfo {

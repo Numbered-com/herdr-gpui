@@ -36,7 +36,7 @@ pub(crate) fn menus() -> Vec<Menu> {
                     },
                 ),
                 MenuItem::action(
-                    "Keybinds",
+                    "Keyboard Shortcuts",
                     RunCommand {
                         command: Command::Keybinds,
                     },

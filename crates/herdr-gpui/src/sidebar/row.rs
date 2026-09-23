@@ -456,8 +456,13 @@ pub(super) fn row(
                             // pull request's, not the working tree's.
                             .when(dirty, |line| {
                                 line.child(
-                                    crate::icons::uncommitted(theme, line_height(font).min(18.))
-                                        .debug_selector(|| format!("dirty-{key}")),
+                                    // Well under the line height, so marks on
+                                    // neighbouring rows keep a visible gap.
+                                    crate::icons::uncommitted(
+                                        theme,
+                                        (line_height(font) * 0.75).round().min(15.),
+                                    )
+                                    .debug_selector(|| format!("dirty-{key}")),
                                 )
                             })
                             .when_some(pr.as_ref(), |line, badge| {
