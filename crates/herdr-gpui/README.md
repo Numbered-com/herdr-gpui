@@ -618,7 +618,18 @@ attention can keep the badge visible. This QA setting is not saved.
   Reconnect rechecks the endpoint. See
   [PR lookup scope and limits](../../README.md) for authentication and remote limits.
    The same worktree-registry path supports both current and older daemons without
-   `workspace.get`. No Git or HTTP requests run from menu-open or render paths.
+    `workspace.get`. No Git or HTTP requests run from menu-open or render paths.
+  Opening the top-right Git/PR dropdown also queues a fresh lookup for the focused
+  local branch, keeping cached details visible while the background worker runs.
+  The dropdown shows draft/ready-for-review status, review decisions, merge
+  conflicts or blockers, and passed/failed/pending/skipped check counts. Repeated
+  opens share an in-flight lookup; account authentication/rate-limit pauses still
+  apply.
+  PR numbers in the sidebar and titlebar share readiness colors: green for a clean
+  merge, red for conflicts, failing checks, or requested changes, yellow for pending
+  checks/reviews or an unknown merge status, and orange for a blocked/behind branch
+  without a more specific check/review status. Drafts remain gray, merged PRs
+  purple, and closed PRs red.
 - The top-right titlebar profile control starts native GitHub device sign-in on
   a signed-out click, shows the authenticated user's avatar, and offers Sign out
   on right-click. Signed-out workspace menus have no GitHub section or requests.
