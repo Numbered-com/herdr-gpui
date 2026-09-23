@@ -63,8 +63,9 @@ cd herdr-gpui
 just run
 ```
 
-`just run` uses the optimized release build; `just run-debug` is notably slower
-with a dense terminal on screen. Without `just`: `cargo run --locked --release -p herdr-gpui`.
+`just run` uses the optimized release build with the QA menu enabled;
+`just run-debug` is notably slower with a dense terminal on screen.
+Without `just`: `cargo run --locked --release -p herdr-gpui --features qa-menu`.
 
 Install the Herdr daemon separately. The app starts an already-installed local
 `herdr server` when the target session is absent, but never installs, stops, or
@@ -128,7 +129,10 @@ running.
 
 ## Audio Test
 
-To manually test native audio, choose **QA > Play Sound**. It plays the built-in
+The QA menu is excluded from default Cargo builds, including published releases.
+`just run` enables it automatically; with Cargo, use
+`cargo run --locked --release -p herdr-gpui --features qa-menu`.
+To manually test native audio in that build, choose **QA > Play Sound**. It plays the built-in
 Done sound on the background Rodio worker, even without a daemon or active pane
 and even with notifications muted. `HERDR_DISABLE_SOUND` and `NEXTEST` still
 suppress playback. See [notification sounds](crates/herdr-gpui/README.md#notification-sounds)
