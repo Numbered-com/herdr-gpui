@@ -43,6 +43,7 @@ impl HerdrWindow {
                 pr.color(theme),
                 pr.additions,
                 pr.deletions,
+                pr.url.clone(),
             )
         });
         Some(
@@ -53,6 +54,92 @@ impl HerdrWindow {
                 .flex_none()
                 .h_full()
                 .pr(px(2.))
+                .gap(px(4.))
+                .text_font(font)
+                .text_size(px(font.size))
+                .text_color(rgb(theme.foreground))
+                .map(|button| match pr {
+                    Some((number, color, additions, deletions, url)) => button
+                        .child(
+                            div()
+                                .id("titlebar-git-pr")
+                                .debug_selector(|| "titlebar-git-pr".into())
+                                .cursor_pointer()
+                                .hover(|link| link.underline())
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_click(move |_, _, cx| {
+                                    cx.stop_propagation();
+                                    cx.open_url(&url);
+                                })
+                                .text_color(rgb(color))
+                                .child(number),
+                        )
+                        .child(
+                            div()
+                                .debug_selector(|| "titlebar-git-pr-lines".into())
+                                .flex()
+                                .child(
+                                    div()
+                                        .debug_selector(|| "titlebar-git-pr-additions".into())
+                                        .text_color(rgb(theme.palette[2]))
+                                        .child(format!("+{}", crate::sidebar::compact(additions))),
+                                )
+                                .child(div().text_color(rgb(theme.muted)).child("/"))
+                                .child(
+                                    div()
+                                        .debug_selector(|| "titlebar-git-pr-deletions".into())
+                                        .text_color(rgb(theme.palette[1]))
+                                        .child(format!("-{}", crate::sidebar::compact(deletions))),
+                                ),
+                        )
+                        // The pull request's churn is history; the dot
+                        // says work is still sitting in the checkout.
+                        .when(status.is_some_and(|status| status.dirty()), |button| {
+                            button.child(
+                                div()
+                                    .debug_selector(|| "titlebar-git-dirty".into())
+                                    .child("\u{2022}"),
+                            )
+                        }),
+                    None => button.when_some(
+                        status.filter(|status| status.dirty()),
+                        |button, status| {
+                            button
+                                .when(status.additions > 0, |button| {
+                                    button.child(
+                                        div()
+                                            .debug_selector(|| "titlebar-git-additions".into())
+                                            .text_color(rgb(theme.palette[2]))
+                                            .child(format!("+{}", status.additions)),
+                                    )
+                                })
+                                .when(status.deletions > 0, |button| {
+                                    button.child(
+                                        div()
+                                            .debug_selector(|| "titlebar-git-deletions".into())
+                                            .text_color(rgb(theme.palette[1]))
+                                            .child(format!("-{}", status.deletions)),
+                                    )
+                                })
+                                // Untracked files are staged by a commit
+                                // too, but have no diff against HEAD.
+                                .when(status.untracked > 0, |button| {
+                                    button.child(
+                                        div()
+                                            .debug_selector(|| "titlebar-git-untracked".into())
+                                            .text_color(rgb(theme.muted))
+                                            .child(
+                                                if status.additions == 0 && status.deletions == 0 {
+                                                    "Uncommitted"
+                                                } else {
+                                                    "*"
+                                                },
+                                            ),
+                                    )
+                                })
+                        },
+                    ),
+                })
                 .child(
                     div()
                         .id("titlebar-git")
@@ -64,9 +151,6 @@ impl HerdrWindow {
                         .px(px(6.))
                         .rounded(px(4.))
                         .cursor_pointer()
-                        .text_font(font)
-                        .text_size(px(font.size))
-                        .text_color(rgb(theme.foreground))
                         .hover(|button| {
                             button.bg(background.blend(rgba((theme.foreground << 8) | 0x14)))
                         })
@@ -81,98 +165,6 @@ impl HerdrWindow {
                                     theme.muted
                                 })),
                         )
-                        .map(|button| match pr {
-                            Some((number, color, additions, deletions)) => button
-                                .child(
-                                    div()
-                                        .debug_selector(|| "titlebar-git-pr".into())
-                                        .text_color(rgb(color))
-                                        .child(number),
-                                )
-                                .child(
-                                    div()
-                                        .debug_selector(|| "titlebar-git-pr-lines".into())
-                                        .flex()
-                                        .child(
-                                            div()
-                                                .debug_selector(|| {
-                                                    "titlebar-git-pr-additions".into()
-                                                })
-                                                .text_color(rgb(theme.palette[2]))
-                                                .child(format!(
-                                                    "+{}",
-                                                    crate::sidebar::compact(additions)
-                                                )),
-                                        )
-                                        .child(div().text_color(rgb(theme.muted)).child("/"))
-                                        .child(
-                                            div()
-                                                .debug_selector(|| {
-                                                    "titlebar-git-pr-deletions".into()
-                                                })
-                                                .text_color(rgb(theme.palette[1]))
-                                                .child(format!(
-                                                    "-{}",
-                                                    crate::sidebar::compact(deletions)
-                                                )),
-                                        ),
-                                )
-                                // The pull request's churn is history; the dot
-                                // says work is still sitting in the checkout.
-                                .when(status.is_some_and(|status| status.dirty()), |button| {
-                                    button.child(
-                                        div()
-                                            .debug_selector(|| "titlebar-git-dirty".into())
-                                            .child("\u{2022}"),
-                                    )
-                                }),
-                            None => button.when_some(
-                                status.filter(|status| status.dirty()),
-                                |button, status| {
-                                    button
-                                        .when(status.additions > 0, |button| {
-                                            button.child(
-                                                div()
-                                                    .debug_selector(|| {
-                                                        "titlebar-git-additions".into()
-                                                    })
-                                                    .text_color(rgb(theme.palette[2]))
-                                                    .child(format!("+{}", status.additions)),
-                                            )
-                                        })
-                                        .when(status.deletions > 0, |button| {
-                                            button.child(
-                                                div()
-                                                    .debug_selector(|| {
-                                                        "titlebar-git-deletions".into()
-                                                    })
-                                                    .text_color(rgb(theme.palette[1]))
-                                                    .child(format!("-{}", status.deletions)),
-                                            )
-                                        })
-                                        // Untracked files are staged by a commit
-                                        // too, but have no diff against HEAD.
-                                        .when(status.untracked > 0, |button| {
-                                            button.child(
-                                                div()
-                                                    .debug_selector(|| {
-                                                        "titlebar-git-untracked".into()
-                                                    })
-                                                    .text_color(rgb(theme.muted))
-                                                    .child(
-                                                        if status.additions == 0
-                                                            && status.deletions == 0
-                                                        {
-                                                            "Uncommitted"
-                                                        } else {
-                                                            "*"
-                                                        },
-                                                    ),
-                                            )
-                                        })
-                                },
-                            ),
-                        })
                         .child(
                             svg()
                                 .path("icons/chevron-down.svg")
@@ -469,7 +461,8 @@ mod git_button_tests {
                 "titlebar-git-deletions",
                 "titlebar-git-untracked",
             ] {
-                assert!(cx.debug_bounds(part).is_some(), "{part} at width {width}");
+                let bounds = cx.debug_bounds(part).unwrap();
+                assert!(bounds.right() <= button.left(), "{part} at width {width}");
             }
             cx.simulate_event(MouseDownEvent {
                 button: MouseButton::Left,
@@ -616,7 +609,7 @@ mod git_button_tests {
         );
         assert!(number.right() <= churn.left());
         assert!(churn.right() <= dirty.left());
-        assert!(dirty.right() <= button.right());
+        assert!(dirty.right() <= button.left());
         assert!(button.right() <= cx.debug_bounds("titlebar-avatar").unwrap().left());
         // Additions and deletions are separate spans so each keeps its own
         // color, as the sidebar badge paints them.
@@ -624,6 +617,32 @@ mod git_button_tests {
         let deletions = cx.debug_bounds("titlebar-git-pr-deletions").unwrap();
         assert!(churn.left() <= additions.left() && additions.right() <= deletions.left());
         assert!(deletions.right() <= churn.right());
+        for width in [900., 360.] {
+            cx.simulate_resize(size(px(width), px(600.)));
+            cx.update(|window, cx| {
+                window.refresh();
+                let _ = window.draw(cx);
+            });
+            let number = cx.debug_bounds("titlebar-git-pr").unwrap();
+            let churn = cx.debug_bounds("titlebar-git-pr-lines").unwrap();
+            let button = cx.debug_bounds("titlebar-git").unwrap();
+            assert!(number.left() >= px(80.));
+            assert!(number.right() <= churn.left());
+            assert!(churn.right() <= button.left());
+            cx.simulate_click(number.center(), Modifiers::default());
+            assert_eq!(
+                cx.opened_url(),
+                Some(crate::pull_request::fixture().unwrap().url)
+            );
+            cx.update(|_, cx| assert_eq!(view.read(cx).menu.page, None));
+            cx.simulate_click(churn.center(), Modifiers::default());
+            cx.update(|_, cx| assert_eq!(view.read(cx).menu.page, None));
+            cx.simulate_click(button.center(), Modifiers::default());
+            cx.update(|_, cx| assert_eq!(view.read(cx).menu.page, Some(Page::Git)));
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| view.dismiss_menu(window, cx));
+            });
+        }
     }
 
     #[gpui::test]
