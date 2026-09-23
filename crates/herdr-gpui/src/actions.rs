@@ -13,7 +13,9 @@ actions!(
         ShowHerdrNotDetected,
         ShowLogs,
         CheckForUpdates,
-        ShowUpdatePreview
+        ShowUpdatePreview,
+        ShowUpdateDownloadPreview,
+        ShowUpdateHomebrewPreview
     ]
 );
 

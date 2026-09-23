@@ -34,6 +34,10 @@ GPUI panel through **app updates** in the sidebar menu or **Herdr > Check for
 Updates...**. Background offers change the status version label without taking
 focus. Download and **Install and Restart** are separate approvals; closing the
 panel does not cancel work. Explicit **Cancel** requests cancellation.
+The panel shows archive download progress and an animated bar for work without a
+known percentage. Homebrew-managed installs use `brew upgrade --cask herdr-gpui`;
+if the installed version is behind the offer, `brew update` refreshes metadata
+before one retry. Homebrew upgrades cannot be cancelled mid-install.
 The existing UI timer polls the updater mailbox; workers own blocking work, and
 the restart helper is dispatched before CLI parsing or GPUI startup.
 
@@ -45,6 +49,9 @@ GNU systems, not arbitrary packages or a claim of full Linux app support.
 **QA > Show app update available** and the sidebar's **preview app update** use
 independent synthetic version `9999.0.0`: Download becomes Ready and Install and
 Restart only dismisses the panel. No preview action reaches the updater service or quits.
+**QA > Show update download progress (50%)** displays a half-filled bar;
+**QA > Show Homebrew update progress** displays the animated activity bar.
+Both remain visible until dismissed and never run a real update.
 See [update setup and QA](../../docs/updating.md).
 The protected release workflow builds both macOS and both Linux architectures
 with the required public key. Linux manual `Herdr-VERSION-TARGET.tar.gz` archives

@@ -3,7 +3,9 @@
 
 use crate::{
     CheckForUpdates, PlaySound, Quit, RunCommand, ShowHerdrNotDetected, ShowLogs,
-    ShowUpdatePreview, actions::ShowToastPreview, controls::Command,
+    ShowUpdatePreview,
+    actions::{ShowToastPreview, ShowUpdateDownloadPreview, ShowUpdateHomebrewPreview},
+    controls::Command,
 };
 use gpui::{Menu, MenuItem};
 use herdr_client::protocol::SemanticNotificationKind;
@@ -176,6 +178,11 @@ pub(crate) fn menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action("Show herdr non-detected modal", ShowHerdrNotDetected),
                 MenuItem::action("Show app update available", ShowUpdatePreview),
+                MenuItem::action(
+                    "Show update download progress (50%)",
+                    ShowUpdateDownloadPreview,
+                ),
+                MenuItem::action("Show Homebrew update progress", ShowUpdateHomebrewPreview),
                 MenuItem::action("Play Sound", PlaySound),
                 #[cfg(target_os = "macos")]
                 MenuItem::action(
@@ -243,6 +250,33 @@ mod tests {
             } else {
                 assert!(action.is_none());
             }
+        }
+    }
+
+    #[test]
+    fn qa_menu_carries_update_progress_previews() {
+        let menus = menus();
+        let qa = menus
+            .iter()
+            .find(|menu| menu.name.as_ref() == "QA")
+            .unwrap();
+        for (label, expected) in [
+            (
+                "Show update download progress (50%)",
+                Box::new(ShowUpdateDownloadPreview) as Box<dyn gpui::Action>,
+            ),
+            (
+                "Show Homebrew update progress",
+                Box::new(ShowUpdateHomebrewPreview),
+            ),
+        ] {
+            assert!(
+                qa.items.iter().any(|item| matches!(item,
+                    MenuItem::Action { name, action, .. }
+                        if name.as_ref() == label && action.partial_eq(expected.as_ref())
+                )),
+                "{label}"
+            );
         }
     }
 
