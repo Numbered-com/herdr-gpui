@@ -424,7 +424,18 @@ mod tests {
 
     fn cask(script: &str, root: &Path) -> anyhow::Result<Cask> {
         let brew = root.join("brew");
-        fs::write(&brew, script)?;
+        // Write in a single-threaded child: a concurrent test's fork must not
+        // inherit a writable handle to this executable (Linux ETXTBSY).
+        let status = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "printf '%s' \"$1\" > \"$2\"",
+                "write-brew-fixture",
+                script,
+            ])
+            .arg(&brew)
+            .status()?;
+        anyhow::ensure!(status.success(), "writing brew fixture failed: {status}");
         fs::set_permissions(&brew, fs::Permissions::from_mode(0o755))?;
         Ok(Cask {
             brew,
@@ -736,8 +747,11 @@ esac
                 &AtomicBool::new(false),
                 |_| (),
             );
-            assert!(matches!(result, Err(Error::BrewFailed { status, detail })
-                if status.code() == Some(3) && detail == format!("{fail} failed")));
+            assert!(
+                matches!(&result, Err(Error::BrewFailed { status, detail })
+                if status.code() == Some(3) && detail == &format!("{fail} failed")),
+                "{fail}: {result:?}"
+            );
             assert_eq!(fs::read_to_string(root.path().join("commands"))?, commands);
         }
         Ok(())
