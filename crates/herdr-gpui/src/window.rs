@@ -123,6 +123,94 @@ pub(crate) struct HerdrWindow {
 }
 
 impl HerdrWindow {
+    /// Runs every display frame while the window draws, so a new surface is
+    /// shown on the refresh it arrives for instead of on the next timer tick.
+    fn poll_on_frame(this: WeakEntity<Self>, window: &mut Window) {
+        window.on_next_frame(move |window, cx| {
+            let alive = this.update(cx, |view, cx| {
+                if view
+                    .endpoints
+                    .iter()
+                    .any(|endpoint| endpoint.connection.has_update())
+                {
+                    view.tick(window, cx);
+                }
+            });
+            if alive.is_ok() {
+                Self::poll_on_frame(this, window);
+            }
+        });
+    }
+
+    fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.updater.poll() {
+            match self.updater.commit_restart() {
+                Ok(true) => {
+                    cx.quit();
+                    return;
+                }
+                Ok(false) => {}
+                Err(error) => eprintln!("App update restart failed: {error}"),
+            }
+            cx.notify();
+        }
+        if self.avatars.as_mut().is_some_and(|avatars| avatars.poll()) {
+            cx.notify();
+        }
+        if let Some(chrome) = self.sidebar_preferences.as_mut().and_then(|p| p.loaded()) {
+            if !self.sidebar_modified {
+                self.sidebar_width = chrome.sidebar_width;
+            }
+            if !self.sidebar_split_modified {
+                self.sidebar_split = chrome.sidebar_split;
+            }
+            if !self.agent_sort_modified {
+                self.agent_sort = chrome.agent_sort;
+            }
+            cx.notify();
+        }
+        let old_pane = self
+            .live
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.focused_pane_id.clone());
+        self.poll_endpoints(cx);
+        #[cfg(target_os = "macos")]
+        crate::app_badge::sync(window.window_handle().window_id(), &self.endpoints, cx);
+        self.cancel_stale_image();
+        self.poll_file_transfer(cx);
+        self.update_workspace_dialog(window, cx);
+        self.poll_worktree_source(cx);
+        self.poll_hover_menu(std::time::Instant::now(), window, cx);
+        if self.tick_copy_feedback(std::time::Instant::now()) {
+            cx.notify();
+        }
+        self.poll_tab_rename(window, cx);
+        self.poll_pane_rename(window, cx);
+        if old_pane
+            != self
+                .live
+                .snapshot
+                .as_ref()
+                .and_then(|s| s.focused_pane_id.clone())
+        {
+            self.marked.clear();
+        }
+        if self.update_workspace_pr() {
+            cx.notify();
+        }
+        if self.update_git() {
+            cx.notify();
+        }
+        if self.live.missing_installation && !self.install_warning_shown {
+            self.install_warning_shown = true;
+            self.show_install_modal(window, cx);
+        }
+        self.resize();
+        self.report_focus();
+        self.sync_window_title(window);
+    }
+
     pub(crate) fn new(
         target: ConnectTarget,
         window: &mut Window,
@@ -142,80 +230,7 @@ impl HerdrWindow {
             loop {
                 timer.timer(Duration::from_millis(16)).await;
                 if this
-                    .update_in(cx, |this, window, cx| {
-                        if this.updater.poll() {
-                            match this.updater.commit_restart() {
-                                Ok(true) => {
-                                    cx.quit();
-                                    return;
-                                }
-                                Ok(false) => {}
-                                Err(error) => eprintln!("App update restart failed: {error}"),
-                            }
-                            cx.notify();
-                        }
-                        if this.avatars.as_mut().is_some_and(|avatars| avatars.poll()) {
-                            cx.notify();
-                        }
-                        if let Some(chrome) =
-                            this.sidebar_preferences.as_mut().and_then(|p| p.loaded())
-                        {
-                            if !this.sidebar_modified {
-                                this.sidebar_width = chrome.sidebar_width;
-                            }
-                            if !this.sidebar_split_modified {
-                                this.sidebar_split = chrome.sidebar_split;
-                            }
-                            if !this.agent_sort_modified {
-                                this.agent_sort = chrome.agent_sort;
-                            }
-                            cx.notify();
-                        }
-                        let old_pane = this
-                            .live
-                            .snapshot
-                            .as_ref()
-                            .and_then(|s| s.focused_pane_id.clone());
-                        this.poll_endpoints(cx);
-                        #[cfg(target_os = "macos")]
-                        crate::app_badge::sync(
-                            window.window_handle().window_id(),
-                            &this.endpoints,
-                            cx,
-                        );
-                        this.cancel_stale_image();
-                        this.poll_file_transfer(cx);
-                        this.update_workspace_dialog(window, cx);
-                        this.poll_worktree_source(cx);
-                        this.poll_hover_menu(std::time::Instant::now(), window, cx);
-                        if this.tick_copy_feedback(std::time::Instant::now()) {
-                            cx.notify();
-                        }
-                        this.poll_tab_rename(window, cx);
-                        this.poll_pane_rename(window, cx);
-                        if old_pane
-                            != this
-                                .live
-                                .snapshot
-                                .as_ref()
-                                .and_then(|s| s.focused_pane_id.clone())
-                        {
-                            this.marked.clear();
-                        }
-                        if this.update_workspace_pr() {
-                            cx.notify();
-                        }
-                        if this.update_git() {
-                            cx.notify();
-                        }
-                        if this.live.missing_installation && !this.install_warning_shown {
-                            this.install_warning_shown = true;
-                            this.show_install_modal(window, cx);
-                        }
-                        this.resize();
-                        this.report_focus();
-                        this.sync_window_title(window);
-                    })
+                    .update_in(cx, |this, window, cx| this.tick(window, cx))
                     .is_err()
                 {
                     break;
@@ -320,6 +335,7 @@ impl HerdrWindow {
             }
             return this;
         }
+        Self::poll_on_frame(cx.entity().downgrade(), window);
         this.sidebar_preferences = this.endpoints[0]
             .connection
             .target
