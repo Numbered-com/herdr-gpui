@@ -77,6 +77,7 @@ pub(crate) struct HerdrWindow {
     pub(crate) hovered_terminal_link: bool,
     pub(crate) pressed_terminal_link: Option<(String, Point<Pixels>)>,
     pub(crate) terminal_mouse: Option<mouse::Gesture>,
+    pub(crate) scrollbar_drag: Option<mouse::ScrollbarDrag>,
     pub(crate) pending_images: Vec<images::PendingImage>,
     pub(crate) file_transfer: Option<transfers::FileTransfer>,
     /// The terminal cells the pointer is choosing. A release copies them and
@@ -175,6 +176,7 @@ impl HerdrWindow {
             .as_ref()
             .and_then(|s| s.focused_pane_id.clone());
         self.poll_endpoints(cx);
+        self.flush_scrollbar(cx);
         #[cfg(target_os = "macos")]
         crate::app_badge::sync(window.window_handle().window_id(), &self.endpoints, cx);
         self.cancel_stale_image();
@@ -283,6 +285,7 @@ impl HerdrWindow {
             hovered_terminal_link: false,
             pressed_terminal_link: None,
             terminal_mouse: None,
+            scrollbar_drag: None,
             pending_images: Vec::new(),
             file_transfer: None,
             selection: None,

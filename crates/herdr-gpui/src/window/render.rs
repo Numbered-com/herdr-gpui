@@ -197,7 +197,9 @@ impl Render for HerdrWindow {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    if this.terminal_mouse_down(event, window, cx) {
+                    if this.scrollbar_mouse_down(event, cx)
+                        || this.terminal_mouse_down(event, window, cx)
+                    {
                         return;
                     }
                     this.pressed_terminal_link = this
@@ -257,7 +259,9 @@ impl Render for HerdrWindow {
                         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                             if phase == DispatchPhase::Capture {
                                 entity.update(cx, |this, cx| {
-                                    if this.terminal_mouse_move(event, cx) {
+                                    if this.scrollbar_mouse_move(event, cx)
+                                        || this.terminal_mouse_move(event, cx)
+                                    {
                                         cx.stop_propagation();
                                         return;
                                     }
@@ -290,7 +294,8 @@ impl Render for HerdrWindow {
                                     ) {
                                         this.menu.opening_right_click = false;
                                     }
-                                    if this.terminal_mouse_up(event, cx)
+                                    if this.scrollbar_mouse_up(event, cx)
+                                        || this.terminal_mouse_up(event, cx)
                                         || (event.button == MouseButton::Left
                                             && !cx.has_active_drag()
                                             && this.release_selection(cx))
@@ -328,6 +333,7 @@ impl Render for HerdrWindow {
                                 cell_width,
                                 &font,
                                 &panes,
+                                &surface.panes,
                                 window,
                                 cx,
                             );
@@ -348,6 +354,7 @@ impl Render for HerdrWindow {
                                     cell_width,
                                     &font,
                                     &rows,
+                                    &[],
                                     window,
                                     cx,
                                 );

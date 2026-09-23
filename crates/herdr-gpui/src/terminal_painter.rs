@@ -1,7 +1,7 @@
 use crate::config::Theme;
 use crate::terminal::*;
 use gpui::*;
-use herdr_client::protocol::{CellData, FrameData};
+use herdr_client::protocol::{CellData, FrameData, PaneSurfacePane, SurfaceRect};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -12,6 +12,8 @@ const CACHE_LIMIT: usize = 4096;
 const SELECTION_ALPHA: u32 = 0x59;
 const REPORT_INTERVAL: Duration = Duration::from_secs(5);
 const SLOW_PAINT: Duration = Duration::from_millis(16);
+const SCROLLBAR_INSET: f32 = 1.;
+const SCROLLBAR_ALPHA: u32 = 0xc0;
 
 #[derive(Default)]
 struct PaintTiming {
@@ -267,6 +269,7 @@ impl TerminalPainter {
         cell_width: f32,
         font: &Font,
         selection: &[(u16, std::ops::Range<u16>)],
+        panes: &[PaneSurfacePane],
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -289,6 +292,13 @@ impl TerminalPainter {
                 px(f32::from(frame.height) * self.cell_height),
             ),
         );
+        // The daemon's cell scrollbar is replaced by the pixel thumb painted below.
+        let bars: Vec<SurfaceRect> = panes.iter().filter_map(|p| p.scrollbar_rect).collect();
+        let in_bar = |index: usize| {
+            let width = usize::from(frame.width);
+            bars.iter()
+                .any(|r| in_rect(*r, (index % width) as u16, (index / width) as u16))
+        };
         // A layer gives all its primitives one draw order, skipping GPUI's
         // per-primitive BoundsTree insert that dominates large grids. Within a
         // layer quads draw before glyphs, so decorations and the cursor take a
@@ -350,7 +360,7 @@ impl TerminalPainter {
                 }
             }
             for (index, cell) in frame.cells.iter().enumerate() {
-                if cell.skip || cell.symbol.is_empty() || cell.symbol == " " {
+                if cell.skip || cell.symbol.is_empty() || cell.symbol == " " || in_bar(index) {
                     continue;
                 }
                 let key = style(cell, &self.theme);
@@ -414,6 +424,9 @@ impl TerminalPainter {
         window.paint_layer(grid, |window| {
             // Decorations cover the grid, including spaces and wide-glyph continuation cells.
             for (index, cell) in frame.cells.iter().enumerate() {
+                if in_bar(index) {
+                    continue;
+                }
                 let position = origin
                     + point(
                         px((index % usize::from(frame.width)) as f32 * cell_width),
@@ -458,6 +471,26 @@ impl TerminalPainter {
                 {
                     counts.decorations += 1;
                 }
+            }
+            for bar in panes
+                .iter()
+                .filter_map(|pane| Scrollbar::new(pane, cell_width, self.cell_height))
+            {
+                let width = (f32::from(bar.track.size.width) - 2. * SCROLLBAR_INSET).clamp(2., 6.);
+                window.paint_quad(
+                    fill(
+                        Bounds::new(
+                            origin
+                                + point(
+                                    bar.track.right() - px(width + SCROLLBAR_INSET),
+                                    bar.thumb.top(),
+                                ),
+                            size(px(width), bar.thumb.size.height),
+                        ),
+                        rgba((self.theme.muted << 8) | SCROLLBAR_ALPHA),
+                    )
+                    .corner_radii(px(width / 2.)),
+                );
             }
         });
         #[cfg(feature = "integration-test")]
@@ -638,6 +671,7 @@ mod tests {
                             8.5,
                             &font("Menlo"),
                             &[],
+                            &[],
                             window,
                             cx,
                         );
@@ -734,6 +768,7 @@ mod tests {
                             bounds.origin,
                             cell_width,
                             &font,
+                            &[],
                             &[],
                             window,
                             cx,

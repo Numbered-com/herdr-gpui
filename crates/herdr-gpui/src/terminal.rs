@@ -11,7 +11,7 @@ use gpui::{
 use herdr_client::protocol::{
     CellData, ClientKeyCode, ClientKeyKind, ClientMouseGeometry, ClientMouseKind,
     ClientMousePosition, ClientPaneInputEvent, ClientSurfaceSize, CursorState, FrameData,
-    PaneSurfaceFrame, SurfaceRect,
+    PaneSurfaceFrame, PaneSurfacePane, SurfaceRect,
 };
 
 #[cfg(test)]
@@ -382,6 +382,70 @@ fn key_code(key: &Keystroke) -> Option<ClientKeyCode> {
         name if key.modifiers.control && name.chars().count() == 1 => Char(name.chars().next()?),
         _ => return None,
     })
+}
+
+const MIN_THUMB: f32 = 24.;
+
+/// A pane's scrollbar in grid pixels. The daemon draws it as cells, which
+/// move the thumb a whole row per many lines; this places it to the pixel.
+/// Painting and dragging share it so the thumb is where it is grabbed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Scrollbar {
+    pub track: Bounds<Pixels>,
+    pub thumb: Bounds<Pixels>,
+    max: u64,
+}
+
+impl Scrollbar {
+    pub(crate) fn new(pane: &PaneSurfacePane, cell_width: f32, cell_height: f32) -> Option<Self> {
+        let (rect, scroll) = (pane.scrollbar_rect?, pane.scroll?);
+        if scroll.max_offset_from_bottom == 0 || rect.height == 0 {
+            return None;
+        }
+        let track = Bounds::new(
+            point(
+                px(f32::from(rect.x) * cell_width),
+                px(f32::from(rect.y) * cell_height),
+            ),
+            size(
+                px(f32::from(rect.width) * cell_width),
+                px(f32::from(rect.height) * cell_height),
+            ),
+        );
+        let height = f32::from(track.size.height);
+        let max = scroll.max_offset_from_bottom as f32;
+        let visible = scroll.viewport_rows as f32;
+        let thumb = (height * visible / (max + visible))
+            .max(MIN_THUMB)
+            .min(height);
+        let offset = scroll.offset_from_bottom.min(scroll.max_offset_from_bottom) as f32;
+        let top = (height - thumb) * (1. - offset / max);
+        Some(Self {
+            track,
+            thumb: Bounds::new(
+                track.origin + point(px(0.), px(top)),
+                size(track.size.width, px(thumb)),
+            ),
+            max: scroll.max_offset_from_bottom,
+        })
+    }
+
+    /// The offset from the bottom that puts the thumb's top at `top`.
+    pub(crate) fn offset_at(&self, top: f32) -> u64 {
+        let travel = f32::from(self.track.size.height - self.thumb.size.height);
+        if travel <= 0. {
+            return 0;
+        }
+        let fraction = ((top - f32::from(self.track.top())) / travel).clamp(0., 1.);
+        ((1. - fraction) * self.max as f32).round() as u64
+    }
+}
+
+pub(crate) fn in_rect(rect: SurfaceRect, x: u16, y: u16) -> bool {
+    x >= rect.x
+        && y >= rect.y
+        && u32::from(x) < u32::from(rect.x) + u32::from(rect.width)
+        && u32::from(y) < u32::from(rect.y) + u32::from(rect.height)
 }
 
 #[cfg(test)]
@@ -863,5 +927,64 @@ mod tests {
         assert_eq!(key_code(&key("a")), None);
         assert_eq!(key_code(&key("alt-e")), None);
         assert_eq!(key_code(&key("cmd-q")), None);
+    }
+
+    #[test]
+    fn scrollbar_thumb_tracks_offset_to_the_pixel_and_round_trips() {
+        use herdr_client::protocol::PaneSurfaceScrollMetrics;
+        let rect = SurfaceRect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 24,
+        };
+        let pane = |offset, max| PaneSurfacePane {
+            pane_id: "p".into(),
+            content_revision: 1,
+            rect: SurfaceRect {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 24,
+            },
+            inner_rect: SurfaceRect {
+                x: 0,
+                y: 0,
+                width: 79,
+                height: 24,
+            },
+            scrollbar_rect: Some(rect),
+            scroll: Some(PaneSurfaceScrollMetrics {
+                offset_from_bottom: offset,
+                max_offset_from_bottom: max,
+                viewport_rows: 24,
+            }),
+            focused: true,
+            mouse_reporting: false,
+            sgr_pixel_mouse: false,
+            alternate_screen_active: false,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        assert!(Scrollbar::new(&pane(0, 0), 8., 20.).is_none());
+        let bottom = Scrollbar::new(&pane(0, 1978), 8., 20.).unwrap();
+        let top = Scrollbar::new(&pane(1978, 1978), 8., 20.).unwrap();
+        let one = Scrollbar::new(&pane(1, 1978), 8., 20.).unwrap();
+        assert_eq!(
+            bottom.track,
+            Bounds::new(point(px(632.), px(0.)), size(px(8.), px(480.)))
+        );
+        assert_eq!(bottom.thumb.size.height, px(MIN_THUMB));
+        assert_eq!(bottom.thumb.bottom(), bottom.track.bottom());
+        assert_eq!(top.thumb.top(), top.track.top());
+        // One line moves the thumb a fraction of a pixel, not a whole cell.
+        let step = f32::from(bottom.thumb.top() - one.thumb.top());
+        assert!(step > 0. && step < 1., "{step}");
+        for offset in [0, 1, 500, 1977, 1978] {
+            let bar = Scrollbar::new(&pane(offset, 1978), 8., 20.).unwrap();
+            assert_eq!(bar.offset_at(f32::from(bar.thumb.top())), offset);
+        }
+        assert_eq!(bottom.offset_at(-100.), 1978);
+        assert_eq!(bottom.offset_at(1000.), 0);
     }
 }
