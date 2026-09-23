@@ -119,6 +119,9 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("Output already exists", result.stderr)
         self.assertEqual(output.read_bytes(), before)
         output.unlink()
+        arm = Path(self.run_windows("20260920.3", "aarch64-pc-windows-msvc", binary, self.work, self.notices).stdout.strip())
+        self.assertEqual(arm, self.work.resolve() / "Herdr-20260920.3-aarch64-pc-windows-msvc.zip")
+        arm.unlink()
         for args in [("20260920.03", target, binary, self.work, self.notices),
                      ("v20260920.3", target, binary, self.work, self.notices),
                      ("20260920.3", "x86_64-pc-windows-gnu", binary, self.work, self.notices),

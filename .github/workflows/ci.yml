@@ -103,6 +103,10 @@ jobs:
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: bash scripts/install-linux-deps.sh
+      # Lets the release script tests build real .deb, .rpm and Arch packages.
+      - name: Install the pinned Linux package builder
+        if: runner.os == 'Linux'
+        run: echo "HERDR_TEST_NFPM=$(bash scripts/release/install-nfpm.sh "$RUNNER_TEMP/nfpm")" >> "$GITHUB_ENV"
       - name: Test release scripts and security contracts without credentials
         env:
           PYTHONDONTWRITEBYTECODE: '1'
@@ -138,9 +142,13 @@ jobs:
         github.event.pull_request.head.repo.full_name == 'penso/herdr-gpui') ||
        ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
         github.ref == 'refs/heads/main'))
-    name: Windows check
+    name: Windows check (${{ matrix.runner }})
     needs: zizmor
-    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -152,7 +160,7 @@ jobs:
         run: rustup show
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          key: windows
+          key: ${{ matrix.runner }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check formatting
         run: cargo fmt --all -- --check

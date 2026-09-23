@@ -63,8 +63,10 @@ class ReleaseTargets(unittest.TestCase):
         self.assertNotIn("github.event_name == 'pull_request'", jobs["build"])
         for name in ("checks", "build"):
             self.assertIn("bash scripts/install-linux-deps.sh", jobs[name])
+        self.assertIn('HERDR_TEST_NFPM=$(bash scripts/release/install-nfpm.sh "$RUNNER_TEMP/nfpm")', jobs["checks"])
         windows = jobs["windows"]
-        self.assertIn("    runs-on: windows-2025\n", windows)
+        self.assertIn("        runner: [windows-2025, windows-11-arm]\n", windows)
+        self.assertIn("    runs-on: ${{ matrix.runner }}\n", windows)
         for name in ("checks", "windows"):
             for command in ("cargo fmt --all -- --check",
                             "cargo clippy --locked --workspace --all-targets --all-features -- -D warnings",
@@ -81,7 +83,7 @@ class ReleaseTargets(unittest.TestCase):
         jobs = dict(zip(sections[1::2], sections[2::2]))
         targets = {"aarch64-apple-darwin", "x86_64-apple-darwin",
                    "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
-                   "x86_64-pc-windows-msvc"}
+                   "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"}
         self.assertEqual(set(SBOM.TARGETS), targets)
         self.assertEqual(set(tomllib.loads((ROOT / "deny.toml").read_text())["graph"]["targets"]), targets)
         self.assertEqual(set(tomllib.loads((ROOT / "scripts/release/about.toml").read_text())["targets"]), targets)
@@ -96,13 +98,19 @@ class ReleaseTargets(unittest.TestCase):
                         'cargo test --locked --workspace --all-features',
                         'test "$(rustc -vV | sed -n \'s/^host: //p\')" = "$TARGET"',
                         'name: linux-package-${{ matrix.target }}',
-                        'bash scripts/release/package-linux.sh "$VERSION" "$TARGET"'):
+                        'bash scripts/release/package-linux.sh "$VERSION" "$TARGET"',
+                        'bash scripts/release/install-nfpm.sh "$RUNNER_TEMP/nfpm"',
+                        'python3 scripts/release/package-linux-distro.py "$VERSION" "$TARGET"',
+                        'bash scripts/release/smoke-linux-packages.sh "$VERSION" "$TARGET" dist'):
             self.assertIn(command, linux)
+        for extension in ("tar.gz", "deb", "rpm", "pkg.tar.zst"):
+            self.assertIn(f"dist/Herdr-${{{{ needs.validate.outputs.version }}}}-${{{{ matrix.target }}}}.{extension}\n", linux)
         for target in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"):
             self.assertIn(f"name: linux-package-{target}\n", jobs["attest"])
         windows = jobs["windows"]
         self.assertEqual(re.findall(r"- runner: (\S+)\n            target: (\S+)", windows), [
-            ("windows-2025", "x86_64-pc-windows-msvc")])
+            ("windows-2025", "x86_64-pc-windows-msvc"),
+            ("windows-11-arm", "aarch64-pc-windows-msvc")])
         for command in ('cargo build --locked --release -p herdr-gpui --target "$TARGET"',
                         'cargo test --locked --release -p herdr-gpui --test cli --target "$TARGET"',
                         'cargo clippy --locked --workspace --all-targets --all-features -- -D warnings',
@@ -112,7 +120,8 @@ class ReleaseTargets(unittest.TestCase):
                         'python scripts/release/package-windows.py "$VERSION" "$TARGET"',
                         'name: windows-package-${{ matrix.target }}'):
             self.assertIn(command, windows)
-        self.assertIn("name: windows-package-x86_64-pc-windows-msvc\n", jobs["attest"])
+        for target in ("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"):
+            self.assertIn(f"name: windows-package-{target}\n", jobs["attest"])
         for name in ("sign", "attest"):
             self.assertRegex(jobs[name], r"    needs: \[[^]]*\bwindows\b")
         attest = jobs["attest"].replace("${{ needs.validate.outputs.version }}", VERSION)
@@ -275,15 +284,17 @@ class ReleaseSecurity(unittest.TestCase):
         self.run_manifest("verify")
         self.assertEqual(set(MANIFEST.base_names(VERSION)), {
             "Herdr-20260920.1-universal-apple-darwin.dmg", "Herdr-20260920.1.cdx.json",
-            "Herdr-20260920.1-x86_64-unknown-linux-gnu.tar.gz",
-            "Herdr-20260920.1-aarch64-unknown-linux-gnu.tar.gz",
+            *(f"Herdr-20260920.1-{target}.{extension}"
+              for target in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
+              for extension in ("tar.gz", "deb", "rpm", "pkg.tar.zst")),
             "Herdr-20260920.1-x86_64-pc-windows-msvc.zip",
+            "Herdr-20260920.1-aarch64-pc-windows-msvc.zip",
             "herdr-gpui-20260920.1-macos-universal.app.tar.gz",
             "herdr-gpui-20260920.1-x86_64-unknown-linux-gnu-update.tar.gz",
             "herdr-gpui-20260920.1-aarch64-unknown-linux-gnu-update.tar.gz",
             "update-manifest.json", "update-manifest.sig"})
-        self.assertEqual(len((self.path / "SHA256SUMS").read_text().splitlines()), 50)
-        self.assertEqual(len(self.run_manifest("names").splitlines()), 51)
+        self.assertEqual(len((self.path / "SHA256SUMS").read_text().splitlines()), 85)
+        self.assertEqual(len(self.run_manifest("names").splitlines()), 86)
         self.assertEqual(self.run_manifest("base-names").splitlines(), MANIFEST.base_names(VERSION))
         with tempfile.TemporaryDirectory() as temp:
             name = MANIFEST.base_names(VERSION)[0]
