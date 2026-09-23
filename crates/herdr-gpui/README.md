@@ -343,6 +343,9 @@ The Dock icon shows the number of agents reporting `Done` (finished) or `Blocked
 (waiting for input), and clears at zero. It covers all connected hosts and
 main windows, including minimized windows, without counting the same agent twice.
 Sidebar visibility, muted sounds, and dismissed toasts do not affect the badge.
+Existing attention is counted from each host's first snapshot at startup; no
+new completion or notification is needed. The first positive focus report waits
+until the terminal surface is ready so loading cannot acknowledge unseen work.
 
 The badge follows daemon status, just like the sidebar: foregrounding the app
 does not clear it locally. Finished agents clear according to the daemon's

@@ -177,6 +177,42 @@ mod tests {
     use herdr_client::ConnectTarget;
 
     #[gpui::test]
+    fn first_snapshot_counts_existing_attention_without_surface_or_notifications(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let handle = cx.add_window(fixture_window);
+        handle
+            .update(cx, |view, window, cx| {
+                install(cx);
+                let id = window.window_handle().window_id();
+                sync(id, &view.endpoints, cx);
+                assert_eq!(cx.global::<Badge>().published, Some(0));
+
+                let mut initial = snapshot(2);
+                initial.agents[0].agent_status = AgentStatus::Done;
+                initial.agents[1].agent_status = AgentStatus::Blocked;
+                view.endpoints[0]
+                    .live
+                    .apply(herdr_client::ClientEvent::Snapshot(Arc::new(
+                        initial.clone(),
+                    )));
+                assert!(view.endpoints[0].live.surface.is_none());
+                assert!(view.endpoints[0].live.notifications.is_empty());
+                sync(id, &view.endpoints, cx);
+                assert_eq!(cx.global::<Badge>().published, Some(2));
+
+                initial.revision += 1;
+                initial.agents[0].agent_status = AgentStatus::Idle;
+                view.endpoints[0]
+                    .live
+                    .apply(herdr_client::ClientEvent::Snapshot(Arc::new(initial)));
+                sync(id, &view.endpoints, cx);
+                assert_eq!(cx.global::<Badge>().published, Some(1));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn qa_preview_survives_polling_and_restores_daemon_attention(cx: &mut gpui::TestAppContext) {
         use crate::actions::SetBadgePreview;
 

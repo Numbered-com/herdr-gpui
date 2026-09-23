@@ -221,6 +221,58 @@ fn connected_endpoint(id: &str) -> (Endpoint, Server) {
 }
 
 #[gpui::test]
+fn startup_focus_waits_for_the_first_surface_without_flapping_on_later_updates(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
+    });
+    let view = fixture.update(cx, |fixture, _| fixture.0.clone());
+    let (mut endpoint, mut server) = connected_endpoint(LOCAL);
+    endpoint.connection.inbox.lock().unwrap().surface = None;
+    endpoint.live.surface = None;
+    let inbox = endpoint.connection.inbox.clone();
+    view.update(cx, |view, _| {
+        view.endpoints = vec![endpoint];
+        view.options = ConnectOptions::default();
+        view.reset_selected();
+        view.active = true;
+        assert!(!view.input_ready());
+        view.report_focus();
+        assert_eq!(view.sent_focus, Some(false));
+    });
+    assert!(matches!(
+        server.receive(),
+        ClientMessage::ClientShellFocus { focused: false }
+    ));
+
+    inbox
+        .lock()
+        .unwrap()
+        .apply(ClientEvent::Surface(surface(&snapshot())));
+    view.update(cx, |view, cx| {
+        project_until(view, cx, "startup surface ready", HerdrWindow::input_ready);
+        view.report_focus();
+        assert_eq!(view.sent_focus, Some(true));
+        // New snapshot/surface pairs can arrive separately during normal activity.
+        view.live.surface = None;
+        view.report_focus();
+        assert_eq!(view.sent_focus, Some(true));
+        view.active = false;
+        view.report_focus();
+        assert_eq!(view.sent_focus, Some(false));
+    });
+    assert!(matches!(
+        server.receive(),
+        ClientMessage::ClientShellFocus { focused: true }
+    ));
+    assert!(matches!(
+        server.receive(),
+        ClientMessage::ClientShellFocus { focused: false }
+    ));
+}
+
+#[gpui::test]
 fn toast_navigation_queues_typed_targets_and_fences_input(cx: &mut gpui::TestAppContext) {
     let (fixture, cx) = cx.add_window_view(|window, cx| {
         Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
