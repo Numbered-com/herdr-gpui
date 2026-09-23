@@ -48,8 +48,8 @@ release workflow. A cask install updates itself through Homebrew: the in-app
 updater detects that Homebrew owns the bundle and runs `brew upgrade --cask
 herdr-gpui` for you, so Homebrew's records stay correct. If its metadata is stale,
 the updater runs `brew update` and retries once. The update panel shows progress
-throughout. macOS `.dmg` and experimental Linux tarballs are also published
-on [Releases](https://github.com/penso/herdr-gpui/releases).
+throughout. macOS `.dmg`, experimental Linux tarballs, and an experimental Windows `.zip`
+are also published on [Releases](https://github.com/penso/herdr-gpui/releases).
 
 ### From source
 
@@ -84,15 +84,22 @@ audio player is required. Custom notification sounds are MP3 only. See
 
 ### Windows
 
-Windows is a compile target, not a supported platform: CI type-checks every
-target and feature on `windows-2025` and runs the protocol and client test
-suites there, but no window, renderer, or live daemon has been exercised. Local
+Windows is experimental, not a supported platform: CI type-checks every target
+and feature on `windows-2025`, runs the protocol and client test suites, and
+links the executable, but no window, renderer, or live daemon has been
+exercised. Local
 connections use the named pipe the Windows daemon binds, and configuration and
 state follow its `%APPDATA%` / `%LOCALAPPDATA%` layout. Saved SSH
 hosts, in-app updates, saved GitHub credentials, and the avatar disk cache are
 unavailable and report that plainly; see
-[the GUI README](crates/herdr-gpui/README.md#windows). No Windows binary is
-published.
+[the GUI README](crates/herdr-gpui/README.md#windows).
+
+Each release publishes `Herdr-VERSION-x86_64-pc-windows-msvc.zip` containing
+`herdr-gpui.exe` and its license notices. It carries the same checksums,
+Sigstore signatures, and build provenance as the other assets, but it is not
+Authenticode-signed, so SmartScreen warns on first launch, and it never updates
+itself: download each new release manually. It is a console-subsystem
+executable, so launching it from Explorer also opens a console window.
 
 ## How it connects
 

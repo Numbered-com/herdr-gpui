@@ -192,11 +192,12 @@ commands on trusted build outputs first.
    exact JSON, verify the signature, and require 64 raw bytes. Upload the DMG,
    macOS updater archive, JSON and raw signature for the attestation job.
 5. In the separate protected OIDC job, combine these with both Linux artifact
-   pairs and the locked four-target SBOM. Require the exact nine-file base set,
-   then checksum, Sigstore-sign and attest all nine files. Each has four sidecars
-   (`.sha256`, `.sha512`, `.sig`, `.crt`); `SHA256SUMS` covers all 45 files.
+   pairs, the Windows zip (manual download only, never in the update manifest),
+   and the locked five-target SBOM. Require the exact ten-file base set, then
+   checksum, Sigstore-sign and attest all ten files. Each has four sidecars
+   (`.sha256`, `.sha512`, `.sig`, `.crt`); `SHA256SUMS` covers all 50 files.
 6. The protected publication job refuses existing tags/releases, creates a
-   `vVERSION` tag at the validated SHA and a draft, uploads all 46 assets, then
+   `vVERSION` tag at the validated SHA and a draft, uploads all 51 assets, then
    re-downloads and verifies the exact set and hashes before publication. The
    separately approved Homebrew job uses only the verified published DMG.
 
