@@ -76,6 +76,11 @@ impl HerdrWindow {
                 // Apply a coherent pair only after both have loaded successfully.
                 match loaded {
                     Ok((config, theme)) => {
+                        cx.set_global(crate::app::InitialAppearance {
+                            config: config.clone(),
+                            theme: theme.clone(),
+                            error: None,
+                        });
                         if this.avatars.is_some() && this.menu.github.initialize(&config) {
                             this.menu.pr_cache.clear();
                             this.menu.pr.clear();

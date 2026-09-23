@@ -518,6 +518,28 @@ impl Config {
         Self::load_path(&Self::path()?, &daemon_config_path(|key| env::var_os(key)))
     }
 
+    /// First-frame settings only: no lock, migration, writes, or fsync. The
+    /// background load performs maintenance after the window has appeared.
+    pub(crate) fn load_startup() -> Result<Self> {
+        Self::load_startup_path(&Self::path()?, &daemon_config_path(|key| env::var_os(key)))
+    }
+
+    fn load_startup_path(path: &Path, daemon: &Path) -> Result<Self> {
+        let local = path.with_extension("local.toml");
+        let (text, source) = match fs::read_to_string(&local) {
+            Ok(text) => (text, local),
+            Err(error) if error.kind() == ErrorKind::NotFound => match fs::read_to_string(path) {
+                Ok(text) if !text.starts_with(MANAGED_HEADER) => (text, path.to_owned()),
+                Ok(_) => (String::new(), local),
+                Err(error) if error.kind() == ErrorKind::NotFound => (String::new(), local),
+                Err(error) => return Err(Error::from(error).at_path(path)),
+            },
+            Err(error) => return Err(Error::from(error).at_path(&local)),
+        };
+        Self::parse_layers([DEFAULT_CONFIG, &text], daemon_clipboard_toast(daemon))
+            .map_err(|error| error.at_path(&source))
+    }
+
     /// `daemon` is the herdr config whose settings this GUI also honors. It is
     /// read for those keys alone and never written; a missing one is normal.
     fn load_path(path: &Path, daemon: &Path) -> Result<Self> {
@@ -1822,6 +1844,82 @@ mod tests {
                 "{result:?}"
             );
         }
+    }
+
+    #[test]
+    fn startup_reads_settings_without_writes_or_waiting_for_maintenance() -> anyhow::Result<()> {
+        let temp = TempDirectory::new()?;
+        let path = temp.0.join("config-gpui.toml");
+        let daemon = temp.0.join("absent.toml");
+        assert_eq!(
+            Config::load_startup_path(&path, &daemon)?.layout.mode,
+            LayoutMode::Normal
+        );
+        assert_eq!(fs::read_dir(&temp.0)?.count(), 0);
+        let legacy = "layout = 'compact'\ntheme = 'Nord'\n[terminal]\nsize = 18\n";
+        fs::write(&path, legacy)?;
+        let config = Config::load_startup_path(&path, &daemon)?;
+        assert_eq!(config.layout.mode, LayoutMode::Compact);
+        assert_eq!(config.theme, "Nord");
+        assert_eq!(config.terminal.size, 18.);
+        assert_eq!(fs::read_to_string(&path)?, legacy);
+        assert_eq!(fs::read_dir(&temp.0)?.count(), 1);
+
+        let local = path.with_extension("local.toml");
+        fs::write(&local, "layout = 'compact'\ntheme = 'Dracula'")?;
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path.with_extension("lock"))?;
+        lock.lock()?;
+        // Hold the maintenance lock until the read finishes, with a bounded wait
+        // so accidentally adding lock acquisition is a deterministic failure.
+        let (send, receive) = std::sync::mpsc::channel();
+        let (worker_path, worker_daemon) = (path.clone(), daemon.clone());
+        let worker = std::thread::spawn(move || {
+            let _ = send.send(Config::load_startup_path(&worker_path, &worker_daemon));
+        });
+        let result = receive.recv_timeout(std::time::Duration::from_secs(5));
+        drop(lock);
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("startup reader panicked"))?;
+        assert_eq!(result??.theme, "Dracula");
+        assert_eq!(fs::read_to_string(&path)?, legacy);
+        assert_eq!(
+            fs::read_to_string(&local)?,
+            "layout = 'compact'\ntheme = 'Dracula'"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn startup_appearance_read_timing() -> anyhow::Result<()> {
+        let temp = TempDirectory::new()?;
+        let path = temp.0.join("config-gpui.toml");
+        let daemon = temp.0.join("absent.toml");
+        fs::write(
+            path.with_extension("local.toml"),
+            "layout = 'compact'\ntheme = 'Nord'",
+        )?;
+        let mut samples = Vec::new();
+        for _ in 0..100 {
+            let start = std::time::Instant::now();
+            let config = Config::load_startup_path(&path, &daemon)?;
+            let theme = config.theme()?;
+            samples.push(start.elapsed());
+            assert_eq!(config.layout.mode, LayoutMode::Compact);
+            assert_eq!(Some(theme), Theme::builtin("Nord"));
+        }
+        let first = samples[0];
+        samples.sort();
+        eprintln!(
+            "Startup config + built-in theme: first={first:?}, median={:?}, p95={:?} (100 reads)",
+            samples[50], samples[94]
+        );
+        // Timing is reported, not gated: filesystem latency is machine-dependent.
+        Ok(())
     }
 
     #[test]

@@ -219,8 +219,13 @@ repeating the other field. `FontConfig::line_height()` returns `size * 20 / 14`.
 The `[features]` table holds opt-in behaviors as `Features`, with every flag off
 by default and unknown keys rejected like the other sections; Preferences lists
 each flag and its state read-only, since only the config file turns one on.
-Config and theme I/O is synchronous; startup and reload schedule it on the GPUI
-background executor and apply the validated pair together. Failed reloads retain
+First-frame config and theme loading is read-only: no config lock, migration,
+writes, or fsync delays window creation. It reads local overrides (or the legacy
+file before migration) so the first frame uses the configured layout, theme, and
+font sizes. Config maintenance, font fallback discovery, and subsequent reloads
+run on the GPUI background executor. External theme files still require disk I/O;
+startup appearance timing is recorded at debug level. Additional
+windows start from the last successfully loaded pair. Failed reloads retain
 current settings. Theme selection cancels pending reload application so a delayed
 load cannot overwrite the newer selection.
 
