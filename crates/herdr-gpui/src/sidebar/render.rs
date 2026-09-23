@@ -219,6 +219,15 @@ impl HerdrWindow {
                         first_text([workspace.branch.as_deref()], ""),
                         RowKind::Workspace,
                         workspace.agent_status,
+                        selected
+                            && self.live.status.is_connected()
+                            && self.removal.as_ref().is_some_and(|removal| {
+                                removal.pending_for(
+                                    (self.selection_epoch, endpoint.generation),
+                                    &snapshot.boot_id,
+                                    &workspace.workspace_id,
+                                )
+                            }),
                         selected && workspace.focused,
                         tree,
                         reserve_arrow,
@@ -350,6 +359,7 @@ impl HerdrWindow {
                         detail,
                         RowKind::Agent,
                         agent.agent_status,
+                        false,
                         selected && agent.focused,
                         RowTree::None,
                         false,

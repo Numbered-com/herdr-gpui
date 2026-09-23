@@ -244,6 +244,7 @@ pub(super) fn row(
     detail: &str,
     kind: RowKind,
     status: AgentStatus,
+    removing: bool,
     focused: bool,
     tree: RowTree,
     reserve_arrow: bool,
@@ -336,7 +337,28 @@ pub(super) fn row(
                     ),
             )
         })
-        .child(status_indicator(status, font))
+        .child(if removing {
+            div()
+                .debug_selector(|| "worktree-removing".into())
+                .size(px(STATUS_WIDTH))
+                .mt(px((line_height(font) - STATUS_WIDTH) / 2.))
+                .flex_none()
+                .child(
+                    div()
+                        .size_full()
+                        .rounded_full()
+                        .bg(rgb(theme.primary()))
+                        .with_animation(
+                            "worktree-removing-pulse",
+                            Animation::new(std::time::Duration::from_secs(1)).repeat(),
+                            |dot, delta| {
+                                dot.opacity(0.3 + 0.7 * (delta * std::f32::consts::PI).sin())
+                            },
+                        ),
+                )
+        } else {
+            status_indicator(status, font)
+        })
         .child(
             div()
                 .flex()
