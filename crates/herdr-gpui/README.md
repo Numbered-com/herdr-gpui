@@ -1,8 +1,8 @@
 # Herdr Native Shell
 
 A GPUI 0.2.2 client for a Local daemon and saved SSH hosts, with macOS support,
-experimental Linux x86_64/ARM64 builds, and an unproven Windows build that CI
-type-checks but does not run. See [Windows](#windows) for what is unavailable there.
+experimental Linux x86_64/ARM64 builds, and an experimental Windows build with
+headless CI coverage. See [Windows](#windows) for what is unavailable there.
 It starts an installed local `herdr server` when absent; explicit socket and
 development targets remain attach-only. It does not link or install Herdr, stop
 daemons, spawn a local PTY, or emulate a terminal. Herdr's remote bridge may start
@@ -705,11 +705,12 @@ GPUI native action/menu/keybinding patterns.
 
 ## Windows
 
-Windows is experimental, not a supported platform. CI lints every target and
-feature on `windows-2025`. The release workflow runs the `herdr-protocol` and
-`herdr-client` suites, builds the optimized executable, tests its CLI, and
-publishes it as `Herdr-VERSION-x86_64-pc-windows-msvc.zip`; nothing about the
-window, rendering, input, or a live daemon has been exercised. Local connections use the named pipe the Windows
+Windows is experimental, not a supported platform. CI checks formatting, lints
+every target and feature, and runs workspace tests with default and all features
+on `windows-2025`, including headless UI and CLI tests. The release workflow
+builds and CLI-tests the optimized executable and publishes it as
+`Herdr-VERSION-x86_64-pc-windows-msvc.zip`; native window, rendering, input, and
+live-daemon behavior remain unproven. Local connections use the named pipe the Windows
 daemon binds, derived from the same socket path string upstream uses, so
 discovery and framing are the same code as on Unix. Receive deadlines are
 emulated with `PeekNamedPipe`, the one `unsafe` call in the workspace, because a

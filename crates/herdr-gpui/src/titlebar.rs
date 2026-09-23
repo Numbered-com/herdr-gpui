@@ -401,6 +401,7 @@ mod git_button_tests {
         git::{Git, Status},
         menu::Page,
         pull_request::Input,
+        sidebar::layout_tests::REPO_KEY,
     };
     use gpui::{Modifiers, MouseButton, MouseDownEvent, TestAppContext, px, size};
 
@@ -425,7 +426,7 @@ mod git_button_tests {
                 view.git = Git::fixture(
                     Input {
                         checkout: None,
-                        repo_key: "/fixture/agent-launcher/.git".into(),
+                        repo_key: REPO_KEY.into(),
                         branch: "develop".into(),
                     },
                     Status {
@@ -489,7 +490,7 @@ mod git_button_tests {
                 view.git = Git::fixture(
                     Input {
                         checkout: None,
-                        repo_key: "/fixture/agent-launcher/.git".into(),
+                        repo_key: REPO_KEY.into(),
                         branch: "develop".into(),
                     },
                     Status::default(),
@@ -515,7 +516,7 @@ mod git_button_tests {
         let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
         let input = Input {
             checkout: None,
-            repo_key: "/fixture/agent-launcher/.git".into(),
+            repo_key: REPO_KEY.into(),
             branch: "develop".into(),
         };
         cx.simulate_resize(size(px(900.), px(600.)));
@@ -569,7 +570,7 @@ mod git_button_tests {
         let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
         let input = Input {
             checkout: None,
-            repo_key: "/fixture/agent-launcher/.git".into(),
+            repo_key: REPO_KEY.into(),
             branch: "develop".into(),
         };
         cx.simulate_resize(size(px(900.), px(600.)));

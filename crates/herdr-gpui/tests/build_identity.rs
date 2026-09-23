@@ -63,6 +63,15 @@ impl Drop for Sandbox {
     }
 }
 
+fn watches(identity: &Identity, path: &std::path::Path) -> bool {
+    // Git output and canonical paths use different Windows path prefixes.
+    let path = path.canonicalize().unwrap();
+    identity
+        .watched
+        .iter()
+        .any(|p| p.canonicalize().unwrap() == path)
+}
+
 #[test]
 fn real_linked_worktree_branch_detached_and_metadata() {
     let repo = Sandbox::new();
@@ -92,9 +101,9 @@ fn real_linked_worktree_branch_detached_and_metadata() {
             .any(|p| p.ends_with("refs/heads/feature/test"))
     );
     assert!(identity.watched.iter().all(|p| p.is_file()));
-    assert!(identity.watched.contains(&linked.join(".git")));
+    assert!(watches(&identity, &linked.join(".git")));
     assert!(!identity.watched.iter().any(|p| p.ends_with("packed-refs")));
-    assert!(!detect(&repo.0).watched.contains(&repo.0.join(".git")));
+    assert!(!watches(&detect(&repo.0), &repo.0.join(".git")));
     assert!(
         identity
             .watched
@@ -125,12 +134,17 @@ fn packed_refs_watch_existing_parent_for_loose_ref_creation() {
     let identity = detect(&linked);
     assert_eq!(identity.branch, "feature/nested/test");
     assert!(identity.watched.iter().all(|p| p.exists()));
-    assert!(identity.watched.contains(&repo.0.join(".git/packed-refs")));
+    assert!(watches(&identity, &repo.0.join(".git/packed-refs")));
     let loose = repo.0.join(".git/refs/heads/feature/nested/test");
     assert!(!loose.exists());
-    assert!(!identity.watched.contains(&loose));
+    assert!(
+        !identity
+            .watched
+            .iter()
+            .any(|p| p.ends_with("refs/heads/feature/nested/test"))
+    );
     let parent = loose.ancestors().skip(1).find(|p| p.is_dir()).unwrap();
-    assert!(identity.watched.iter().any(|p| p == parent));
+    assert!(watches(&identity, parent));
     repo.git(&[
         "-C",
         linked.to_str().unwrap(),
@@ -146,7 +160,7 @@ fn packed_refs_watch_existing_parent_for_loose_ref_creation() {
         "loose",
     ]);
     assert!(loose.is_file());
-    assert!(detect(&linked).watched.contains(&loose));
+    assert!(watches(&detect(&linked), &loose));
 }
 
 #[test]
@@ -158,11 +172,10 @@ fn branch_unicode_whitespace_is_preserved_and_controls_fall_back_to_sha() {
     repo.git(&["worktree", "add", "-b", branch, linked.to_str().unwrap()]);
     let identity = detect(&linked);
     assert_eq!(identity.branch, branch);
-    assert!(
-        identity
-            .watched
-            .contains(&repo.0.join(".git/refs/heads").join(branch))
-    );
+    assert!(watches(
+        &identity,
+        &repo.0.join(".git/refs/heads").join(branch)
+    ));
     repo.git(&[
         "-C",
         linked.to_str().unwrap(),

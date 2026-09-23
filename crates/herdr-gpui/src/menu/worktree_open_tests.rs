@@ -632,7 +632,7 @@ fn open_worktree_replies_cannot_revive_dismissed_or_stale_pickers(cx: &mut TestA
             view.live.dialog_response = Some(("old-open".into(), Some(Ok(opened.clone()))));
             view.update_workspace_dialog(window, cx);
             assert_eq!(view.menu.creation.as_deref(), Some("open"));
-            view.collapsed_repos.insert("/fixture/agent-launcher/.git".into());
+            view.collapsed_repos.insert(crate::sidebar::layout_tests::REPO_KEY.into());
             view.live.dialog_response = Some(("open".into(), Some(Ok(opened))));
             view.update_workspace_dialog(window, cx);
             assert!(view.menu.page.is_none());

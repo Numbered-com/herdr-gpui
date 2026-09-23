@@ -126,9 +126,9 @@ jobs:
       - name: Test integration-feature build and executable CLI
         run: cargo test --locked --workspace --all-features
 
-  # Keep Windows CI lint-only to catch `cfg` regressions without the cost of
-  # linking. The release workflow runs the protocol/client suites and builds
-  # and CLI-tests the optimized executable; native GUI behavior is unproven.
+  # Match the other platforms' Rust checks without an extra optimized build.
+  # Native GUI tests remain opt-in; release builds and optimized CLI tests run
+  # in the release workflow.
   windows:
     if: >-
       github.repository == 'penso/herdr-gpui' &&
@@ -154,13 +154,19 @@ jobs:
         with:
           key: windows
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Check formatting
+        run: cargo fmt --all -- --check
       - name: Lint every target and feature
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Test default features and executable CLI
+        run: cargo test --locked --workspace
+      - name: Test integration-feature build and executable CLI
+        run: cargo test --locked --workspace --all-features
 
   # Keep the branch-protection context stable while requiring every platform.
   checks-passed:
     name: Format, lint, and test
-    needs: [checks, commits]
+    needs: [checks, windows, commits]
     if: >-
       always() &&
       github.repository == 'penso/herdr-gpui' &&
@@ -177,8 +183,9 @@ jobs:
       - name: Require all platform checks
         env:
           RESULT: ${{ needs.checks.result }}
+          WINDOWS: ${{ needs.windows.result }}
           COMMITS: ${{ needs.commits.result }}
-        run: test "$RESULT" = success && test "$COMMITS" = success
+        run: test "$RESULT" = success && test "$WINDOWS" = success && test "$COMMITS" = success
 
   build:
     if: >-
