@@ -441,6 +441,35 @@ mod tests {
     }
 
     #[test]
+    fn scroll_request_clears_only_on_its_own_answer() {
+        let mut state = LiveState {
+            scroll_request: Some("scroll".into()),
+            ..LiveState::default()
+        };
+        state.apply(ClientEvent::Response {
+            request_id: "other".into(),
+            response: serde_json::json!({"result": {}}),
+        });
+        state.apply(ClientEvent::CommandRejected {
+            request_id: None,
+            reason: herdr_client::Error::Disconnected,
+        });
+        assert_eq!(state.scroll_request.as_deref(), Some("scroll"));
+        state.apply(ClientEvent::Response {
+            request_id: "scroll".into(),
+            response: serde_json::json!({"result": {}}),
+        });
+        assert_eq!(state.scroll_request, None);
+
+        state.scroll_request = Some("scroll".into());
+        state.apply(ClientEvent::CommandRejected {
+            request_id: Some("scroll".into()),
+            reason: herdr_client::Error::CommandBoot,
+        });
+        assert_eq!(state.scroll_request, None);
+    }
+
+    #[test]
     fn dialog_response_is_correlated_and_survives_coalescing() {
         let mut state = LiveState {
             dialog_response: Some(("remove".into(), None)),
