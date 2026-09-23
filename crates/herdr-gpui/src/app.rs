@@ -131,6 +131,8 @@ pub(crate) fn run() -> std::process::ExitCode {
     let failed = startup_failed.clone();
     Application::new().with_assets(icons::Icons).run(move |cx| {
         app_icon::install();
+        #[cfg(target_os = "macos")]
+        crate::app_badge::install(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &ShowLogs, cx| log_window::open(cx));
         bind_keys(cx);

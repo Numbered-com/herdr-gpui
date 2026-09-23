@@ -337,6 +337,27 @@ Plain URL detection is limited to one row within one pane; links that wrap or
 reach the right edge need explicit terminal hyperlink metadata. Other URI schemes
 and local file paths are not activated.
 
+## macOS Dock Badge
+
+The Dock icon shows the number of agents reporting `Done` (finished) or `Blocked`
+(waiting for input), and clears at zero. It covers all connected hosts and
+main windows, including minimized windows, without counting the same agent twice.
+Sidebar visibility, muted sounds, and dismissed toasts do not affect the badge.
+
+The badge follows daemon status, just like the sidebar: foregrounding the app
+does not clear it locally. Finished agents clear according to the daemon's
+acknowledgement behavior: two completions become `1` after the daemon marks one
+seen. The daemon may acknowledge all panes in a viewed tab together. Blocked
+agents remain counted until their status changes, even after you view them.
+Disconnecting a host or closing a window removes its contribution, while other
+windows can keep the badge visible. Quitting the GUI stops monitoring; this is
+not a background notification service. Linux and Windows do not show this badge.
+
+To preview it without waiting for an agent, choose **QA > Enable badge** in the
+macOS menu bar. The preview shows at least `2` and stays on until you choose **QA > Disable badge preview**
+or quit. Disabling the preview restores daemon-driven behavior, so real agent
+attention can keep the badge visible. This QA setting is not saved.
+
 ## Supported
 
 - Workspace/worktree sidebar with main-checkout parents, indented linked

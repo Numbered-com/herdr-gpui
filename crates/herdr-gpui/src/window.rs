@@ -166,6 +166,12 @@ impl HerdrWindow {
                             .as_ref()
                             .and_then(|s| s.focused_pane_id.clone());
                         this.poll_endpoints(cx);
+                        #[cfg(target_os = "macos")]
+                        crate::app_badge::sync(
+                            window.window_handle().window_id(),
+                            &this.endpoints,
+                            cx,
+                        );
                         this.update_workspace_dialog(window, cx);
                         this.poll_worktree_source(cx);
                         this.poll_hover_menu(std::time::Instant::now(), window, cx);

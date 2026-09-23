@@ -177,6 +177,16 @@ pub(crate) fn menus() -> Vec<Menu> {
                 MenuItem::action("Show herdr non-detected modal", ShowHerdrNotDetected),
                 MenuItem::action("Show app update available", ShowUpdatePreview),
                 MenuItem::action("Play Sound", PlaySound),
+                #[cfg(target_os = "macos")]
+                MenuItem::action(
+                    "Enable badge",
+                    crate::actions::SetBadgePreview { enabled: true },
+                ),
+                #[cfg(target_os = "macos")]
+                MenuItem::action(
+                    "Disable badge preview",
+                    crate::actions::SetBadgePreview { enabled: false },
+                ),
                 MenuItem::separator(),
                 MenuItem::action(
                     "Show NeedsAttention toast",
@@ -211,6 +221,30 @@ pub(crate) fn menus() -> Vec<Menu> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn badge_preview_is_available_only_in_the_macos_qa_menu() {
+        let menus = menus();
+        let qa = menus
+            .iter()
+            .find(|menu| menu.name.as_ref() == "QA")
+            .unwrap();
+        for (label, enabled) in [("Enable badge", true), ("Disable badge preview", false)] {
+            let action = qa.items.iter().find_map(|item| match item {
+                MenuItem::Action { name, action, .. } if name.as_ref() == label => Some(action),
+                _ => None,
+            });
+            if cfg!(target_os = "macos") {
+                assert!(
+                    action
+                        .unwrap()
+                        .partial_eq(&crate::actions::SetBadgePreview { enabled })
+                );
+            } else {
+                assert!(action.is_none());
+            }
+        }
+    }
 
     /// The font size items are the only way to reach these commands from the
     /// macOS menu bar, and each must dispatch the catalog command rather than
