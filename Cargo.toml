@@ -58,6 +58,7 @@ toml_edit            = "0.25"
 tracing              = "0.1"
 tracing-subscriber   = { default-features = false, features = ["registry", "std"], version = "0.3" }
 unicode-segmentation = "1"
+unicode-width        = "0.2.2"
 ureq                 = "3"
 windows-sys          = { features = ["Win32_Foundation", "Win32_System_Pipes"], version = "0.61.2" }
 zeroize              = "=1.9.0"

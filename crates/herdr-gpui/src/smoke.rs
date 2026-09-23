@@ -20,6 +20,10 @@ use std::{
 
 pub static EXIT_CODE: AtomicU8 = AtomicU8::new(0);
 
+#[cfg(target_os = "macos")]
+#[path = "smoke_selection.rs"]
+mod selection;
+
 fn banner_height() -> f32 {
     if env!("HERDR_BUILD_WORKTREE") == "1" {
         22.
@@ -1298,6 +1302,13 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
             }
         }
         if completed {
+            #[cfg(target_os = "macos")]
+            if let Err(error) = selection::verify(handle, cx).await {
+                EXIT_CODE.store(1, Ordering::SeqCst);
+                eprintln!("GUI selection FAIL: {error:#}");
+                let _ = cx.update(|cx| cx.quit());
+                return;
+            }
             match second_window(handle, cx).await {
                 Ok(()) => {
                     eprintln!("GUI integration PASS: same boot={boot}, 3 workspaces / 4 tabs, persisted shell output after reconnect, external workspace pushed to idle GUI, second window on its own space");

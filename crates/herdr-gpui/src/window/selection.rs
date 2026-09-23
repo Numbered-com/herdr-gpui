@@ -289,6 +289,53 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    fn chinese_mouse_selection_copies_exact_text_only_on_release(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut view = fixture_window(window, cx);
+            // Daemon-style wide cells: ordinary blank continuations, skip=false.
+            let mut frame = surface(&["你 好 世 界 ", "A你  B"], 12);
+            let snapshot = view.live.snapshot.as_ref().unwrap();
+            frame.boot_id = snapshot.boot_id.clone();
+            frame.projection_revision = snapshot.revision;
+            view.live.surface = Some(Arc::new(frame));
+            view
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear();
+        });
+        let (origin, width, height) = view.read_with(cx, |view, _| {
+            (
+                view.bounds.origin,
+                view.cell_width,
+                view.config.terminal.line_height(),
+            )
+        });
+        let at =
+            |column: f32, row: f32| origin + point(px(column * width), px((row + 0.5) * height));
+        for (from, to, row, expected) in [
+            (0.1, 7.9, 0., "你好世界"),
+            (7.9, 0.1, 0., "你好世界"),
+            (0.1, 8.9, 0., "你好世界 "),
+            (0.1, 4.9, 1., "A你 B"),
+        ] {
+            cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("before".into())));
+            cx.simulate_mouse_down(at(from, row), MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_move(at(to, row), MouseButton::Left, Modifiers::default());
+            assert_eq!(
+                cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+                Some("before".into())
+            );
+            cx.simulate_mouse_up(at(to, row), MouseButton::Left, Modifiers::default());
+            assert_eq!(
+                cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+                Some(expected.into())
+            );
+            assert!(view.read_with(cx, |view, _| view.selection.is_none()));
+        }
+    }
+
     /// A link is a destination for a click and text for a drag: the same
     /// press must be able to become either one.
     #[gpui::test]
