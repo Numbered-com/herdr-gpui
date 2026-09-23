@@ -165,6 +165,9 @@ impl HerdrWindow {
         // A GitHub tab of the new worktree dialog is a picker, not a form.
         let listing =
             self.worktree_listing() || page == Page::Dialog(WorkspaceAction::OpenWorktree);
+        // The new worktree dialog keeps a listing's size on every tab, form
+        // included, so moving between tabs never resizes it.
+        let settled = listing || page == Page::Dialog(WorkspaceAction::NewWorktree);
         // Context menus open where the pointer asked for them. A dialog is a
         // modal decision, not a continuation of the row it came from, so it
         // centres over a dimmed window the way the Herdr TUI's dialogs do.
@@ -187,9 +190,8 @@ impl HerdrWindow {
                         340.
                     } else if page == Page::Dialog(WorkspaceAction::DeleteWorktree) {
                         480.
-                    } else if listing || page == Page::Dialog(WorkspaceAction::NewWorktree) {
-                        // A listing needs room for a title and its branch, and
-                        // the new worktree tabs keep one width across tabs.
+                    } else if settled {
+                        // A listing needs room for a title and its branch.
                         560.
                     } else {
                         420.
@@ -200,7 +202,7 @@ impl HerdrWindow {
                     .max_h((viewport.height - px(24.)).max(px(0.)))
                     // A listing is a picker: it takes a settled height and
                     // scrolls inside it, as the theme and command pickers do.
-                    .when(listing, |panel| {
+                    .when(settled, |panel| {
                         panel
                             .flex()
                             .flex_col()
@@ -278,7 +280,7 @@ impl HerdrWindow {
                     // Dialogs draw their own full-bleed header and footer rules,
                     // so the panel's own inset would cut those rules short.
                     panel
-                        .when(!listing, |panel| panel.overflow_y_scroll())
+                        .when(!settled, |panel| panel.overflow_y_scroll())
                         .when(!matches!(page, Page::Dialog(_)), |panel| panel.p(px(6.)))
                 },
             )

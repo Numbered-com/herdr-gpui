@@ -546,3 +546,32 @@ fn one_search_field_searches_every_tab(cx: &mut gpui::TestAppContext) {
         branch
     );
 }
+
+/// Moving between tabs never resizes the dialog: the branch form takes the
+/// same settled size as the listings, whatever each one holds.
+#[gpui::test]
+fn every_tab_keeps_the_same_dialog_size(cx: &mut gpui::TestAppContext) {
+    let (view, cx) = cx.add_window_view(sidebar::layout_tests::fixture_window);
+    cx.simulate_resize(gpui::size(gpui::px(900.), gpui::px(700.)));
+    open_dialog(&view, cx, true, Tab::New);
+    install_local_listings(&view, cx);
+    let form = cx.debug_bounds("menu-panel").unwrap();
+    for tab in Tab::ALL {
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| view.select_worktree_tab(tab, window, cx));
+        });
+        draw(cx);
+        assert_eq!(self::tab(&view, cx), tab);
+        let panel = cx.debug_bounds("menu-panel").unwrap();
+        assert_eq!(panel.size, form.size, "{tab:?}");
+    }
+    // The form's footer still sits at the panel's bottom edge.
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.select_worktree_tab(Tab::New, window, cx)
+        });
+    });
+    draw(cx);
+    let footer = cx.debug_bounds("dialog-footer").unwrap();
+    assert!((form.bottom() - footer.bottom()).abs() <= gpui::px(2.));
+}

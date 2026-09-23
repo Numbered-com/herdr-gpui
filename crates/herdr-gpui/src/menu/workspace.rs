@@ -831,7 +831,10 @@ impl HerdrWindow {
         div()
             .flex()
             .flex_col()
-            .when(listing, |dialog| dialog.size_full().min_h_0())
+            .when(
+                listing || action == WorkspaceAction::NewWorktree,
+                |dialog| dialog.size_full().min_h_0(),
+            )
             .child(
                 div()
                     .debug_selector(|| "dialog-header".into())
@@ -905,9 +908,8 @@ impl HerdrWindow {
                 dialog.child(self.render_worktree_tabs(cx))
             })
             .child(if action == WorkspaceAction::OpenWorktree {
-                self.render_existing_worktrees(cx).when(
-                    creating || self.menu.error.is_some(),
-                    |picker| {
+                self.render_existing_worktrees(cx)
+                    .when(creating || self.menu.error.is_some(), |picker| {
                         picker.child(
                             div()
                                 .id("open-worktree-status")
@@ -917,12 +919,25 @@ impl HerdrWindow {
                                 .overflow_y_scroll()
                                 .child(body),
                         )
-                    },
-                )
+                    })
+                    .into_any_element()
             } else if listing {
-                self.render_worktree_items(cx)
+                self.render_worktree_items(cx).into_any_element()
+            } else if action == WorkspaceAction::NewWorktree {
+                // The branch form shares the listings' settled height, so it
+                // fills the space above the footer and scrolls within it.
+                div()
+                    .id("new-worktree-form")
+                    .debug_selector(|| "new-worktree-form".into())
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(body)
+                    .into_any_element()
             } else {
-                body
+                body.into_any_element()
             })
             .child(
                 div()
