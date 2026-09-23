@@ -533,8 +533,11 @@ mod tests {
             });
             let panel = cx.debug_bounds("menu-panel").unwrap();
             let title = cx.debug_bounds("workspace-pr-title").unwrap();
-            // The workspace menu now includes one more worktree action row.
-            assert!(panel.size.height < px(340.), "oversized popover: {panel:?}");
+            let header = cx.debug_bounds("workspace-menu-header").unwrap();
+            assert!(
+                panel.size.height < px(340.) + header.size.height + px(4.),
+                "oversized popover: {panel:?}"
+            );
             assert!(panel.left() >= px(0.) && panel.right() <= px(width));
             assert!(panel.bottom() <= px(400.));
             assert!(panel.contains(&title.origin) && title.right() <= panel.right());
@@ -610,11 +613,17 @@ mod tests {
             window.draw(cx).clear();
         });
         // GPUI retains removed debug selectors; measure the remaining action panel.
-        // Five action rows and nothing else: no PR section, no stale metadata.
+        // Five action rows and the target header: no PR section or stale metadata.
         let rows = cx.update(|_, cx| view.read(cx).workspace_menu_actions().len());
         assert_eq!(rows, 5);
         let panel = cx.debug_bounds("menu-panel").unwrap().size.height;
-        assert!(panel < px(35. * rows as f32), "{panel:?}");
+        let header = cx
+            .debug_bounds("workspace-menu-header")
+            .unwrap()
+            .size
+            .height
+            + px(4.);
+        assert!(panel - header < px(35. * rows as f32), "{panel:?}");
     }
 
     /// Explicitly selected running daemon only: no start, focus, resize, input,
