@@ -773,6 +773,54 @@ fn queued_removal_closes_the_dialog_and_reports_refusals(cx: &mut gpui::TestAppC
     });
 }
 
+#[gpui::test]
+fn pending_removal_shows_loading_only_on_its_worktree(cx: &mut gpui::TestAppContext) {
+    for state in 0..7 {
+        let (view, cx) = cx.add_window_view(sidebar::layout_tests::fixture_window);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.live.status = crate::state::ConnectionStatus::Connected;
+                view.removal = Some(super::Removal {
+                    endpoint: (
+                        view.selection_epoch,
+                        view.endpoints[view.selected_endpoint].generation,
+                    ),
+                    boot_id: view.live.snapshot.as_ref().unwrap().boot_id.clone(),
+                    workspace: "w4".into(),
+                    pending: Some("remove".into()),
+                    force: false,
+                });
+                match state {
+                    1 => view.removal.as_mut().unwrap().pending = None,
+                    2 => view.removal.as_mut().unwrap().boot_id = "stale".into(),
+                    3 => view.removal.as_mut().unwrap().endpoint.1 += 1,
+                    4 => {
+                        view.live.dialog_response = Some((
+                            "remove".into(),
+                            Some(Ok(
+                                serde_json::json!({"result":{"type":"worktree_removed"}}),
+                            )),
+                        ));
+                        view.update_workspace_dialog(window, cx);
+                    }
+                    5 => view.live.status = crate::state::ConnectionStatus::Connecting,
+                    6 => view.removal.as_mut().unwrap().endpoint.0 += 1,
+                    _ => {}
+                }
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        let loading = cx.debug_bounds("worktree-removing");
+        assert_eq!(loading.is_some(), state == 0);
+        if let Some(loading) = loading {
+            let row = cx.debug_bounds("row-sidebar-child").unwrap();
+            assert!(row.contains(&loading.origin));
+            assert!(loading.right() <= row.right() && loading.bottom() <= row.bottom());
+        }
+    }
+}
+
 /// The confirmation matches the Herdr TUI: one modal, no typed phrase. The
 /// queued removal itself is exercised by the connected endpoint fixture.
 #[gpui::test]
