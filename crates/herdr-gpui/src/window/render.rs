@@ -383,6 +383,20 @@ impl Render for HerdrWindow {
             .on_action(cx.listener(|this, _: &ShowUpdatePreview, window, cx| {
                 this.open_app_update(true, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &crate::actions::ShowUpdateDownloadPreview, window, cx| {
+                this.open_update_progress_preview(
+                    crate::updater::State::Downloading { received: 50_000_000, total: 100_000_000 },
+                    window,
+                    cx,
+                );
+            }))
+            .on_action(cx.listener(|this, _: &crate::actions::ShowUpdateHomebrewPreview, window, cx| {
+                this.open_update_progress_preview(
+                    crate::updater::State::Upgrading { detail: "Refreshing Homebrew metadata with brew update...".into() },
+                    window,
+                    cx,
+                );
+            }))
             .on_action(cx.listener(|this, action: &ShowToastPreview, _, cx| {
                 this.show_toast_preview(action.kind, cx);
             }))
