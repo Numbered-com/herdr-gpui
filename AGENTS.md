@@ -111,16 +111,8 @@ and `publish` passes its `RELEASE_NOTES.md` to `gh release create --notes-file`.
   so nothing user-visible may ship under those types. A breaking change is the
   exception: `type!:` or a `BREAKING CHANGE:` footer is always published, under
   Changed and prefixed `**BREAKING:**`, whatever its type.
-- Preview what a release would say before dispatching one:
-
-```sh
-just changelog-unreleased          # only the commits since the last tag
-just changelog                     # the whole generated changelog
-just changelog-release 20260920.3 out/   # exactly the two files CI publishes
-```
-
-- `just changelog*` needs `git-cliff` locally (`cargo install --locked --version
-  2.12.0 git-cliff`); CI installs the same pinned version.
+- Previewing the generated changelog before a release is covered by the
+  `release` skill.
 - These rules are enforced, not advisory. `just hooks` installs a `commit-msg`
   hook that refuses a bad subject before the commit exists, and CI's `commits`
   job checks every commit in a pull request; it is part of the `Format, lint,
@@ -136,15 +128,6 @@ workspace gates for Rust changes before handoff or a requested commit:
 ```sh
 just format
 just ci
-```
-
-`just ci` runs these checks:
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-cargo test --locked --workspace
-cargo test --locked --workspace --all-features
 ```
 
 - For linking, startup, or packaging changes, also use `just test-build` to build the release executable and exercise its CLI without a desktop.
