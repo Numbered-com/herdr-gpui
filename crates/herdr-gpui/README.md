@@ -437,6 +437,8 @@ and local file paths are not activated.
 - The top-right titlebar profile control starts native GitHub device sign-in on
   a signed-out click, shows the authenticated user's avatar, and offers Sign out
   on right-click. Signed-out workspace menus have no GitHub section or requests.
+  The signed-out GitHub icon and connected avatar share a 20px size and subtle
+  hover glow; authentication errors appear in the account panel, not a red border.
   It uses Herdr GPUI's public client ID `Iv23liurUcwxPjrdIFYT`, overridden by
   `[github].oauth_client_id`, then `HERDR_GITHUB_OAUTH_CLIENT_ID`. No client secret
   or private key is needed or shipped. The compact native macOS titlebar design
@@ -459,8 +461,14 @@ and local file paths are not activated.
   active credential, without reactivating an explicitly signed-out session.
   Disabling plaintext stops its session use but keeps the file; explicit sign-out
   still removes the saved file regardless of opt-in, or reports a safe error.
-  Token refresh is not implemented; an
-  expired GitHub App token requires reauthentication. No CLI authentication is used. See
+   Device-flow refresh tokens are saved alongside access tokens in the same
+   store. When restoring a session after restart or update, a rejected access
+   token is renewed automatically and the rotated pair is saved before loading
+   the profile again. Network and Keychain errors do not delete credentials;
+   environment tokens are never renewed or replaced by saved credentials.
+   Older versions saved only access tokens, so an expired legacy token needs
+   one more sign-in to obtain a refresh token. Revoked or expired refresh tokens
+   also require sign-in. No CLI authentication is used. See
   [setup, cancellation, scopes, and sign-out](../../README.md#native-github-sign-in).
 - Workspace actions retain the clicked ID and boot, revalidate before queueing,
   and reject changed close-group membership. Reconnect clears dialogs. Queue
