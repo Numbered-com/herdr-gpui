@@ -727,7 +727,12 @@ attention can keep the badge visible. This QA setting is not saved.
   scrolling tab strip. Each tab has a 16px SVG close cross in a 24px hit target;
   it uses the same configurable confirmation without focusing an inactive tab.
   Both icons use the current theme's foreground tint.
-- Cmd-N creates and focuses a workspace; Cmd-T creates and focuses a tab.
+- Cmd-T creates and focuses a tab; Cmd-Shift-N creates and focuses
+  a workspace. Cmd-N opens the New worktree dialog for the focused workspace
+  (for a linked worktree, its repository's main checkout). When there is none,
+  because the workspace is not a Git repository, the main checkout is not open,
+  nothing is focused, or the window is disconnected, a two-second flash in the
+  clipboard toast's position says why.
   Cmd-D splits the focused pane vertically (new pane on the right);
   Cmd-Shift-D splits horizontally (new pane below). Cmd-Shift-] / Cmd-Shift-[
   cycles next/previous tab within the current workspace, wrapping at the ends.
@@ -747,10 +752,18 @@ attention can keep the badge visible. This QA setting is not saved.
 - Cmd-Shift-P opens the command palette with native actions and configured daemon
   command entries, including native Themes and Reconnect actions without dedicated
   shortcuts. Cmd-P opens the workspace picker instead.
+- Every native shortcut can be rebound in `config-gpui.local.toml` under
+  `[keybindings]`, keyed by command name (`new_tab`, `new_workspace`,
+  `split_right`, `focus_tab_1`, `quit`, ...). A value is one keystroke or a list;
+  an empty string or list unbinds the command. A keystroke assigned there moves
+  away from its default command, keystrokes need a cmd, ctrl, alt, or fn
+  modifier, and unknown names, unparseable keys, or one key on two configured
+  commands reject the config. Saved changes rebind the keymap and menu bar live.
 - Cmd-B toggles sidebar visibility locally without changing daemon state.
   Cmd-, opens Settings; Cmd-/ opens the grouped native shortcut reference.
   Native shortcut labels and keycaps come from the shared `controls::COMMANDS`
-  catalog, with Cmd-V semantic paste shown separately. Search filters by action,
+  catalog, overridden by the config's `[keybindings]` table, with Cmd-V semantic
+  paste shown separately. Search filters by action,
   section, or key combination. Preferences, keybinds, theme/palette pickers, and
   close confirmations use themed centered modals and configured UI fonts;
   modal input does not reach the terminal.

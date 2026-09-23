@@ -395,7 +395,7 @@ impl HerdrWindow {
         self.selection = None;
         self.terminal_mouse = None;
         self.pressed_terminal_link = None;
-        self.copy_feedback = None;
+        self.flash = None;
         self.local_error = None;
         self.marked.clear();
         self.last_queued_options = None;

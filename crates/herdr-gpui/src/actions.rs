@@ -1,8 +1,8 @@
 //! GPUI actions the app registers and the keystrokes bound to them. Every
-//! shortcut comes from the single `controls::COMMANDS` table, so the palette,
-//! the menu bar, and the keymap cannot drift apart.
+//! shortcut comes from the config's resolved `Keymap`, so the palette, the
+//! menu bar, and the keymap cannot drift apart.
 
-use crate::controls::{self, Command};
+use crate::controls::Command;
 use gpui::{Action, App, KeyBinding, actions};
 
 actions!(
@@ -38,31 +38,27 @@ pub(crate) struct SetBadgePreview {
     pub(crate) enabled: bool,
 }
 
+/// Binds the keymap from the last validated config, or the catalog defaults
+/// before any config has loaded.
 pub(crate) fn bind_keys(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-    // Reaching for `+` is the more natural way to ask for larger text, and the
-    // platforms report it as the shifted character with the shift dropped
-    // rather than as shift-`=`, so `cmd-+` is its own binding. The catalog
-    // carries one shortcut per command, so the alias is bound by hand here.
-    cx.bind_keys([KeyBinding::new(
-        "cmd-+",
-        RunCommand {
-            command: Command::IncreaseFontSize,
-        },
-        None,
-    )]);
-    cx.bind_keys(
-        controls::COMMANDS
-            .iter()
-            .filter(|info| !info.shortcut.is_empty() && info.command != Command::Quit)
-            .map(|info| {
-                KeyBinding::new(
-                    info.shortcut,
-                    RunCommand {
-                        command: info.command,
-                    },
-                    None,
-                )
-            }),
-    );
+    let keymap = cx
+        .try_global::<crate::app::InitialAppearance>()
+        .map(|appearance| appearance.config.keybindings.clone())
+        .unwrap_or_default();
+    cx.bind_keys(keymap.bindings().map(|(command, keystroke)| {
+        if command == Command::Quit {
+            KeyBinding::new(keystroke, Quit, None)
+        } else {
+            KeyBinding::new(keystroke, RunCommand { command }, None)
+        }
+    }));
+    cx.bind_keys(crate::log_window::key_bindings());
+}
+
+/// Replaces every binding after a config reload. The menu bar reads its
+/// shortcut labels from the keymap when it is installed, so it is rebuilt too.
+pub(crate) fn rebind_keys(cx: &mut App) {
+    cx.clear_key_bindings();
+    bind_keys(cx);
+    cx.set_menus(crate::menus());
 }

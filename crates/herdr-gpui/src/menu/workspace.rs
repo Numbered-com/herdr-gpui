@@ -145,6 +145,51 @@ impl WorkspaceTarget {
     }
 }
 
+/// Why the new worktree shortcut found no workspace to branch from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NewWorktreeUnavailable {
+    Disconnected,
+    NoWorkspace,
+    NotGit,
+    MainCheckoutClosed,
+}
+
+impl NewWorktreeUnavailable {
+    pub(super) fn message(self) -> &'static str {
+        match self {
+            Self::Disconnected => "Not connected, so no worktree can be created",
+            Self::NoWorkspace => "No workspace is focused to create a worktree from",
+            Self::NotGit => "This workspace is not a Git repository",
+            Self::MainCheckoutClosed => "Open this repository's main checkout to create a worktree",
+        }
+    }
+}
+
+/// The workspace a new worktree for the focused one is created from.
+fn new_worktree_source(snapshot: &ClientShellSnapshot) -> Result<String, NewWorktreeUnavailable> {
+    let focused = snapshot
+        .workspaces
+        .iter()
+        .find(|w| Some(&w.workspace_id) == snapshot.focused_workspace_id.as_ref())
+        .ok_or(NewWorktreeUnavailable::NoWorkspace)?;
+    let source = match &focused.worktree {
+        Some(tree) if tree.is_linked_worktree => snapshot
+            .workspaces
+            .iter()
+            .find(|w| {
+                w.worktree
+                    .as_ref()
+                    .is_some_and(|other| other.key == tree.key && !other.is_linked_worktree)
+            })
+            .ok_or(NewWorktreeUnavailable::MainCheckoutClosed)?,
+        _ => focused,
+    };
+    if !WorkspaceTarget::new(snapshot, source).can_create() {
+        return Err(NewWorktreeUnavailable::NotGit);
+    }
+    Ok(source.workspace_id.clone())
+}
+
 fn close_members(snapshot: &ClientShellSnapshot, workspace: &ClientShellWorkspace) -> Vec<String> {
     let mut members: Vec<_> = snapshot
         .workspaces
@@ -195,6 +240,29 @@ impl HerdrWindow {
         self.marked.clear();
         window.focus(&self.menu.focus);
         cx.notify();
+    }
+
+    /// Opens the new worktree dialog for the focused workspace, as its menu's
+    /// "New worktree" row would. A linked checkout offers no such row, so its
+    /// repository's main checkout seeds the worktree instead.
+    /// When there is none, a flash says why rather than the shortcut doing
+    /// nothing visible.
+    pub(crate) fn open_new_worktree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let source = match &self.live.snapshot {
+            Some(snapshot) if self.live.status.is_connected() => new_worktree_source(snapshot),
+            _ => Err(NewWorktreeUnavailable::Disconnected),
+        };
+        let id = match source {
+            Ok(id) => id,
+            Err(reason) => {
+                self.show_flash(crate::window::Flash::warning(reason.message()), cx);
+                return;
+            }
+        };
+        self.open_workspace_menu(&id, Point::default(), window, cx);
+        if self.menu.page == Some(Page::Workspace) {
+            self.open_workspace_dialog(WorkspaceAction::NewWorktree, window, cx);
+        }
     }
 
     pub(super) fn workspace_items(&self) -> Vec<(WorkspaceMenuAction, &'static str)> {

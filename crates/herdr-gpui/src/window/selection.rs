@@ -6,10 +6,6 @@
 use super::HerdrWindow;
 use crate::terminal::Selection;
 use gpui::{ClipboardItem, Context, Pixels, Point};
-use std::time::{Duration, Instant};
-
-/// How long "copied to clipboard" stays up, matching herdr's own feedback.
-const COPY_FEEDBACK: Duration = Duration::from_secs(2);
 
 impl HerdrWindow {
     /// Starts a selection under the pointer, discarding the previous one. A
@@ -71,7 +67,7 @@ impl HerdrWindow {
         // The gesture is over either way: nothing stays highlighted behind it.
         self.selection = None;
         if copied && self.config.clipboard_toast.enabled {
-            self.copy_feedback = Some(Instant::now() + COPY_FEEDBACK);
+            self.show_flash(super::Flash::success("copied to clipboard"), cx);
         }
         cx.notify();
         selected
@@ -96,16 +92,6 @@ impl HerdrWindow {
                 false
             }
         }
-    }
-
-    /// Retires the flash once its two seconds are up. `true` when the window
-    /// has to repaint without it.
-    pub(crate) fn tick_copy_feedback(&mut self, now: Instant) -> bool {
-        if self.copy_feedback.is_none_or(|expires| now < expires) {
-            return false;
-        }
-        self.copy_feedback = None;
-        true
     }
 
     /// Whether the selection covers no cell the client can still show, either
@@ -154,6 +140,7 @@ mod tests {
     use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
     use herdr_client::protocol::*;
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     fn surface(rows: &[&str], width: u16) -> PaneSurfaceFrame {
         let height = rows.len() as u16;
@@ -245,10 +232,10 @@ mod tests {
         );
         let expires = view.read_with(cx, |view, _| {
             assert!(view.selection.is_none(), "the release deselects");
-            view.copy_feedback.expect("the release reports the copy")
+            view.flash.clone().expect("the release reports the copy").1
         });
         assert!(cx.update(|_, _| expires) > Instant::now());
-        assert!(cx.debug_bounds("copy-feedback").is_some());
+        assert!(cx.debug_bounds("flash").is_some());
 
         // A drag over two rows keeps the rows apart and drops the padding the
         // terminal added to the row it carried through to the edge.
@@ -262,7 +249,7 @@ mod tests {
 
         // A press with no drag selects nothing, so neither the clipboard nor
         // the flash reports one.
-        view.update(cx, |view, _| view.copy_feedback = None);
+        view.update(cx, |view, _| view.flash = None);
         cx.simulate_click(at(2., 0.), Modifiers::default());
         assert_eq!(
             cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
@@ -270,7 +257,7 @@ mod tests {
         );
         view.read_with(cx, |view, _| {
             assert!(view.selection.is_none());
-            assert!(view.copy_feedback.is_none());
+            assert!(view.flash.is_none());
         });
 
         // The flash retires on its own once its two seconds are up. Whether it
@@ -280,12 +267,13 @@ mod tests {
         cx.simulate_mouse_move(at(5., 0.), MouseButton::Left, Modifiers::default());
         cx.simulate_mouse_up(at(5., 0.), MouseButton::Left, Modifiers::default());
         view.update(cx, |view, _| {
-            let expires = view.copy_feedback.expect("a copy reports itself");
-            assert!(!view.tick_copy_feedback(expires - Duration::from_nanos(1)));
-            assert!(view.copy_feedback.is_some());
-            assert!(view.tick_copy_feedback(expires));
-            assert!(view.copy_feedback.is_none());
-            assert!(!view.tick_copy_feedback(expires));
+            let (flash, expires) = view.flash.clone().expect("a copy reports itself");
+            assert_eq!(flash, crate::window::Flash::success("copied to clipboard"));
+            assert!(!view.tick_flash(expires - Duration::from_nanos(1)));
+            assert!(view.flash.is_some());
+            assert!(view.tick_flash(expires));
+            assert!(view.flash.is_none());
+            assert!(!view.tick_flash(expires));
         });
     }
 
@@ -489,7 +477,7 @@ mod tests {
             cx.simulate_mouse_down(at(0.), MouseButton::Left, Modifiers::default());
             cx.simulate_mouse_move(at(10.), MouseButton::Left, Modifiers::default());
             cx.simulate_mouse_up(at(10.), MouseButton::Left, Modifiers::default());
-            view.read_with(cx, |view, _| view.copy_feedback.is_some())
+            view.read_with(cx, |view, _| view.flash.is_some())
         };
 
         view.update(cx, |view, _| view.config.clipboard_toast.enabled = false);
@@ -515,7 +503,7 @@ mod tests {
                 view.config.clipboard_toast.position = position
             });
             assert!(drag(&view, cx));
-            let flash = cx.debug_bounds("copy-feedback").expect("the flash paints");
+            let flash = cx.debug_bounds("flash").expect("the flash paints");
             let top = matches!(position, TopLeft | TopCenter | TopRight);
             assert_eq!(
                 flash.origin.y - bounds.origin.y < bounds.size.height / 2.,
@@ -571,7 +559,7 @@ mod tests {
             assert!(view.selection.is_none());
             assert!(!view.extend_selection(at(6.), cx));
             assert!(!view.release_selection(cx));
-            assert!(view.copy_feedback.is_none());
+            assert!(view.flash.is_none());
             view.menu.page = None;
         });
         assert_eq!(
@@ -587,6 +575,6 @@ mod tests {
             cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
             Some("copied".into())
         );
-        view.read_with(cx, |view, _| assert!(view.copy_feedback.is_some()));
+        view.read_with(cx, |view, _| assert!(view.flash.is_some()));
     }
 }

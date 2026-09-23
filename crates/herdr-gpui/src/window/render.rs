@@ -362,7 +362,7 @@ impl Render for HerdrWindow {
             )
             // Direct feedback for the user's own gesture, not a daemon notice:
             // it sits over the cells it copied and needs no dismissing.
-            .when(self.copy_feedback.is_some(), |terminal| {
+            .when_some(self.flash.as_ref(), |terminal, (flash, _)| {
                 use ClipboardToastPosition::*;
                 let position = self.config.clipboard_toast.position;
                 terminal.child(
@@ -387,7 +387,7 @@ impl Render for HerdrWindow {
                         .overflow_hidden()
                         .child(
                             div()
-                                .debug_selector(|| "copy-feedback".into())
+                                .debug_selector(|| "flash".into())
                                 .min_w_0()
                                 .flex()
                                 .items_center()
@@ -396,7 +396,7 @@ impl Render for HerdrWindow {
                                 .py(px(6.))
                                 .rounded(px(6.))
                                 .border_1()
-                                .border_color(rgb(self.theme.palette[2]))
+                                .border_color(rgb(flash.accent(&self.theme)))
                                 .bg(rgb(self.theme.surface))
                                 .text_color(rgb(self.theme.foreground))
                                 .child(
@@ -404,9 +404,9 @@ impl Render for HerdrWindow {
                                         .size(px(6.))
                                         .flex_none()
                                         .rounded_full()
-                                        .bg(rgb(self.theme.palette[2])),
+                                        .bg(rgb(flash.accent(&self.theme))),
                                 )
-                                .child(div().truncate().child("copied to clipboard")),
+                                .child(div().truncate().child(flash.text.clone())),
                         ),
                 )
             });

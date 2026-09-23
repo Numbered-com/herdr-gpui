@@ -2,7 +2,11 @@
 //! preference the user already expressed there, never written and never used
 //! to change daemon behavior. Managed defaults are refreshed from the binary;
 //! `config-gpui.local.toml` holds persistent user overrides.
-use crate::{Error, Result, error::ThemeParseError};
+use crate::{
+    Error, Result,
+    error::ThemeParseError,
+    keymap::{Binding, Keymap},
+};
 pub(crate) mod watch;
 use gpui::{Font, FontFallbacks};
 use serde::Deserialize;
@@ -39,6 +43,7 @@ pub struct Config {
     pub notifications: NotificationConfig,
     pub clipboard_toast: ClipboardToast,
     pub layout: Layout,
+    pub keybindings: Keymap,
 }
 
 /// Where the "copied to clipboard" flash sits, and whether it appears at all.
@@ -316,6 +321,7 @@ impl Default for Config {
             notifications: NotificationConfig::default(),
             clipboard_toast: ClipboardToast::default(),
             layout: Layout::default(),
+            keybindings: Keymap::default(),
             sidebar: font(monospace, 12.0),
             // Tabs are terminal chrome, so they read in the monospace face the
             // sidebar and terminal use, as they do in the reference UI.
@@ -341,6 +347,7 @@ struct Settings {
     notifications: NotificationConfig,
     clipboard_toast: ClipboardToastSettings,
     layout: Layout,
+    keybindings: std::collections::BTreeMap<String, Binding>,
 }
 
 /// Each key overrides the daemon's answer on its own, so naming one of them
@@ -672,6 +679,7 @@ impl Config {
             return Err(Error::InvalidSidebarGap);
         }
         config.layout = settings.layout;
+        config.keybindings = Keymap::with_overrides(&settings.keybindings)?;
         if let Some(theme) = settings.theme {
             if theme.trim().is_empty() {
                 return Err(Error::EmptyTheme);
@@ -1729,6 +1737,39 @@ mod tests {
             assert!(Config::parse(text).is_err(), "accepted {text:?}");
         }
         assert!(Config::parse("[tabs]\nsize = 8\n[ui]\nsize = 48").is_ok());
+    }
+
+    #[test]
+    fn keybindings_override_defaults_and_reject_bad_entries() -> anyhow::Result<()> {
+        use crate::Command;
+        let config = Config::parse("")?;
+        assert_eq!(config.keybindings.primary(Command::Tab), "cmd-t");
+        let config = Config::parse(
+            "[keybindings]\nnew_workspace = \"cmd-n\"\nnew_tab = [\"cmd-t\", \"ctrl-t\"]\nquit = \"\"",
+        )?;
+        assert_eq!(config.keybindings.shortcuts(Command::Workspace), ["cmd-n"]);
+        assert_eq!(
+            config.keybindings.shortcuts(Command::Tab),
+            ["cmd-t", "ctrl-t"]
+        );
+        assert!(config.keybindings.shortcuts(Command::Quit).is_empty());
+        // The managed defaults document the table without setting it.
+        let layered = Config::parse_layers(
+            [DEFAULT_CONFIG, "[keybindings]\nthemes = \"cmd-k\""],
+            ClipboardToast::default(),
+        )?;
+        assert_eq!(layered.keybindings.primary(Command::Themes), "cmd-k");
+        assert_eq!(layered.keybindings.primary(Command::Tab), "cmd-t");
+        assert!(matches!(
+            Config::parse("[keybindings]\nnew_space = \"cmd-n\""),
+            Err(Error::UnknownKeybinding(_))
+        ));
+        assert!(matches!(
+            Config::parse("[keybindings]\nnew_tab = \"t\""),
+            Err(Error::KeystrokeWithoutModifier { .. })
+        ));
+        assert!(Config::parse("[keybindings]\nnew_tab = 5").is_err());
+        Ok(())
     }
 
     #[test]

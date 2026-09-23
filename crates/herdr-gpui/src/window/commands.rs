@@ -184,6 +184,10 @@ impl HerdrWindow {
                 self.open_palette(command == Command::WorkspacePicker, window, cx);
                 return;
             }
+            Command::NewWorktree => {
+                self.open_new_worktree(window, cx);
+                return;
+            }
             Command::Keybinds => {
                 self.open_keybinds(window, cx);
                 return;
