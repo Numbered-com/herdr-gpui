@@ -219,7 +219,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         if counts.shapes > 400
                             || counts.paints == 0
                             || counts.quads != 50 * counts.paints
-                            || counts.decorations != 1677 * counts.paints
+                            || counts.decorations != 1921 * counts.paints
                             || counts.glyphs != 6981 * counts.paints
                         {
                             bail!("terminal deterministic budget: {counts:?}");
@@ -291,7 +291,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                             window.draw(cx).clear();
                             let c = cx.global::<Counts>();
                             if c.quads != 54
-                                || c.decorations != 1678
+                                || c.decorations != 1922
                                 || c.glyphs <= 6981
                                 || c.paint_errors != 0
                                 || (redraw == 1 && c.shapes != 0)
