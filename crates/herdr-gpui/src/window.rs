@@ -4,8 +4,10 @@
 //! because every one of them describes this window's own presentation state.
 
 mod commands;
+mod file_drop;
 mod input;
 mod lifecycle;
+mod mouse;
 mod render;
 mod selection;
 mod toasts;
@@ -68,6 +70,7 @@ pub(crate) struct HerdrWindow {
     pub(crate) cell_width: f32,
     pub(crate) hovered_terminal_link: bool,
     pub(crate) pressed_terminal_link: Option<(String, Point<Pixels>)>,
+    pub(crate) terminal_mouse: Option<mouse::Gesture>,
     /// The terminal cells the pointer is choosing. A release copies them and
     /// clears this, so a highlight only ever belongs to a drag in progress.
     pub(crate) selection: Option<Selection>,
@@ -238,6 +241,7 @@ impl HerdrWindow {
             cell_width: 9.,
             hovered_terminal_link: false,
             pressed_terminal_link: None,
+            terminal_mouse: None,
             selection: None,
             copy_feedback: None,
             presentation: Default::default(),
@@ -269,6 +273,11 @@ impl HerdrWindow {
             _poll: poll,
             _activation: cx.observe_window_activation(window, |this, window, cx| {
                 this.active = window.is_window_active();
+                if !this.active {
+                    this.cancel_terminal_mouse(cx);
+                    this.selection = None;
+                    this.pressed_terminal_link = None;
+                }
                 this.report_focus();
                 cx.notify();
             }),

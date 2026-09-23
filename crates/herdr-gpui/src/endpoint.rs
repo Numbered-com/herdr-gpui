@@ -387,6 +387,8 @@ impl HerdrWindow {
         // detach, or a switch of endpoint starts from an empty terminal area.
         self.presentation.clear();
         self.selection = None;
+        self.terminal_mouse = None;
+        self.pressed_terminal_link = None;
         self.copy_feedback = None;
         self.local_error = None;
         self.marked.clear();

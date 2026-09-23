@@ -136,7 +136,11 @@ impl Render for HerdrWindow {
         // The highlight is grid coordinates, so it paints with the frame that
         // owns the cells rather than being recomputed from the pointer here.
         let selection = self.selection.clone();
-        self.hovered_terminal_link = self.terminal_link_at(window.mouse_position()).is_some();
+        self.hovered_terminal_link = self.terminal_link_at(window.mouse_position()).is_some()
+            && (window.modifiers().shift
+                || self
+                    .terminal_mouse_at(window.mouse_position())
+                    .is_none_or(|hit| !hit.mouse_reporting));
         // Pad the terminal itself: the canvas bounds that painting, hit testing,
         // and IME placement all read then already exclude the gap.
         let sidebar_gap = if self.sidebar_visible {
@@ -152,7 +156,12 @@ impl Render for HerdrWindow {
                 terminal.cursor_pointer()
             })
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                let hovered = this.terminal_link_at(event.position).is_some();
+                this.terminal_mouse_hover(event, cx);
+                let hovered = this.terminal_link_at(event.position).is_some()
+                    && (event.modifiers.shift
+                        || this
+                            .terminal_mouse_at(event.position)
+                            .is_none_or(|hit| !hit.mouse_reporting));
                 if hovered != this.hovered_terminal_link {
                     this.hovered_terminal_link = hovered;
                     cx.notify();
@@ -168,9 +177,19 @@ impl Render for HerdrWindow {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .on_scroll_wheel(cx.listener(Self::scroll_wheel))
+            .on_drop(cx.listener(Self::drop_terminal_files))
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    this.terminal_mouse_down(event, window, cx);
+                }),
+            )
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    if this.terminal_mouse_down(event, window, cx) {
+                        return;
+                    }
                     cx.stop_propagation();
                     this.open_pane_menu_at(event.position, window, cx);
                 }),
@@ -178,6 +197,9 @@ impl Render for HerdrWindow {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    if this.terminal_mouse_down(event, window, cx) {
+                        return;
+                    }
                     this.pressed_terminal_link = this
                         .terminal_link_at(event.position)
                         .map(|url| (url, event.position));
@@ -205,7 +227,7 @@ impl Render for HerdrWindow {
                         )
                         .map(str::to_owned);
                         if let Some(id) = pane {
-                            this.navigate(NavigationTarget::Pane(&id), cx);
+                            this.focus_clicked_pane(&id, cx);
                         }
                     }
                 }),
@@ -235,6 +257,10 @@ impl Render for HerdrWindow {
                         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                             if phase == DispatchPhase::Capture {
                                 entity.update(cx, |this, cx| {
+                                    if this.terminal_mouse_move(event, cx) {
+                                        cx.stop_propagation();
+                                        return;
+                                    }
                                     if this.pressed_terminal_link.as_ref().is_some_and(
                                         |(_, position)| {
                                             (event.position.x - position.x).abs() > px(4.)
@@ -255,8 +281,12 @@ impl Render for HerdrWindow {
                         let released = paint_entity.clone();
                         window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
                             if phase == DispatchPhase::Capture
-                                && event.button == MouseButton::Left
-                                && released.update(cx, |this, cx| this.release_selection(cx))
+                                && released.update(cx, |this, cx| {
+                                    this.terminal_mouse_up(event, cx)
+                                        || (event.button == MouseButton::Left
+                                            && !cx.has_active_drag()
+                                            && this.release_selection(cx))
+                                })
                             {
                                 cx.stop_propagation();
                             }

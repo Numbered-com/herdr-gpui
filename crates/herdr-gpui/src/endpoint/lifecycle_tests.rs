@@ -2,7 +2,9 @@
 #![allow(clippy::unwrap_used)]
 use super::*;
 use crate::controls::Command;
-use gpui::AppContext;
+use gpui::{
+    AppContext, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, point, px, size,
+};
 use herdr_client::{
     ClientEvent, Method,
     protocol::{endpoint::*, *},
@@ -220,6 +222,763 @@ fn connected_endpoint(id: &str) -> (Endpoint, Server) {
     (endpoint, server)
 }
 
+fn prepare_mouse(view: &mut HerdrWindow, endpoint: Endpoint) {
+    view.endpoints.truncate(1);
+    view.endpoints.push(endpoint);
+    view.selected_endpoint = 1;
+    view.options = ConnectOptions::default();
+    view.reset_selected();
+    view.activation_deadline = None;
+    let snapshot = Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+    let mut inactive = snapshot.panes[0].clone();
+    inactive.pane_id = "w1:p2".into();
+    inactive.focused = false;
+    snapshot.panes.push(inactive);
+    Arc::make_mut(view.live.surface.as_mut().unwrap()).panes = [0, 40]
+        .into_iter()
+        .map(|x| PaneSurfacePane {
+            pane_id: if x == 0 { "w1:p1" } else { "w1:p2" }.into(),
+            content_revision: 1,
+            rect: SurfaceRect {
+                x,
+                y: 0,
+                width: 40,
+                height: 24,
+            },
+            inner_rect: SurfaceRect {
+                x: x + 1,
+                y: 1,
+                width: 38,
+                height: 22,
+            },
+            scrollbar_rect: None,
+            scroll: None,
+            focused: x == 0,
+            mouse_reporting: true,
+            sgr_pixel_mouse: false,
+            alternate_screen_active: false,
+            pixel_width: 760,
+            pixel_height: 880,
+        })
+        .collect();
+    view.cell_width = 10.;
+    view.bounds = gpui::Bounds::new(
+        point(px(100.), px(50.)),
+        size(px(800.), px(24. * view.config.terminal.line_height())),
+    );
+    assert!(view.input_ready());
+}
+
+fn mouse_position(view: &HerdrWindow, column: f32, row: f32) -> gpui::Point<gpui::Pixels> {
+    view.bounds.origin
+        + point(
+            px(column * 10.),
+            px(row * view.config.terminal.line_height()),
+        )
+}
+
+fn mouse_event(kind: ClientMouseKind, column: u16, row: u16) -> ClientPaneInputEvent {
+    ClientPaneInputEvent::Mouse {
+        kind,
+        position: ClientMousePosition::Cell { column, row },
+        geometry: None,
+        modifiers: 0,
+        lines: 1,
+    }
+}
+
+#[gpui::test]
+fn connected_mouse_focused_pane_preserves_drag_target_and_immediate_text(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
+    });
+    let view = fixture.update(cx, |fixture, _| fixture.0.clone());
+    for (button, wire_button) in [
+        (MouseButton::Left, ClientMouseButton::Left),
+        (MouseButton::Middle, ClientMouseButton::Middle),
+        (MouseButton::Right, ClientMouseButton::Right),
+    ] {
+        let (endpoint, mut server) = connected_endpoint("ssh:mouse");
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                prepare_mouse(view, endpoint);
+                assert!(view.terminal_mouse_down(
+                    &MouseDownEvent {
+                        position: mouse_position(view, 3.5, 4.5),
+                        button,
+                        ..Default::default()
+                    },
+                    window,
+                    cx
+                ));
+                assert!(view.input_ready());
+                assert!(view.focus.is_focused(window));
+                // Crossing another pane and leaving the canvas must stay on the pressed pane.
+                assert!(view.terminal_mouse_move(
+                    &MouseMoveEvent {
+                        position: mouse_position(view, 45.5, 6.5),
+                        pressed_button: Some(button),
+                        ..Default::default()
+                    },
+                    cx
+                ));
+                assert!(view.terminal_mouse_up(
+                    &MouseUpEvent {
+                        position: mouse_position(view, 90., 30.),
+                        button,
+                        ..Default::default()
+                    },
+                    cx
+                ));
+                assert!(view.terminal_mouse.is_none());
+                assert!(view.input_ready());
+                assert!(view.live.activation.is_none());
+                assert!(view.activation_deadline.is_none());
+                view.send(ClientPaneInputEvent::TextCommit("immediate".into()), cx);
+            });
+        });
+        for event in [
+            mouse_event(ClientMouseKind::Down(wire_button), 2, 3),
+            mouse_event(ClientMouseKind::Drag(wire_button), 37, 5),
+            mouse_event(ClientMouseKind::Up(wire_button), 37, 21),
+            ClientPaneInputEvent::TextCommit("immediate".into()),
+        ] {
+            assert_eq!(
+                server.receive(),
+                ClientMessage::ClientShellPaneInput {
+                    pane_id: "w1:p1".into(),
+                    events: vec![event],
+                }
+            );
+        }
+    }
+}
+
+#[gpui::test]
+fn connected_mouse_inactive_pane_receives_first_click_before_focus_fence(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
+    });
+    let view = fixture.update(cx, |fixture, _| fixture.0.clone());
+    let (endpoint, mut server) = connected_endpoint("ssh:mouse");
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            prepare_mouse(view, endpoint);
+            let position = mouse_position(view, 43.5, 4.5);
+            assert!(view.terminal_mouse_down(
+                &MouseDownEvent {
+                    position,
+                    button: MouseButton::Left,
+                    ..Default::default()
+                },
+                window,
+                cx
+            ));
+            assert!(view.input_ready());
+            assert!(view.live.activation.is_none());
+            assert!(view.mouse_focus_pending());
+            view.send(
+                ClientPaneInputEvent::TextCommit("must not reach old pane during press".into()),
+                cx,
+            );
+            assert!(view.terminal_mouse_up(
+                &MouseUpEvent {
+                    position,
+                    button: MouseButton::Left,
+                    ..Default::default()
+                },
+                cx
+            ));
+            assert!(!view.input_ready());
+            assert!(!view.mouse_focus_pending());
+            assert!(view.live.activation.is_some());
+            assert!(view.activation_deadline.is_some());
+            view.send(
+                ClientPaneInputEvent::TextCommit("must stay fenced".into()),
+                cx,
+            );
+            view.endpoints[1]
+                .connection
+                .handle
+                .as_ref()
+                .unwrap()
+                .set_focus(&snapshot().boot_id, false)
+                .unwrap();
+        });
+    });
+    for kind in [
+        ClientMouseKind::Down(ClientMouseButton::Left),
+        ClientMouseKind::Up(ClientMouseButton::Left),
+    ] {
+        assert_eq!(
+            server.receive(),
+            ClientMessage::ClientShellPaneInput {
+                pane_id: "w1:p2".into(),
+                events: vec![mouse_event(kind, 2, 3)],
+            }
+        );
+    }
+    let ClientMessage::ClientShellEndpointRequest { request, .. } = server.receive() else {
+        panic!("missing focus after the complete first click");
+    };
+    let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+    assert_eq!(request["method"], "pane.focus");
+    assert_eq!(request["params"], serde_json::json!({"pane_id": "w1:p2"}));
+    server.respond(&request);
+    let ClientMessage::ClientShellEndpointRequest { request, .. } = server.receive() else {
+        panic!("missing ordered surface fence");
+    };
+    let barrier: serde_json::Value = serde_json::from_str(&request).unwrap();
+    assert_eq!(barrier["method"], Method::ClientShellSurfaceSet.as_str());
+    assert_eq!(barrier["params"]["active"], true);
+    // The FIFO sentinel catches text incorrectly sent to the previously focused pane.
+    assert_eq!(
+        server.receive(),
+        ClientMessage::ClientShellFocus { focused: false }
+    );
+}
+
+#[gpui::test]
+fn connected_mouse_popup_uses_popup_relative_pixel_coordinates_and_blocks_covered_panes(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
+    });
+    let view = fixture.update(cx, |fixture, _| fixture.0.clone());
+    let (endpoint, mut server) = connected_endpoint("ssh:mouse");
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            prepare_mouse(view, endpoint);
+            let surface = Arc::make_mut(view.live.surface.as_mut().unwrap());
+            surface.popup = Some(Box::new(ClientShellPopupSurface {
+                terminal_id: "popup-mouse".into(),
+                title: String::new(),
+                width: None,
+                height: None,
+                frame: FrameData {
+                    width: 20,
+                    height: 10,
+                    ..surface.frame.clone()
+                },
+                mouse_reporting: true,
+                sgr_pixel_mouse: true,
+                pixel_width: 400,
+                pixel_height: 400,
+            }));
+            let outside = mouse_position(view, 3.5, 4.5);
+            assert!(!view.terminal_mouse_down(
+                &MouseDownEvent {
+                    position: outside,
+                    button: MouseButton::Left,
+                    ..Default::default()
+                },
+                window,
+                cx
+            ));
+            assert!(!view.terminal_mouse_up(
+                &MouseUpEvent {
+                    position: outside,
+                    button: MouseButton::Left,
+                    ..Default::default()
+                },
+                cx
+            ));
+            let modifiers = gpui::Modifiers {
+                control: true,
+                alt: true,
+                platform: true,
+                ..Default::default()
+            };
+            // A 20x10 popup in an 80x24 surface starts at column 30, row 7.
+            assert!(view.terminal_mouse_down(
+                &MouseDownEvent {
+                    position: mouse_position(view, 32.5, 10.5),
+                    button: MouseButton::Left,
+                    modifiers,
+                    ..Default::default()
+                },
+                window,
+                cx
+            ));
+            assert!(view.terminal_mouse_move(
+                &MouseMoveEvent {
+                    position: mouse_position(view, 34.5, 12.5),
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers,
+                },
+                cx
+            ));
+            assert!(view.terminal_mouse_up(
+                &MouseUpEvent {
+                    position: mouse_position(view, 35.5, 13.5),
+                    button: MouseButton::Left,
+                    modifiers,
+                    ..Default::default()
+                },
+                cx
+            ));
+            assert!(view.input_ready());
+            assert!(view.live.activation.is_none());
+            assert!(view.activation_deadline.is_none());
+            view.send(ClientPaneInputEvent::TextCommit("popup text".into()), cx);
+        });
+    });
+    for (kind, column, row, x, y) in [
+        (
+            ClientMouseKind::Down(ClientMouseButton::Left),
+            2,
+            3,
+            50,
+            140,
+        ),
+        (
+            ClientMouseKind::Drag(ClientMouseButton::Left),
+            4,
+            5,
+            90,
+            220,
+        ),
+        (ClientMouseKind::Up(ClientMouseButton::Left), 5, 6, 110, 260),
+    ] {
+        assert_eq!(
+            server.receive(),
+            ClientMessage::ClientShellPopupInput {
+                terminal_id: "popup-mouse".into(),
+                events: vec![ClientPaneInputEvent::Mouse {
+                    kind,
+                    position: ClientMousePosition::Pixels { x, y, column, row },
+                    geometry: Some(ClientMouseGeometry {
+                        cols: 20,
+                        rows: 10,
+                        width_px: 400,
+                        height_px: 400
+                    }),
+                    modifiers: 14,
+                    lines: 1,
+                }],
+            }
+        );
+    }
+    assert_eq!(
+        server.receive(),
+        ClientMessage::ClientShellPopupInput {
+            terminal_id: "popup-mouse".into(),
+            events: vec![ClientPaneInputEvent::TextCommit("popup text".into())],
+        }
+    );
+}
+
+#[gpui::test]
+fn connected_mouse_cancels_stale_gestures_before_drag_or_release(cx: &mut gpui::TestAppContext) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
+    });
+    let view = fixture.update(cx, |fixture, _| fixture.0.clone());
+    for change in [
+        "epoch",
+        "generation",
+        "boot",
+        "menu",
+        "geometry",
+        "reporting",
+    ] {
+        for move_first in [false, true] {
+            let (endpoint, mut server) = connected_endpoint("ssh:mouse");
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    prepare_mouse(view, endpoint);
+                    let position = mouse_position(view, 3.5, 4.5);
+                    assert!(view.terminal_mouse_down(
+                        &MouseDownEvent {
+                            position,
+                            button: MouseButton::Left,
+                            ..Default::default()
+                        },
+                        window,
+                        cx
+                    ));
+                    assert!(view.terminal_mouse_move(
+                        &MouseMoveEvent {
+                            position: mouse_position(view, 5.5, 6.5),
+                            pressed_button: Some(MouseButton::Left),
+                            ..Default::default()
+                        },
+                        cx
+                    ));
+                    match change {
+                        "epoch" => view.selection_epoch += 1,
+                        "generation" => view.selected_generation += 1,
+                        "boot" => {
+                            Arc::make_mut(view.live.snapshot.as_mut().unwrap()).boot_id =
+                                "replacement".into();
+                            Arc::make_mut(view.live.surface.as_mut().unwrap()).boot_id =
+                                "replacement".into();
+                        }
+                        "menu" => view.open_keybinds(window, cx),
+                        "geometry" => {
+                            Arc::make_mut(view.live.surface.as_mut().unwrap()).panes[0]
+                                .inner_rect
+                                .width -= 1
+                        }
+                        "reporting" => {
+                            Arc::make_mut(view.live.surface.as_mut().unwrap()).panes[0]
+                                .mouse_reporting = false
+                        }
+                        _ => unreachable!(),
+                    }
+                    assert!(
+                        view.input_ready(),
+                        "isolate gesture cancellation from input readiness"
+                    );
+                    if move_first {
+                        view.terminal_mouse_move(
+                            &MouseMoveEvent {
+                                position,
+                                pressed_button: Some(MouseButton::Left),
+                                ..Default::default()
+                            },
+                            cx,
+                        );
+                        assert!(view.terminal_mouse.is_none(), "{change}");
+                    }
+                    view.terminal_mouse_up(
+                        &MouseUpEvent {
+                            position,
+                            button: MouseButton::Left,
+                            ..Default::default()
+                        },
+                        cx,
+                    );
+                    assert!(view.terminal_mouse.is_none(), "{change}");
+                    view.cancel_terminal_mouse(cx);
+                    view.endpoints[1]
+                        .connection
+                        .handle
+                        .as_ref()
+                        .unwrap()
+                        .set_focus(&snapshot().boot_id, false)
+                        .unwrap();
+                });
+            });
+            assert_eq!(
+                server.receive(),
+                ClientMessage::ClientShellPaneInput {
+                    pane_id: "w1:p1".into(),
+                    events: vec![mouse_event(
+                        ClientMouseKind::Down(ClientMouseButton::Left),
+                        2,
+                        3
+                    )],
+                }
+            );
+            assert_eq!(
+                server.receive(),
+                ClientMessage::ClientShellPaneInput {
+                    pane_id: "w1:p1".into(),
+                    events: vec![mouse_event(
+                        ClientMouseKind::Drag(ClientMouseButton::Left),
+                        4,
+                        5
+                    )],
+                }
+            );
+            if matches!(change, "menu" | "geometry" | "reporting") {
+                // Cleanup uses the last sent drag, not the rejected move/release position.
+                assert_eq!(
+                    server.receive(),
+                    ClientMessage::ClientShellPaneInput {
+                        pane_id: "w1:p1".into(),
+                        events: vec![mouse_event(
+                            ClientMouseKind::Up(ClientMouseButton::Left),
+                            4,
+                            5
+                        )],
+                    }
+                );
+            }
+            assert_eq!(
+                server.receive(),
+                ClientMessage::ClientShellFocus { focused: false },
+                "{change}, move_first={move_first}"
+            );
+        }
+    }
+}
+
+#[gpui::test]
+fn connected_mouse_external_drag_cleans_up_once_without_forwarding_synthetic_input(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
+    });
+    let view = fixture.update(cx, |fixture, _| fixture.0.clone());
+    for pressed in [false, true] {
+        for move_first in [false, true] {
+            let (endpoint, mut server) = connected_endpoint("ssh:mouse");
+            let position = cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    prepare_mouse(view, endpoint);
+                    let position = mouse_position(view, 3.5, 4.5);
+                    if pressed {
+                        assert!(view.terminal_mouse_down(
+                            &MouseDownEvent {
+                                position,
+                                button: MouseButton::Left,
+                                ..Default::default()
+                            },
+                            window,
+                            cx
+                        ));
+                    }
+                    mouse_position(view, 7.5, 8.5)
+                })
+            });
+            // Use GPUI's real external-drag state; the nonrendering Fixture keeps resize out.
+            cx.simulate_event(gpui::FileDropEvent::Entered {
+                position,
+                paths: gpui::ExternalPaths::default(),
+            });
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    assert!(cx.has_active_drag());
+                    if move_first {
+                        assert!(!view.terminal_mouse_move(
+                            &MouseMoveEvent {
+                                position,
+                                pressed_button: Some(MouseButton::Left),
+                                ..Default::default()
+                            },
+                            cx
+                        ));
+                    }
+                    assert!(!view.terminal_mouse_up(
+                        &MouseUpEvent {
+                            position,
+                            button: MouseButton::Left,
+                            ..Default::default()
+                        },
+                        cx
+                    ));
+                    assert!(view.terminal_mouse.is_none());
+                    assert!(view.terminal_mouse_down(
+                        &MouseDownEvent {
+                            position,
+                            button: MouseButton::Left,
+                            ..Default::default()
+                        },
+                        window,
+                        cx
+                    ));
+                    assert!(view.terminal_mouse.is_none());
+                    view.terminal_mouse_hover(
+                        &MouseMoveEvent {
+                            position,
+                            ..Default::default()
+                        },
+                        cx,
+                    );
+                    view.cancel_terminal_mouse(cx);
+                    view.endpoints[1]
+                        .connection
+                        .handle
+                        .as_ref()
+                        .unwrap()
+                        .set_focus(&snapshot().boot_id, false)
+                        .unwrap();
+                });
+            });
+            cx.simulate_event(gpui::FileDropEvent::Exited);
+            if pressed {
+                assert_eq!(
+                    server.receive(),
+                    ClientMessage::ClientShellPaneInput {
+                        pane_id: "w1:p1".into(),
+                        events: vec![mouse_event(
+                            ClientMouseKind::Down(ClientMouseButton::Left),
+                            2,
+                            3
+                        )],
+                    }
+                );
+                assert_eq!(
+                    server.receive(),
+                    ClientMessage::ClientShellPaneInput {
+                        pane_id: "w1:p1".into(),
+                        events: vec![mouse_event(
+                            ClientMouseKind::Up(ClientMouseButton::Left),
+                            2,
+                            3
+                        )],
+                    }
+                );
+            }
+            assert_eq!(
+                server.receive(),
+                ClientMessage::ClientShellFocus { focused: false }
+            );
+        }
+    }
+}
+
+#[gpui::test]
+fn connected_mouse_deactivation_releases_last_sent_position_once_without_focusing(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
+    });
+    let view = fixture.update(cx, |fixture, _| fixture.0.clone());
+    for (offset, pane_id) in [(0., "w1:p1"), (40., "w1:p2")] {
+        let (endpoint, mut server) = connected_endpoint("ssh:mouse");
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                prepare_mouse(view, endpoint);
+                view.active = true;
+                assert!(view.terminal_mouse_down(
+                    &MouseDownEvent {
+                        position: mouse_position(view, offset + 3.5, 4.5),
+                        button: MouseButton::Left,
+                        ..Default::default()
+                    },
+                    window,
+                    cx
+                ));
+                assert!(view.terminal_mouse_move(
+                    &MouseMoveEvent {
+                        position: mouse_position(view, offset + 5.5, 6.5),
+                        pressed_button: Some(MouseButton::Left),
+                        ..Default::default()
+                    },
+                    cx
+                ));
+                view.active = false;
+                view.cancel_terminal_mouse(cx);
+                view.cancel_terminal_mouse(cx);
+                assert!(view.terminal_mouse.is_none());
+                assert!(!view.mouse_focus_pending());
+                assert!(!view.terminal_mouse_up(
+                    &MouseUpEvent {
+                        position: mouse_position(view, offset + 7.5, 8.5),
+                        button: MouseButton::Left,
+                        ..Default::default()
+                    },
+                    cx
+                ));
+                assert!(view.live.activation.is_none());
+                assert!(view.activation_deadline.is_none());
+                view.active = true;
+                view.send(
+                    ClientPaneInputEvent::TextCommit("after cancellation".into()),
+                    cx,
+                );
+            });
+        });
+        for event in [
+            mouse_event(ClientMouseKind::Down(ClientMouseButton::Left), 2, 3),
+            mouse_event(ClientMouseKind::Drag(ClientMouseButton::Left), 4, 5),
+            mouse_event(ClientMouseKind::Up(ClientMouseButton::Left), 4, 5),
+        ] {
+            assert_eq!(
+                server.receive(),
+                ClientMessage::ClientShellPaneInput {
+                    pane_id: pane_id.into(),
+                    events: vec![event],
+                }
+            );
+        }
+        assert_eq!(
+            server.receive(),
+            ClientMessage::ClientShellPaneInput {
+                pane_id: "w1:p1".into(),
+                events: vec![ClientPaneInputEvent::TextCommit(
+                    "after cancellation".into()
+                )],
+            }
+        );
+    }
+}
+
+#[gpui::test]
+fn connected_mouse_hover_is_separate_from_capture_and_obeys_input_guards(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
+    });
+    let view = fixture.update(cx, |fixture, _| fixture.0.clone());
+    let (endpoint, mut server) = connected_endpoint("ssh:mouse");
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            prepare_mouse(view, endpoint);
+            let event = MouseMoveEvent {
+                position: mouse_position(view, 43.5, 4.5),
+                ..Default::default()
+            };
+            assert!(!view.terminal_mouse_move(&event, cx));
+            view.terminal_mouse_hover(&event, cx);
+            view.terminal_mouse_hover(
+                &MouseMoveEvent {
+                    pressed_button: Some(MouseButton::Left),
+                    ..event.clone()
+                },
+                cx,
+            );
+            view.terminal_mouse_hover(
+                &MouseMoveEvent {
+                    modifiers: gpui::Modifiers {
+                        shift: true,
+                        ..Default::default()
+                    },
+                    ..event.clone()
+                },
+                cx,
+            );
+            view.terminal_mouse_hover(
+                &MouseMoveEvent {
+                    position: mouse_position(view, 90., 30.),
+                    ..event.clone()
+                },
+                cx,
+            );
+            Arc::make_mut(view.live.surface.as_mut().unwrap()).panes[1].mouse_reporting = false;
+            view.terminal_mouse_hover(&event, cx);
+            Arc::make_mut(view.live.surface.as_mut().unwrap()).panes[1].mouse_reporting = true;
+            view.open_keybinds(window, cx);
+            view.terminal_mouse_hover(&event, cx);
+            view.menu.reset();
+            assert!(view.terminal_mouse.is_none());
+            assert!(view.live.activation.is_none());
+            assert!(view.activation_deadline.is_none());
+            view.send(
+                ClientPaneInputEvent::TextCommit("hover does not focus".into()),
+                cx,
+            );
+        });
+    });
+    assert_eq!(
+        server.receive(),
+        ClientMessage::ClientShellPaneInput {
+            pane_id: "w1:p2".into(),
+            events: vec![mouse_event(ClientMouseKind::Moved, 2, 3)],
+        }
+    );
+    assert_eq!(
+        server.receive(),
+        ClientMessage::ClientShellPaneInput {
+            pane_id: "w1:p1".into(),
+            events: vec![ClientPaneInputEvent::TextCommit(
+                "hover does not focus".into()
+            )],
+        }
+    );
+}
+
 #[gpui::test]
 fn toast_navigation_queues_typed_targets_and_fences_input(cx: &mut gpui::TestAppContext) {
     let (fixture, cx) = cx.add_window_view(|window, cx| {
@@ -386,7 +1145,7 @@ fn toast_click_uses_origin_and_close_never_navigates(cx: &mut gpui::TestAppConte
         .with_snapshot(remote.live.snapshot.as_deref())
         .preview();
     remote.toasts.receive([notice.clone(), notice]);
-    cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(600.)));
+    cx.simulate_resize(size(px(1000.), px(600.)));
     cx.update(|window, cx| {
         view.update(cx, |view, _| {
             // The same IDs on Local must not win over the notification's origin.
@@ -436,7 +1195,7 @@ fn toast_rendered_clicks_reject_replaced_removed_and_disabled_origins(
     cx: &mut gpui::TestAppContext,
 ) {
     let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
-    cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(600.)));
+    cx.simulate_resize(size(px(1000.), px(600.)));
     for change in 0..4 {
         let (mut remote, _server) = connected_endpoint("ssh:toast");
         let mut wire = crate::notifications::tests::notification("old render");

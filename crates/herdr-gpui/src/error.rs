@@ -39,6 +39,14 @@ pub enum Error {
     SelectionStale,
     #[error("Selection is too large to copy.")]
     SelectionSize,
+    #[error("File drop exceeds 256 paths or 64 KiB of quoted text.")]
+    FileDropSize,
+    #[error("Dropped paths must be UTF-8.")]
+    FileDropEncoding,
+    #[error("Dropped paths must not contain control characters.")]
+    FileDropControl,
+    #[error("Dropped paths must not be empty.")]
+    FileDropEmptyPath,
     #[error("Checkout lookup failed. Dismiss and reopen the menu.")]
     DeletionLookup,
     #[error("Reopen the deletion dialog.")]

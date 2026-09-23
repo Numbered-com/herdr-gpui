@@ -55,7 +55,7 @@ impl HerdrWindow {
     }
 
     pub(crate) fn send(&mut self, event: ClientPaneInputEvent, cx: &mut Context<Self>) {
-        if self.menu.page.is_some() || !self.input_ready() {
+        if self.menu.page.is_some() || !self.input_ready() || self.mouse_focus_pending() {
             return;
         }
         if let (Some(handle), Some(snapshot), Some(surface)) = (

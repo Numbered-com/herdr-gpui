@@ -379,6 +379,7 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         cell_width: 9.,
         hovered_terminal_link: false,
         pressed_terminal_link: None,
+        terminal_mouse: None,
         presentation: Default::default(),
         painter: Default::default(),
         marked: String::new(),

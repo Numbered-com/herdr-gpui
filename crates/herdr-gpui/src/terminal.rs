@@ -157,25 +157,42 @@ impl WheelAccumulator {
 
 pub struct WheelTarget {
     pub target: InputTarget,
+    pub(crate) mouse_reporting: bool,
+    pub(crate) bounds: Bounds<Pixels>,
     position: ClientMousePosition,
     geometry: Option<ClientMouseGeometry>,
 }
 
 impl WheelTarget {
     pub fn event(&self, lines: i16, modifiers: Modifiers) -> ClientPaneInputEvent {
-        ClientPaneInputEvent::Mouse {
-            kind: if lines > 0 {
+        let mut event = self.mouse_event(
+            if lines > 0 {
                 ClientMouseKind::ScrollUp
             } else {
                 ClientMouseKind::ScrollDown
             },
+            modifiers,
+        );
+        if let ClientPaneInputEvent::Mouse { lines: count, .. } = &mut event {
+            *count = lines.unsigned_abs();
+        }
+        event
+    }
+
+    pub(crate) fn mouse_event(
+        &self,
+        kind: ClientMouseKind,
+        modifiers: Modifiers,
+    ) -> ClientPaneInputEvent {
+        ClientPaneInputEvent::Mouse {
+            kind,
             position: self.position,
             geometry: self.geometry,
             modifiers: u8::from(modifiers.shift)
                 | (u8::from(modifiers.control) << 1)
                 | (u8::from(modifiers.alt) << 2)
                 | (u8::from(modifiers.platform) << 3),
-            lines: lines.unsigned_abs(),
+            lines: 1,
         }
     }
 }
@@ -198,7 +215,7 @@ pub fn wheel_target(
     {
         return None;
     }
-    let (target, rect, pixel_mouse, width_px, height_px, origin_x, origin_y) =
+    let (target, rect, mouse_reporting, pixel_mouse, width_px, height_px, origin_x, origin_y) =
         if let Some(popup) = &surface.popup {
             let origin = popup_origin(&surface.frame, &popup.frame, cell_width, cell_height);
             (
@@ -209,6 +226,7 @@ pub fn wheel_target(
                     width: popup.frame.width,
                     height: popup.frame.height,
                 },
+                popup.mouse_reporting,
                 popup.sgr_pixel_mouse,
                 popup.pixel_width,
                 popup.pixel_height,
@@ -226,6 +244,7 @@ pub fn wheel_target(
             (
                 InputTarget::Pane(pane.pane_id.clone()),
                 pane.inner_rect,
+                pane.mouse_reporting,
                 pane.sgr_pixel_mouse,
                 pane.pixel_width,
                 pane.pixel_height,
@@ -262,6 +281,14 @@ pub fn wheel_target(
     };
     Some(WheelTarget {
         target,
+        mouse_reporting,
+        bounds: Bounds::new(
+            point(px(origin_x), px(origin_y)),
+            size(
+                px(rect.width as f32 * cell_width),
+                px(rect.height as f32 * cell_height),
+            ),
+        ),
         position,
         geometry,
     })

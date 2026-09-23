@@ -303,6 +303,12 @@ native-frame appearance also remains unverified by these macOS tests.
 
 ## Terminal Selection And Copy
 
+Mouse-aware applications receive clicks, button releases, drags, and pointer
+motion. Hold Shift to select/copy locally instead, or Shift-right-click for the
+GUI pane menu. In applications without mouse reporting, selection and the pane
+menu work without Shift. A forwarded drag stays in the pane or popup where it
+started, including when the pointer moves outside it.
+
 Drag across the terminal to select cells; releasing the button copies them, drops
 the highlight, and shows the `copied to clipboard` flash described under
 [Configuration](#configuration). Selection is client-local: it reads the surface
@@ -324,10 +330,24 @@ The highlight is cleared by the release that copies it, and by a reconnect,
 detach, or endpoint switch. Cmd-V still sends semantic paste; there is no copy
 keystroke, because the release has already copied and nothing stays selected.
 
+## File Drops
+
+Drop files from your file manager onto a terminal pane or popup to paste their
+paths there, even if another pane is focused. Paths are quoted as POSIX shell
+words, separated by spaces; the drop never presses Enter or reads file contents.
+Drops are limited to 256 paths and 64 KiB of quoted text. Non-UTF-8 paths and
+paths containing control characters are rejected rather than altered.
+
+On an SSH endpoint this pastes local path strings, not files: there is no upload
+or remote path translation. This does not add image attachment or image clipboard
+support, and POSIX quoting is not intended for Windows command shells.
+
 ## Terminal Links
 
 Click an explicit terminal hyperlink or a visible `http://` / `https://` URL to
 open it in your default browser. A hand cursor indicates a clickable destination.
+In a mouse-aware application, hold Shift while clicking to open a link locally
+instead of sending the click to the application.
 Only HTTP and HTTPS destinations are opened. Links inside a popup target that
 popup, and menus block activation. Dragging does not activate a link: a drag
 across a link copies it as text, and the click that opens it is the one that
@@ -628,9 +648,9 @@ GPUI native action/menu/keybinding patterns.
   and DejaVu Sans. No bundled Nerd Font.
   Private-use icons may be missing. Fonts and palettes are configured locally,
   not synchronized from the host terminal's theme.
-- No draggable scrollback UI, text selection/copy, mouse button/motion reporting, split dragging,
+- No draggable scrollback UI, split dragging,
   image rendering, or animated blinking.
-- No right-click passthrough or horizontal wheel handling,
+- No horizontal wheel handling,
   server-owned keybindings, session picker, saved-host editing, or daemon
   stop/upgrade management.
 - IME uses a minimal transient buffer, not a local editable terminal document;
