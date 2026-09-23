@@ -20,6 +20,7 @@ pub(crate) struct Counts {
     pub paint_errors: usize,
     pub metric_shapes: usize,
     pub paints: usize,
+    pub sidebar_renders: usize,
 }
 impl Global for Counts {}
 
@@ -313,9 +314,65 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                 std::process::exit(1);
             }
         }
+        // Terminal output: a surface-only update redraws the window while the
+        // cached sidebar keeps its layout. Alternate frames refresh the whole
+        // window, as every update did before, for comparison in the same run.
+        let mut terminal = vec![];
+        let mut terminal_full = vec![];
+        for step in 0..120_usize {
+            timer.timer(Duration::from_millis(20)).await;
+            let full = step % 2 == 1;
+            let result =
+                AnyWindowHandle::from(handle).update(cx, |root, window, cx| -> Result<f64> {
+                    let view = root
+                        .downcast::<HerdrWindow>()
+                        .map_err(|_| anyhow!("unexpected root"))?;
+                    view.update(cx, |view, cx| -> Result<()> {
+                        let surface = Arc::make_mut(
+                            view.live
+                                .surface
+                                .as_mut()
+                                .context("missing fixture surface")?,
+                        );
+                        surface.popup = None;
+                        let cell = &mut surface.frame.cells[step % 160];
+                        cell.fg = if cell.fg == 0x02ff55ee { 0 } else { 0x02ff55ee };
+                        view.redraw_terminal(cx);
+                        Ok(())
+                    })?;
+                    if full {
+                        window.refresh();
+                    }
+                    *cx.default_global::<Counts>() = Counts::default();
+                    let start = Instant::now();
+                    window.draw(cx).clear();
+                    let elapsed = start.elapsed().as_secs_f64() * 1000.;
+                    let counts = *cx.global::<Counts>();
+                    if counts.paints != 1
+                        || counts.glyphs != 6981
+                        || counts.paint_errors != 0
+                        || (!uncached && counts.shapes != 0)
+                        || counts.sidebar_renders != usize::from(full)
+                    {
+                        bail!("terminal redraw (full={full}): {counts:?}");
+                    }
+                    Ok(elapsed)
+                });
+            match result {
+                Ok(Ok(elapsed)) if full => terminal_full.push(elapsed),
+                Ok(Ok(elapsed)) => terminal.push(elapsed),
+                result => {
+                    eprintln!("PERF FAIL: {result:?}");
+                    std::process::exit(1);
+                }
+            }
+        }
         report("first-content", &mut cold);
         report("cache-cold", &mut cache_cold);
-        let p95 = report("warm-hover", &mut hover).max(report("warm-scroll", &mut scroll));
+        report("terminal-full-window", &mut terminal_full);
+        let p95 = report("warm-hover", &mut hover)
+            .max(report("warm-scroll", &mut scroll))
+            .max(report("warm-terminal", &mut terminal));
         if p95 <= budget {
             eprintln!("PERF PASS p95_budget_ms={budget}");
             std::process::exit(0);

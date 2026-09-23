@@ -24,7 +24,15 @@ impl Render for HerdrWindow {
             self.theme.clone(),
         );
         self.cell_width = self.painter.borrow_mut().cell_width(&font, window, cx);
-        let sidebar = self.render_sidebar(window, cx);
+        // Registers the window for surface-only redraws; see `redraw_terminal`.
+        self.surface_signal.read(cx);
+        let sidebar = self.sidebar_visible.then(|| {
+            crate::sidebar::cached_view(
+                &self.sidebar_view,
+                self.sidebar_width,
+                f32::from(window.viewport_size().width),
+            )
+        });
         let mut tabs = div()
             .id("tabs")
             .flex()
@@ -472,7 +480,7 @@ impl Render for HerdrWindow {
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .when(self.sidebar_visible, |row| row.child(sidebar))
+                    .children(sidebar)
                     .child(
                         div()
                             .flex()

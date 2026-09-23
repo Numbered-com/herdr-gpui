@@ -7,6 +7,7 @@ mod layout;
 mod metrics;
 mod render;
 mod row;
+mod view;
 mod workspaces;
 
 #[cfg(test)]
@@ -22,11 +23,14 @@ pub(crate) use {
     hover::{HoverMenu, HoverRest},
     metrics::{ARROW_RESERVE, HOST_ARROW_WIDTH, HOST_GAP, ICON_RESERVE, LABEL_GAP},
     row::{compact, github_mark, label_text},
+    view::SidebarView,
     workspaces::workspace_label,
 };
 
 #[cfg(any(test, feature = "integration-test"))]
 pub(crate) use metrics::LABEL_WIDTH;
+
+pub(crate) use view::cached as cached_view;
 
 use agents::{agents_sort, sorted_agents, status_indicator};
 use metrics::*;
