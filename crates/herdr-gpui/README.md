@@ -927,4 +927,10 @@ desktop. On macOS it checks exact-window clicks with a decoy key window, host
 selection/disabled hosts, scoped collapse, duplicate-ID navigation routing,
 composition preservation, menu isolation, and long-label native glyph clipping.
 Scroll independence uses scroll handles and native draws, not trackpad events.
+Native paint-probe failures report the label and geometry/glyph mismatch in the
+captured `gui.log` output and fail the test with a nonzero exit instead of panicking
+inside the native paint callback. The first failure survives subsequent redraws.
+An intentionally wrong-width native fixture verifies exit code 1, useful diagnostics,
+and absence of an abort signal. Sidebar and notification drivers exit explicitly
+so AppKit termination cannot turn a failure into exit code 0.
 See the root README for the full verification scope and remaining limitations.
