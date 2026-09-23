@@ -18,6 +18,7 @@ pub(super) mod brew {
     pub(in crate::updater) fn upgrade(
         _cask: &Cask,
         _current: &str,
+        _expected: &str,
         _cancel: &AtomicBool,
         _progress: impl FnMut(String),
     ) -> Result<String> {
