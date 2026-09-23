@@ -52,6 +52,8 @@ pub(crate) struct HerdrWindow {
     pub(crate) configured_terminal_size: f32,
     pub(crate) theme: config::Theme,
     pub(crate) config_load: Option<Task<()>>,
+    pub(crate) config_watch: Option<Task<()>>,
+    pub(crate) config_load_revision: u64,
     pub(crate) endpoints: Vec<endpoint::Endpoint>,
     pub(crate) selected_endpoint: usize,
     pub(crate) selection_epoch: u64,
@@ -237,6 +239,8 @@ impl HerdrWindow {
             config,
             theme,
             config_load: None,
+            config_watch: None,
+            config_load_revision: 0,
             catalog: endpoint::Catalog::new(&target),
             endpoints: vec![endpoint::Endpoint::new(
                 endpoint::LOCAL.into(),
@@ -326,6 +330,7 @@ impl HerdrWindow {
         this.reconnect();
         log_window::set_appearance(&this.config, &this.theme, cx);
         this.load_gui_config(cx);
+        this.watch_gui_config(cx);
         this
     }
 }

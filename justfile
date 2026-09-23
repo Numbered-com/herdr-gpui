@@ -58,7 +58,7 @@ stress-linux iterations="30" cpus="0.5" filter="":
 
 # Native font/glyph regression across repeated frames and sizes; no daemon needed.
 test-sidebar:
-    cargo test --locked -p herdr-gpui --features integration-test --test live_gui native_sidebar -- --ignored --nocapture
+    cargo test --locked -p herdr-gpui --features integration-test --test live_gui native_sidebar -- --ignored --nocapture --test-threads=1
 
 # Native hover/scroll CPU scene budget in milliseconds, calibrated for this machine.
 test-perf budget="30":

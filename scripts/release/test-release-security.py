@@ -48,7 +48,12 @@ class ReleaseTargets(unittest.TestCase):
                               "github.actor == 'penso'", "github.triggering_actor == 'penso'"):
                 self.assertIn(condition, job)
         self.assertIn("    needs: [checks, windows, commits]\n", jobs["checks-passed"])
-        self.assertIn('test "$RESULT" = success && test "$WINDOWS" = success && test "$COMMITS" = success', jobs["checks-passed"])
+        self.assertIn('test "$COMMITS" = success || exit 1', jobs["checks-passed"])
+        self.assertIn('test "$RESULT" = success && test "$WINDOWS" = success', jobs["checks-passed"])
+        self.assertIn('test "$CODE" = false && test "$RESULT" = skipped && test "$WINDOWS" = skipped', jobs["checks-passed"])
+        for name in ("checks", "windows", "build"):
+            self.assertIn("needs.commits.outputs.code == 'true'", jobs[name])
+            self.assertIn("needs: [zizmor, commits]", jobs[name])
         self.assertIn("WINDOWS: ${{ needs.windows.result }}", jobs["checks-passed"])
         self.assertIn("          fetch-depth: 0\n", jobs["commits"])
         self.assertIn("python3 scripts/release/check-commit-messages.py range", jobs["commits"])

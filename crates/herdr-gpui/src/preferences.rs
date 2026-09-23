@@ -144,7 +144,7 @@ impl HerdrWindow {
             .child(row("preferences-notifications-enabled", "In-app toasts", self.config.notifications.enabled.to_string()))
             .child(row("preferences-notifications-delay", "Delay (seconds)", self.config.notifications.delay_seconds.to_string()))
             .child(row("preferences-notifications-position", "Corner", format!("{:?}", self.config.notifications.position)))
-            .child(note("Edit [notifications] in the GUI config file, then reload. In-app notifications default off; QA previews always work. No sounds or OS notifications."))
+            .child(note("Edit [notifications] in the local GUI config file; saved changes reload automatically. In-app notifications default off; QA previews always work. No sounds or OS notifications."))
             .child(note(
                 "Font families and sizes are read-only here. Sizes are logical pixels, independent of display scaling.",
             ))
@@ -154,7 +154,7 @@ impl HerdrWindow {
         }
         body = body
             .child(note(
-                "Optional behaviors, off by default. Turn one on in the [features] table of the GUI config file, then reload GUI config.",
+                "Optional behaviors, off by default. Turn one on in the [features] table of the local GUI config file; saved changes reload automatically.",
             ))
             .child(section("CONFIGURATION"))
             .child(
@@ -180,7 +180,7 @@ impl HerdrWindow {
                     ),
             )
             .child(note(
-                "Edit this local file, then reload GUI config. Unset keys inherit config-gpui.toml, which is overwritten with current defaults on startup and reload. Invalid overrides leave the current appearance unchanged.",
+                "Edit this local file; saved changes reload automatically. Unset keys inherit config-gpui.toml, which is overwritten with current defaults on startup and reload. Invalid overrides leave the current appearance unchanged.",
             ))
             .child(
                 button("preferences-reload-config", "Reload GUI config").on_click(cx.listener(
