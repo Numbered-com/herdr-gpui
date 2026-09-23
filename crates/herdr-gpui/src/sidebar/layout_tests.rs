@@ -219,6 +219,12 @@ impl Render for SidebarFixture {
     }
 }
 
+pub(crate) const REPO_KEY: &str = if cfg!(windows) {
+    "C:/fixture/agent-launcher/.git"
+} else {
+    "/fixture/agent-launcher/.git"
+};
+
 pub(crate) fn snapshot(workspace_count: usize) -> ClientShellSnapshot {
     serde_json::from_value(serde_json::json!({
         "boot_id": "layout-test", "revision": 1,
@@ -240,7 +246,7 @@ pub(crate) fn snapshot(workspace_count: usize) -> ClientShellSnapshot {
             "custom_label": false,
             "branch": match i { 0 => "main", 2 => "1256789", 3 => "develop", 4 => "worktree/sidebar-child", 5 => "worktree/sidebar-child-with-a-long-readable-branch-name", _ => "fix/sidebar-label-width-and-overflow-regression" },
             "worktree": if (3..=5).contains(&i) { serde_json::json!({
-                "key": "/fixture/agent-launcher/.git", "label": "agent-launcher", "is_linked_worktree": i != 3
+                "key": REPO_KEY, "label": "agent-launcher", "is_linked_worktree": i != 3
             }) } else { serde_json::Value::Null },
             "tokens": [], "focused": i == 0, "agent_status": "working"
         })).collect::<Vec<_>>(),
@@ -277,7 +283,7 @@ fn compact_sidebar_hides_branches_and_keeps_badges_inside_single_line_rows(
         view.live.snapshot = Some(Arc::new(snapshot(6)));
         let input = crate::pull_request::Input {
             checkout: None,
-            repo_key: "/fixture/agent-launcher/.git".into(),
+            repo_key: REPO_KEY.into(),
             branch: "worktree/sidebar-child".into(),
         };
         let now = std::time::Instant::now();
@@ -794,11 +800,7 @@ fn check_sidebar(
             } else {
                 "\u{25be}"
             }));
-            assert_eq!(
-                view.collapsed_repos
-                    .contains("/fixture/agent-launcher/.git"),
-                collapsed
-            );
+            assert_eq!(view.collapsed_repos.contains(REPO_KEY), collapsed);
             assert_eq!(
                 !cx.global::<TextProbes>().0.contains_key("sidebar-child"),
                 collapsed
@@ -1718,24 +1720,22 @@ fn worktree_rows_wear_their_cached_pull_request(cx: &mut gpui::TestAppContext) {
         view.update(cx, |view, cx| {
             // A standalone checkout too, to compare with a collapsible group row.
             let snapshot = Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+            let solo_key = if cfg!(windows) {
+                "C:/fixture/solo/.git"
+            } else {
+                "/fixture/solo/.git"
+            };
             snapshot.workspaces[0].worktree = Some(ClientShellWorktree {
-                key: "/fixture/solo/.git".into(),
+                key: solo_key.into(),
                 label: "solo".into(),
                 is_linked_worktree: false,
             });
             let now = std::time::Instant::now();
             for (key, branch, number, state, additions, deletions) in [
-                (
-                    "/fixture/agent-launcher/.git",
-                    "worktree/sidebar-child",
-                    7,
-                    "MERGED",
-                    23,
-                    342,
-                ),
-                ("/fixture/solo/.git", "main", 9, "OPEN", 4, 5),
+                (REPO_KEY, "worktree/sidebar-child", 7, "MERGED", 23, 342),
+                (solo_key, "main", 9, "OPEN", 4, 5),
                 // The group's own head, so a row carries arrow and badge both.
-                ("/fixture/agent-launcher/.git", "develop", 11, "OPEN", 1, 2),
+                (REPO_KEY, "develop", 11, "OPEN", 1, 2),
             ] {
                 let mut value = crate::pull_request::fixture().unwrap();
                 value.number = number;
@@ -1812,7 +1812,7 @@ fn worktree_rows_mark_uncommitted_work(cx: &mut gpui::TestAppContext) {
             let now = std::time::Instant::now();
             let input = |branch: &str| crate::pull_request::Input {
                 checkout: None,
-                repo_key: "/fixture/agent-launcher/.git".into(),
+                repo_key: REPO_KEY.into(),
                 branch: branch.into(),
             };
             // A checkout with a pull request and uncommitted work, and one that
@@ -2084,11 +2084,7 @@ fn the_workspace_menu_folds_and_unfolds_a_worktree_group(cx: &mut gpui::TestAppC
             let view = view.read(cx);
             // Folding is the client's own view of the list, not a daemon request.
             assert!(view.menu.page.is_none(), "{item} left the menu open");
-            assert_eq!(
-                view.collapsed_repos
-                    .contains("/fixture/agent-launcher/.git"),
-                collapsed
-            );
+            assert_eq!(view.collapsed_repos.contains(REPO_KEY), collapsed);
             assert_eq!(
                 !cx.global::<TextProbes>().0.contains_key("sidebar-child"),
                 collapsed,

@@ -617,7 +617,7 @@ fn worktree_creation_reports_failures_and_follows_the_created_checkout(
             // Only the correlated response closes the dialog and navigates.
             let created = serde_json::json!({"result":{"type":"worktree_created","workspace":{"workspace_id":"w6"},"tab":{"tab_id":"t9"}}});
             view.collapsed_repos
-                .insert("/fixture/agent-launcher/.git".to_owned());
+                .insert(sidebar::layout_tests::REPO_KEY.to_owned());
             view.menu.creation = Some("create".into());
             view.live.dialog_response = Some(("unrelated".into(), Some(Ok(created.clone()))));
             view.update_workspace_dialog(window, cx);

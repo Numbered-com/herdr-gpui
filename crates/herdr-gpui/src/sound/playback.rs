@@ -202,16 +202,31 @@ mod tests {
             .set_len(MAX_FILE_BYTES + 1)
             .unwrap();
         assert!(matches!(decode_file(&path), Err(Error::SoundFileSize)));
+        #[cfg(unix)]
         assert!(matches!(decode_file(dir.path()), Err(Error::SoundFileSize)));
-        std::fs::remove_file(&path).unwrap();
-        assert!(
-            std::process::Command::new("mkfifo")
-                .arg(&path)
-                .status()
-                .unwrap()
-                .success()
-        );
-        assert!(matches!(decode_file(&path), Err(Error::SoundFileSize)));
+        #[cfg(windows)]
+        {
+            let error = decode_file(dir.path()).err().unwrap();
+            assert!(matches!(
+                &error,
+                Error::SoundFile { path, source }
+                    if path == dir.path() && source.kind() == std::io::ErrorKind::PermissionDenied
+            ));
+            assert!(std::error::Error::source(&error).is_some());
+        }
+        assert!(decode(Sound::Request, Some(dir.path())).is_ok());
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&path).unwrap();
+            assert!(
+                std::process::Command::new("mkfifo")
+                    .arg(&path)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            assert!(matches!(decode_file(&path), Err(Error::SoundFileSize)));
+        }
         assert!(decode(Sound::Request, Some(&path)).is_ok());
     }
 

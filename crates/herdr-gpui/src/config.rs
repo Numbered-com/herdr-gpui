@@ -13,7 +13,8 @@ use std::{
 };
 
 const DEFAULT_CONFIG: &str = include_str!("../config-gpui.example.toml");
-const MANAGED_HEADER: &str = "# DO NOT EDIT -- WILL BE OVERWRITTEN\n";
+// Compare the first line so Windows checkouts and editors can use CRLF.
+const MANAGED_HEADER: &str = "# DO NOT EDIT -- WILL BE OVERWRITTEN";
 const LOCAL_CONFIG: &str = "# Herdr GPUI overrides. Edit this file, then reload GUI config.\n# Unset keys inherit config-gpui.toml; tables merge key by key.\n";
 
 /// Every face is held to this range, whether it comes from the config file or
@@ -529,7 +530,7 @@ impl Config {
         let (text, source) = match fs::read_to_string(&local) {
             Ok(text) => (text, local),
             Err(error) if error.kind() == ErrorKind::NotFound => match fs::read_to_string(path) {
-                Ok(text) if !text.starts_with(MANAGED_HEADER) => (text, path.to_owned()),
+                Ok(text) if text.lines().next() != Some(MANAGED_HEADER) => (text, path.to_owned()),
                 Ok(_) => (String::new(), local),
                 Err(error) if error.kind() == ErrorKind::NotFound => (String::new(), local),
                 Err(error) => return Err(Error::from(error).at_path(path)),
@@ -579,7 +580,7 @@ impl Config {
         };
         let legacy = original
             .as_deref()
-            .filter(|text| !text.starts_with(MANAGED_HEADER));
+            .filter(|text| text.lines().next() != Some(MANAGED_HEADER));
         if let Some(text) = legacy {
             // Never replace an old user's file until its exact contents are
             // safely stored in the local file. A conflict needs human resolution.
@@ -608,7 +609,11 @@ impl Config {
             Err(error) => return Err(Error::from(error).at_path(&local)),
         }
         if legacy.is_some() {
-            fs::File::open(&local)
+            // Windows FlushFileBuffers requires write access, including when
+            // resuming a migration whose local copy already exists. Never truncate.
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&local)
                 .and_then(|file| file.sync_all())
                 .map_err(|error| Error::from(error).at_path(&local))?;
             // Publish the migration copy durably before replacing the only old
@@ -1947,11 +1952,14 @@ mod tests {
         let local = path.with_extension("local.toml");
         let daemon = temp.0.join("absent.toml");
         Config::load_path(&path, &daemon)?;
-        assert!(fs::read_to_string(&path)?.starts_with(MANAGED_HEADER));
+        assert_eq!(
+            fs::read_to_string(&path)?.lines().next(),
+            Some(MANAGED_HEADER)
+        );
         assert_eq!(fs::read_to_string(&local)?, LOCAL_CONFIG);
         let overrides = "# personal settings\nlayout = 'compact'\n[terminal]\nsize = 19\nfallback = []\n[notifications]\nenabled = true\n";
         fs::write(&local, overrides)?;
-        fs::write(&path, format!("{MANAGED_HEADER}theme = 'old-default'\n"))?;
+        fs::write(&path, format!("{MANAGED_HEADER}\ntheme = 'old-default'\n"))?;
         let config = Config::load_path(&path, &daemon)?;
         assert_eq!(config.layout.mode, LayoutMode::Compact);
         assert_eq!(config.terminal.size, 19.);
@@ -1976,12 +1984,52 @@ mod tests {
     }
 
     #[test]
+    fn managed_headers_accept_lf_and_crlf_without_migrating_defaults() -> anyhow::Result<()> {
+        for newline in ["\n", "\r\n"] {
+            for overrides in [None, Some("theme = 'Nord'\r\n")] {
+                let temp = TempDirectory::new()?;
+                let path = temp.0.join("config-gpui.toml");
+                let local = path.with_extension("local.toml");
+                let daemon = temp.0.join("absent.toml");
+                let managed = format!(
+                    "# DO NOT EDIT -- WILL BE OVERWRITTEN{newline}theme = 'Dracula'{newline}"
+                );
+                fs::write(&path, &managed)?;
+                if let Some(text) = overrides {
+                    fs::write(&local, text)?;
+                }
+                let expected_theme = if overrides.is_some() {
+                    "Nord"
+                } else {
+                    "Default"
+                };
+                assert_eq!(
+                    Config::load_startup_path(&path, &daemon)?.theme,
+                    expected_theme
+                );
+                assert_eq!(fs::read_to_string(&path)?, managed);
+                assert_eq!(local.exists(), overrides.is_some());
+                for _ in 0..2 {
+                    assert_eq!(Config::load_path(&path, &daemon)?.theme, expected_theme);
+                    assert_eq!(fs::read_to_string(&path)?, DEFAULT_CONFIG);
+                    assert_eq!(
+                        fs::read_to_string(&local)?,
+                        overrides.unwrap_or(LOCAL_CONFIG)
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn legacy_config_migrates_verbatim_and_conflicts_never_overwrite() -> anyhow::Result<()> {
         let temp = TempDirectory::new()?;
         let path = temp.0.join("config-gpui.toml");
         let local = path.with_extension("local.toml");
         let daemon = temp.0.join("absent.toml");
-        let legacy = "# keep my comments\ntheme = 'Nord'\n[layout]\nsidebar_gap = 4\n";
+        // A longer comment is not the exact managed marker. Preserve CRLF too.
+        let legacy = "# DO NOT EDIT -- WILL BE OVERWRITTEN (personal copy)\r\ntheme = 'Nord'\r\n[layout]\r\nsidebar_gap = 4\r\n";
         fs::write(&path, legacy)?;
         assert_eq!(Config::load_path(&path, &daemon)?.theme, "Nord");
         assert_eq!(fs::read_to_string(&local)?, legacy);
@@ -1990,6 +2038,8 @@ mod tests {
         // A crash after the local copy but before refresh is safe to resume.
         fs::write(&path, legacy)?;
         assert_eq!(Config::load_path(&path, &daemon)?.theme, "Nord");
+        assert_eq!(fs::read_to_string(&local)?, legacy);
+        assert_eq!(fs::read_to_string(&path)?, DEFAULT_CONFIG);
         fs::write(&path, "theme = 'Dracula'")?;
         assert!(matches!(
             Config::load_path(&path, &daemon),
@@ -2016,7 +2066,11 @@ mod tests {
             let error = Config::load_path(&path, &daemon)
                 .err()
                 .context("accepted bad local config")?;
-            assert!(matches!(error, Error::Path { path, .. } if path == local));
+            assert!(
+                matches!(&error, Error::Path { path, source } if path == &local
+                    && matches!(source.as_ref(), Error::ConfigFile { .. } | Error::Toml(_))),
+                "{error:?}"
+            );
             assert_eq!(fs::read_to_string(&local)?, text);
         }
         Ok(())
@@ -2060,7 +2114,7 @@ mod tests {
             assert_eq!(fs::read_to_string(&path)?, DEFAULT_CONFIG);
             let local = path.with_extension("local.toml");
             fs::write(&local, "theme = 'Nord'")?;
-            fs::write(&path, format!("{MANAGED_HEADER}theme = 'Dracula'"))?;
+            fs::write(&path, format!("{MANAGED_HEADER}\ntheme = 'Dracula'"))?;
             assert_eq!(Config::load_path(&path, &absent)?.theme, "Nord");
             assert_eq!(fs::read_to_string(&path)?, DEFAULT_CONFIG);
             assert_eq!(fs::read_to_string(&local)?, "theme = 'Nord'");

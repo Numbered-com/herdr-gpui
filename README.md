@@ -84,10 +84,11 @@ audio player is required. Custom notification sounds are MP3 only. See
 
 ### Windows
 
-Windows is experimental, not a supported platform: CI type-checks every target
-and feature on `windows-2025`, runs the protocol and client test suites, and
-links the executable, but no window, renderer, or live daemon has been
-exercised. Local
+Windows is experimental, not a supported platform: CI checks formatting, lints
+every target and feature, and runs workspace tests with default and all features
+on `windows-2025`, including headless UI and CLI tests. The release workflow also
+builds and CLI-tests the optimized executable, but no native window, renderer,
+or live daemon has been exercised. Local
 connections use the named pipe the Windows daemon binds, and configuration and
 state follow its `%APPDATA%` / `%LOCALAPPDATA%` layout. Saved SSH
 hosts, in-app updates, saved GitHub credentials, and the avatar disk cache are

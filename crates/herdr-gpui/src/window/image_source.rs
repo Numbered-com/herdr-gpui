@@ -380,26 +380,29 @@ mod tests {
 
     #[test]
     fn parses_unix_drop_quotes_escapes_and_bracketed_paste() {
+        let root = if cfg!(windows) { "C:/tmp" } else { "/tmp" };
+        let expected = format!("{root}/a b.png");
         for text in [
-            "/tmp/a b.png",
-            "/tmp/a\\ b.png\r\n",
-            "'/tmp/a b.png'",
-            "\"/tmp/a\\ b.png\"\n",
-            "\x1b[200~'/tmp/a\\ b.png'\r\n\x1b[201~",
+            expected.clone(),
+            format!("{root}/a\\ b.png\r\n"),
+            format!("'{root}/a b.png'"),
+            format!("\"{root}/a\\ b.png\"\n"),
+            format!("\x1b[200~'{root}/a\\ b.png'\r\n\x1b[201~"),
         ] {
             assert!(
-                matches!(from_paste(text), Some(Source::File { path, extension: "png" })
-                if path == Path::new("/tmp/a b.png"))
+                matches!(from_paste(&text), Some(Source::File { path, extension: "png" })
+                if path == Path::new(&expected))
             );
         }
         assert!(
-            matches!(from_paste("'/tmp/a\\\\b.png'"), Some(Source::File { path, .. })
-            if path == Path::new("/tmp/a\\b.png"))
+            matches!(from_paste(&format!("'{root}/a\\\\b.png'")), Some(Source::File { path, .. })
+            if path == Path::new(&format!("{root}/a\\b.png")))
         );
     }
 
     #[test]
     fn rejects_controls_multiline_relative_and_oversized_pastes() {
+        let root = if cfg!(windows) { "C:/" } else { "/" };
         for text in [
             "",
             "\r\n",
@@ -415,9 +418,12 @@ mod tests {
         for control in [
             '\0', '\n', '\r', '\t', '\u{1b}', '\u{7f}', '\u{85}', '\u{9b}',
         ] {
-            assert!(from_paste(&format!("/tmp/a{control}.png")).is_none());
+            assert!(from_paste(&format!("{root}tmp/a{control}.png")).is_none());
         }
-        let at_limit = format!("/{}.png", "x".repeat(MAX_SOURCE_BYTES - 5));
+        let at_limit = format!(
+            "{root}{}.png",
+            "x".repeat(MAX_SOURCE_BYTES - root.len() - 4)
+        );
         assert!(from_paste(&at_limit).is_some());
         assert!(from_paste(&format!("{at_limit}\n")).is_none());
         assert!(from_path(Path::new(&format!("/{at_limit}"))).is_none());
@@ -456,9 +462,16 @@ mod tests {
         );
         let nonregular = directory.path().join("directory.png");
         fs::create_dir(&nonregular).unwrap();
+        #[cfg(unix)]
         assert!(matches!(
             from_path(&nonregular).unwrap().prepare(),
             Err(Error::ImageFileType)
+        ));
+        #[cfg(windows)]
+        assert!(matches!(
+            from_path(&nonregular).unwrap().prepare(),
+            Err(Error::ImageFile { operation: "open", source })
+                if source.kind() == io::ErrorKind::PermissionDenied
         ));
     }
 

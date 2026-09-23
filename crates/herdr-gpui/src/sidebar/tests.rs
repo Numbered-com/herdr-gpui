@@ -81,7 +81,7 @@ fn collapse_uses_repository_identity_without_mutating_selection() {
     let mut workspaces = layout_tests::snapshot(7).workspaces;
     workspaces[4].focused = true;
     let before = workspaces.clone();
-    let collapsed = std::collections::HashSet::from(["/fixture/agent-launcher/.git".into()]);
+    let collapsed = std::collections::HashSet::from([layout_tests::REPO_KEY.into()]);
     let entries = super::visible_workspace_entries(&workspaces, &collapsed);
     assert_eq!(
         entries.iter().map(|entry| entry.0).collect::<Vec<_>>(),

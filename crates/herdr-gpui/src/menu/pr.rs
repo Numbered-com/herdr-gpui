@@ -775,17 +775,20 @@ mod tests {
 
     #[test]
     fn checkout_response_requires_authoritative_identity_and_absolute_path() {
+        let root = std::env::temp_dir();
+        let repo_key = root.join("repo/.git").to_str().unwrap().to_owned();
+        let checkout = root.join("worktree").to_str().unwrap().to_owned();
         let tree = ClientShellWorktree {
-            key: "/repo/.git".into(),
+            key: repo_key.clone(),
             label: "repo".into(),
             is_linked_worktree: true,
         };
         let response = serde_json::json!({"result":{"type":"workspace_info", "workspace":{
-            "workspace_id":"w", "worktree":{"repo_key":"/repo/.git", "checkout_path":"/worktree"}
+            "workspace_id":"w", "worktree":{"repo_key":repo_key, "checkout_path":checkout}
         }}});
         let input = checkout_input(&response, "w", Some(&tree), Some("feature")).unwrap();
-        assert_eq!(input.checkout.as_deref(), Some("/worktree"));
-        assert_eq!(input.repo_key, "/repo/.git");
+        assert_eq!(input.checkout.as_deref(), Some(checkout.as_str()));
+        assert_eq!(input.repo_key, repo_key);
         assert_eq!(input.branch, "feature");
         let fallback = repository_input(Some(&tree), Some("feature")).unwrap();
         assert!(fallback.checkout.is_none());
