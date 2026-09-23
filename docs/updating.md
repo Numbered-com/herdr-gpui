@@ -338,6 +338,10 @@ the ordinary test suite uses fake Homebrew processes instead.
 
 ## Native QA
 
+`just run` enables the QA menu automatically. With Cargo, enable it with
+`cargo run --locked --release -p herdr-gpui --features qa-menu`.
+Default Cargo builds and published releases omit this menu.
+
 The GPUI **QA > Show app update available** action presents safe synthetic
 update state for version `9999.0.0`, without network requests, installing files,
 or changing real update preferences. Verify modal focus, keyboard isolation, dismissal, long labels, and

@@ -59,7 +59,11 @@ include desktop integration and notices; updater-only
 `herdr-gpui-VERSION-TARGET-update.tar.gz` archives contain one executable.
 Native two-version update/restart QA remains pending.
 
-The macOS **QA** menu offers **Show NeedsAttention toast**, **Show Finished
+The macOS **QA** menu requires the opt-in `qa-menu` Cargo feature and is excluded
+from default Cargo builds and published releases. `just run` enables it
+automatically, or use
+`cargo run --locked --release -p herdr-gpui --features qa-menu`.
+The menu offers **Show NeedsAttention toast**, **Show Finished
 toast**, **Show UpdateInstalled toast**, and **Show Custom toast**. Each adds a
 synthetic in-app toast for the selected endpoint, even when disconnected. Each
 preview replaces the visible card immediately, bypassing disabled delivery,
