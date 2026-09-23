@@ -103,9 +103,29 @@ and its terminals running.
 
 ## Configuration
 
-GUI settings live in `$XDG_CONFIG_HOME/herdr/config-gpui.toml`, falling back to
-`~/.config/herdr/config-gpui.toml` and, on Windows, to
-`%APPDATA%\herdr\config-gpui.toml`. See
+GUI settings live in `$XDG_CONFIG_HOME/herdr/`, falling back to
+`~/.config/herdr/` and, on Windows, to `%APPDATA%\herdr\`:
+
+- `config-gpui.toml` contains managed defaults and documentation. Its first line
+  warns **DO NOT EDIT -- WILL BE OVERWRITTEN**. Startup and GUI config reload
+  replace it with the current release's defaults, exposing newly added settings.
+- `config-gpui.local.toml` contains your persistent overrides. Edit this file;
+  omitted keys inherit the managed defaults, nested tables merge key by key,
+  and arrays replace rather than append. Theme-picker saves also go here.
+
+Close older GPUI versions before upgrading: they still write theme changes to
+the old managed path rather than the local override file.
+
+The files are created automatically. Existing pre-managed configs are copied
+verbatim into the local file before the original is replaced. This preserves
+comments and all explicitly set values, including old defaults; remove a local
+key to follow the current default again. If a different local file already
+exists, migration stops without overwriting either file and asks you to merge
+them. A sibling `config-gpui.lock` serializes application writes across windows
+and processes. Invalid local settings keep the current in-memory configuration
+on reload. The daemon's config is never modified.
+
+See
 [`config-gpui.example.toml`](config-gpui.example.toml) for a complete example.
 Font sizes use logical pixels (finite 8..48), not typographic points. Restart the
 GUI or invoke GUI config reload after edits; daemon config reload is separate.
@@ -141,7 +161,29 @@ already waiting in a connection inbox from the disabled period are discarded too
 Failed reloads preserve current settings. QA
 previews remain available regardless of delivery settings.
 
-The `[layout]` table holds spacing. `sidebar_gap` (finite 0..64 logical pixels,
+Enable a TUI-like compact sidebar with a top-level setting in `config-gpui.local.toml`
+(before any table headers):
+
+```toml
+layout = "compact"
+```
+
+The default is `layout = "normal"`. Compact mode hides workspace branch lines and PR change
+counts, removes row padding above and below labels, and tightens horizontal and
+heading spacing in both Spaces and Agents. PR numbers, status indicators, tree
+guides, and agent-name lines remain visible; font sizes and terminal spacing are
+unchanged. Reload GUI config or restart to apply it; there is no UI toggle yet.
+
+To customize spacing too, use a `[layout]` table **instead of** the top-level
+string. Existing spacing-only tables remain supported and use normal mode:
+
+```toml
+[layout]
+mode = "compact"
+sidebar_gap = 8
+```
+
+`sidebar_gap` (finite 0..64 logical pixels,
 default `8`) is blank space between the sidebar and the terminal beside it, so
 the first column does not sit against the divider; `0` restores the flush edge.
 The terminal keeps the remaining width, so the daemon is resized to the columns
@@ -168,7 +210,8 @@ never written, and an unreadable, oversized, malformed, or unrecognized value
 leaves the defaults standing.
 
 The `src/config.rs` module exposes `Config::load()` and
-`Config::path()`, both returning the crate's typed `Result`. `Config::theme()` resolves
+`Config::path()` (managed defaults) and `Config::local_path()` (user overrides),
+all returning the crate's typed `Result`. `Config::theme()` resolves
 built-ins or Ghostty files into a `Theme` with packed 24-bit RGB colors and all
 256 palette entries. Theme resolution is a separate fallible step from loading
 and validating TOML. Font sections can override either family or size without
@@ -176,8 +219,13 @@ repeating the other field. `FontConfig::line_height()` returns `size * 20 / 14`.
 The `[features]` table holds opt-in behaviors as `Features`, with every flag off
 by default and unknown keys rejected like the other sections; Preferences lists
 each flag and its state read-only, since only the config file turns one on.
-Config and theme I/O is synchronous; startup and reload schedule it on the GPUI
-background executor and apply the validated pair together. Failed reloads retain
+First-frame config and theme loading is read-only: no config lock, migration,
+writes, or fsync delays window creation. It reads local overrides (or the legacy
+file before migration) so the first frame uses the configured layout, theme, and
+font sizes. Config maintenance, font fallback discovery, and subsequent reloads
+run on the GPUI background executor. External theme files still require disk I/O;
+startup appearance timing is recorded at debug level. Additional
+windows start from the last successfully loaded pair. Failed reloads retain
 current settings. Theme selection cancels pending reload application so a delayed
 load cannot overwrite the newer selection.
 
