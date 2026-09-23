@@ -545,6 +545,19 @@ macOS menu bar. The preview shows at least `2` and stays on until you choose **Q
 or quit. Disabling the preview restores daemon-driven behavior, so real agent
 attention can keep the badge visible. This QA setting is not saved.
 
+## Logs
+
+The client's own logs are written to
+`$XDG_STATE_HOME/herdr/gpui/logs/herdr-gpui.jsonl` (falling back to
+`~/.local/state`), one JSON record per line, readable only by you on Unix. Past
+16 MiB the file is rotated to `herdr-gpui.1.jsonl`, replacing the previous one,
+so at most two files are kept. Logs are not held in memory: **Window > Logs**
+reads the newest 5,000 records of the file while it is open, including earlier
+runs, and filters, copies, or exports them. Nothing is uploaded. Logging never
+waits on the disk; lines that cannot be queued or written are counted as dropped
+in the window's status bar. Without `XDG_STATE_HOME` or `HOME` (as on a default
+Windows setup) nothing is saved and the window says so.
+
 ## Supported
 
 - Workspace/worktree sidebar with main-checkout parents, indented linked

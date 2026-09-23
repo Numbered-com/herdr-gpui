@@ -85,7 +85,7 @@ fn open_deferred(cx: &mut App) {
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(620.), px(360.))),
-            titlebar: Some(crate::titlebar::options("Herdr GPUI Logs")),
+            titlebar: Some(crate::titlebar::options("Logs")),
             ..Default::default()
         },
         |window, cx| cx.new(|cx| LogWindow::new(window, cx)),
@@ -222,6 +222,8 @@ impl LogWindow {
             cx.notify();
         });
         let poll = cx.spawn(async move |this, cx| {
+            // The reader lives in this task; a background read borrows it by value.
+            let mut tail = diagnostics::path().map(diagnostics::Tail::new);
             loop {
                 let request = this.update(cx, |this, cx| {
                     (this.generation.is_none()
@@ -231,55 +233,72 @@ impl LogWindow {
                             this.search.read(cx).text().to_owned(),
                             this.minimum,
                             this.following,
-                            (!this.following).then(|| {
-                                (
-                                    diagnostics::generation(),
-                                    this.retained.clone(),
-                                    this.dropped,
-                                )
-                            }),
+                            (!this.following).then(|| (this.retained.clone(), this.dropped)),
                         )
                     })
                 });
                 let Ok(request) = request else { break };
                 if let Some((query, minimum, following, frozen)) = request {
                     let filter_query = query.clone();
-                    let snapshot = cx
+                    // Read the hint first so a write racing the read triggers another one.
+                    let generation = diagnostics::generation();
+                    let (returned, snapshot) = cx
                         .background_executor()
                         .spawn(async move {
-                            frozen.or_else(diagnostics::snapshot).map(
-                                |(generation, retained, dropped)| {
-                                    (
-                                        generation,
-                                        filtered(retained.clone(), &filter_query, minimum),
-                                        retained,
-                                        dropped,
-                                    )
-                                },
-                            )
+                            let snapshot = match frozen {
+                                Some((retained, dropped)) => Ok((retained, dropped)),
+                                None => tail.as_mut().map_or(Ok(()), diagnostics::Tail::read).map(
+                                    |()| {
+                                        (
+                                            tail.as_ref()
+                                                .map_or_else(Vec::new, diagnostics::Tail::records),
+                                            diagnostics::dropped(),
+                                        )
+                                    },
+                                ),
+                            }
+                            .map(|(retained, dropped)| {
+                                (
+                                    filtered(retained.clone(), &filter_query, minimum),
+                                    retained,
+                                    dropped,
+                                )
+                            });
+                            (tail, snapshot)
                         })
                         .await;
-                    if let Some((generation, rows, retained, dropped)) = snapshot
-                        && this
-                            .update(cx, |this, cx| {
-                                if this.search.read(cx).text() != query
-                                    || this.minimum != minimum
-                                    || this.following != following
-                                {
-                                    return;
+                    tail = returned;
+                    if this
+                        .update(cx, |this, cx| {
+                            if this.search.read(cx).text() != query
+                                || this.minimum != minimum
+                                || this.following != following
+                            {
+                                return;
+                            }
+                            this.generation = Some(generation);
+                            match snapshot {
+                                Ok((rows, retained, dropped)) => {
+                                    if rows.len() != this.rows.len()
+                                        || !rows
+                                            .iter()
+                                            .zip(&this.rows)
+                                            .all(|(a, b)| Arc::ptr_eq(a, b))
+                                    {
+                                        this.scroll.reset(rows.len());
+                                    }
+                                    this.rows = rows;
+                                    this.retained = retained;
+                                    this.dropped = dropped;
                                 }
-                                this.generation = Some(generation);
-                                if rows.len() != this.rows.len()
-                                    || !rows.iter().zip(&this.rows).all(|(a, b)| Arc::ptr_eq(a, b))
-                                {
-                                    this.scroll.reset(rows.len());
+                                // Not logged: a failing read would log on every change.
+                                Err(error) => {
+                                    this.status = format!("Unable to read logs: {}", error.kind())
                                 }
-                                this.rows = rows;
-                                this.retained = retained;
-                                this.dropped = dropped;
-                                cx.notify();
-                            })
-                            .is_err()
+                            }
+                            cx.notify();
+                        })
+                        .is_err()
                     {
                         break;
                     }
@@ -305,7 +324,10 @@ impl LogWindow {
             following: true,
             scroll: ListState::new(0, ListAlignment::Top, px(100.)),
             selected: None,
-            status: "Local only. Review logs before sharing.".into(),
+            status: match diagnostics::path() {
+                Some(path) => format!("Saved to {}. Review before sharing.", path.display()),
+                None => "Not saved: no state directory. Review before sharing.".into(),
+            },
             exporting: false,
             _search: subscription,
             _poll: poll,
@@ -493,7 +515,7 @@ impl Render for LogWindow {
                     .child(
                         div()
                             .text_size(px(config.ui.size + 4.))
-                            .child("GPUI / Diagnostics"),
+                            .child("Logs"),
                     )
                     .child(self.search.clone())
                     .child(
@@ -675,7 +697,7 @@ impl Render for LogWindow {
                     .border_color(rgb(theme.active))
                     .truncate()
                     .child(format!(
-                        "{} shown | {} evicted/dropped | {} | {}",
+                        "{} shown | {} dropped | {} | {}",
                         self.rows.len(),
                         self.dropped,
                         if self.following { "LIVE" } else { "PAUSED" },
@@ -713,8 +735,8 @@ mod tests {
                 "Menlo"
             }
         );
-        let options = crate::titlebar::options("Herdr GPUI Logs");
-        assert_eq!(options.title.unwrap().as_ref(), "Herdr GPUI Logs");
+        let options = crate::titlebar::options("Logs");
+        assert_eq!(options.title.unwrap().as_ref(), "Logs");
         assert_eq!(options.appears_transparent, cfg!(target_os = "macos"));
         assert_eq!(
             options.traffic_light_position,
