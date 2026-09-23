@@ -27,7 +27,7 @@ impl HerdrWindow {
     ///
     /// One set of counts only, so two "+N -M" pairs can never sit side by side
     /// meaning different things. A branch with a prefetched pull request shows
-    /// that pull request, exactly as its sidebar row does, and a dot when the
+    /// that pull request, exactly as its sidebar row does, and a badge when the
     /// checkout also has uncommitted work; the popup says how much. A branch
     /// without one shows what a commit would include right now.
     fn render_git_button(&self, cx: &mut Context<Self>) -> Option<Div> {
@@ -62,43 +62,64 @@ impl HerdrWindow {
                     Some((number, color, additions, deletions, url)) => button
                         .child(
                             div()
-                                .id("titlebar-git-pr")
-                                .debug_selector(|| "titlebar-git-pr".into())
+                                .id("titlebar-git-pr-link")
+                                .debug_selector(|| "titlebar-git-pr-link".into())
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .h(px(24.))
+                                .px(px(6.))
+                                .rounded(px(4.))
                                 .cursor_pointer()
-                                .hover(|link| link.underline())
+                                .hover(|link| {
+                                    link.bg(background.blend(rgba((theme.foreground << 8) | 0x14)))
+                                })
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                 .on_click(move |_, _, cx| {
                                     cx.stop_propagation();
                                     cx.open_url(&url);
                                 })
-                                .text_color(rgb(color))
-                                .child(number),
-                        )
-                        .child(
-                            div()
-                                .debug_selector(|| "titlebar-git-pr-lines".into())
-                                .flex()
                                 .child(
                                     div()
-                                        .debug_selector(|| "titlebar-git-pr-additions".into())
-                                        .text_color(rgb(theme.palette[2]))
-                                        .child(format!("+{}", crate::sidebar::compact(additions))),
+                                        .debug_selector(|| "titlebar-git-pr".into())
+                                        .text_color(rgb(color))
+                                        .child(number),
                                 )
-                                .child(div().text_color(rgb(theme.muted)).child("/"))
                                 .child(
                                     div()
-                                        .debug_selector(|| "titlebar-git-pr-deletions".into())
-                                        .text_color(rgb(theme.palette[1]))
-                                        .child(format!("-{}", crate::sidebar::compact(deletions))),
+                                        .debug_selector(|| "titlebar-git-pr-lines".into())
+                                        .flex()
+                                        .child(
+                                            div()
+                                                .debug_selector(|| {
+                                                    "titlebar-git-pr-additions".into()
+                                                })
+                                                .text_color(rgb(theme.palette[2]))
+                                                .child(format!(
+                                                    "+{}",
+                                                    crate::sidebar::compact(additions)
+                                                )),
+                                        )
+                                        .child(div().text_color(rgb(theme.muted)).child("/"))
+                                        .child(
+                                            div()
+                                                .debug_selector(|| {
+                                                    "titlebar-git-pr-deletions".into()
+                                                })
+                                                .text_color(rgb(theme.palette[1]))
+                                                .child(format!(
+                                                    "-{}",
+                                                    crate::sidebar::compact(deletions)
+                                                )),
+                                        ),
                                 ),
                         )
-                        // The pull request's churn is history; the dot
+                        // The pull request's churn is history; the badge
                         // says work is still sitting in the checkout.
                         .when(status.is_some_and(|status| status.dirty()), |button| {
                             button.child(
-                                div()
-                                    .debug_selector(|| "titlebar-git-dirty".into())
-                                    .child("\u{2022}"),
+                                crate::icons::uncommitted(theme, 18.)
+                                    .debug_selector(|| "titlebar-git-dirty".into()),
                             )
                         }),
                     None => button.when_some(
@@ -601,6 +622,7 @@ mod git_button_tests {
         let number = cx.debug_bounds("titlebar-git-pr").unwrap();
         let churn = cx.debug_bounds("titlebar-git-pr-lines").unwrap();
         let dirty = cx.debug_bounds("titlebar-git-dirty").unwrap();
+        assert_eq!(dirty.size, size(px(18.), px(18.)));
         // One set of counts only: the pull request's, then a dot for the work
         // still sitting in the checkout. Two "+N -M" pairs never sit together.
         assert!(
@@ -629,14 +651,22 @@ mod git_button_tests {
             assert!(number.left() >= px(80.));
             assert!(number.right() <= churn.left());
             assert!(churn.right() <= button.left());
-            cx.simulate_click(number.center(), Modifiers::default());
-            assert_eq!(
-                cx.opened_url(),
-                Some(crate::pull_request::fixture().unwrap().url)
-            );
-            cx.update(|_, cx| assert_eq!(view.read(cx).menu.page, None));
-            cx.simulate_click(churn.center(), Modifiers::default());
-            cx.update(|_, cx| assert_eq!(view.read(cx).menu.page, None));
+            for selector in [
+                "titlebar-git-pr",
+                "titlebar-git-pr-additions",
+                "titlebar-git-pr-deletions",
+                "titlebar-git-pr-link",
+            ] {
+                cx.update(|_, cx| cx.open_url("https://example.com"));
+                let target = cx.debug_bounds(selector).unwrap();
+                cx.simulate_click(target.center(), Modifiers::default());
+                assert_eq!(
+                    cx.opened_url(),
+                    Some(crate::pull_request::fixture().unwrap().url),
+                    "{selector} should open the PR"
+                );
+                cx.update(|_, cx| assert_eq!(view.read(cx).menu.page, None));
+            }
             cx.simulate_click(button.center(), Modifiers::default());
             cx.update(|_, cx| assert_eq!(view.read(cx).menu.page, Some(Page::Git)));
             cx.update(|window, cx| {
