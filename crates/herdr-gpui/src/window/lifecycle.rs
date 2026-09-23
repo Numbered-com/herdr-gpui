@@ -5,11 +5,36 @@
 use super::HerdrWindow;
 use crate::{WINDOW_TITLE, sidebar};
 use gpui::Window;
+use std::time::{Duration, Instant};
+
+/// A drag or the full screen animation passes through many sizes, and each
+/// resize makes every pane's program redraw, agents re-rendering whole
+/// transcripts. Only the size the window settles on is sent.
+pub(crate) const RESIZE_SETTLE: Duration = Duration::from_millis(150);
 
 impl HerdrWindow {
     pub(crate) fn resize(&mut self) {
+        self.resize_at(Instant::now());
+    }
+
+    pub(crate) fn resize_at(&mut self, now: Instant) {
         if self.last_queued_options == Some(self.options) {
+            self.pending_resize = None;
             return;
+        }
+        // The first geometry goes out at once; later changes wait to settle.
+        if self.last_queued_options.is_some() {
+            match self.pending_resize {
+                Some((options, since)) if options == self.options => {
+                    if now.duration_since(since) < RESIZE_SETTLE {
+                        return;
+                    }
+                }
+                _ => {
+                    self.pending_resize = Some((self.options, now));
+                    return;
+                }
+            }
         }
         if let (Some(handle), Some(snapshot)) = (
             &self.endpoints[self.selected_endpoint].connection.handle,

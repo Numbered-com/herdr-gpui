@@ -29,15 +29,31 @@ fn resize_tracks_cell_metrics_and_retries_failed_options(cx: &mut gpui::TestAppC
             view.local_error.is_none(),
             "identical options are not resent"
         );
+        let start = std::time::Instant::now();
+        view.options.surface_size.cols += 1;
+        view.resize_at(start);
+        view.options.surface_size.cols += 1;
+        view.resize_at(start + super::lifecycle::RESIZE_SETTLE);
+        assert!(
+            view.local_error.is_none(),
+            "a size still changing is not sent"
+        );
+        let settled = start + super::lifecycle::RESIZE_SETTLE * 2;
         view.options.cell_width_px += 1;
-        view.resize();
+        view.resize_at(settled);
+        view.resize_at(settled + super::lifecycle::RESIZE_SETTLE / 2);
+        assert!(
+            view.local_error.is_none(),
+            "the last change restarts the wait"
+        );
+        view.resize_at(settled + super::lifecycle::RESIZE_SETTLE);
         assert!(
             view.local_error.is_some(),
-            "cell metrics alone trigger a send"
+            "cell metrics alone trigger a send once settled"
         );
         assert_eq!(view.last_queued_options, Some(queued));
         view.local_error = None;
-        view.resize();
+        view.resize_at(settled + super::lifecycle::RESIZE_SETTLE);
         assert!(view.local_error.is_some(), "failed options are retried");
     });
 }
