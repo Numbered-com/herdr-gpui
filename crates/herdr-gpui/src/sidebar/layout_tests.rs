@@ -2,7 +2,6 @@
 //! Headless NoopTextSystem ignores font-run lengths, so only the native smoke
 //! test can catch GPUI's stale truncation runs. Keep headless checks for geometry.
 #![allow(clippy::unwrap_used)]
-#[cfg(test)]
 use crate::HerdrWindow;
 #[cfg(test)]
 use crate::{LiveState, WheelAccumulator};
@@ -25,6 +24,10 @@ impl Global for TextProbes {}
 #[derive(Default)]
 pub(crate) struct PaintedProbes(pub std::collections::BTreeMap<String, PaintedText>);
 impl Global for PaintedProbes {}
+
+#[derive(Default)]
+pub(crate) struct VerifyChildGeometry(pub bool);
+impl Global for VerifyChildGeometry {}
 
 #[derive(Debug)]
 #[cfg_attr(not(feature = "integration-test"), allow(dead_code))]
@@ -149,20 +152,35 @@ impl Element for ProbeText {
         }
         // These extra fixture rows leave the original smoke/performance labels
         // untouched. Check their native glyphs whenever the whole row is visible.
-        if matches!(
-            self.0.as_ref(),
-            "sidebar-child" | "sidebar-child-with-a-long-readable-branch-name"
-        ) && bounds.top() >= mask.top()
+        if cx.default_global::<VerifyChildGeometry>().0
+            && matches!(
+                self.0.as_ref(),
+                "sidebar-child" | "sidebar-child-with-a-long-readable-branch-name"
+            )
+            && bounds.top() >= mask.top()
             && bounds.bottom() <= mask.bottom()
         {
-            let parent = &cx.global::<TextProbes>().0["agent-launcher"].0;
+            let mode = window
+                .root::<HerdrWindow>()
+                .flatten()
+                .map(|view| view.read(cx).config.layout.mode)
+                .unwrap_or_default();
+            let layout = super::layout::for_mode(mode);
+            // Compute the sidebar column directly: menu labels share text keys,
+            // and retained paint probes can still describe the previous layout.
             assert_eq!(
                 bounds.left(),
-                parent.left() + px(super::CHILD_INDENT - super::ICON_RESERVE)
+                px(layout.padding() + layout.child_indent() + super::STATUS_WIDTH + layout.gap())
             );
             assert_eq!(
                 bounds.size.width,
-                px(super::LABEL_WIDTH - super::CHILD_INDENT - super::ARROW_RESERVE)
+                px(super::SIDEBAR_WIDTH
+                    - 1.
+                    - 2. * layout.padding()
+                    - super::STATUS_WIDTH
+                    - layout.gap()
+                    - layout.child_indent()
+                    - super::ARROW_RESERVE)
             );
             assert_eq!(mask.size.width, bounds.size.width);
             assert_eq!(glyph_text, state.wrapped_text());
@@ -247,6 +265,105 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
     });
     let result = check_sidebar(fixture, cx);
     assert!(result.is_ok(), "sidebar layout failed: {result:#?}");
+}
+
+#[gpui::test]
+fn compact_sidebar_hides_branches_and_keeps_badges_inside_single_line_rows(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::config::LayoutMode;
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut view = fixture_window(window, cx);
+        view.live.snapshot = Some(Arc::new(snapshot(6)));
+        let input = crate::pull_request::Input {
+            checkout: None,
+            repo_key: "/fixture/agent-launcher/.git".into(),
+            branch: "worktree/sidebar-child".into(),
+        };
+        let now = std::time::Instant::now();
+        let mut pr = crate::pull_request::fixture().unwrap();
+        pr.number = 7;
+        pr.additions = 234;
+        pr.deletions = 567;
+        view.menu.pr_cache.seed(input.clone(), pr, now);
+        view.git.seed_probe(input, true, now);
+        view
+    });
+    cx.simulate_resize(size(px(800.), px(900.)));
+    cx.run_until_parked();
+    for font_size in [12., 18.] {
+        for width in [160., 232.] {
+            // Return to normal too: config reload must restore details and spacing.
+            for mode in [LayoutMode::Compact, LayoutMode::Normal] {
+                let compact = mode == LayoutMode::Compact;
+                view.update(cx, |view, cx| {
+                    view.config.layout.mode = mode;
+                    view.config.sidebar.size = font_size;
+                    view.sidebar_width = Some(width);
+                    cx.notify();
+                });
+                cx.update(|window, cx| {
+                    cx.default_global::<TextProbes>().0.clear();
+                    window.refresh();
+                    window.draw(cx).clear();
+                    let probes = &cx.global::<TextProbes>().0;
+                    for text in ["main", "worktree/sidebar-child", "+234", "-567"] {
+                        assert_eq!(probes.contains_key(text), !compact, "{text}");
+                    }
+                    for text in ["Claude Code", "#7"] {
+                        assert!(probes.contains_key(text), "{text}");
+                    }
+                });
+                let line = font_size * 4. / 3.;
+                let padding = if compact { 6. } else { 12. };
+                for (row, name, detail) in [
+                    ("row-herdr", "name-herdr", "detail-herdr"),
+                    (
+                        "row-agent-launcher",
+                        "name-agent-launcher",
+                        "detail-agent-launcher",
+                    ),
+                    (
+                        "row-sidebar-child",
+                        "name-sidebar-child",
+                        "detail-sidebar-child",
+                    ),
+                ] {
+                    let row = cx.debug_bounds(row).unwrap();
+                    let name = cx.debug_bounds(name).unwrap();
+                    assert_eq!(
+                        row.size.height,
+                        px(if compact { line } else { 2. * line + 8. })
+                    );
+                    assert_eq!(name.top(), row.top() + px(if compact { 0. } else { 4. }));
+                    assert!(name.right() <= row.right() - px(padding));
+                    if !compact {
+                        assert!(cx.debug_bounds(detail).is_some());
+                    }
+                }
+                let agent = cx.debug_bounds("row-agent-p0").unwrap();
+                assert_eq!(
+                    agent.size.height,
+                    px(2. * line + if compact { 0. } else { 8. })
+                );
+                assert!(cx.debug_bounds("detail-agent-p0").is_some());
+                let row = cx.debug_bounds("row-sidebar-child").unwrap();
+                let badge = cx.debug_bounds("pr-sidebar-child").unwrap();
+                assert_eq!(badge.right(), row.right() - px(padding));
+                assert!(badge.bottom() <= row.bottom());
+                assert!(cx.debug_bounds("name-sidebar-child").unwrap().right() <= badge.left());
+                assert!(cx.debug_bounds("dirty-sidebar-child").is_some());
+                let gutter = cx.debug_bounds("tree-sidebar-child").unwrap();
+                assert_eq!(
+                    gutter.left(),
+                    cx.debug_bounds("column-agent-launcher").unwrap().left()
+                );
+                let arrow = cx.debug_bounds("collapse-3").unwrap();
+                let parent = cx.debug_bounds("row-agent-launcher").unwrap();
+                assert!(arrow.top() >= parent.top() && arrow.bottom() <= parent.bottom());
+            }
+        }
+    }
 }
 
 #[gpui::test]
@@ -1812,7 +1929,7 @@ fn child_gutter_lines_land_on_whole_device_pixels() {
         let device = |value: Pixels| f32::from(value) * scale;
         let whole = |value: Pixels| (device(value) - device(value).round()).abs() < 0.001;
         for tree in [RowTree::Child, RowTree::LastChild] {
-            let [trunk, tick] = tree_lines(row, tree, &font, scale);
+            let [trunk, tick] = tree_lines(row, tree, &font, 4., scale);
             // Both lines carry the same weight and start on the device grid, so
             // neither is drawn thinner or blurrier than the other.
             assert!(

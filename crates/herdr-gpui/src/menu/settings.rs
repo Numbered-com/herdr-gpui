@@ -470,6 +470,7 @@ mod tests {
                         herdr_client::protocol::ToastHerdrPosition::TopRight;
                     config.terminal.size = 18.;
                     config.layout.sidebar_gap = 16.;
+                    config.layout.mode = crate::config::LayoutMode::Compact;
                     let theme = config.theme()?;
                     Ok((config, theme))
                 },
@@ -483,6 +484,7 @@ mod tests {
             assert_eq!(view.config.terminal.size, 18.);
             assert_eq!(view.configured_terminal_size, 18.);
             assert_eq!(view.config.layout.sidebar_gap, 16.);
+            assert_eq!(view.config.layout.mode, crate::config::LayoutMode::Compact);
             view.set_terminal_font_size(20., cx);
             view.load_gui_config_with(|| Err(crate::Error::MissingHome), cx);
         });
@@ -493,6 +495,7 @@ mod tests {
             assert_eq!(view.config.terminal.size, 20.);
             assert_eq!(view.configured_terminal_size, 18.);
             assert_eq!(view.config.layout.sidebar_gap, 16.);
+            assert_eq!(view.config.layout.mode, crate::config::LayoutMode::Compact);
             view.load_gui_config_with(|| Ok((Config::default(), Default::default())), cx);
         });
         cx.run_until_parked();
