@@ -7,6 +7,7 @@ import shutil
 import tarfile
 import tempfile
 import unittest
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = ROOT / "scripts/release"
@@ -86,6 +87,49 @@ class ReleaseTests(unittest.TestCase):
                     self.assertEqual(archive.extractfile(archive.getmembers()[0]).read(), binary.read_bytes())
                 self.run_script("package-linux.sh", "20260920.3", target, binary, self.work, self.notices, success=False)
         self.run_script("package-linux.sh", "20260920.3", "bad-target", binary, self.work, self.notices, success=False)
+
+    def run_windows(self, *args, success=True):
+        result = subprocess.run(["python3", str(SCRIPTS / "package-windows.py"), *map(str, args)],
+                                env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode == 0, success, result.stderr)
+        return result
+
+    def test_windows_archive(self):
+        binary = self.work / "input binary.exe"
+        binary.write_bytes(build_identity())
+        target = "x86_64-pc-windows-msvc"
+        output = Path(self.run_windows("20260920.3", target, binary, self.work, self.notices).stdout.strip())
+        self.assertEqual(output, self.work.resolve() / f"Herdr-20260920.3-{target}.zip")
+        base = f"Herdr-20260920.3-{target}/"
+        with zipfile.ZipFile(output) as archive:
+            self.assertIsNone(archive.testzip())
+            self.assertEqual(set(archive.namelist()), {base + p for p in [
+                "herdr-gpui.exe", "licenses/LICENSE", "licenses/NOTICE", "licenses/LICENSE-octicons",
+                "licenses/LICENSE-APACHE", "licenses/NOTICE.md", "licenses/SOUND-NOTICE.md",
+                "licenses/THIRD-PARTY-NOTICES.txt",
+            ]})
+            self.assertEqual({info.date_time for info in archive.infolist()}, {(1980, 1, 1, 0, 0, 0)})
+            self.assertEqual(archive.read(base + "herdr-gpui.exe"), binary.read_bytes())
+            self.assertEqual(archive.read(base + "licenses/THIRD-PARTY-NOTICES.txt"), self.notices.read_bytes())
+            for source in ("LICENSE", "NOTICE", "assets/icons/LICENSE-octicons", "crates/herdr-protocol/LICENSE-APACHE",
+                           "crates/herdr-protocol/NOTICE.md", "crates/herdr-gpui/SOUND-NOTICE.md"):
+                self.assertEqual(archive.read(base + "licenses/" + Path(source).name), (ROOT / source).read_bytes())
+        before = output.read_bytes()
+        result = self.run_windows("20260920.3", target, binary, self.work, self.notices, success=False)
+        self.assertIn("Output already exists", result.stderr)
+        self.assertEqual(output.read_bytes(), before)
+        output.unlink()
+        for args in [("20260920.03", target, binary, self.work, self.notices),
+                     ("v20260920.3", target, binary, self.work, self.notices),
+                     ("20260920.3", "x86_64-pc-windows-gnu", binary, self.work, self.notices),
+                     ("20260920.3", target, self.work / "missing.exe", self.work, self.notices),
+                     ("20260920.3", target, binary, self.work / "missing", self.notices),
+                     ("20260920.3", target, binary, self.work, self.work / "missing"),
+                     ("20260920.3", target, binary, self.work, self.work / "empty")]:
+            (self.work / "empty").touch()
+            with self.subTest(args=args):
+                self.run_windows(*args, success=False)
+        self.assertEqual([p.name for p in self.work.iterdir() if p.suffix == ".zip" or p.name.startswith(".herdr")], [])
 
     def test_packaging_requires_notices(self):
         self.mock_tools()

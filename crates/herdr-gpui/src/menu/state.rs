@@ -14,6 +14,8 @@ pub(crate) struct MenuState {
     // Selection epoch and connection generation fence captured modal actions.
     pub(super) endpoint_target: (u64, u64),
     pub anchor: Point<Pixels>,
+    /// Ignore repeated right presses until the opening gesture is released.
+    pub(crate) opening_right_click: bool,
     pub focus: FocusHandle,
     pub(super) selected: Option<usize>,
     pub(super) workspace_selected: Option<WorkspaceMenuAction>,
@@ -156,6 +158,7 @@ impl MenuState {
             page: None,
             endpoint_target: (0, 0),
             anchor: Point::default(),
+            opening_right_click: false,
             focus: cx.focus_handle(),
             selected: None,
             workspace_selected: None,
@@ -188,6 +191,7 @@ impl MenuState {
     }
 
     pub fn reset(&mut self) {
+        self.opening_right_click = false;
         self.tab = None;
         self.pane = None;
         self.github_selected = None;

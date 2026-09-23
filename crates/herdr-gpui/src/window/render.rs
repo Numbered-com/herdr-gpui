@@ -280,15 +280,24 @@ impl Render for HerdrWindow {
                         });
                         let released = paint_entity.clone();
                         window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                            if phase == DispatchPhase::Capture
-                                && released.update(cx, |this, cx| {
-                                    this.terminal_mouse_up(event, cx)
+                            if phase == DispatchPhase::Capture {
+                                released.update(cx, |this, cx| {
+                                    // Global: the overlay occludes the opener, and release
+                                    // may also precede the overlay's first frame.
+                                    if matches!(
+                                        event.button,
+                                        MouseButton::Left | MouseButton::Right
+                                    ) {
+                                        this.menu.opening_right_click = false;
+                                    }
+                                    if this.terminal_mouse_up(event, cx)
                                         || (event.button == MouseButton::Left
                                             && !cx.has_active_drag()
                                             && this.release_selection(cx))
-                                })
-                            {
-                                cx.stop_propagation();
+                                    {
+                                        cx.stop_propagation();
+                                    }
+                                });
                             }
                         });
                         window.handle_input(

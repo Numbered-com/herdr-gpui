@@ -100,6 +100,15 @@ impl HerdrWindow {
                 self.config.confirm_close_tab.to_string(),
             ))
             .child(row(
+                "preferences-layout",
+                "Layout",
+                match self.config.layout.mode {
+                    crate::config::LayoutMode::Normal => "normal",
+                    crate::config::LayoutMode::Compact => "compact",
+                }
+                .into(),
+            ))
+            .child(row(
                 "preferences-sidebar-gap",
                 "Sidebar gap",
                 format!("{} px", self.config.layout.sidebar_gap),
@@ -152,7 +161,7 @@ impl HerdrWindow {
                 div()
                     .text_color(rgb(theme.muted))
                     .py(px(7.))
-                    .child("GUI config file"),
+                    .child("GUI local overrides"),
             )
             .child(
                 div()
@@ -165,13 +174,13 @@ impl HerdrWindow {
                     .border_color(rgb(theme.active))
                     .bg(rgb(theme.background))
                     .child(
-                        Config::path()
+                        Config::local_path()
                             .map(|path| path.display().to_string())
                             .unwrap_or_else(|error| format!("Unavailable ({error})")),
                     ),
             )
             .child(note(
-                "Edit the GUI config file to change theme, fonts, layout spacing, confirm_close_tab, or show_agents, then reload GUI config. Invalid configuration leaves the current appearance unchanged.",
+                "Edit this local file, then reload GUI config. Unset keys inherit config-gpui.toml, which is overwritten with current defaults on startup and reload. Invalid overrides leave the current appearance unchanged.",
             ))
             .child(
                 button("preferences-reload-config", "Reload GUI config").on_click(cx.listener(

@@ -3,9 +3,11 @@
 //! caches only.
 
 use super::{
-    ARROW_RESERVE, HOST_ARROW_WIDTH, HOST_GAP, LABEL_GAP, ROW_PADDING, SidebarDrag,
+    ARROW_RESERVE, HOST_ARROW_WIDTH, HOST_GAP, SidebarDrag,
     agents::agent_labels,
-    agents_sort, label_text, line_height,
+    agents_sort, label_text,
+    layout::{self, SidebarLayout},
+    line_height,
     row::first_text,
     row::{RowIcon, RowKind, RowTree, row},
     sidebar_width, sorted_agents, visible_workspace_entries,
@@ -26,11 +28,14 @@ impl HerdrWindow {
     ) -> Stateful<Div> {
         let width = sidebar_width(self.sidebar_width, f32::from(window.viewport_size().width));
         let split = self.sidebar_split.unwrap_or(0.5).clamp(0.1, 0.9);
+        let layout = layout::for_mode(self.config.layout.mode);
+        let padding = layout.padding();
+        let gap = layout.gap();
         // Hide secondary status in narrow windows, retaining useful host label space.
         let show_host_status = width >= 200.;
         let host_label_width = (width
             - 1.
-            - 2. * ROW_PADDING
+            - 2. * padding
             - HOST_ARROW_WIDTH
             - HOST_GAP
             - if show_host_status { HOST_GAP + 67. } else { 0. })
@@ -72,12 +77,12 @@ impl HerdrWindow {
                     div()
                         .id(SharedString::from(format!("host-{endpoint_id}")))
                         .debug_selector(|| format!("host-{endpoint_id}"))
-                        .h(px(line_height(font) + 16.))
+                        .h(px(line_height(font) + 2. * layout.host_padding()))
                         .flex_none()
                         .flex()
                         .items_center()
                         .gap(px(HOST_GAP))
-                        .px(px(12.))
+                        .px(px(padding))
                         .when(selected, |row| row.bg(rgb(theme.active)))
                         .text_color(rgb(if endpoint.enabled {
                             theme.foreground
@@ -178,8 +183,10 @@ impl HerdrWindow {
                     div()
                         .id(SharedString::from(format!("collapse-{endpoint_id}-{id}")))
                         .debug_selector(move || format!("collapse-{index}"))
-                        .w(px(ARROW_RESERVE - LABEL_GAP))
-                        .h(px(2. * line_height(font)))
+                        .w(px(ARROW_RESERVE - gap))
+                        .h(px(
+                            line_height(font) * if layout.workspace_details() { 2. } else { 1. }
+                        ))
                         .flex_none()
                         .text_size(px(16.))
                         .text_color(rgb(theme.muted))
@@ -227,18 +234,75 @@ impl HerdrWindow {
                         },
                         arrow,
                         workspace_badge(workspace, &self.menu.pr_cache, &self.git, theme),
+                        layout,
                         (font, theme),
                     )
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                             cx.stop_propagation();
-                            if this.menu.page.is_none()
-                                && this.select_endpoint(&context_endpoint, cx)
-                            {
+                            if this.navigate_endpoint(
+                                &context_endpoint,
+                                NavigationTarget::Workspace(&context_id),
+                                cx,
+                            ) {
                                 this.open_workspace_menu(&context_id, event.position, window, cx);
+                                this.menu.opening_right_click =
+                                    this.menu.page == Some(crate::menu::Page::Workspace);
                             }
                         }),
+                    )
+                    .when(
+                        self.menu.page == Some(crate::menu::Page::Workspace),
+                        |row| {
+                            let view = cx.entity().downgrade();
+                            let endpoint = endpoint_id.clone();
+                            let workspace = id.clone();
+                            row.child(
+                                canvas(
+                                    |_, _, _| (),
+                                    move |bounds, _, window, _| {
+                                        let bounds =
+                                            bounds.intersect(&window.content_mask().bounds);
+                                        window.on_mouse_event(
+                                            move |event: &MouseDownEvent, phase, window, cx| {
+                                                // The overlay dismisses first in bubble order. Use
+                                                // clipped row geometry because it occludes our hitbox.
+                                                if phase == DispatchPhase::Bubble
+                                                    && event.button == MouseButton::Right
+                                                    && bounds.contains(&event.position)
+                                                {
+                                                    let _ = view.update(cx, |this, cx| {
+                                                        cx.stop_propagation();
+                                                        if this.navigate_endpoint(
+                                                            &endpoint,
+                                                            NavigationTarget::Workspace(&workspace),
+                                                            cx,
+                                                        ) {
+                                                            this.open_workspace_menu(
+                                                                &workspace,
+                                                                event.position,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                            this.menu.opening_right_click = this
+                                                                .menu
+                                                                .page
+                                                                == Some(
+                                                                    crate::menu::Page::Workspace,
+                                                                );
+                                                        }
+                                                    });
+                                                }
+                                            },
+                                        );
+                                    },
+                                )
+                                .absolute()
+                                .inset_0()
+                                .size_full(),
+                            )
+                        },
                     )
                     .id(SharedString::from(format!("workspace-{endpoint_id}-{id}")))
                     .when(multi, |row| {
@@ -293,6 +357,7 @@ impl HerdrWindow {
                         RowIcon::None,
                         None,
                         None,
+                        layout,
                         (font, theme),
                     )
                     .id(SharedString::from(format!("agent-{endpoint_id}-{id}")))
@@ -322,7 +387,7 @@ impl HerdrWindow {
         if agent_count == 0 {
             agents = agents.child(
                 div()
-                    .px(px(12.))
+                    .px(px(padding))
                     .text_color(rgb(theme.muted))
                     .truncate()
                     .child("no agents"),
@@ -360,13 +425,13 @@ impl HerdrWindow {
                     })
                     .min_h_0()
                     .overflow_hidden()
-                    .child(header("spaces", font, theme))
+                    .child(header("spaces", font, theme, layout))
                     .child(spaces)
                     .child(
                         div()
                             .flex_none()
-                            .h(px(line_height(font) + 10.))
-                            .px(px(12.))
+                            .h(px(line_height(font) + 2. * layout.footer_padding()))
+                            .px(px(padding))
                             .flex()
                             .items_center()
                             // Menu hugs the sidebar's edge, as in the terminal client.
@@ -440,7 +505,7 @@ impl HerdrWindow {
                             .min_h_0()
                             .overflow_hidden()
                             .child(
-                                header("agents", font, theme)
+                                header("agents", font, theme, layout)
                                     .justify_between()
                                     .child(agents_sort(self, cx)),
                             )
@@ -536,11 +601,16 @@ impl HerdrWindow {
     }
 }
 
-pub(super) fn header(label: &'static str, font: &FontConfig, theme: &Theme) -> Div {
+pub(super) fn header(
+    label: &'static str,
+    font: &FontConfig,
+    theme: &Theme,
+    layout: &dyn SidebarLayout,
+) -> Div {
     div()
         .flex_none()
-        .h(px(line_height(font) + 12.))
-        .px(px(12.))
+        .h(px(line_height(font) + 2. * layout.header_padding()))
+        .px(px(layout.padding()))
         .flex()
         .items_center()
         .text_size(px(font.size))

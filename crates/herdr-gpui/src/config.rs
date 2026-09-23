@@ -1,6 +1,7 @@
 //! GUI settings. The daemon's own config is read only where the GUI honors a
 //! preference the user already expressed there, never written and never used
-//! to change daemon behavior; `config-gpui.toml` overrides it key by key.
+//! to change daemon behavior. Managed defaults are refreshed from the binary;
+//! `config-gpui.local.toml` holds persistent user overrides.
 use crate::{Error, Result, error::ThemeParseError};
 use gpui::{Font, FontFallbacks};
 use serde::Deserialize;
@@ -9,10 +10,11 @@ use std::{
     io::{ErrorKind, Write},
     ops::RangeInclusive,
     path::{Component, Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
 };
 
 const DEFAULT_CONFIG: &str = include_str!("../config-gpui.example.toml");
+const MANAGED_HEADER: &str = "# DO NOT EDIT -- WILL BE OVERWRITTEN\n";
+const LOCAL_CONFIG: &str = "# Herdr GPUI overrides. Edit this file, then reload GUI config.\n# Unset keys inherit config-gpui.toml; tables merge key by key.\n";
 
 /// Every face is held to this range, whether it comes from the config file or
 /// from a runtime adjustment, so the two can never disagree on what is valid.
@@ -100,10 +102,10 @@ fn notification_delay<'de, D: serde::Deserializer<'de>>(
     Ok(seconds)
 }
 
-/// Spacing the config file can adjust, in logical pixels.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-#[serde(default, deny_unknown_fields)]
+/// Sidebar density and spacing the config file can adjust.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {
+    pub mode: LayoutMode,
     /// Blank space between the sidebar and the terminal it borders. Applies
     /// only while the sidebar is on screen, and narrows the terminal, so the
     /// daemon is told about the columns it actually has.
@@ -113,8 +115,45 @@ pub struct Layout {
 impl Default for Layout {
     fn default() -> Self {
         Self {
+            mode: LayoutMode::Normal,
             sidebar_gap: DEFAULT_SIDEBAR_GAP,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LayoutMode {
+    #[default]
+    Normal,
+    Compact,
+}
+
+impl<'de> Deserialize<'de> for Layout {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        // Keep shipped [layout] spacing settings readable alongside named layouts.
+        #[derive(Deserialize)]
+        #[serde(untagged, deny_unknown_fields)]
+        enum Setting {
+            Named(LayoutMode),
+            Options {
+                #[serde(default)]
+                mode: LayoutMode,
+                sidebar_gap: Option<f32>,
+            },
+        }
+        Ok(match Setting::deserialize(deserializer)? {
+            Setting::Named(mode) => Self {
+                mode,
+                ..Self::default()
+            },
+            Setting::Options { mode, sidebar_gap } => Self {
+                mode,
+                sidebar_gap: sidebar_gap.unwrap_or(DEFAULT_SIDEBAR_GAP),
+            },
+        })
     }
 }
 
@@ -447,6 +486,10 @@ impl Config {
         Ok(config_root()?.join("herdr/config-gpui.toml"))
     }
 
+    pub fn local_path() -> Result<PathBuf> {
+        Ok(Self::path()?.with_extension("local.toml"))
+    }
+
     /// Gives every face the config left alone an automatic icon-font cascade.
     /// `installed` is consulted only when some face still needs one, because
     /// enumerating system fonts is slow enough to keep off the UI thread.
@@ -475,31 +518,110 @@ impl Config {
         Self::load_path(&Self::path()?, &daemon_config_path(|key| env::var_os(key)))
     }
 
+    /// First-frame settings only: no lock, migration, writes, or fsync. The
+    /// background load performs maintenance after the window has appeared.
+    pub(crate) fn load_startup() -> Result<Self> {
+        Self::load_startup_path(&Self::path()?, &daemon_config_path(|key| env::var_os(key)))
+    }
+
+    fn load_startup_path(path: &Path, daemon: &Path) -> Result<Self> {
+        let local = path.with_extension("local.toml");
+        let (text, source) = match fs::read_to_string(&local) {
+            Ok(text) => (text, local),
+            Err(error) if error.kind() == ErrorKind::NotFound => match fs::read_to_string(path) {
+                Ok(text) if !text.starts_with(MANAGED_HEADER) => (text, path.to_owned()),
+                Ok(_) => (String::new(), local),
+                Err(error) if error.kind() == ErrorKind::NotFound => (String::new(), local),
+                Err(error) => return Err(Error::from(error).at_path(path)),
+            },
+            Err(error) => return Err(Error::from(error).at_path(&local)),
+        };
+        Self::parse_layers([DEFAULT_CONFIG, &text], daemon_clipboard_toast(daemon))
+            .map_err(|error| error.at_path(&source))
+    }
+
     /// `daemon` is the herdr config whose settings this GUI also honors. It is
     /// read for those keys alone and never written; a missing one is normal.
     fn load_path(path: &Path, daemon: &Path) -> Result<Self> {
         let base = daemon_clipboard_toast(daemon);
-        let result = (|| {
-            match fs::read_to_string(path) {
-                Ok(text) => return Self::parse_over(&text, base),
-                Err(error) if error.kind() == ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
+        let (_lock, local) = Self::prepare_files(path)?;
+        let text =
+            fs::read_to_string(&local).map_err(|error| Error::from(error).at_path(&local))?;
+        // Validate the override independently so bad types/unknown keys cannot
+        // disappear inside the merge. Empty arrays explicitly replace defaults.
+        Self::parse_over(&text, base).map_err(|error| error.at_path(&local))?;
+        Self::parse_layers([DEFAULT_CONFIG, &text], base).map_err(|error| error.at_path(&local))
+    }
+
+    /// Serialize migration, defaults refresh, and theme saves across GUI windows
+    /// and processes. This is only called by background config workers.
+    fn prepare_files(path: &Path) -> Result<(fs::File, PathBuf)> {
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        fs::create_dir_all(parent).map_err(|error| Error::from(error).at_path(parent))?;
+        let lock_path = path.with_extension("lock");
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|error| Error::from(error).at_path(&lock_path))?;
+        lock.lock()
+            .map_err(|error| Error::from(error).at_path(&lock_path))?;
+        let local = path.with_extension("local.toml");
+        let original = match fs::read_to_string(path) {
+            Ok(text) => Some(text),
+            Err(error) if error.kind() == ErrorKind::NotFound => None,
+            Err(error) => return Err(Error::from(error).at_path(path)),
+        };
+        let legacy = original
+            .as_deref()
+            .filter(|text| !text.starts_with(MANAGED_HEADER));
+        if let Some(text) = legacy {
+            // Never replace an old user's file until its exact contents are
+            // safely stored in the local file. A conflict needs human resolution.
+            Self::parse_over(text, ClipboardToast::default())
+                .map_err(|error| error.at_path(path))?;
+        }
+        match fs::read_to_string(&local) {
+            Ok(text) if legacy.is_some_and(|legacy| legacy != text) => {
+                return Err(Error::ConfigMigrationConflict {
+                    original: path.into(),
+                    local,
+                });
             }
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                let mut file = tempfile::NamedTempFile::new_in(parent)
+                    .map_err(|error| Error::from(error).at_path(&local))?;
+                file.write_all(legacy.unwrap_or(LOCAL_CONFIG).as_bytes())
+                    .map_err(|error| Error::from(error).at_path(&local))?;
+                file.as_file()
+                    .sync_all()
+                    .map_err(|error| Error::from(error).at_path(&local))?;
+                file.persist_noclobber(&local)
+                    .map_err(|error| Error::from(error.error).at_path(&local))?;
             }
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
-            {
-                Ok(mut file) => file.write_all(DEFAULT_CONFIG.as_bytes())?,
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error.into()),
-            }
-            Self::parse_over(&fs::read_to_string(path)?, base)
-        })();
-        result.map_err(|error| error.at_path(path))
+            Err(error) => return Err(Error::from(error).at_path(&local)),
+        }
+        if legacy.is_some() {
+            fs::File::open(&local)
+                .and_then(|file| file.sync_all())
+                .map_err(|error| Error::from(error).at_path(&local))?;
+            // Publish the migration copy durably before replacing the only old
+            // copy. Windows does not expose directory sync through std::fs.
+            #[cfg(unix)]
+            fs::File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| Error::from(error).at_path(parent))?;
+        }
+        if original.as_deref() != Some(DEFAULT_CONFIG) {
+            write_config(path, DEFAULT_CONFIG)?;
+        }
+        Ok((lock, local))
     }
 
     /// The GUI file on its own, with nothing layered under it: the shape the
@@ -512,12 +634,21 @@ impl Config {
     /// `base` is what the daemon's own config asked for, which every key this
     /// file names overrides.
     fn parse_over(text: &str, base: ClipboardToast) -> Result<Self> {
-        let loaded = config_loader::Config::builder()
-            .add_source(config_loader::File::from_str(
+        Self::parse_layers([text], base)
+    }
+
+    fn parse_layers<'a>(
+        texts: impl IntoIterator<Item = &'a str>,
+        base: ClipboardToast,
+    ) -> Result<Self> {
+        let mut builder = config_loader::Config::builder();
+        for text in texts {
+            builder = builder.add_source(config_loader::File::from_str(
                 text,
                 config_loader::FileFormat::Toml,
-            ))
-            .build()?;
+            ));
+        }
+        let loaded = builder.build()?;
         // Config's typed deserializer coerces strings/numbers. Preserve TOML
         // types so existing strict font and theme validation remains intact.
         let value: toml::Value = loaded.try_deserialize()?;
@@ -616,7 +747,12 @@ impl Config {
 
     /// Persist only the theme selection, retaining the latest on-disk settings.
     pub fn save_theme(&self, name: &str) -> Result<()> {
-        self.save_theme_path(name, &Self::path()?)
+        self.save_theme_at(name, &Self::path()?)
+    }
+
+    fn save_theme_at(&self, name: &str, path: &Path) -> Result<()> {
+        let (_lock, local) = Self::prepare_files(path)?;
+        self.save_theme_path(name, &local)
     }
 
     fn save_theme_path(&self, name: &str, path: &Path) -> Result<()> {
@@ -628,7 +764,7 @@ impl Config {
         let result = (|| -> Result<()> {
             let text = match fs::read_to_string(path) {
                 Ok(text) => text,
-                Err(error) if error.kind() == ErrorKind::NotFound => DEFAULT_CONFIG.into(),
+                Err(error) if error.kind() == ErrorKind::NotFound => LOCAL_CONFIG.into(),
                 Err(error) => return Err(error.into()),
             };
             let mut document = text.parse::<toml_edit::DocumentMut>()?;
@@ -637,42 +773,7 @@ impl Config {
                 *value.decor_mut() = previous.decor().clone();
             }
             document["theme"] = toml_edit::Item::Value(value);
-            let parent = path
-                .parent()
-                .filter(|parent| !parent.as_os_str().is_empty())
-                .unwrap_or_else(|| Path::new("."));
-            fs::create_dir_all(parent)?;
-            static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-            let (temporary, mut file) = loop {
-                let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-                let temporary =
-                    parent.join(format!(".config-gpui-{}-{id}.tmp", std::process::id()));
-                match fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&temporary)
-                {
-                    Ok(file) => break (temporary, file),
-                    Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-                    Err(error) => return Err(error.into()),
-                }
-            };
-            let write_result = (|| {
-                file.write_all(document.to_string().as_bytes())?;
-                file.sync_all()?;
-                drop(file);
-                fs::rename(&temporary, path)
-            })();
-            if let Err(error) = write_result {
-                if let Err(cleanup) = fs::remove_file(&temporary) {
-                    return Err(Error::Cleanup {
-                        source: error,
-                        path: temporary,
-                        cleanup,
-                    });
-                }
-                return Err(error.into());
-            }
+            write_config(path, &document.to_string())?;
             Ok(())
         })();
         result.map_err(|error| error.at_path(path))
@@ -726,6 +827,22 @@ impl Config {
         let text = fs::read_to_string(&path).map_err(|error| Error::from(error).at_path(&path))?;
         Theme::parse_ghostty(&text).map_err(|error| error.at_path(&path))
     }
+}
+
+fn write_config(path: &Path, text: &str) -> Result<()> {
+    let result = (|| -> std::io::Result<()> {
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        fs::create_dir_all(parent)?;
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        file.write_all(text.as_bytes())?;
+        file.as_file().sync_all()?;
+        file.persist(path).map_err(|error| error.error)?;
+        Ok(())
+    })();
+    result.map_err(|error| Error::from(error).at_path(path))
 }
 
 /// Colors are packed 24-bit RGB, without an alpha channel.
@@ -938,6 +1055,7 @@ impl Theme {
 mod tests {
     use super::*;
     use anyhow::Context as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// The daemon's own answer is the starting point, each GUI key overrides
     /// it alone, and the file this GUI writes for a new user pins neither.
@@ -946,6 +1064,7 @@ mod tests {
         use ClipboardToastPosition::*;
         let temp = TempDirectory::new()?;
         let gui = temp.0.join("config-gpui.toml");
+        let local = gui.with_extension("local.toml");
         let daemon = temp.0.join("config.toml");
 
         // No files at all: herdr's defaults, so both clients agree.
@@ -1003,13 +1122,13 @@ mod tests {
                 },
             ),
         ] {
-            fs::write(&gui, text)?;
+            fs::write(&local, text)?;
             assert_eq!(load(&daemon)?.clipboard_toast, expected, "{text}");
         }
 
         // A daemon config the GUI cannot use leaves herdr's defaults standing:
         // it belongs to another program and may hold anything.
-        fs::write(&gui, "")?;
+        fs::write(&local, "")?;
         for text in [
             "not toml",
             "[ui.toast.clipboard]\nenabled = \"yes\"\nposition = 3",
@@ -1397,7 +1516,7 @@ mod tests {
         let new_path = temp.0.join("nested/config.toml");
         config.save_theme_path(custom_name, &new_path)?;
         assert_eq!(
-            Config::load_path(&new_path, &temp.0.join("absent.toml"))?
+            Config::parse(&fs::read_to_string(&new_path)?)?
                 .theme()?
                 .background,
             0x112233
@@ -1489,6 +1608,33 @@ mod tests {
         assert!(!config.show_agents);
         assert!(Config::parse("confirm_close_tab = 'false'").is_err());
         assert!(Config::parse("show_agents = 0").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn compact_layout_is_opt_in() -> anyhow::Result<()> {
+        for config in [
+            Config::default(),
+            Config::parse("")?,
+            Config::parse(DEFAULT_CONFIG)?,
+            Config::parse("[layout]")?,
+            Config::parse("layout = 'normal'")?,
+        ] {
+            assert_eq!(config.layout.mode, LayoutMode::Normal);
+        }
+        let config = Config::parse("layout = 'compact'")?;
+        assert_eq!(config.layout.mode, LayoutMode::Compact);
+        assert_eq!(config.layout.sidebar_gap, Layout::default().sidebar_gap);
+        assert_eq!(config.sidebar.size, Config::default().sidebar.size);
+        let custom = Config::parse("[layout]\nmode = 'compact'\nsidebar_gap = 4")?;
+        assert_eq!(custom.layout.mode, LayoutMode::Compact);
+        assert_eq!(custom.layout.sidebar_gap, 4.);
+        for value in ["'unknown'", "true", "1"] {
+            assert!(matches!(
+                Config::parse(&format!("layout = {value}")),
+                Err(Error::Toml(_))
+            ));
+        }
         Ok(())
     }
 
@@ -1701,7 +1847,207 @@ mod tests {
     }
 
     #[test]
-    fn creates_config_without_overwriting_and_loads_absolute_theme() -> anyhow::Result<()> {
+    fn startup_reads_settings_without_writes_or_waiting_for_maintenance() -> anyhow::Result<()> {
+        let temp = TempDirectory::new()?;
+        let path = temp.0.join("config-gpui.toml");
+        let daemon = temp.0.join("absent.toml");
+        assert_eq!(
+            Config::load_startup_path(&path, &daemon)?.layout.mode,
+            LayoutMode::Normal
+        );
+        assert_eq!(fs::read_dir(&temp.0)?.count(), 0);
+        let legacy = "layout = 'compact'\ntheme = 'Nord'\n[terminal]\nsize = 18\n";
+        fs::write(&path, legacy)?;
+        let config = Config::load_startup_path(&path, &daemon)?;
+        assert_eq!(config.layout.mode, LayoutMode::Compact);
+        assert_eq!(config.theme, "Nord");
+        assert_eq!(config.terminal.size, 18.);
+        assert_eq!(fs::read_to_string(&path)?, legacy);
+        assert_eq!(fs::read_dir(&temp.0)?.count(), 1);
+
+        let local = path.with_extension("local.toml");
+        fs::write(&local, "layout = 'compact'\ntheme = 'Dracula'")?;
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path.with_extension("lock"))?;
+        lock.lock()?;
+        // Hold the maintenance lock until the read finishes, with a bounded wait
+        // so accidentally adding lock acquisition is a deterministic failure.
+        let (send, receive) = std::sync::mpsc::channel();
+        let (worker_path, worker_daemon) = (path.clone(), daemon.clone());
+        let worker = std::thread::spawn(move || {
+            let _ = send.send(Config::load_startup_path(&worker_path, &worker_daemon));
+        });
+        let result = receive.recv_timeout(std::time::Duration::from_secs(5));
+        drop(lock);
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("startup reader panicked"))?;
+        assert_eq!(result??.theme, "Dracula");
+        assert_eq!(fs::read_to_string(&path)?, legacy);
+        assert_eq!(
+            fs::read_to_string(&local)?,
+            "layout = 'compact'\ntheme = 'Dracula'"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn startup_appearance_read_timing() -> anyhow::Result<()> {
+        let temp = TempDirectory::new()?;
+        let path = temp.0.join("config-gpui.toml");
+        let daemon = temp.0.join("absent.toml");
+        fs::write(
+            path.with_extension("local.toml"),
+            "layout = 'compact'\ntheme = 'Nord'",
+        )?;
+        let mut samples = Vec::new();
+        for _ in 0..100 {
+            let start = std::time::Instant::now();
+            let config = Config::load_startup_path(&path, &daemon)?;
+            let theme = config.theme()?;
+            samples.push(start.elapsed());
+            assert_eq!(config.layout.mode, LayoutMode::Compact);
+            assert_eq!(Some(theme), Theme::builtin("Nord"));
+        }
+        let first = samples[0];
+        samples.sort();
+        eprintln!(
+            "Startup config + built-in theme: first={first:?}, median={:?}, p95={:?} (100 reads)",
+            samples[50], samples[94]
+        );
+        // Timing is reported, not gated: filesystem latency is machine-dependent.
+        Ok(())
+    }
+
+    #[test]
+    fn theme_save_updates_only_local_overrides() -> anyhow::Result<()> {
+        let temp = TempDirectory::new()?;
+        let path = temp.0.join("config-gpui.toml");
+        let daemon = temp.0.join("absent.toml");
+        let legacy = "# user fonts\n[terminal]\nsize = 19 # keep\n";
+        fs::write(&path, legacy)?;
+        Config::default().save_theme_at("Nord", &path)?;
+        assert_eq!(fs::read_to_string(&path)?, DEFAULT_CONFIG);
+        let local = fs::read_to_string(path.with_extension("local.toml"))?;
+        assert!(local.contains("# user fonts"));
+        assert!(local.contains("size = 19 # keep"));
+        let config = Config::load_path(&path, &daemon)?;
+        assert_eq!(config.theme, "Nord");
+        assert_eq!(config.terminal.size, 19.);
+        Ok(())
+    }
+
+    #[test]
+    fn local_overrides_merge_tables_replace_arrays_and_refresh_defaults() -> anyhow::Result<()> {
+        let temp = TempDirectory::new()?;
+        let path = temp.0.join("config-gpui.toml");
+        let local = path.with_extension("local.toml");
+        let daemon = temp.0.join("absent.toml");
+        Config::load_path(&path, &daemon)?;
+        assert!(fs::read_to_string(&path)?.starts_with(MANAGED_HEADER));
+        assert_eq!(fs::read_to_string(&local)?, LOCAL_CONFIG);
+        let overrides = "# personal settings\nlayout = 'compact'\n[terminal]\nsize = 19\nfallback = []\n[notifications]\nenabled = true\n";
+        fs::write(&local, overrides)?;
+        fs::write(&path, format!("{MANAGED_HEADER}theme = 'old-default'\n"))?;
+        let config = Config::load_path(&path, &daemon)?;
+        assert_eq!(config.layout.mode, LayoutMode::Compact);
+        assert_eq!(config.terminal.size, 19.);
+        assert_eq!(config.terminal.fallbacks, Some(vec![]));
+        assert!(config.notifications.enabled);
+        assert_eq!(config.notifications.delay_seconds, 1);
+        assert_eq!(config.theme, "Default");
+        assert_eq!(fs::read_to_string(&local)?, overrides);
+        assert_eq!(fs::read_to_string(&path)?, DEFAULT_CONFIG);
+        // A table can replace the named default without losing layout defaults.
+        fs::write(&local, "[layout]\nmode = 'compact'\nsidebar_gap = 3")?;
+        assert_eq!(Config::load_path(&path, &daemon)?.layout.sidebar_gap, 3.);
+        let merged = Config::parse_layers(
+            [
+                "[terminal]\nfallback = ['first', 'second']",
+                "[terminal]\nfallback = []",
+            ],
+            ClipboardToast::default(),
+        )?;
+        assert_eq!(merged.terminal.fallbacks, Some(vec![]));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_config_migrates_verbatim_and_conflicts_never_overwrite() -> anyhow::Result<()> {
+        let temp = TempDirectory::new()?;
+        let path = temp.0.join("config-gpui.toml");
+        let local = path.with_extension("local.toml");
+        let daemon = temp.0.join("absent.toml");
+        let legacy = "# keep my comments\ntheme = 'Nord'\n[layout]\nsidebar_gap = 4\n";
+        fs::write(&path, legacy)?;
+        assert_eq!(Config::load_path(&path, &daemon)?.theme, "Nord");
+        assert_eq!(fs::read_to_string(&local)?, legacy);
+        assert_eq!(fs::read_to_string(&path)?, DEFAULT_CONFIG);
+        assert_eq!(Config::load_path(&path, &daemon)?.layout.sidebar_gap, 4.);
+        // A crash after the local copy but before refresh is safe to resume.
+        fs::write(&path, legacy)?;
+        assert_eq!(Config::load_path(&path, &daemon)?.theme, "Nord");
+        fs::write(&path, "theme = 'Dracula'")?;
+        assert!(matches!(
+            Config::load_path(&path, &daemon),
+            Err(Error::ConfigMigrationConflict { .. })
+        ));
+        assert_eq!(fs::read_to_string(&local)?, legacy);
+        assert_eq!(fs::read_to_string(&path)?, "theme = 'Dracula'");
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_local_overrides_keep_their_path_and_contents() -> anyhow::Result<()> {
+        let temp = TempDirectory::new()?;
+        let path = temp.0.join("config-gpui.toml");
+        let local = path.with_extension("local.toml");
+        let daemon = temp.0.join("absent.toml");
+        Config::load_path(&path, &daemon)?;
+        for text in [
+            "theme = [",
+            "[terminal]\nsize = '19'",
+            "[notifications]\nunknown = true",
+        ] {
+            fs::write(&local, text)?;
+            let error = Config::load_path(&path, &daemon)
+                .err()
+                .context("accepted bad local config")?;
+            assert!(matches!(error, Error::Path { path, .. } if path == local));
+            assert_eq!(fs::read_to_string(&local)?, text);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn simultaneous_migration_keeps_user_settings() -> anyhow::Result<()> {
+        let temp = TempDirectory::new()?;
+        let path = temp.0.join("config-gpui.toml");
+        fs::write(&path, "theme = 'Nord'")?;
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| scope.spawn(|| Config::load_path(&path, &temp.0.join("absent.toml"))))
+                .collect();
+            for handle in handles {
+                let config = handle
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("config loader panicked"))??;
+                assert_eq!(config.theme, "Nord");
+            }
+            anyhow::Ok(())
+        })?;
+        assert_eq!(
+            fs::read_to_string(path.with_extension("local.toml"))?,
+            "theme = 'Nord'"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn refreshes_managed_config_and_loads_absolute_theme() -> anyhow::Result<()> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
@@ -1712,9 +2058,12 @@ mod tests {
             let absent = directory.join("config.toml");
             Config::load_path(&path, &absent)?;
             assert_eq!(fs::read_to_string(&path)?, DEFAULT_CONFIG);
-            fs::write(&path, "theme = 'Nord'")?;
+            let local = path.with_extension("local.toml");
+            fs::write(&local, "theme = 'Nord'")?;
+            fs::write(&path, format!("{MANAGED_HEADER}theme = 'Dracula'"))?;
             assert_eq!(Config::load_path(&path, &absent)?.theme, "Nord");
-            assert_eq!(fs::read_to_string(&path)?, "theme = 'Nord'");
+            assert_eq!(fs::read_to_string(&path)?, DEFAULT_CONFIG);
+            assert_eq!(fs::read_to_string(&local)?, "theme = 'Nord'");
             let theme_path = directory.join("custom-theme");
             fs::write(&theme_path, "background=112233")?;
             let config = Config {

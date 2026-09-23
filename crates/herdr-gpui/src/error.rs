@@ -299,6 +299,8 @@ pub enum Error {
     MissingHome,
     #[error("XDG_CONFIG_HOME must be an absolute path")]
     RelativeConfigRoot,
+    #[error("Cannot migrate {}: {} already contains different settings. Merge your old settings into the local file, then remove the old config; it will be regenerated.", original.display(), local.display())]
+    ConfigMigrationConflict { original: PathBuf, local: PathBuf },
     #[error("theme must not be empty")]
     EmptyTheme,
     #[error("{0}.family must not be empty")]

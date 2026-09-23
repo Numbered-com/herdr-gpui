@@ -1,3 +1,6 @@
+# DO NOT EDIT -- WILL BE OVERWRITTEN
+# Managed Herdr GPUI defaults, refreshed on startup and GUI config reload.
+# Put your overrides in config-gpui.local.toml beside this file, then reload.
 # Herdr GUI settings. Independent of the daemon config, except where a setting
 # below says it starts from one the daemon config already carries.
 # Save at $XDG_CONFIG_HOME/herdr/config-gpui.toml (default ~/.config/herdr/).
@@ -8,7 +11,7 @@
 # no text face covers. Each section falls back to the installed "Nerd Font"
 # families automatically; set fallback to choose them yourself, or to [] for
 # none. Uninstalled names are ignored, and at most 8 are accepted per section.
-# Restart the GUI or use its GUI config reload action after editing.
+# Restart the GUI or use its GUI config reload action after editing the local file.
 
 # Built-ins: Default, Nord, Dracula, Catppuccin Mocha, Catppuccin Latte.
 # Also accepts a Ghostty theme name, an absolute path, or a ~/ path.
@@ -19,6 +22,9 @@ theme = "Default"
 confirm_close_tab = true
 # Show the Agents section below Spaces in the sidebar.
 show_agents = true
+# "normal" or "compact". Compact hides workspace branch lines and PR change
+# counts, and tightens Spaces and Agents spacing without changing font sizes.
+layout = "normal"
 
 [notifications]
 # GUI-local in-app delivery only. QA previews bypass delivery policy.
@@ -38,12 +44,13 @@ position = "bottom-right"
 # top-left, top-center, top-right, bottom-left, bottom-center, bottom-right.
 # position = "bottom-center"
 
-# Spacing, in logical pixels. Omit the table to keep the defaults.
-[layout]
+# To customize spacing too, REPLACE the top-level layout above with this table:
+# [layout]
+# mode = "normal"
 # Blank space between the sidebar and the terminal beside it, 0 to 64.
 # The terminal keeps the remaining width, so a wide gap costs columns.
 # Ignored while the sidebar is hidden. Set 0 to sit against the divider.
-sidebar_gap = 8
+# sidebar_gap = 8
 
 [sidebar]
 # Default: "Menlo" on macOS, "DejaVu Sans Mono" on Linux.
