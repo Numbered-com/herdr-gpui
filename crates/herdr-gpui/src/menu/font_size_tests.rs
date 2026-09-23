@@ -26,7 +26,7 @@ fn the_in_app_menu_applies_a_size_and_dismisses(cx: &mut gpui::TestAppContext) {
         }
         // Other tests locate these two rows by selector; keep their places.
         assert_eq!(items[0], "settings");
-        assert_eq!(items[1], "keybinds");
+        assert_eq!(items[1], "shortcuts");
     });
 
     for (item, expected) in [

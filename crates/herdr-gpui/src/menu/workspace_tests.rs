@@ -347,7 +347,7 @@ pub(crate) fn check_menu_interactions(
                 super::Page::Menu,
                 view.menu_items().len(),
                 "menu-settings",
-                "menu-keybinds",
+                "menu-shortcuts",
             )
         }
     });
