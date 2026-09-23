@@ -163,8 +163,8 @@ impl HerdrWindow {
         let theme = &self.theme;
         let viewport = window.viewport_size();
         // A GitHub tab of the new worktree dialog is a picker, not a form.
-        let listing = self.worktree_list_tab().is_some()
-            || page == Page::Dialog(WorkspaceAction::OpenWorktree);
+        let listing =
+            self.worktree_listing() || page == Page::Dialog(WorkspaceAction::OpenWorktree);
         // Context menus open where the pointer asked for them. A dialog is a
         // modal decision, not a continuation of the row it came from, so it
         // centres over a dimmed window the way the Herdr TUI's dialogs do.
@@ -187,8 +187,9 @@ impl HerdrWindow {
                         340.
                     } else if page == Page::Dialog(WorkspaceAction::DeleteWorktree) {
                         480.
-                    } else if listing {
-                        // A listing needs room for a title and its branch.
+                    } else if listing || page == Page::Dialog(WorkspaceAction::NewWorktree) {
+                        // A listing needs room for a title and its branch, and
+                        // the new worktree tabs keep one width across tabs.
                         560.
                     } else {
                         420.
@@ -609,9 +610,9 @@ impl HerdrWindow {
                     window.prevent_default();
                     return;
                 }
-                let listing = this.worktree_list_tab().is_some();
-                // A listing types into its own search field, so everything the
-                // list itself does not own must reach the native text handler.
+                let listing = this.worktree_listing() || this.worktree_search_focused(window, cx);
+                // The shared search owns its own typing, so everything the list
+                // itself does not own must reach the native text handler.
                 if listing
                     && (this.worktree_source_composing(cx)
                         || event.keystroke.key.as_str() != "escape")
