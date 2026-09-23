@@ -530,6 +530,8 @@ impl TerminalPainter {
             total.paint_errors += counts.paint_errors;
             total.paints += 1;
         }
+        #[cfg(not(feature = "integration-test"))]
+        let _ = cx;
         let now = Instant::now();
         if let Some(timing) = self.diagnostics.record(now, now.duration_since(started)) {
             let mean_ms = timing.total.as_secs_f64() * 1000. / timing.count as f64;

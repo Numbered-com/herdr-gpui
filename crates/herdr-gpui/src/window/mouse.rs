@@ -420,7 +420,9 @@ impl HerdrWindow {
         }
         // Registered under the inbox lock so the response cannot be applied
         // before the request is known, which would leave the drag waiting.
-        let Ok(mut state) = connection.inbox.lock() else {
+        // The UI thread never waits on the worker; a busy inbox retries next tick.
+        let Ok(mut state) = connection.inbox.try_lock() else {
+            drag.want = Some(offset);
             return;
         };
         match handle.request(
