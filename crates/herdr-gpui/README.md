@@ -705,9 +705,9 @@ GPUI native action/menu/keybinding patterns.
 
 ## Windows
 
-Windows is experimental, not a supported platform. CI type-checks every
-target and feature for `windows-2025`, runs the `herdr-protocol` and
-`herdr-client` suites there, and links the executable, and each release
+Windows is experimental, not a supported platform. CI lints every target and
+feature on `windows-2025`. The release workflow runs the `herdr-protocol` and
+`herdr-client` suites, builds the optimized executable, tests its CLI, and
 publishes it as `Herdr-VERSION-x86_64-pc-windows-msvc.zip`; nothing about the
 window, rendering, input, or a live daemon has been exercised. Local connections use the named pipe the Windows
 daemon binds, derived from the same socket path string upstream uses, so

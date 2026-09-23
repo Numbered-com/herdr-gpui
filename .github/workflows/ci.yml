@@ -126,12 +126,9 @@ jobs:
       - name: Test integration-feature build and executable CLI
         run: cargo test --locked --workspace --all-features
 
-  # Windows has no runner in `checks`: the GUI is unproven there and its tests
-  # need a desktop session. This job type-checks every target and feature for
-  # Windows and runs the two platform-independent crates' suites, which is what
-  # keeps the `cfg` split honest as the code changes. It also links the release
-  # executable and runs its CLI tests, since releases publish that executable
-  # and a link failure should surface on the pull request, not at release time.
+  # Keep Windows CI lint-only to catch `cfg` regressions without the cost of
+  # linking. The release workflow runs the protocol/client suites and builds
+  # and CLI-tests the optimized executable; native GUI behavior is unproven.
   windows:
     if: >-
       github.repository == 'penso/herdr-gpui' &&
@@ -159,10 +156,6 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Lint every target and feature
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-      - name: Test the protocol and client crates
-        run: cargo test --locked -p herdr-protocol -p herdr-client
-      - name: Link the release executable and test its CLI
-        run: cargo test --locked --release -p herdr-gpui --test cli
 
   # Keep the branch-protection context stable while requiring every platform.
   checks-passed:

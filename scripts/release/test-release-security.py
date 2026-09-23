@@ -62,6 +62,11 @@ class ReleaseTargets(unittest.TestCase):
         self.assertNotIn("github.event_name == 'pull_request'", jobs["build"])
         for name in ("checks", "build"):
             self.assertIn("bash scripts/install-linux-deps.sh", jobs[name])
+        windows = jobs["windows"]
+        self.assertIn("    runs-on: windows-2025\n", windows)
+        self.assertIn("cargo clippy --locked --workspace --all-targets --all-features -- -D warnings", windows)
+        self.assertNotIn("cargo test", windows)
+        self.assertNotIn("cargo build", windows)
 
     def test_workflow_and_metadata_contract(self):
         # Keep this offline and dependency-free; actionlint validates YAML syntax.
@@ -95,6 +100,7 @@ class ReleaseTargets(unittest.TestCase):
         for command in ('cargo build --locked --release -p herdr-gpui --target "$TARGET"',
                         'cargo test --locked --release -p herdr-gpui --test cli --target "$TARGET"',
                         'cargo clippy --locked --workspace --all-targets --all-features -- -D warnings',
+                        'cargo test --locked -p herdr-protocol -p herdr-client',
                         'test "$(rustc -vV | sed -n \'s/^host: //p\')" = "$TARGET"',
                         'python scripts/release/generate-notices.py',
                         'python scripts/release/package-windows.py "$VERSION" "$TARGET"',

@@ -148,8 +148,9 @@ cargo test --locked --workspace --all-features
 ```
 
 - For linking, startup, or packaging changes, also use `just test-build` to build the release executable and exercise its CLI without a desktop.
-- Windows is type-checked, never run: the `windows` CI job lints every target and
-  feature and runs the protocol/client suites. Keep the `cfg(unix)`/`cfg(windows)`
+- The `windows` CI job only lints every target and feature. The release workflow
+  runs the protocol/client suites and builds and CLI-tests the optimized
+  executable; native GUI behavior is unproven. Keep the `cfg(unix)`/`cfg(windows)`
   split honest and say plainly what a platform cannot do instead of stubbing
   behavior that appears to work.
 - A `cfg` gate is only proven on the platform it names. Before handing off a
