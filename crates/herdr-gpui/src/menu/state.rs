@@ -24,6 +24,7 @@ pub(crate) struct MenuState {
     pub input: Option<DialogInput>,
     pub(super) error: Option<String>,
     pub(super) deletion: Option<Deletion>,
+    pub(super) close_check: Option<super::workspace_close::CloseCheck>,
     /// The correlated `worktree.create` or `worktree.open` request, so the dialog
     /// can report the daemon's answer and follow the returned workspace.
     pub(super) creation: Option<String>,
@@ -167,6 +168,7 @@ impl MenuState {
             input: None,
             error: None,
             deletion: None,
+            close_check: None,
             creation: None,
             worktree_open: None,
             keybinds_scroll: ScrollHandle::new(),
@@ -207,6 +209,7 @@ impl MenuState {
         self.input = None;
         self.error = None;
         self.deletion = None;
+        self.close_check = None;
         self.creation = None;
         self.worktree_open = None;
         self.close = None;

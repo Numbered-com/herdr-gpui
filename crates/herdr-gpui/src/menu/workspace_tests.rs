@@ -33,9 +33,24 @@ pub(crate) fn submit_focus_change(
         3
     };
     let target = WorkspaceTarget::new(snapshot, &snapshot.workspaces[index]);
+    let close_check = (action == WorkspaceAction::Close).then(|| {
+        super::workspace_close::CloseCheck::fixture(
+            snapshot,
+            &target,
+            Some(super::workspace_close::Report {
+                dirty: true,
+                unpushed: true,
+                unknown: false,
+            }),
+        )
+    });
     view.open_menu(window, cx);
     view.menu.target = Some(target);
     view.menu.page = Some(super::Page::Dialog(action));
+    if let Some(check) = close_check {
+        view.menu.close_check = Some(check);
+        view.menu.input = Some(DialogInput::new("close".into()));
+    }
     if action == WorkspaceAction::DeleteWorktree {
         view.menu.deletion = Some(Deletion {
             pending: None,
@@ -79,6 +94,61 @@ pub(crate) fn submit_focus_change(
         );
     }
     view.dismiss_menu(window, cx);
+}
+
+#[gpui::test]
+fn close_dialog_blocks_submission_until_risks_are_explicitly_accepted(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::workspace_close::{CloseCheck, Report};
+    let (view, cx) = cx.add_window_view(sidebar::layout_tests::fixture_window);
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.live.status = crate::state::ConnectionStatus::Connected;
+            let snapshot = std::sync::Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+            snapshot.workspaces = sidebar::layout_tests::snapshot(7).workspaces;
+            view.open_workspace_menu("w3", Default::default(), window, cx);
+            view.menu.page = Some(super::Page::Dialog(WorkspaceAction::Close));
+            // Missing or pending checks must block even a programmatic submission.
+            view.submit_workspace_dialog(window, cx);
+            assert!(view.menu.error.is_none());
+            let snapshot = view.live.snapshot.as_ref().unwrap();
+            let target = view.menu.target.as_ref().unwrap();
+            view.menu.close_check = Some(CloseCheck::fixture(snapshot, target, None));
+            view.submit_workspace_dialog(window, cx);
+            assert!(view.menu.error.is_none());
+            view.menu.close_check.as_mut().unwrap().report = Some(Report {
+                dirty: true,
+                unpushed: true,
+                unknown: true,
+            });
+            view.menu.input = Some(DialogInput::new(String::new()));
+            view.submit_workspace_dialog(window, cx);
+            assert!(view.menu.error.is_none());
+        });
+        window.draw(cx).clear();
+    });
+    let panel = cx.debug_bounds("menu-panel").unwrap();
+    let warning = cx.debug_bounds("close-git-status").unwrap();
+    let submit = cx.debug_bounds("dialog-submit").unwrap();
+    assert!(panel.contains(&warning.origin));
+    assert!(warning.bottom() <= submit.top());
+    assert!(submit.bottom() <= panel.bottom());
+    cx.simulate_keystrokes("enter");
+    view.read_with(cx, |view, _| {
+        assert!(view.menu.error.is_none());
+        assert!(view.menu.page.is_some());
+    });
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.menu.input = Some(DialogInput::new("close".into()));
+            view.submit_workspace_dialog(window, cx);
+            // Only after consent does submission reach the absent fixture connection.
+            assert!(view.menu.error.is_some());
+            view.dismiss_menu(window, cx);
+            assert!(view.menu.close_check.is_none());
+        })
+    });
 }
 
 #[gpui::test]
