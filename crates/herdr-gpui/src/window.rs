@@ -204,6 +204,7 @@ impl HerdrWindow {
                         {
                             this.marked.clear();
                         }
+                        this.poll_github(window, cx);
                         if this.update_workspace_pr() {
                             cx.notify();
                         }

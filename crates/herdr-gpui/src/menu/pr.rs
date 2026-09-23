@@ -92,7 +92,7 @@ impl HerdrWindow {
     }
 
     pub(crate) fn update_workspace_pr(&mut self) -> bool {
-        let mut changed = self.menu.github.poll();
+        let mut changed = false;
         if !self.menu.github.connected() {
             self.menu.pr_cache.clear();
             self.menu.pr.clear();

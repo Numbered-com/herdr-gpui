@@ -688,10 +688,15 @@ attention can keep the badge visible. This QA setting is not saved.
   Disabling plaintext stops its session use but keeps the file; explicit sign-out
   still removes the saved file regardless of opt-in, or reports a safe error.
    Device-flow refresh tokens are saved alongside access tokens in the same
-   store. When restoring a session after restart or update, a rejected access
-   token is renewed automatically and the rotated pair is saved before loading
-   the profile again. Network and Keychain errors do not delete credentials;
-   environment tokens are never renewed or replaced by saved credentials.
+   store, including their access-token expiry when GitHub supplies it. Connected
+   sessions are checked in the background every five minutes and renewed within
+   ten minutes of expiry, without restarting the app. Older saved pairs without
+   expiry metadata renew when GitHub rejects the access token. The rotated pair
+   is saved before loading the profile again. Temporary network and Keychain
+   failures keep an active session visible and retry on the next check. They do
+   not delete credentials; environment tokens are never renewed or replaced by
+   saved credentials. Successful sign-in closes the GitHub panel and returns
+   focus to the terminal. Reopen the account panel to use the red Sign out action.
    Older versions saved only access tokens, so an expired legacy token needs
    one more sign-in to obtain a refresh token. Revoked or expired refresh tokens
    also require sign-in. No CLI authentication is used. See
