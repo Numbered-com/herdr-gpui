@@ -13,6 +13,12 @@ Runtime dependencies include GPUI, `herdr-client`, `serde_json` for API paramete
 as `config_loader`, TOML-only) for GUI configuration. `toml` preserves strict
 field types during deserialization; `toml_edit` preserves comments on theme saves.
 
+Solid light/heavy box-drawing characters and block elements (including fractional
+blocks and quadrants) are drawn on the terminal cell grid, with device-pixel-aligned
+edges. Borders and block-art logos remain joined across rows and columns regardless
+of font line spacing. Dashed, double, rounded and diagonal lines, shading characters,
+and graphemes with combining marks continue to use font rendering.
+
 ```sh
 cargo run -p herdr-gpui
 cargo run -p herdr-gpui -- --session default
