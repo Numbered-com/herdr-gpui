@@ -25,6 +25,8 @@ pub(super) struct Flow {
     pub(super) next: Instant,
 }
 
+const SESSION_CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
 #[derive(Default)]
 pub(crate) struct Auth {
     pub(super) flow: Option<Flow>,
@@ -37,6 +39,7 @@ pub(crate) struct Auth {
     pub(super) reload_pending: bool,
     pub(super) store: Store,
     pub(super) profile_incoming: Option<mpsc::Receiver<Result<Option<Profile>>>>,
+    pub(super) next_session_check: Option<Instant>,
     pub profile: Option<Profile>,
     pub message: Option<String>,
     pub failed: bool,
@@ -44,6 +47,13 @@ pub(crate) struct Auth {
 }
 
 impl Auth {
+    #[cfg(test)]
+    pub(crate) fn complete_profile_fixture(&mut self, result: Result<Option<Profile>>) {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let _ = tx.send(result);
+        self.profile_incoming = Some(rx);
+    }
+
     #[cfg(any(test, feature = "integration-test"))]
     pub(crate) fn connected_fixture() -> Self {
         Self {
@@ -74,6 +84,7 @@ impl Auth {
             return false;
         }
         self.profile = None;
+        self.next_session_check = None;
         self.flow = None;
         self.cancelled = true;
         self.reload_pending = true;
@@ -263,6 +274,7 @@ impl Auth {
         self.failed = false;
         self.initialized = true;
         self.signed_out = true;
+        self.next_session_check = None;
         self.reload_pending = false;
         self.profile = None;
         self.flow = None;
@@ -297,6 +309,15 @@ impl Auth {
         persist: impl FnOnce(Option<&SecretString>) -> Result<()> + Send + 'static,
         load: impl FnOnce(Option<Arc<SecretString>>, Store) -> Result<Option<Profile>> + Send + 'static,
     ) -> bool {
+        self.poll_at(Instant::now(), persist, load)
+    }
+
+    pub(super) fn poll_at(
+        &mut self,
+        now: Instant,
+        persist: impl FnOnce(Option<&SecretString>) -> Result<()> + Send + 'static,
+        load: impl FnOnce(Option<Arc<SecretString>>, Store) -> Result<Option<Profile>> + Send + 'static,
+    ) -> bool {
         if self.signout_pending && !self.committing && self.profile_incoming.is_none() {
             self.signout_pending = false;
             self.committing = true;
@@ -309,6 +330,18 @@ impl Auth {
         if self.reload_pending && !self.busy() && self.profile_incoming.is_none() {
             self.reload_pending = false;
             self.cancelled = false;
+            self.load_profile_with(None, load);
+            return true;
+        }
+        if self.connected()
+            && !self.signed_out
+            && !self.busy()
+            && self.profile_incoming.is_none()
+            && self.next_session_check.is_some_and(|next| now >= next)
+        {
+            // Resolve the store again under its transaction lock: another window
+            // may already have rotated the single-use refresh token or signed out.
+            self.next_session_check = Some(now + SESSION_CHECK_INTERVAL);
             self.load_profile_with(None, load);
             return true;
         }
@@ -335,8 +368,15 @@ impl Auth {
             if let Some(result) = result {
                 self.profile_incoming = None;
                 if !self.reload_pending && !self.signed_out {
+                    self.next_session_check = Some(now + SESSION_CHECK_INTERVAL);
                     match result {
-                        Ok(profile) => {
+                        Ok(mut profile) => {
+                            if let (Some(old), Some(new)) = (&self.profile, &mut profile)
+                                && old.token.expose_secret() == new.token.expose_secret()
+                            {
+                                // PR caches use token identity to fence workers.
+                                new.token = old.token.clone();
+                            }
                             self.profile = profile;
                             self.failed = false;
                             self.message = None;
@@ -344,7 +384,15 @@ impl Auth {
                         Err(error) => {
                             log::failure("profile", &error);
                             self.credential_cleanup = true;
-                            self.profile = None;
+                            if matches!(
+                                error,
+                                Error::GitHubAuthentication
+                                    | Error::GitHubExpired
+                                    | Error::GitHubDenied
+                                    | Error::GitHubAuthorization
+                            ) {
+                                self.profile = None;
+                            }
                             self.failed = true;
                             self.message = Some(error.to_string());
                         }
