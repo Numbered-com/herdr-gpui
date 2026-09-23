@@ -853,9 +853,11 @@ GPUI native action/menu/keybinding patterns.
 
 Windows is experimental, not a supported platform. CI checks formatting, lints
 every target and feature, and runs workspace tests with default and all features
-on `windows-2025`, including headless UI and CLI tests. The release workflow
-builds and CLI-tests the optimized executable and publishes it as
-`Herdr-VERSION-x86_64-pc-windows-msvc.zip`; native window, rendering, input, and
+on `windows-2025` (x86_64) and `windows-11-arm` (ARM64), including headless UI
+and CLI tests. The release workflow builds and CLI-tests the optimized
+executable natively for each architecture and publishes
+`Herdr-VERSION-x86_64-pc-windows-msvc.zip` and
+`Herdr-VERSION-aarch64-pc-windows-msvc.zip`; native window, rendering, input, and
 live-daemon behavior remain unproven. Local connections use the named pipe the Windows
 daemon binds, derived from the same socket path string upstream uses, so
 discovery and framing are the same code as on Unix. Receive deadlines are
