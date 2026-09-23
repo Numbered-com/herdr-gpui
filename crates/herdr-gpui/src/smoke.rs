@@ -102,7 +102,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
     }
     EXIT_CODE.store(1, Ordering::SeqCst);
     #[cfg(target_os = "macos")]
-    if let Err(error) = app_icon::verify_native() {
+    if let Err(error) = app_icon::verify_native().and_then(|()| crate::app_badge::verify_native()) {
         eprintln!("ICON native FAIL: {error:#}");
         cx.quit();
         return;
