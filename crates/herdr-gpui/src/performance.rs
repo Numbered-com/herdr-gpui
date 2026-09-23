@@ -246,8 +246,10 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                             .map_err(|_| anyhow!("unexpected root"))?;
                         let verified =
                             view.read(cx).painter.borrow().verify_native_cache(window)?;
-                        if verified < 300 {
-                            bail!("insufficient native cache coverage");
+                        // Every symbol of the fixture in each face it is drawn in;
+                        // color is not part of a glyph's shape.
+                        if verified < 140 {
+                            bail!("insufficient native cache coverage: {verified}");
                         }
                         eprintln!("PERF native cached/fresh glyph layouts identical: {verified}");
                         // Outside timing: a changed cell and centered popup must use the
