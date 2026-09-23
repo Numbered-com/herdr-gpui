@@ -56,6 +56,12 @@ pub(crate) fn menus() -> Vec<Menu> {
                     },
                 ),
                 MenuItem::action(
+                    "New Worktree...",
+                    RunCommand {
+                        command: Command::NewWorktree,
+                    },
+                ),
+                MenuItem::action(
                     "New Tab",
                     RunCommand {
                         command: Command::Tab,

@@ -976,7 +976,7 @@ const STEPS: &[&str] = &[
     "Cmd-Shift-D below split",
     "previous tab",
     "next tab",
-    "Cmd-N workspace",
+    "Cmd-Shift-N workspace",
     "workspace navigation",
     "return to full-width tab",
     "text commit + Enter output",
@@ -1214,7 +1214,7 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         window.dispatch_action(Box::new(RunCommand { command: Command::NextTab }), cx);
                     }
                     5 if focused_tab == second_tab && surface.panes.len() == 3 => {
-                        key("cmd-n", window, cx)?;
+                        key("cmd-shift-n", window, cx)?;
                     }
                     6 if snapshot.workspaces.len() == 2 && focused_workspace != workspace && surface.panes.len() == 1 => {
                         let before = view.read(cx).presentation.probe;

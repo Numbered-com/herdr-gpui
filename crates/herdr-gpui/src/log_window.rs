@@ -18,6 +18,18 @@ const LEVELS: [Level; 5] = [
 
 actions!(log_window, [Close, FocusSearch, FocusLevel]);
 
+/// The console's own keys, scoped to its window. They are bound with the app
+/// keymap so a config reload, which replaces every binding, keeps them.
+pub(crate) fn key_bindings() -> [KeyBinding; 5] {
+    [
+        KeyBinding::new("cmd-w", Close, Some("LogWindow")),
+        KeyBinding::new("cmd-f", FocusSearch, Some("LogWindow")),
+        KeyBinding::new("cmd-l", FocusLevel, Some("LogWindow")),
+        KeyBinding::new("tab", FocusLevel, Some("LogWindow")),
+        KeyBinding::new("shift-tab", FocusSearch, Some("LogWindow")),
+    ]
+}
+
 #[derive(Default)]
 struct LogWindowHandle(Option<WindowHandle<LogWindow>>);
 impl Global for LogWindowHandle {}
@@ -178,13 +190,6 @@ impl LogWindow {
     }
 
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        cx.bind_keys([
-            KeyBinding::new("cmd-w", Close, Some("LogWindow")),
-            KeyBinding::new("cmd-f", FocusSearch, Some("LogWindow")),
-            KeyBinding::new("cmd-l", FocusLevel, Some("LogWindow")),
-            KeyBinding::new("tab", FocusLevel, Some("LogWindow")),
-            KeyBinding::new("shift-tab", FocusSearch, Some("LogWindow")),
-        ]);
         let search = cx.new(SearchInput::new);
         let appearance = cx.default_global::<Appearance>().clone();
         search.update(cx, |input, cx| {
@@ -1190,6 +1195,7 @@ mod tests {
 
     #[gpui::test]
     fn level_dropdown_keyboard_dismissal_focus_and_input_isolation(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.bind_keys(key_bindings()));
         let (view, cx) = cx.add_window_view(LogWindow::new);
         cx.simulate_resize(size(px(620.), px(360.)));
         cx.run_until_parked();

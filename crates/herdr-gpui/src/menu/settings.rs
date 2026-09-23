@@ -119,6 +119,9 @@ impl HerdrWindow {
                             theme: theme.clone(),
                             error: None,
                         });
+                        if config.keybindings != this.config.keybindings {
+                            crate::actions::rebind_keys(cx);
+                        }
                         if this.avatars.is_some() && this.menu.github.initialize(&config) {
                             this.menu.pr_cache.clear();
                             this.menu.pr.clear();
@@ -177,11 +180,22 @@ impl HerdrWindow {
         let mut groups = [
             ("WORKSPACES & PANES", Vec::new()),
             ("NAVIGATION", Vec::new()),
-            ("APPLICATION", vec![("cmd-v", "Paste into terminal")]),
+            ("APPLICATION", vec![(vec!["cmd-v"], "Paste into terminal")]),
         ];
-        for info in COMMANDS.iter().filter(|info| !info.shortcut.is_empty()) {
+        for info in COMMANDS {
+            let keys: Vec<&str> = self
+                .config
+                .keybindings
+                .shortcuts(info.command)
+                .iter()
+                .map(String::as_str)
+                .collect();
+            if keys.is_empty() {
+                continue;
+            }
             let group = match info.command {
                 Command::Workspace
+                | Command::NewWorktree
                 | Command::Tab
                 | Command::SplitRight
                 | Command::SplitDown
@@ -213,14 +227,17 @@ impl HerdrWindow {
                 | Command::About => 2,
                 Command::OpenNotificationTarget => 1,
             };
-            groups[group].1.push((info.shortcut, info.label));
+            groups[group].1.push((keys, info.label));
         }
         let total: usize = groups.iter().map(|(_, shortcuts)| shortcuts.len()).sum();
         let mut count = 0;
         for (section, shortcuts) in groups {
             let shortcuts: Vec<_> = shortcuts
                 .into_iter()
-                .filter(|(keys, description)| shortcut_matches(query, keys, description, section))
+                .filter(|(keys, description)| {
+                    keys.iter()
+                        .any(|keys| shortcut_matches(query, keys, description, section))
+                })
                 .collect();
             if shortcuts.is_empty() {
                 continue;
@@ -252,26 +269,23 @@ impl HerdrWindow {
                                 .flex_none()
                                 .flex()
                                 .flex_wrap()
-                                .gap(px(4.))
-                                .children(keys.split('-').map(|key| {
-                                    let mut chars = key.chars();
-                                    let key: String = chars
-                                        .next()
-                                        .map(|first| first.to_ascii_uppercase())
-                                        .into_iter()
-                                        .chain(chars)
-                                        .collect();
-                                    div()
-                                        .flex_none()
-                                        .px(px(6.))
-                                        .py(px(2.))
-                                        .rounded(px(4.))
-                                        .border_1()
-                                        .border_color(rgb(theme.active))
-                                        .bg(rgb(theme.background))
-                                        .text_size(px(font.size * 0.9))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(key)
+                                .gap(px(10.))
+                                .children(keys.into_iter().map(|keys| {
+                                    div().flex().flex_wrap().gap(px(4.)).children(
+                                        keycaps(keys).map(|key| {
+                                            div()
+                                                .flex_none()
+                                                .px(px(6.))
+                                                .py(px(2.))
+                                                .rounded(px(4.))
+                                                .border_1()
+                                                .border_color(rgb(theme.active))
+                                                .bg(rgb(theme.background))
+                                                .text_size(px(font.size * 0.9))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(key)
+                                        }),
+                                    )
                                 })),
                         )
                         .child(
@@ -388,6 +402,28 @@ impl HerdrWindow {
                     .child("Esc to close  /  click outside to dismiss"),
             )
     }
+}
+
+/// The keycaps of one keystroke, capitalized for display. `cmd--` splits into
+/// `cmd` and a `-` key rather than an empty cap.
+fn keycaps(keystroke: &str) -> impl Iterator<Item = String> + '_ {
+    let (modifiers, key) = match keystroke.strip_suffix("--") {
+        Some(modifiers) => (modifiers, "-"),
+        None => keystroke.rsplit_once('-').unwrap_or(("", keystroke)),
+    };
+    modifiers
+        .split('-')
+        .filter(|modifier| !modifier.is_empty())
+        .chain(std::iter::once(key))
+        .map(|key| {
+            let mut chars = key.chars();
+            chars
+                .next()
+                .map(|first| first.to_ascii_uppercase())
+                .into_iter()
+                .chain(chars)
+                .collect()
+        })
 }
 
 fn shortcut_matches(query: &str, keys: &str, description: &str, section: &str) -> bool {
@@ -681,5 +717,86 @@ mod tests {
             "Split Right",
             "WORKSPACES & PANES"
         ));
+    }
+
+    #[test]
+    fn keycaps_split_modifiers_from_the_key() {
+        let caps = |keystroke| super::keycaps(keystroke).collect::<Vec<_>>();
+        assert_eq!(caps("cmd-shift-t"), ["Cmd", "Shift", "T"]);
+        assert_eq!(caps("cmd--"), ["Cmd", "-"]);
+        assert_eq!(caps("cmd-+"), ["Cmd", "+"]);
+        assert_eq!(caps("f5"), ["F5"]);
+    }
+
+    /// A saved `[keybindings]` change must reach the live keymap, the palette,
+    /// and the keybindings page without restarting, and keep the console keys.
+    #[gpui::test]
+    #[allow(clippy::unwrap_used)]
+    fn config_reload_rebinds_the_keymap(cx: &mut gpui::TestAppContext) {
+        use crate::{
+            Command, RunCommand,
+            config::Config,
+            keymap::{Binding, Keymap},
+        };
+        use gpui::Keystroke;
+
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        cx.update(|_, cx| crate::bind_keys(cx));
+        let runs = |keystroke: &str, command: Command, cx: &mut gpui::VisualTestContext| {
+            cx.update(|_, cx| {
+                cx.key_bindings()
+                    .borrow()
+                    .all_bindings_for_input(&[Keystroke::parse(keystroke).unwrap()])
+                    .iter()
+                    .any(|binding| binding.action().partial_eq(&RunCommand { command }))
+            })
+        };
+        assert!(runs("cmd-t", Command::Tab, cx));
+        assert!(!runs("cmd-n", Command::Tab, cx));
+        assert!(runs("cmd-shift-n", Command::Workspace, cx));
+
+        view.update(cx, |view, cx| {
+            view.load_gui_config_with(
+                || {
+                    let overrides = [
+                        ("new_workspace", Binding::One("cmd-t".into())),
+                        ("toggle_sidebar", Binding::Many(Vec::new())),
+                    ]
+                    .into_iter()
+                    .map(|(name, binding)| (name.to_owned(), binding))
+                    .collect();
+                    let config = Config {
+                        keybindings: Keymap::with_overrides(&overrides)?,
+                        ..Config::default()
+                    };
+                    Ok((config, Default::default()))
+                },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert!(runs("cmd-t", Command::Workspace, cx));
+        assert!(!runs("cmd-t", Command::Tab, cx));
+        assert!(!runs("cmd-shift-n", Command::Workspace, cx));
+        assert!(!runs("cmd-b", Command::ToggleSidebar, cx));
+        cx.update(|_, cx| {
+            let keymap = cx.key_bindings();
+            let keymap = keymap.borrow();
+            let console = keymap.all_bindings_for_input(&[Keystroke::parse("cmd-l").unwrap()]);
+            assert_eq!(console.len(), 1);
+        });
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.config.keybindings.primary(Command::Workspace), "cmd-t");
+            assert_eq!(view.config.keybindings.primary(Command::Tab), "");
+        });
+
+        view.update(cx, |view, cx| {
+            view.load_gui_config_with(|| Ok((Config::default(), Default::default())), cx)
+        });
+        cx.run_until_parked();
+        assert!(runs("cmd-t", Command::Tab, cx));
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.config.keybindings, Keymap::default())
+        });
     }
 }
