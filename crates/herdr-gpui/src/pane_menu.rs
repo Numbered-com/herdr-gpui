@@ -263,8 +263,13 @@ mod tests {
         });
         // Use the actual terminal mouse handler, not just menu construction.
         cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear());
+        // A second press before release must not dismiss the menu just opened.
+        cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+        assert!(view.read_with(cx, |v, _| v.menu.page == Some(Page::Pane)));
         cx.simulate_mouse_up(position, MouseButton::Right, Modifiers::default());
         view.read_with(cx, |v, _| {
+            assert!(!v.menu.opening_right_click);
             assert_eq!(v.menu.pane.as_ref().unwrap().target.pane, "inactive");
             assert!(v.pending_navigation.is_none());
             assert_ne!(

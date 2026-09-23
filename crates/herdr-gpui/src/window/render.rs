@@ -115,6 +115,8 @@ impl Render for HerdrWindow {
                             cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                                 cx.stop_propagation();
                                 this.open_tab_menu(&context_id, event.position, window, cx);
+                                this.menu.opening_right_click =
+                                    this.menu.page == Some(crate::menu::Page::Tab);
                             }),
                         )
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -192,6 +194,7 @@ impl Render for HerdrWindow {
                     }
                     cx.stop_propagation();
                     this.open_pane_menu_at(event.position, window, cx);
+                    this.menu.opening_right_click = this.menu.page == Some(crate::menu::Page::Pane);
                 }),
             )
             .on_mouse_down(
