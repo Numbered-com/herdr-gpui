@@ -94,8 +94,8 @@
           postInstall = ''
             install -Dm644 scripts/release/herdr-gpui.desktop \
               $out/share/applications/herdr-gpui.desktop
-            install -Dm644 assets/icons/herdr-icon-square-clean.png \
-              $out/share/icons/hicolor/1024x1024/apps/herdr-gpui.png
+            install -Dm644 assets/icons/herdr-icon-square-clean.svg \
+              $out/share/icons/hicolor/scalable/apps/herdr-gpui.svg
           '';
           postFixup = ''
             patchelf --add-rpath ${lib.makeLibraryPath runtimeLibraries} $out/bin/herdr-gpui

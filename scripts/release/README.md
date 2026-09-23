@@ -11,7 +11,11 @@ prerelease/build suffixes, or leading zeros.
 Packaging and `just bundle` require Python 3 and read a versioned identity record
 embedded in the supplied executable, never the packaging checkout's Git state.
 Linked-worktree binaries select `assets/icons/herdr-square-worktree-1024.png` or
-`assets/icons/Herdr-worktree.icns`; other builds use the standard assets. The
+`assets/icons/Herdr-worktree.icns`; other builds use the standard assets. On
+Linux a release installs `herdr-icon-square-clean.svg` as the hicolor `scalable`
+icon, because icon themes list no size above 512x512; the worktree PNG goes to
+`share/pixmaps`, the lookup fallback. Distribution packages are built only from
+the release layout. The
 installed icon keeps its standard filename. No binary is executed, so foreign
 Linux architectures and both macOS slices work on the packaging host. macOS
 inputs must have identical identities (branch and PR included). Missing, malformed,
@@ -115,7 +119,7 @@ consumer verification cover both. The SBOM unions both Linux, both macOS, and
 the Windows target graphs. No separate per-platform manifest or publication job is used.
 The caller must supply the matching release binary; packaging does not cross-build
 or resolve shared libraries. Output is `Herdr-VERSION-TARGET.tar.gz`, with a
-same-named root containing `bin/herdr-gpui`, a PNG icon, desktop entry, license and
+same-named root containing `bin/herdr-gpui`, a scalable SVG icon, desktop entry, license and
 notice under `share/`. Install that tree into a chosen prefix with its `bin` on
 PATH. Archives are not promised to be bit-for-bit reproducible.
 

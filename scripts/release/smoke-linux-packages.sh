@@ -35,7 +35,7 @@ for library in libvulkan.so.1 libwayland-client.so.0; do
     grep -q "^[[:space:]]*$library " <<<"$cache" || { echo "missing dlopen target $library" >&2; exit 1; }
 done
 test -f /usr/share/applications/herdr-gpui.desktop
-test -f /usr/share/icons/hicolor/1024x1024/apps/herdr-gpui.png
+test -f /usr/share/icons/hicolor/scalable/apps/herdr-gpui.svg
 test -f /usr/share/licenses/herdr-gpui/THIRD-PARTY-NOTICES.txt
 '
 
