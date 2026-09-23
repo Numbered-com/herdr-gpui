@@ -2058,6 +2058,8 @@ fn worktree_rows_mark_uncommitted_work(cx: &mut gpui::TestAppContext) {
     let row = cx.debug_bounds("row-sidebar-child").unwrap();
     let badge = cx.debug_bounds("pr-sidebar-child").unwrap();
     let dot = cx.debug_bounds("dirty-sidebar-child").unwrap();
+    assert_eq!(dot.size.width, px(16.));
+    assert_eq!(dot.size.height, px(16.));
     // The mark leads the badge column, still flush against the row's edge.
     assert!(badge.left() <= dot.left() && dot.right() <= badge.right());
     assert_eq!(badge.right(), row.right() - px(12.));

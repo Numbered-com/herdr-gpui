@@ -238,8 +238,16 @@ impl HerdrWindow {
                 panel
                     .w((viewport.width - px(24.))
                         .max(px(0.))
-                        .min(px(if page == Page::Git { 240. } else { 420. })))
+                        .min(px(if page == Page::Git { 340. } else { 420. })))
                     .max_h((viewport.height - px(24.)).max(px(0.)))
+                    .when(page == Page::Git, |panel| {
+                        let top = crate::titlebar::HEIGHT
+                            + crate::worktree_banner::reserved(env!("HERDR_BUILD_WORKTREE") == "1")
+                            + 6.;
+                        panel
+                            .max_h((viewport.height - px(top + 12.)).max(px(0.)))
+                            .shadow_lg()
+                    })
             })
             .when(
                 matches!(
@@ -782,7 +790,18 @@ impl HerdrWindow {
             }))
             .child(if pointer_anchored {
                 anchored()
-                    .position(self.menu.anchor)
+                    .position(if page == Page::Git {
+                        point(
+                            self.menu.anchor.x,
+                            px(crate::titlebar::HEIGHT
+                                + crate::worktree_banner::reserved(
+                                    env!("HERDR_BUILD_WORKTREE") == "1",
+                                )
+                                + 6.),
+                        )
+                    } else {
+                        self.menu.anchor
+                    })
                     .snap_to_window_with_margin(Edges::all(px(12.)))
                     .child(panel)
                     .into_any_element()

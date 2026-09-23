@@ -3,6 +3,27 @@ use std::borrow::Cow;
 
 pub(super) struct Icons;
 
+/// Shared working-tree marker, distinct from the daemon's activity dots.
+pub(super) fn uncommitted(theme: &crate::config::Theme, size: f32) -> gpui::Div {
+    use gpui::{div, prelude::*, px, rgb, rgba, svg};
+    div()
+        .size(px(size))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.))
+        .bg(rgba((theme.palette[3] << 8) | 0x30))
+        .border_1()
+        .border_color(rgba((theme.palette[3] << 8) | 0x90))
+        .child(
+            svg()
+                .path("icons/pencil.svg")
+                .size(px(size - 4.))
+                .text_color(rgb(theme.palette[3])),
+        )
+}
+
 impl AssetSource for Icons {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
         let bytes: &'static [u8] = match path {

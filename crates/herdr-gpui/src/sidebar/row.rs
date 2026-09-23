@@ -122,9 +122,9 @@ impl RowBadge {
 
     pub(super) fn width(&self, font: &FontConfig, layout: &dyn SidebarLayout) -> f32 {
         let pr = self.pr.as_ref().map_or(0., |pr| pr.width(font, layout));
-        // The dot sits on the number's line, a glyph of space ahead of it.
+        // Reserve the icon and the gap before the PR number, even at small fonts.
         pr + if self.dirty {
-            2. * glyph_width(font)
+            line_height(font).min(18.) + glyph_width(font)
         } else {
             0.
         }
@@ -456,11 +456,8 @@ pub(super) fn row(
                             // pull request's, not the working tree's.
                             .when(dirty, |line| {
                                 line.child(
-                                    div()
-                                        .debug_selector(|| format!("dirty-{key}"))
-                                        .flex_none()
-                                        .text_color(rgb(theme.foreground))
-                                        .child(label_text("\u{2022}")),
+                                    crate::icons::uncommitted(theme, line_height(font).min(18.))
+                                        .debug_selector(|| format!("dirty-{key}")),
                                 )
                             })
                             .when_some(pr.as_ref(), |line, badge| {
