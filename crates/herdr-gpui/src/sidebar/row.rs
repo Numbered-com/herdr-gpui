@@ -155,7 +155,7 @@ impl PrBadge {
     /// a wider face truncates the counts rather than eating the label.
     pub(super) fn width(&self, font: &FontConfig, layout: &dyn SidebarLayout) -> f32 {
         let mut glyphs = self.number.chars().count();
-        if layout.workspace_details() {
+        if layout.pr_counts() {
             glyphs =
                 glyphs.max(self.additions.chars().count() + self.deletions.chars().count() + 1);
         }
@@ -258,7 +258,12 @@ pub(super) fn row(
     let padding = layout.padding();
     let gap = layout.gap();
     let vertical_padding = layout.row_padding();
-    let show_detail = layout.workspace_details() || kind == RowKind::Agent;
+    let show_detail = kind == RowKind::Agent
+        || if tree == RowTree::None {
+            layout.workspace_details()
+        } else {
+            layout.child_details()
+        };
     let (name_color, weight, detail_color) = row_text(kind, focused, theme);
     let icon_reserve = match workspace_icon {
         RowIcon::None => 0.,
@@ -446,35 +451,32 @@ pub(super) fn row(
                                 )
                             }),
                     )
-                    .when_some(
-                        pr.filter(|_| layout.workspace_details()),
-                        |column, badge| {
-                            column.child(
-                                div()
-                                    .flex()
-                                    .flex_none()
-                                    .overflow_hidden()
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .text_color(rgb(theme.palette[2]))
-                                            .child(label_text(&badge.additions)),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .text_color(rgb(theme.muted))
-                                            .child(label_text("/")),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .text_color(rgb(theme.palette[1]))
-                                            .child(label_text(&badge.deletions)),
-                                    ),
-                            )
-                        },
-                    ),
+                    .when_some(pr.filter(|_| layout.pr_counts()), |column, badge| {
+                        column.child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(rgb(theme.palette[2]))
+                                        .child(label_text(&badge.additions)),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(rgb(theme.muted))
+                                        .child(label_text("/")),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(rgb(theme.palette[1]))
+                                        .child(label_text(&badge.deletions)),
+                                ),
+                        )
+                    }),
             )
         })
 }

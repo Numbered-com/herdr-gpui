@@ -105,6 +105,7 @@ impl HerdrWindow {
                 match self.config.layout.mode {
                     crate::config::LayoutMode::Normal => "normal",
                     crate::config::LayoutMode::Compact => "compact",
+                    crate::config::LayoutMode::Comfortable => "comfortable",
                 }
                 .into(),
             ))

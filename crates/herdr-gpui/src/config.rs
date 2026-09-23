@@ -129,6 +129,7 @@ pub enum LayoutMode {
     #[default]
     Normal,
     Compact,
+    Comfortable,
 }
 
 impl<'de> Deserialize<'de> for Layout {
@@ -1635,6 +1636,19 @@ mod tests {
         let custom = Config::parse("[layout]\nmode = 'compact'\nsidebar_gap = 4")?;
         assert_eq!(custom.layout.mode, LayoutMode::Compact);
         assert_eq!(custom.layout.sidebar_gap, 4.);
+        for (name, mode) in [
+            ("compact", LayoutMode::Compact),
+            ("normal", LayoutMode::Normal),
+            ("comfortable", LayoutMode::Comfortable),
+        ] {
+            assert_eq!(
+                Config::parse(&format!("layout = '{name}'"))?.layout.mode,
+                mode
+            );
+            let config = Config::parse(&format!("[layout]\nmode = '{name}'\nsidebar_gap = 4"))?;
+            assert_eq!(config.layout.mode, mode);
+            assert_eq!(config.layout.sidebar_gap, 4.);
+        }
         for value in ["'unknown'", "true", "1"] {
             assert!(matches!(
                 Config::parse(&format!("layout = {value}")),

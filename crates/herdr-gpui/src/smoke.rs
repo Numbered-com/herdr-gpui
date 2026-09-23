@@ -129,7 +129,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
             }
         };
         eprintln!("SIDEBAR native symbol cascade: {cascade}");
-        for frame in 0..24 {
+        for frame in 0..36 {
             timer.timer(Duration::from_millis(100)).await;
             let result = AnyWindowHandle::from(handle).update(
                 cx,
@@ -137,7 +137,9 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     use crate::sidebar::layout_tests::PaintedProbes;
                     let (w, h) =
                         [(1200., 780.), (640., 400.), (1000., 650.), (800., 600.)][(frame % 12) / 3];
-                    let compact = frame >= 12;
+                    use crate::config::LayoutMode;
+                    let mode = [LayoutMode::Comfortable, LayoutMode::Normal, LayoutMode::Compact][frame / 12];
+                    let compact = mode == LayoutMode::Compact;
                     if frame % 3 == 0 {
                         window.resize(fixture_size(w, h));
                     } else if window.viewport_size() != fixture_size(w, h) {
@@ -150,11 +152,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     root.downcast::<HerdrWindow>()
                         .map_err(|_| anyhow!("unexpected root"))?
                         .update(cx, |view, cx| {
-                            view.config.layout.mode = if compact {
-                                crate::config::LayoutMode::Compact
-                            } else {
-                                crate::config::LayoutMode::Normal
-                            };
+                            view.config.layout.mode = mode;
                             cx.notify();
                         });
                     window.refresh();
@@ -185,7 +183,12 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         }
                         let expected_short = input.len() < 20;
                         let title_icon = matches!(input, "herdr" | "herdr-gpui-sidebar-rendering-regression-investigation");
-                        let expected_width = px(sidebar::LABEL_WIDTH + if compact { 16. } else { 0. } - if title_icon { sidebar::ICON_RESERVE } else { 0. });
+                        let extra_width = match mode {
+                            LayoutMode::Comfortable => 0.,
+                            LayoutMode::Normal => 10.,
+                            LayoutMode::Compact => 16.,
+                        };
+                        let expected_width = px(sidebar::LABEL_WIDTH + extra_width - if title_icon { sidebar::ICON_RESERVE } else { 0. });
                         if p.glyph_text != p.cached
                             || (expected_short && p.glyph_text != input)
                             || (!expected_short
@@ -204,7 +207,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         bail!("incomplete/cropped native glyph output");
                     }
                     eprintln!(
-                        "SIDEBAR verified frame={frame} compact={compact} viewport={:?} clipped=0",
+                        "SIDEBAR verified frame={frame} mode={mode:?} viewport={:?} clipped=0",
                         window.viewport_size()
                     );
                     Ok(())
@@ -218,7 +221,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
         let _ = handle.update(cx, |view, _, cx| {
             // Later fixtures add PR badges and dialogs that change label budgets.
             cx.set_global(sidebar::layout_tests::VerifyChildGeometry(false));
-            view.config.layout.mode = crate::config::LayoutMode::Normal;
+            view.config.layout.mode = crate::config::LayoutMode::Comfortable;
             cx.notify();
         });
         #[cfg(target_os = "macos")]

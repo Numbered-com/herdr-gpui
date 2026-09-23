@@ -9,6 +9,12 @@ pub(super) trait SidebarLayout {
     fn row_padding(&self) -> f32;
     fn child_indent(&self) -> f32;
     fn workspace_details(&self) -> bool;
+    fn child_details(&self) -> bool {
+        self.workspace_details()
+    }
+    fn pr_counts(&self) -> bool {
+        self.workspace_details()
+    }
     fn header_padding(&self) -> f32;
     fn host_padding(&self) -> f32;
     fn footer_padding(&self) -> f32;
@@ -18,9 +24,9 @@ pub(super) trait SidebarLayout {
     }
 }
 
-pub(super) struct Normal;
+pub(super) struct Comfortable;
 
-impl SidebarLayout for Normal {
+impl SidebarLayout for Comfortable {
     fn padding(&self) -> f32 {
         ROW_PADDING
     }
@@ -44,6 +50,43 @@ impl SidebarLayout for Normal {
     }
     fn footer_padding(&self) -> f32 {
         5.
+    }
+}
+
+/// TUI-like density: branch lines on roots, single-line worktree children,
+/// and two-line agents without extra vertical padding between rows.
+pub(super) struct Normal;
+
+impl SidebarLayout for Normal {
+    fn padding(&self) -> f32 {
+        8.
+    }
+    fn gap(&self) -> f32 {
+        6.
+    }
+    fn row_padding(&self) -> f32 {
+        0.
+    }
+    fn child_indent(&self) -> f32 {
+        STATUS_WIDTH + self.gap() + 8.
+    }
+    fn workspace_details(&self) -> bool {
+        true
+    }
+    fn child_details(&self) -> bool {
+        false
+    }
+    fn pr_counts(&self) -> bool {
+        false
+    }
+    fn header_padding(&self) -> f32 {
+        4.
+    }
+    fn host_padding(&self) -> f32 {
+        2.
+    }
+    fn footer_padding(&self) -> f32 {
+        3.
     }
 }
 
@@ -80,5 +123,6 @@ pub(super) fn for_mode(mode: LayoutMode) -> &'static dyn SidebarLayout {
     match mode {
         LayoutMode::Normal => &Normal,
         LayoutMode::Compact => &Compact,
+        LayoutMode::Comfortable => &Comfortable,
     }
 }
