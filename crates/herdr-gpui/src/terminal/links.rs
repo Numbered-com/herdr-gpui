@@ -323,6 +323,38 @@ mod tests {
     }
 
     #[gpui::test]
+    fn link_modifier_click_bypasses_mouse_reporting_only_on_links(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, point, px};
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut view = crate::sidebar::layout_tests::fixture_window(window, cx);
+            let mut s = surface("https://example.com/app plain");
+            s.panes[0].mouse_reporting = true;
+            let snapshot = view.live.snapshot.as_ref().unwrap();
+            s.boot_id = snapshot.boot_id.clone();
+            s.projection_revision = snapshot.revision;
+            view.live.surface = Some(Arc::new(s));
+            view
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear();
+        });
+        let origin = view.read_with(cx, |view, _| view.bounds.origin);
+        let link = origin + point(px(1.), px(1.));
+        let plain = origin + point(px(251.), px(1.));
+        cx.simulate_click(link, Modifiers::default());
+        assert!(cx.opened_url().is_none());
+        view.read_with(cx, |view, _| {
+            assert!(!view.terminal_link_hovered(link, Modifiers::default()));
+            assert!(view.terminal_link_hovered(link, Modifiers::secondary_key()));
+            assert!(!view.terminal_link_hovered(plain, Modifiers::secondary_key()));
+            assert!(!view.link_modifier_held(plain, Modifiers::secondary_key()));
+        });
+        cx.simulate_click(link, Modifiers::secondary_key());
+        assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/app"));
+    }
+
+    #[gpui::test]
     fn click_dispatch_opens_browser_and_respects_menu_and_revision(cx: &mut gpui::TestAppContext) {
         use gpui::{point, px};
         let (view, cx) = cx.add_window_view(|window, cx| {
