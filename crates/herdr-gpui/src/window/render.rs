@@ -141,6 +141,7 @@ impl Render for HerdrWindow {
         let entity = cx.entity();
         let paint_entity = entity.clone();
         let focus = self.focus.clone();
+        let menu_open = self.menu.page.is_some();
         let cell_width = self.cell_width;
         let painter = self.painter.clone();
         // The highlight is grid coordinates, so it paints with the frame that
@@ -321,7 +322,11 @@ impl Render for HerdrWindow {
                         });
                         window.handle_input(
                             &focus,
-                            ElementInputHandler::new(bounds, paint_entity.clone()),
+                            crate::input::TerminalInputHandler::new(
+                                bounds,
+                                paint_entity.clone(),
+                                menu_open,
+                            ),
                             cx,
                         );
                         if let Some(surface) = &surface {

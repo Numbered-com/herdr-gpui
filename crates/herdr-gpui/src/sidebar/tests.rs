@@ -201,14 +201,14 @@ fn rows_weight_and_dim_their_text_like_upstream() {
     // earns bold only while focused, and hands its branch the accent then.
     for (kind, focused, weight, name, detail) in [
         (
-            RowKind::Agent,
+            RowKind::Agent(crate::icons::AgentIcon::Generic),
             false,
             FontWeight::BOLD,
             theme.subtext(),
             theme.muted,
         ),
         (
-            RowKind::Agent,
+            RowKind::Agent(crate::icons::AgentIcon::Generic),
             true,
             FontWeight::BOLD,
             theme.foreground,
