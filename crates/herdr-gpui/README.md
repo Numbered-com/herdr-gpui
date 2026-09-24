@@ -40,6 +40,17 @@ without input replay. Detach pauses retries for that endpoint until Reconnect.
 The status dot pulses amber during local daemon startup, is green when connected,
 and red otherwise.
 
+Normal launches restore the main windows left open at quit, including each
+window's size and screen position, using the current launch's connection options.
+Closing an individual window removes it from the saved set; closing the final
+main window retains its geometry for next time. Additional windows cascade from
+the last open main window. Fullscreen windows restore to their normal rectangle.
+Each window reopens on the display it was on; if that display is disconnected,
+it opens on the primary display, resized and moved to fit. Logs windows
+are not restored. Geometry is stored in `window-state.json` under
+`$XDG_STATE_HOME/herdr/gpui`, or `~/.local/state/herdr/gpui` by default. Native
+test modes skip this state. Up to 64 main windows are restored.
+
 The Rust GitHub updater verifies signed archive manifests and presents a shared
 GPUI panel through **app updates** in the sidebar menu or **Herdr > Check for
 Updates...**. Background offers change the status version label without taking

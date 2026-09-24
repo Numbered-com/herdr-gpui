@@ -2752,6 +2752,7 @@ dependencies = [
  "unicode-width",
  "ureq",
  "url",
+ "uuid",
  "zeroize",
 ]
 

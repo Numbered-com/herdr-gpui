@@ -57,9 +57,11 @@ pub(crate) fn open_window(
     let step = px(28. * existing.min(6) as f32);
     let mut bounds = Bounds::centered(None, size(px(1200.), px(780.)), cx);
     bounds.origin += point(step, step);
+    let (bounds, display_id) = crate::window_state::WindowState::placement(bounds, cx);
     cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            display_id,
             window_min_size: Some(size(px(640.), px(400.))),
             titlebar: Some(titlebar::options(WINDOW_TITLE)),
             app_id: Some("so.pen.herdr-gpui".into()),
@@ -75,6 +77,7 @@ pub(crate) fn open_window(
                     fixture,
                 );
                 view.updater = updater;
+                crate::window_state::WindowState::observe(window, cx);
                 view
             })
         },
@@ -170,7 +173,12 @@ pub(crate) fn run() -> std::process::ExitCode {
         InitialAppearance::default()
     };
     let failed = startup_failed.clone();
+    let window_state = (mode == LaunchMode::Normal).then(crate::window_state::WindowState::load);
     Application::new().with_assets(icons::Icons).run(move |cx| {
+        let window_count = window_state.as_ref().map_or(1, |state| state.count());
+        if let Some(state) = window_state {
+            state.install(cx);
+        }
         cx.set_global(appearance);
         app_icon::install();
         #[cfg(target_os = "macos")]
@@ -196,7 +204,7 @@ pub(crate) fn run() -> std::process::ExitCode {
             updater::Updater::default()
         };
         let opened = open_window(
-            target,
+            target.clone(),
             updater,
             cx,
             #[cfg(feature = "integration-test")]
@@ -210,6 +218,9 @@ pub(crate) fn run() -> std::process::ExitCode {
                     let _ = _window.update(cx, |view, _, _| {
                         view.sound = crate::sound::Service::new();
                     });
+                    for _ in 1..window_count {
+                        open_additional_window(target.clone(), cx);
+                    }
                 }
                 #[cfg(feature = "integration-test")]
                 if performance_test {

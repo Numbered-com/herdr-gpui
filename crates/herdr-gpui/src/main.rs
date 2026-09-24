@@ -48,6 +48,7 @@ mod titlebar;
 mod update_panel;
 mod updater;
 mod window;
+mod window_state;
 mod worktree;
 mod worktree_banner;
 
