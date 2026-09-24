@@ -115,6 +115,18 @@ impl HerdrWindow {
         }
     }
 
+    /// Cmd-V and Edit > Paste into the focused pane or popup.
+    pub(crate) fn paste(&mut self, cx: &mut Context<Self>) {
+        // GPUI has no text-only Linux clipboard API. Preserve its native
+        // ordinary paste (which needs no helper executable); explicit Ctrl-V
+        // image acquisition still uses the bounded background reader.
+        if self.accepts_clipboard_images() && !cfg!(target_os = "linux") {
+            self.paste_native_clipboard(false, None, cx);
+        } else if let Some(item) = cx.read_from_clipboard() {
+            self.paste_terminal_clipboard(item, false, cx);
+        }
+    }
+
     pub(crate) fn key_down(
         &mut self,
         event: &KeyDownEvent,
@@ -126,14 +138,7 @@ impl HerdrWindow {
             self.input_probe.keys += 1;
         }
         if event.keystroke.modifiers.platform && event.keystroke.key == "v" {
-            // GPUI has no text-only Linux clipboard API. Preserve its native
-            // ordinary paste (which needs no helper executable); explicit Ctrl-V
-            // image acquisition still uses the bounded background reader.
-            if self.accepts_clipboard_images() && !cfg!(target_os = "linux") {
-                self.paste_native_clipboard(false, None, cx);
-            } else if let Some(item) = cx.read_from_clipboard() {
-                self.paste_terminal_clipboard(item, false, cx);
-            }
+            self.paste(cx);
             cx.stop_propagation();
             window.prevent_default();
         } else if event.keystroke.key == "v"

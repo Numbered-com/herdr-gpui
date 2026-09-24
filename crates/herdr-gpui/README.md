@@ -412,6 +412,9 @@ too large to copy reports in the status bar instead.
 The highlight is cleared by the release that copies it, and by a reconnect,
 detach, or endpoint switch. Cmd-V still sends semantic paste; there is no copy
 keystroke, because the release has already copied and nothing stays selected.
+For the same reason, the native **Edit** menu enables only **Paste** while a
+terminal has focus. In dialogs and search fields, **Cut**, **Copy**, **Paste**,
+and **Select All** do the same as Cmd-X, Cmd-C, Cmd-V, and Cmd-A.
 
 ## File Drops
 
@@ -792,7 +795,7 @@ Windows setup) nothing is saved and the window says so.
   always asks for confirmation with Cancel selected. Popups and stale retained
   terminal frames block pane context actions. Escape or an outside left/right
   click dismisses the menu without forwarding input to the terminal.
-- Native File/Terminal menus and creation buttons: **+ New Workspace** in the
+- Native File/Edit/Terminal menus and creation buttons: **+ New Workspace** in the
   sidebar and a persistent 18px SVG **+** in a 44px-wide button beside the horizontally
   scrolling tab strip. Each tab has a 16px SVG close cross in a 24px hit target;
   it uses the same configurable confirmation without focusing an inactive tab.
