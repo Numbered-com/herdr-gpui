@@ -2,18 +2,85 @@
 mod setup;
 
 use super::Page;
-use crate::{Command, HerdrWindow, search_input::SearchInput};
+use crate::{Command, HerdrWindow, NavigationTarget, search_input::SearchInput};
 use gpui::{prelude::*, *};
-use herdr_client::ConnectTarget;
+use herdr_client::{
+    ConnectTarget, HostProbe, Method,
+    protocol::{ClientKeyCode, ClientKeyKind, ClientPaneInputEvent},
+};
 
 pub(super) const MENU_GAP: f32 = 12.;
 pub(super) const MENU_WIDTH: f32 = 280.;
 
 pub(super) struct Setup {
     fields: [Entity<SearchInput>; 3],
-    launching: bool,
-    launched: bool,
+    step: Step,
     task: Option<Task<()>>,
+}
+
+/// Where adding a device stands. Each step after `Form` belongs to the request
+/// that was submitted, not to whatever the fields hold now.
+enum Step {
+    Form,
+    Checking(setup::Request),
+    /// Herdr is present, so the CLI saves the device without a terminal. A
+    /// stopped server is started by that same command.
+    Saving(setup::Request, HostProbe),
+    Saved(setup::Request),
+    /// Setup needs prompts, so the user decides whether to run it locally.
+    Confirm(setup::Request, Offer),
+    /// Waiting for the local daemon to create the setup workspace.
+    Opening(setup::Request, LocalSpace),
+}
+
+/// Why setup has to continue in a terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Offer {
+    Install,
+    Update,
+    /// SSH needs a prompt, or saving without a terminal failed.
+    Terminal,
+}
+
+impl Offer {
+    /// `None` when Herdr is present, so the device is saved without a terminal.
+    fn for_probe(probe: HostProbe) -> Option<Self> {
+        match probe {
+            HostProbe::Running | HostProbe::Stopped => None,
+            HostProbe::Missing => Some(Self::Install),
+            HostProbe::Outdated => Some(Self::Update),
+            HostProbe::SshFailed => Some(Self::Terminal),
+        }
+    }
+
+    fn question(self, target: &str) -> String {
+        match self {
+            Self::Install => {
+                format!("Herdr was not detected on {target}. Should we install it?")
+            }
+            Self::Update => {
+                format!("The Herdr on {target} is too old for this app. Should we update it?")
+            }
+            Self::Terminal => format!(
+                "Setting up {target} needs your input, such as an SSH password or host key. Continue in a local terminal?"
+            ),
+        }
+    }
+
+    fn action(self) -> &'static str {
+        match self {
+            Self::Install => "Install",
+            Self::Update => "Update",
+            Self::Terminal => "Open terminal",
+        }
+    }
+}
+
+/// The local workspace request whose root pane will run the setup command.
+struct LocalSpace {
+    request: String,
+    boot: String,
+    command: String,
 }
 
 struct SettingsHint {
@@ -358,8 +425,7 @@ impl HerdrWindow {
             window.focus(&fields[0].read(cx).focus);
             self.menu.device_setup = Some(Setup {
                 fields,
-                launching: false,
-                launched: false,
+                step: Step::Form,
                 task: None,
             });
             self.menu.page = Some(Page::AddDevice);
@@ -434,7 +500,7 @@ impl HerdrWindow {
         let mut body = div().id("device-setup-body").debug_selector(|| "device-setup-body".into())
             .min_h_0().overflow_y_scroll().p(px(16.)).flex().flex_col().gap(px(12.))
             .child(div().flex_none().text_color(rgb(theme.muted))
-                .child("Herdr will prepare the remote server and save the device. Complete SSH prompts and installation approval in your terminal."));
+                .child("Herdr checks the host over SSH and saves the device. If Herdr is missing or SSH needs your input, setup continues in a local workspace."));
         for (label, field) in ["SSH target", "Label", "Remote session (optional)"]
             .into_iter()
             .zip(&setup.fields)
@@ -457,51 +523,101 @@ impl HerdrWindow {
                     .child(error.clone()),
             );
         }
-        if setup.launched {
-            body = body.child(div().flex_none().text_color(rgb(theme.muted)).child("Continue setup in the terminal. Once saved, the device appears automatically in the device picker."));
+        let status = match &setup.step {
+            Step::Form => None,
+            Step::Checking(request) => Some(format!("Checking Herdr on {}…", request.target())),
+            Step::Saving(request, HostProbe::Stopped) => Some(format!(
+                "Herdr is installed on {} but not running. Starting it…",
+                request.target()
+            )),
+            Step::Saving(request, _) => Some(format!(
+                "Herdr is running on {}. Saving the device…",
+                request.target()
+            )),
+            Step::Saved(request) => Some(format!(
+                "Saved {}. It appears in the device picker.",
+                request.label()
+            )),
+            Step::Confirm(request, offer) => Some(offer.question(request.target())),
+            Step::Opening(..) => Some("Opening a local workspace…".into()),
+        };
+        if let Some(status) = status {
+            body = body.child(
+                div()
+                    .debug_selector(|| "device-setup-status".into())
+                    .flex_none()
+                    .text_color(rgb(theme.muted))
+                    .child(status),
+            );
         }
-        let ready = !setup.launching && !setup.launched;
-        view.child(body).child(
+        let button = |id: &'static str, label: SharedString, enabled: bool| {
             div()
-                .debug_selector(|| "device-setup-footer".into())
-                .flex_none()
-                .p(px(16.))
-                .border_t_1()
-                .border_color(rgb(theme.active))
-                .flex()
-                .justify_end()
-                .gap(px(8.))
+                .id(id)
+                .debug_selector(move || id.into())
+                .p(px(8.))
+                .rounded(px(crate::config::corners::CONTROL))
+                .bg(rgb(theme.active))
+                .when(enabled, |button| {
+                    button.cursor_pointer().hover(|s| {
+                        s.bg(rgb(theme.active).blend(rgba((theme.foreground << 8) | 0x20)))
+                    })
+                })
+                .when(!enabled, |button| button.text_color(rgb(theme.muted)))
+                .child(label)
+        };
+        let mut footer = div()
+            .debug_selector(|| "device-setup-footer".into())
+            .flex_none()
+            .p(px(16.))
+            .border_t_1()
+            .border_color(rgb(theme.active))
+            .flex()
+            .justify_end()
+            .gap(px(8.));
+        footer = match &setup.step {
+            Step::Confirm(_, offer) => footer
                 .child(
-                    div()
-                        .id("device-setup-submit")
-                        .debug_selector(|| "device-setup-submit".into())
-                        .p(px(8.))
-                        .rounded(px(crate::config::corners::CONTROL))
-                        .bg(rgb(self.theme.active))
-                        .when(ready, |button| {
-                            button.cursor_pointer().hover(|s| {
-                                s.bg(rgb(theme.active).blend(rgba((theme.foreground << 8) | 0x20)))
-                            })
-                        })
-                        .when(!ready, |button| button.text_color(rgb(theme.muted)))
-                        .child(if setup.launching {
-                            "Opening terminal…"
-                        } else if setup.launched {
-                            "Setup opened"
-                        } else {
-                            "Add device"
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| this.submit_device_setup(cx))),
+                    button("device-setup-cancel", "Cancel".into(), true).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            if let Some(setup) = &mut this.menu.device_setup {
+                                setup.step = Step::Form;
+                                this.menu.error = None;
+                                cx.notify();
+                            }
+                        },
+                    )),
+                )
+                .child(
+                    button("device-setup-submit", offer.action().into(), true)
+                        .on_click(cx.listener(|this, _, _, cx| this.open_setup_space(cx))),
                 ),
-        )
+            Step::Saved(_) => footer.child(
+                button("device-setup-submit", "Done".into(), true)
+                    .on_click(cx.listener(|this, _, window, cx| this.dismiss_menu(window, cx))),
+            ),
+            step => {
+                let ready = matches!(step, Step::Form);
+                footer.child(
+                    button(
+                        "device-setup-submit",
+                        if ready { "Add device" } else { "Checking…" }.into(),
+                        ready,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.submit_device_setup(cx))),
+                )
+            }
+        };
+        view.child(body).child(footer)
     }
 
     fn submit_device_setup(&mut self, cx: &mut Context<Self>) {
         let Some(form) = &mut self.menu.device_setup else {
             return;
         };
-        if form.launching || form.launched {
-            return;
+        match &form.step {
+            Step::Form => {}
+            Step::Confirm(..) => return self.open_setup_space(cx),
+            _ => return,
         }
         let request = setup::Request::new(
             form.fields[0].read(cx).text(),
@@ -516,23 +632,196 @@ impl HerdrWindow {
                 return;
             }
         };
-        form.launching = true;
+        form.step = Step::Checking(request.clone());
         self.menu.error = None;
         let background = cx
             .background_executor()
-            .spawn(async move { setup::launch(request) });
+            .spawn(async move { request.probe() });
+        form.task = Some(cx.spawn(async move |this, cx| {
+            let result = background.await;
+            let _ = this.update(cx, |this, cx| this.device_probed(result, cx));
+        }));
+        cx.notify();
+    }
+
+    fn device_probed(&mut self, result: crate::Result<HostProbe>, cx: &mut Context<Self>) {
+        let Some(form) = &mut self.menu.device_setup else {
+            return;
+        };
+        let Step::Checking(request) = &form.step else {
+            return;
+        };
+        let request = request.clone();
+        let offer = match result {
+            Ok(probe) => match Offer::for_probe(probe) {
+                None => {
+                    self.save_device(request, probe, cx);
+                    return;
+                }
+                Some(offer) => offer,
+            },
+            Err(error) => {
+                self.menu.error = Some(format!("Check {}: {error}", request.target()));
+                Offer::Terminal
+            }
+        };
+        form.step = Step::Confirm(request, offer);
+        cx.notify();
+    }
+
+    fn save_device(&mut self, request: setup::Request, probe: HostProbe, cx: &mut Context<Self>) {
+        let Some(form) = &mut self.menu.device_setup else {
+            return;
+        };
+        form.step = Step::Saving(request.clone(), probe);
+        let background = cx
+            .background_executor()
+            .spawn(async move { setup::save(&request) });
         form.task = Some(cx.spawn(async move |this, cx| {
             let result = background.await;
             let _ = this.update(cx, |this, cx| {
-                if let Some(form) = &mut this.menu.device_setup {
-                    form.launching = false;
-                    form.launched = result.is_ok();
-                    this.menu.error = result.err().map(|error| error.to_string());
-                    cx.notify();
-                }
+                let Some(form) = &mut this.menu.device_setup else {
+                    return;
+                };
+                let Step::Saving(request, _) = &form.step else {
+                    return;
+                };
+                let request = request.clone();
+                form.step = match result {
+                    Ok(()) => Step::Saved(request),
+                    Err(error) => {
+                        this.menu.error = Some(error.to_string());
+                        Step::Confirm(request, Offer::Terminal)
+                    }
+                };
+                cx.notify();
             });
         }));
         cx.notify();
+    }
+
+    /// Ask the local daemon for a workspace; its root pane runs the setup once
+    /// the daemon answers, in `poll_device_setup`.
+    fn open_setup_space(&mut self, cx: &mut Context<Self>) {
+        let Some(form) = &mut self.menu.device_setup else {
+            return;
+        };
+        let Step::Confirm(request, _) = &form.step else {
+            return;
+        };
+        let request = request.clone();
+        let local = &self.endpoints[0];
+        let result = (|| {
+            let command = setup::terminal_command(&request)?;
+            let boot = local
+                .live
+                .snapshot
+                .as_ref()
+                .filter(|_| local.live.status.is_connected())
+                .map(|snapshot| snapshot.boot_id.clone())
+                .ok_or(crate::Error::NotConnected)?;
+            let id = local.connection.request_dialog(
+                &boot,
+                Method::WorkspaceCreate,
+                serde_json::json!({"focus": true, "label": format!("Set up {}", request.label())}),
+            )?;
+            Ok::<_, crate::Error>(LocalSpace {
+                request: id,
+                boot,
+                command,
+            })
+        })();
+        match result {
+            Ok(space) => {
+                self.menu.error = None;
+                form.step = Step::Opening(request, space);
+            }
+            Err(error) => {
+                self.menu.error = Some(format!("Open a local workspace: {error}"));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Runs the setup command in the workspace the local daemon created, then
+    /// shows it. The command is typed into the pane's shell: the endpoint API
+    /// has no method that starts a command in a pane.
+    pub(crate) fn poll_device_setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Setup {
+            step: Step::Opening(_, space),
+            ..
+        }) = &self.menu.device_setup
+        else {
+            return;
+        };
+        let local = &self.endpoints[0];
+        let fail = |this: &mut Self, error: String, cx: &mut Context<Self>| {
+            if let Some(form) = &mut this.menu.device_setup
+                && let Step::Opening(request, _) = &form.step
+            {
+                form.step = Step::Confirm(request.clone(), Offer::Terminal);
+            }
+            this.menu.error = Some(format!("Open a local workspace: {error}"));
+            cx.notify();
+        };
+        let current = local.live.status.is_connected()
+            && local
+                .live
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.boot_id == space.boot);
+        if !current {
+            return fail(self, crate::Error::StaleConnection.to_string(), cx);
+        }
+        let Some((id, Some(result))) = &local.live.dialog_response else {
+            return;
+        };
+        if id != &space.request {
+            return;
+        }
+        let response = match result {
+            Ok(response) => response,
+            Err(error) => return fail(self, error.to_string(), cx),
+        };
+        if let Some(error) = response.get("error") {
+            let (code, message) = super::endpoint_error(error);
+            return fail(self, format!("{code}: {message}"), cx);
+        }
+        let result = &response["result"];
+        let created = (result["type"] == "workspace_created")
+            .then(|| {
+                Some((
+                    result["workspace"]["workspace_id"].as_str()?,
+                    result["root_pane"]["pane_id"].as_str()?,
+                ))
+            })
+            .flatten()
+            .filter(|(workspace, pane)| !workspace.is_empty() && !pane.is_empty());
+        let Some((workspace, pane)) = created else {
+            return fail(self, "Unexpected daemon response".into(), cx);
+        };
+        let (workspace, pane) = (workspace.to_owned(), pane.to_owned());
+        let sent = local
+            .connection
+            .handle
+            .as_ref()
+            .ok_or(crate::Error::NotConnected)
+            .and_then(|handle| {
+                Ok(handle.send_input(
+                    &space.boot,
+                    &pane,
+                    [
+                        ClientPaneInputEvent::TextCommit(space.command.clone()),
+                        enter(),
+                    ],
+                )?)
+            });
+        if let Err(error) = sent {
+            return fail(self, error.to_string(), cx);
+        }
+        let local = local.id.clone();
+        self.dismiss_menu(window, cx);
+        self.navigate_endpoint(&local, NavigationTarget::Workspace(&workspace), cx);
     }
 
     pub(super) fn devices_key(
@@ -592,5 +881,149 @@ impl HerdrWindow {
         }
         cx.stop_propagation();
         window.prevent_default();
+    }
+}
+
+fn enter() -> ClientPaneInputEvent {
+    ClientPaneInputEvent::Key {
+        code: ClientKeyCode::Enter,
+        modifiers: 0,
+        kind: ClientKeyKind::Press,
+        repeat_count: 1,
+        shifted_codepoint: None,
+        generated_text: None,
+        tracks_release: false,
+        physical_key_id: None,
+        windows_record: None,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::{LocalSpace, Offer, Page, Setup, Step, enter, setup};
+    use crate::{
+        HerdrWindow, NavigationTarget, search_input::SearchInput,
+        sidebar::layout_tests::fixture_window, state::ConnectionStatus,
+    };
+    use gpui::{AppContext, Context};
+    use herdr_client::protocol::{ClientMessage, ClientShellSnapshot};
+    use herdr_client::{HostProbe, protocol::ClientPaneInputEvent};
+    use std::sync::Arc;
+
+    #[test]
+    fn only_a_present_herdr_is_saved_without_a_terminal() {
+        assert_eq!(Offer::for_probe(HostProbe::Running), None);
+        assert_eq!(Offer::for_probe(HostProbe::Stopped), None);
+        assert_eq!(Offer::for_probe(HostProbe::Missing), Some(Offer::Install));
+        assert_eq!(Offer::for_probe(HostProbe::Outdated), Some(Offer::Update));
+        assert_eq!(
+            Offer::for_probe(HostProbe::SshFailed),
+            Some(Offer::Terminal)
+        );
+        assert_eq!(
+            Offer::Install.question("dev@box"),
+            "Herdr was not detected on dev@box. Should we install it?"
+        );
+    }
+
+    fn open_form(view: &mut HerdrWindow, step: Step, cx: &mut Context<HerdrWindow>) {
+        view.menu.device_setup = Some(Setup {
+            fields: std::array::from_fn(|_| cx.new(SearchInput::new)),
+            step,
+            task: None,
+        });
+        view.menu.page = Some(Page::AddDevice);
+    }
+
+    fn step(view: &HerdrWindow) -> &Step {
+        &view.menu.device_setup.as_ref().unwrap().step
+    }
+
+    #[gpui::test]
+    fn install_needs_a_connected_local_daemon(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(fixture_window);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                let request = setup::Request::new("dev@box", "Box", "").unwrap();
+                view.endpoints[0].live.status = ConnectionStatus::Disconnected;
+                open_form(view, Step::Confirm(request, Offer::Install), cx);
+                view.open_setup_space(cx);
+                assert!(matches!(step(view), Step::Confirm(_, Offer::Install)));
+                assert!(
+                    view.menu
+                        .error
+                        .as_deref()
+                        .unwrap()
+                        .starts_with("Open a local workspace:")
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn created_space_runs_setup_in_its_root_pane(cx: &mut gpui::TestAppContext) {
+        let mut peer = crate::window::MockPeer::new();
+        let (view, cx) = cx.add_window_view(fixture_window);
+        let snapshot: ClientShellSnapshot = serde_json::from_str(include_str!(
+            "../../../herdr-protocol/tests/fixtures/endpoint-snapshot-v1.json"
+        ))
+        .unwrap();
+        let boot = snapshot.boot_id.clone();
+        let space = |request: &str| {
+            let request = request.to_owned();
+            let boot = boot.clone();
+            move || LocalSpace {
+                request,
+                boot,
+                command: "'herdr' 'machine' 'add'".into(),
+            }
+        };
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                let local = &mut view.endpoints[0];
+                local.connection.handle = Some(peer.client.handle.clone());
+                local.live.snapshot = Some(Arc::new(snapshot));
+                local.live.status = ConnectionStatus::Connected;
+                let request = setup::Request::new("dev@box", "Box", "").unwrap();
+
+                // A refusal returns to the question with the daemon's reason.
+                open_form(view, Step::Opening(request.clone(), space("create")()), cx);
+                view.endpoints[0].live.dialog_response = Some((
+                    "create".into(),
+                    Some(Ok(serde_json::json!({"error":{"code":"denied","message":"no"}}))),
+                ));
+                view.poll_device_setup(window, cx);
+                assert!(matches!(step(view), Step::Confirm(_, Offer::Terminal)));
+                assert!(view.menu.error.as_deref().unwrap().ends_with("denied: no"));
+
+                // Another dialog's response is not this workspace.
+                let created = serde_json::json!({"result":{"type":"workspace_created","workspace":{"workspace_id":"w9"},"tab":{"tab_id":"t9"},"root_pane":{"pane_id":"w9:p1"}}});
+                open_form(view, Step::Opening(request, space("create")()), cx);
+                view.endpoints[0].live.dialog_response =
+                    Some(("other".into(), Some(Ok(created.clone()))));
+                view.poll_device_setup(window, cx);
+                assert!(matches!(step(view), Step::Opening(..)));
+
+                view.endpoints[0].live.dialog_response =
+                    Some(("create".into(), Some(Ok(created))));
+                view.poll_device_setup(window, cx);
+                assert!(view.menu.page.is_none());
+                assert_eq!(
+                    view.pending_navigation,
+                    Some(NavigationTarget::Workspace("w9".into()))
+                );
+            });
+        });
+        assert_eq!(
+            peer.receive(),
+            ClientMessage::ClientShellPaneInput {
+                pane_id: "w9:p1".into(),
+                events: vec![
+                    ClientPaneInputEvent::TextCommit("'herdr' 'machine' 'add'".into()),
+                    enter(),
+                ],
+            }
+        );
     }
 }

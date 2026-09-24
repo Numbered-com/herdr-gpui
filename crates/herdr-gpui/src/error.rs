@@ -294,9 +294,12 @@ pub enum Error {
     MissingStateRoot,
     #[error("{0}")]
     DeviceSetupInput(&'static str),
-    #[error("Could not open the setup terminal (exit status {0})")]
-    DeviceSetupTerminal(std::process::ExitStatus),
-    #[error("Opening the setup terminal timed out")]
+    #[error("Saving the device failed ({status}){}", if detail.is_empty() { String::new() } else { format!(": {detail}") })]
+    DeviceSetup {
+        status: std::process::ExitStatus,
+        detail: String,
+    },
+    #[error("Saving the device timed out")]
     DeviceSetupTimeout,
     #[error("preferences must be an object")]
     PreferencesNotObject,

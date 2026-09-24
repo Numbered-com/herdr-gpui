@@ -1,7 +1,21 @@
-//! Delegate provisioning to the installed Herdr CLI. Its approval and SSH
-//! prompts require a real terminal; no remote installer policy is duplicated.
+//! Delegate provisioning to the installed Herdr CLI. A host that already runs
+//! a compatible Herdr is saved without a terminal; anything that needs SSH or
+//! installation prompts runs in a local workspace, so no remote installer
+//! policy is duplicated here.
 use crate::{Error, Result};
+use herdr_client::HostProbe;
+use std::{
+    io::Read,
+    process::{Command, Stdio},
+    time::{Duration, Instant},
+};
 
+/// `machine add` connects, starts the remote server, and verifies it.
+const SAVE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Enough for the CLI's final error line without retaining remote output.
+const SAVE_STDERR_LIMIT: u64 = 8 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Request {
     target: String,
     label: String,
@@ -54,6 +68,19 @@ impl Request {
         })
     }
 
+    pub(super) fn target(&self) -> &str {
+        &self.target
+    }
+
+    pub(super) fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// Blocks on SSH: call it from the background executor.
+    pub(super) fn probe(&self) -> Result<HostProbe> {
+        Ok(herdr_client::probe_host(&self.target, &self.session)?)
+    }
+
     fn arguments(&self) -> [&str; 7] {
         [
             "machine",
@@ -67,7 +94,7 @@ impl Request {
     }
 }
 
-// The command is sent to a terminal shell.
+// The command is typed into a terminal shell.
 // Single-quote each argument so labels/SSH aliases never become shell syntax.
 fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
@@ -75,7 +102,7 @@ fn quote(value: &str) -> String {
 
 fn shell_command(executable: &str, request: &Request, environment: &[(String, String)]) -> String {
     let mut args = vec!["env".to_owned()];
-    // A running macOS Terminal does not inherit the GUI's environment. Clear
+    // The daemon's shell does not inherit the GUI's environment. Clear
     // optional overrides before restoring this window's exact catalog roots.
     for name in ["HERDR_CONFIG_PATH", "XDG_STATE_HOME", "XDG_CONFIG_HOME"] {
         args.extend(["-u".into(), name.into()]);
@@ -93,7 +120,73 @@ fn shell_command(executable: &str, request: &Request, environment: &[(String, St
         .join(" ")
 }
 
-pub(super) fn launch(request: Request) -> Result<()> {
+/// Runs `machine add` without a terminal, for a host whose probe found a
+/// compatible Herdr: the CLI starts a stopped server itself. Blocks on SSH, so
+/// call it from the background executor. Stdin is closed, so any approval the
+/// CLI would need fails instead of waiting for input nobody can see.
+pub(super) fn save(request: &Request) -> Result<()> {
+    save_with(crate::daemon::executable(), request)
+}
+
+fn save_with(executable: impl AsRef<std::ffi::OsStr>, request: &Request) -> Result<()> {
+    let mut child = Command::new(executable)
+        .args(request.arguments())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stderr = child.stderr.take().ok_or(Error::DeviceSetupTimeout)?;
+    let reader = std::thread::Builder::new()
+        .name("herdr-device-save".into())
+        .spawn(move || {
+            let mut output = Vec::new();
+            // Keep draining past the limit so a chatty CLI never blocks on a full pipe.
+            let kept = (&mut stderr)
+                .take(SAVE_STDERR_LIMIT)
+                .read_to_end(&mut output);
+            let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+            kept.map(|_| output)
+        })?;
+    let deadline = Instant::now() + SAVE_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error::DeviceSetupTimeout);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let output = reader
+        .join()
+        .map_err(|_| Error::DeviceSetupTimeout)?
+        .unwrap_or_default();
+    if status.success() {
+        return Ok(());
+    }
+    Err(Error::DeviceSetup {
+        status,
+        detail: last_line(&output),
+    })
+}
+
+/// The CLI ends with its most specific error; earlier lines are progress.
+fn last_line(output: &[u8]) -> String {
+    String::from_utf8_lossy(output)
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(300)
+        .collect()
+}
+
+/// The shell command a local workspace runs to set the host up interactively.
+pub(super) fn terminal_command(request: &Request) -> Result<String> {
     if cfg!(windows) {
         return Err(Error::DeviceSetupInput(
             "Saved SSH devices are unavailable on Windows.",
@@ -120,144 +213,7 @@ pub(super) fn launch(request: Request) -> Result<()> {
             ));
         }
     }
-    let command = shell_command(executable, &request, &environment);
-    launch_terminal(&command)
-}
-
-#[cfg(target_os = "macos")]
-fn launch_terminal(command: &str) -> Result<()> {
-    use std::{
-        fs::OpenOptions,
-        io::Write,
-        os::unix::fs::OpenOptionsExt,
-        process::{Command, Stdio},
-        sync::atomic::{AtomicU64, Ordering},
-        time::{Duration, Instant},
-    };
-    struct Script(std::path::PathBuf);
-    impl Drop for Script {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let mut script = None;
-    for _ in 0..64 {
-        let path = std::env::temp_dir().join(format!(
-            "herdr-gpui-device-{}-{}.command",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o700)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                let owned = Script(path);
-                // Opening a .command through Launch Services needs no Apple Events
-                // entitlement or Automation permission. Unlink once the shell owns it.
-                writeln!(
-                    file,
-                    "#!/bin/sh\n/bin/rm -- \"$0\"\n{command}\nstatus=$?\nprintf '\\nHerdr setup exited with status %s.\\n' \"$status\"\nexit \"$status\""
-                )?;
-                script = Some(owned);
-                break;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
-        }
-    }
-    let script = script.ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "Could not create a unique device setup script",
-        )
-    })?;
-    let mut child = Command::new("/usr/bin/open")
-        .args(["-b", "com.apple.Terminal", "--"])
-        .arg(&script.0)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    return Err(Error::DeviceSetupTerminal(status));
-                }
-                // A successful `open` only queues Launch Services. Keep the script
-                // until Terminal actually starts it, with bounded cleanup on failure.
-                while script.0.try_exists()? {
-                    if Instant::now() >= deadline {
-                        return Err(Error::DeviceSetupTimeout);
-                    }
-                    std::thread::sleep(Duration::from_millis(25));
-                }
-                return Ok(());
-            }
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
-            result => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return match result {
-                    Err(error) => Err(error.into()),
-                    _ => Err(Error::DeviceSetupTimeout),
-                };
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn launch_terminal(command: &str) -> Result<()> {
-    use std::process::{Command, Stdio};
-    // Keep the result visible even for emulators that close when the command
-    // exits. This shell only executes our quoted argv, never terminal output.
-    let script =
-        format!("{command}; printf '\\nSetup finished. Press Enter to close.'; read -r reply");
-    for (terminal, separator) in [
-        ("x-terminal-emulator", "-e"),
-        ("gnome-terminal", "--"),
-        ("konsole", "-e"),
-        ("kitty", "--"),
-        ("alacritty", "-e"),
-        ("xterm", "-e"),
-    ] {
-        match Command::new(terminal)
-            .args([separator, "/bin/sh", "-c", &script])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            Ok(mut child) => {
-                // The external terminal owns the interactive setup, and can
-                // outlive this window. Reap only the launcher we created.
-                std::thread::Builder::new()
-                    .name("herdr-device-terminal".into())
-                    .spawn(move || {
-                        let _ = child.wait();
-                    })?;
-                return Ok(());
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Err(Error::DeviceSetupInput(
-        "No supported terminal found. Install x-terminal-emulator, GNOME Terminal, Konsole, Kitty, Alacritty, or xterm.",
-    ))
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn launch_terminal(_: &str) -> Result<()> {
-    Err(Error::DeviceSetupInput(
-        "Remote device setup requires macOS or Linux.",
-    ))
+    Ok(shell_command(executable, request, &environment))
 }
 
 #[cfg(test)]
@@ -293,6 +249,43 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn save_reports_the_cli_failure_without_waiting_for_input() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("herdr-device-save-{}", std::process::id()));
+        std::fs::create_dir_all(&root)?;
+        let binary = root.join("herdr");
+        // Stdin is closed, so a prompt reads EOF instead of blocking.
+        std::fs::write(
+            &binary,
+            "#!/bin/sh\n[ \"$1 $2 $3\" = 'machine add ok' ] && exit 0\nread -r answer\necho 'error: approval required' >&2\nexit 3\n",
+        )?;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))?;
+        save_with(&binary, &Request::new("ok", "Label", "")?)?;
+        let error = save_with(&binary, &Request::new("host", "Label", "")?).err();
+        std::fs::remove_dir_all(&root)?;
+        match error {
+            Some(Error::DeviceSetup { status, detail }) => {
+                assert_eq!(status.code(), Some(3));
+                assert_eq!(detail, "error: approval required");
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn save_failures_keep_only_the_final_diagnostic_line() {
+        assert_eq!(
+            last_line(b"connecting\nerror: remote server is not ready\n\n"),
+            "error: remote server is not ready"
+        );
+        assert_eq!(last_line(b"\x1b[31mbad\x1b[0m"), "[31mbad[0m");
+        assert_eq!(last_line(&[b'x'; 1000]).len(), 300);
+        assert_eq!(last_line(b""), "");
+    }
+
     #[test]
     fn shell_arguments_and_catalog_roots_are_quoted() -> Result<()> {
         let request = Request::new("host", "Alice's $(printf INJECTED); device", "work")?;
@@ -317,7 +310,7 @@ mod tests {
             &request,
             &[("XDG_STATE_HOME".into(), "/state user's".into())],
         );
-        let output = std::process::Command::new("/bin/sh")
+        let output = Command::new("/bin/sh")
             .args(["-c", &format!("set -- {command}; printf '%s\\0' \"$@\"")])
             .output()?;
         assert!(output.status.success());

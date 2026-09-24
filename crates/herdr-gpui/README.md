@@ -128,14 +128,26 @@ to Local. The filter is window-local and starts at All Devices. The adjacent gea
 opens the existing Settings page (also available with `Cmd-,`).
 
 **Add Device…** accepts an SSH target, label, and optional remote session (default:
-`default`). **Add device** runs the installed `herdr machine add` in macOS
-Terminal or an available Linux terminal. Herdr handles SSH prompts, approval to
+`default`). **Add device** first checks the host over non-interactive SSH, using
+the same executable search and compatibility rules as the connection bridge, and
+never installs or starts anything while checking:
+
+- Herdr running, or installed but stopped: the installed `herdr machine add`
+  runs without a terminal and saves the device. It starts a stopped server
+  itself. Any approval it would need fails instead of waiting for input.
+- Herdr missing: the dialog asks "Herdr was not detected on the host. Should we
+  install it?" An outdated Herdr asks to update it instead.
+- SSH needs a prompt (unknown host key, password, passphrase), the check failed,
+  or saving without a terminal failed: the dialog offers to continue in a
+  terminal.
+
+Accepting creates a new workspace on this device's Herdr and types
+`herdr machine add` into its shell. Herdr handles SSH prompts, approval to
 install/update remote software, server startup, and saving the machine only after
-successful setup. Continue any prompts in that terminal; opening it is not proof
-that setup succeeded. The saved device appears automatically on the next catalog
-refresh. Closing the GUI's dialog does not cancel setup in the external terminal.
-No credentials are collected by the GUI. Explicit-socket and development-catalog
-windows do not offer setup, and saved SSH devices remain unsupported on Windows.
+successful setup; complete any prompts in that workspace. The saved device
+appears automatically on the next catalog refresh. No credentials are collected
+by the GUI. Explicit-socket and development-catalog windows do not offer setup,
+and saved SSH devices remain unsupported on Windows.
 
 Switching revokes the old host's focus before releasing its surface, then resizes
 and activates the selected host. Input waits for the activation acknowledgement
