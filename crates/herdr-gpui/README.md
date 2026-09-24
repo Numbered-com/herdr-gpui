@@ -487,8 +487,10 @@ rejected instead of silently losing animation. Invalid, too-large-to-process,
 and unsupported images show an `Image discarded` notification with the reason;
 no fallback local path is pasted for resize failures. Unreadable, empty, or
 nonregular image-file candidates retain the TUI's original path-paste fallback.
-TIFF, HEIC, and SVG are not image-bridge formats but can be dropped as ordinary
-files using SSH file copy.
+Clipboard images published only as TIFF (for example by Preview) are converted
+to lossless PNG in the background, and use the same resize path when that PNG
+is too large. Dropped TIFF, HEIC, and SVG files are not image-bridge formats but
+can be dropped as ordinary files using SSH file copy.
 
 Switching endpoints, reconnecting, or invalidating the target cancels pending
 work. Cancelling an image already partially written closes that client connection
