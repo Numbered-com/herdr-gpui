@@ -81,7 +81,7 @@ pub enum Error {
     ImageEncode(#[source] image::ImageError),
     #[error("Reading the local image timed out (3 seconds).")]
     ImageReadTimeout,
-    #[error("TIFF and SVG clipboard images are not supported. Use PNG, JPEG, GIF, WebP, or BMP.")]
+    #[error("SVG clipboard images are not supported. Use PNG, JPEG, GIF, WebP, BMP, or TIFF.")]
     ImageFormat,
     #[error("Clipboard content exceeds the {limit}-byte limit.")]
     ClipboardSize { limit: usize },

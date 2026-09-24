@@ -411,9 +411,7 @@ fn connected_image_paste_popup_never_reaches_underlying_pane(cx: &mut gpui::Test
 }
 
 #[gpui::test]
-fn connected_image_paste_local_isolation_and_image_only_preserve_text(
-    cx: &mut gpui::TestAppContext,
-) {
+fn connected_image_paste_image_only_preserves_text(cx: &mut gpui::TestAppContext) {
     let (fixture, cx) = cx.add_window_view(|window, cx| {
         Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
     });
@@ -426,9 +424,6 @@ fn connected_image_paste_local_isolation_and_image_only_preserve_text(
             } else {
                 prepare_mouse(view, endpoint);
                 assert!(!view.accepts_remote_images());
-                for image_only in [false, true] {
-                    assert!(!view.paste_terminal_clipboard(clipboard_image(&[42]), image_only, cx));
-                }
             }
             let text = ClipboardItem::new_string("ordinary text".into());
             assert!(!view.paste_terminal_clipboard(text.clone(), true, cx));
@@ -455,6 +450,49 @@ fn connected_image_paste_local_isolation_and_image_only_preserve_text(
             assert!(view.local_error.is_none());
         });
     }
+}
+
+#[gpui::test]
+fn connected_image_paste_local_bridges_clipboard_image_but_not_paths(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
+    });
+    let view = fixture.update(cx, |fixture, _| fixture.0.clone());
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("local image.png");
+    std::fs::write(&path, [1, 2, 3]).unwrap();
+    let text = format!("'{}'", path.display());
+    let (endpoint, mut server) = connected_endpoint("image");
+    view.update(cx, |view, cx| {
+        prepare_mouse(view, endpoint);
+        assert!(view.accepts_clipboard_images());
+        assert!(!view.accepts_remote_images());
+        assert!(view.paste_terminal_clipboard(clipboard_image(&[42]), false, cx));
+        assert_eq!(view.pending_images.len(), 1);
+        // A local pane reads the original file; only remote panes need its bytes.
+        assert!(view.paste_terminal_clipboard(ClipboardItem::new_string(text.clone()), false, cx));
+        assert_eq!(view.pending_images.len(), 1);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        server.receive(),
+        ClientMessage::ClipboardImage {
+            target: ClientClipboardImageTarget::Pane("w1:p1".into()),
+            extension: "png".into(),
+            data: vec![42],
+        }
+    );
+    assert_eq!(
+        server.receive(),
+        ClientMessage::ClientShellPaneInput {
+            pane_id: "w1:p1".into(),
+            events: vec![ClientPaneInputEvent::Paste(text)],
+        }
+    );
+    wait_image_finished(&view, cx);
+    view.read_with(cx, |view, _| assert!(view.local_error.is_none()));
 }
 
 #[gpui::test]
@@ -707,18 +745,19 @@ fn connected_image_paste_key_down_ctrl_v_and_cmd_v(cx: &mut gpui::TestAppContext
                         cx.write_to_clipboard(item.clone());
                         view.key_down(&event, window, cx);
                         assert_eq!(cx.read_from_clipboard(), Some(item));
-                        // Remote clipboard reads reserve FIFO order even for text-only Ctrl-V.
+                        // Remote clipboard reads reserve FIFO order even for text-only
+                        // Ctrl-V. Local Ctrl-V stays a key for agents that read the
+                        // clipboard themselves; local Cmd-V bridges images.
+                        let native_paste = key == "cmd-v" && (image || !cfg!(target_os = "linux"));
                         assert_eq!(
                             view.pending_images.len(),
-                            usize::from(
-                                remote && (image || key == "ctrl-v" || !cfg!(target_os = "linux"))
-                            )
+                            usize::from(native_paste || (remote && key == "ctrl-v"))
                         );
                         view.send(ClientPaneInputEvent::TextCommit("key sentinel".into()), cx);
                     });
                 });
                 cx.run_until_parked();
-                if remote && image {
+                if image && (remote || key == "cmd-v") {
                     assert_eq!(
                         server.receive(),
                         ClientMessage::ClipboardImage {
@@ -766,7 +805,7 @@ fn connected_image_paste_native_text_reservations_preserve_fifo(cx: &mut gpui::T
         prepare_remote_image(view, endpoint);
         for text in ["first paste", "second paste"] {
             cx.write_to_clipboard(ClipboardItem::new_string(text.into()));
-            view.paste_remote_clipboard(false, None, cx);
+            view.paste_native_clipboard(false, None, cx);
         }
         assert_eq!(view.pending_images.len(), 2);
         assert!(view.local_error.is_none());
@@ -823,12 +862,12 @@ fn connected_image_paste_native_text_during_blocked_image_and_second_image_busy(
         assert_eq!(view.pending_images.len(), 1);
         for text in ["first paste", "second paste"] {
             cx.write_to_clipboard(ClipboardItem::new_string(text.into()));
-            view.paste_remote_clipboard(false, None, cx);
+            view.paste_native_clipboard(false, None, cx);
         }
         assert_eq!(view.pending_images.len(), 3);
         assert!(view.local_error.is_none());
         cx.write_to_clipboard(clipboard_image(&[99]));
-        view.paste_remote_clipboard(false, None, cx);
+        view.paste_native_clipboard(false, None, cx);
         assert_eq!(view.pending_images.len(), 4);
         view.send(ClientPaneInputEvent::TextCommit("sentinel".into()), cx);
     });
@@ -891,7 +930,7 @@ fn connected_image_paste_native_preparations_stay_bounded_across_reset(
                     view.live.surface = surface.clone();
                 }
                 cx.write_to_clipboard(ClipboardItem::new_string(format!("paste {index}")));
-                view.paste_remote_clipboard(false, None, cx);
+                view.paste_native_clipboard(false, None, cx);
                 assert_eq!(view.pending_images.len(), index + 1);
             }
             if reset_all {
@@ -903,7 +942,7 @@ fn connected_image_paste_native_preparations_stay_bounded_across_reset(
             // Even cancelled tasks count until their background work returns.
             view.activation_deadline = None;
             cx.write_to_clipboard(ClipboardItem::new_string("overflow".into()));
-            view.paste_remote_clipboard(false, None, cx);
+            view.paste_native_clipboard(false, None, cx);
             assert_eq!(view.pending_images.len(), 4);
             assert_eq!(
                 view.local_error,

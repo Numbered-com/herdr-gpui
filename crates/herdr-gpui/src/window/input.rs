@@ -129,8 +129,8 @@ impl HerdrWindow {
             // GPUI has no text-only Linux clipboard API. Preserve its native
             // ordinary paste (which needs no helper executable); explicit Ctrl-V
             // image acquisition still uses the bounded background reader.
-            if self.accepts_remote_images() && !cfg!(target_os = "linux") {
-                self.paste_remote_clipboard(false, None, cx);
+            if self.accepts_clipboard_images() && !cfg!(target_os = "linux") {
+                self.paste_native_clipboard(false, None, cx);
             } else if let Some(item) = cx.read_from_clipboard() {
                 self.paste_terminal_clipboard(item, false, cx);
             }
@@ -140,9 +140,10 @@ impl HerdrWindow {
             && event.keystroke.modifiers.control
             && !event.keystroke.modifiers.alt
             && !event.keystroke.modifiers.shift
+            // Local agents read the shared clipboard themselves on Ctrl-V.
             && self.accepts_remote_images()
         {
-            self.paste_remote_clipboard(true, key_input(event), cx);
+            self.paste_native_clipboard(true, key_input(event), cx);
             cx.stop_propagation();
             window.prevent_default();
         } else if self.marked.is_empty()
