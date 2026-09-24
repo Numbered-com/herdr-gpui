@@ -14,6 +14,7 @@ mod handle;
 mod limits;
 mod method;
 mod options;
+mod queue;
 mod session;
 mod ssh;
 mod transport;
