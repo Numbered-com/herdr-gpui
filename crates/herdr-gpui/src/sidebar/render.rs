@@ -3,7 +3,7 @@
 //! caches only.
 
 use super::{
-    ARROW_RESERVE, HOST_ARROW_WIDTH, HOST_GAP, SidebarDrag,
+    ARROW_RESERVE, DEVICE_FOOTER_HEIGHT, HOST_ARROW_WIDTH, HOST_GAP, SidebarDrag,
     agents::agent_labels,
     agents_sort, label_text,
     layout::{self, SidebarLayout},
@@ -68,6 +68,9 @@ impl HerdrWindow {
         let mut space_rows = 0usize;
         let mut highlighted = [None; 2];
         for (endpoint_index, endpoint) in self.endpoints.iter().enumerate() {
+            if !self.device_visible(&endpoint.id) {
+                continue;
+            }
             let selected = endpoint_index == self.selected_endpoint;
             let endpoint_id = endpoint.id.clone();
             if multi {
@@ -532,6 +535,7 @@ impl HerdrWindow {
                             .child(agents),
                     )
             })
+            .child(self.render_device_footer(cx))
             .child(
                 div()
                     .id("sidebar-resize")
@@ -583,8 +587,10 @@ impl HerdrWindow {
                                                 ));
                                             }
                                             SidebarDrag::Split => {
-                                                let height =
-                                                    (f32::from(bounds.size.height) - 6.).max(1.);
+                                                let height = (f32::from(bounds.size.height)
+                                                    - 6.
+                                                    - DEVICE_FOOTER_HEIGHT)
+                                                    .max(1.);
                                                 this.sidebar_split = Some(
                                                     ((f32::from(
                                                         event.position.y - bounds.origin.y,

@@ -376,7 +376,7 @@ impl Render for SearchInput {
             .w_full()
             .px_2()
             .py_1()
-            .rounded(px(5.))
+            .rounded(px(crate::config::corners::CONTROL))
             .border_1()
             .border_color(rgb(self.theme.active))
             .bg(rgb(self.theme.background))

@@ -12,7 +12,7 @@ pub(super) fn uncommitted(theme: &crate::config::Theme, size: f32) -> gpui::Div 
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(4.))
+        .rounded(px(crate::config::corners::SMALL))
         .bg(rgba((theme.palette[3] << 8) | 0x30))
         .border_1()
         .border_color(rgba((theme.palette[3] << 8) | 0x90))
@@ -27,6 +27,8 @@ pub(super) fn uncommitted(theme: &crate::config::Theme, size: f32) -> gpui::Div 
 impl AssetSource for Icons {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
         let bytes: &'static [u8] = match path {
+            "icons/devices.svg" => include_bytes!("../../../assets/icons/devices.svg"),
+            "icons/settings.svg" => include_bytes!("../../../assets/icons/settings.svg"),
             "icons/plus.svg" => include_bytes!("../../../assets/icons/plus.svg"),
             "icons/close.svg" => include_bytes!("../../../assets/icons/close.svg"),
             "icons/user.svg" => include_bytes!("../../../assets/icons/user.svg"),
@@ -46,6 +48,8 @@ impl AssetSource for Icons {
 
     fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
         Ok([
+            "icons/devices.svg",
+            "icons/settings.svg",
             "icons/plus.svg",
             "icons/close.svg",
             "icons/user.svg",
@@ -76,6 +80,8 @@ mod tests {
     fn embedded_icons_render_nonempty_masks(cx: &mut TestAppContext) {
         let renderer = cx.update(|cx| cx.svg_renderer());
         for path in [
+            "icons/devices.svg",
+            "icons/settings.svg",
             "icons/plus.svg",
             "icons/close.svg",
             "icons/user.svg",
@@ -104,6 +110,6 @@ mod tests {
             assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == 0));
         }
         assert!(Icons.load("unknown.svg").unwrap().is_none());
-        assert_eq!(Icons.list("icons/").unwrap().len(), 12);
+        assert_eq!(Icons.list("icons/").unwrap().len(), 14);
     }
 }

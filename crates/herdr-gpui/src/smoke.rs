@@ -145,6 +145,9 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                     use crate::sidebar::layout_tests::PaintedProbes;
                     let (w, h) =
                         [(1200., 780.), (640., 400.), (1000., 650.), (800., 600.)][(frame % 12) / 3];
+                    // Retain the glyph fixture's list viewport while reserving
+                    // the fixed device footer below both scrollable sections.
+                    let h = h + sidebar::DEVICE_FOOTER_HEIGHT;
                     use crate::config::LayoutMode;
                     let mode = [LayoutMode::Comfortable, LayoutMode::Normal, LayoutMode::Compact][frame / 12];
                     let compact = mode == LayoutMode::Compact;

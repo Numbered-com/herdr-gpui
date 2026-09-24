@@ -314,7 +314,7 @@ impl HerdrWindow {
             .flex_none()
             .px(px(12.))
             .py(px(7.))
-            .rounded(px(5.))
+            .rounded(px(crate::config::corners::CONTROL))
             .border_1()
             .border_color(if selected {
                 if danger {
@@ -408,7 +408,7 @@ impl HerdrWindow {
                 .child(
                     div()
                         .p(px(16.))
-                        .rounded(px(6.))
+                        .rounded(px(crate::config::corners::CONTROL))
                         .border_1()
                         .border_color(rgb(theme.active))
                         .bg(rgb(theme.background))
@@ -453,7 +453,7 @@ impl HerdrWindow {
                     .debug_selector(|| "github-status".into())
                     .mt(px(16.))
                     .p(px(10.))
-                    .rounded(px(5.))
+                    .rounded(px(crate::config::corners::CONTROL))
                     .bg(rgb(theme.background))
                     .text_color(rgb(if auth.failed {
                         theme.palette[1]
@@ -530,7 +530,7 @@ impl HerdrWindow {
                             .cursor_pointer()
                             .px(px(8.))
                             .py(px(4.))
-                            .rounded(px(4.))
+                            .rounded(px(crate::config::corners::CONTROL))
                             .when(self.menu.github_selected == Some(Action::Close), |style| {
                                 style.bg(rgb(theme.active))
                             })

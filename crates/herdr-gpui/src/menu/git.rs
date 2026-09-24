@@ -344,7 +344,7 @@ impl HerdrWindow {
                     .px(px(8.))
                     .py(px(6.))
                     .mb(px(4.))
-                    .rounded(px(4.))
+                    .rounded(px(crate::config::corners::CONTROL))
                     .font_weight(FontWeight::SEMIBOLD)
                     .cursor_pointer()
                     .hover(|link| link.bg(rgb(theme.active)))
@@ -372,7 +372,7 @@ impl HerdrWindow {
                         div()
                             .px(px(6.))
                             .py(px(2.))
-                            .rounded(px(4.))
+                            .rounded(px(crate::config::corners::CONTROL))
                             .bg(rgb(theme.active))
                             .text_color(rgb(pr.color(theme)))
                             .child(pr.lifecycle()),
@@ -456,7 +456,7 @@ impl HerdrWindow {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .rounded(px(3.))
+                    .rounded(px(crate::config::corners::CONTROL))
                     .when(!running, |item| item.cursor_pointer())
                     .when(running, |item| item.text_color(rgb(theme.muted)))
                     .when(selected && !running, |item| item.bg(rgb(theme.active)))
@@ -558,7 +558,7 @@ impl HerdrWindow {
             .child(
                 div()
                     .debug_selector(|| "git-commit-summary".into())
-                    .rounded(px(4.))
+                    .rounded(px(crate::config::corners::CONTROL))
                     .bg(rgb(theme.active))
                     .px(px(10.))
                     .py(px(6.))
@@ -571,7 +571,7 @@ impl HerdrWindow {
             body = body.child(
                 div()
                     .debug_selector(|| "git-commit-error".into())
-                    .rounded(px(4.))
+                    .rounded(px(crate::config::corners::CONTROL))
                     .bg(rgb(theme.active))
                     .px(px(10.))
                     .py(px(6.))
@@ -585,7 +585,7 @@ impl HerdrWindow {
                 .debug_selector(move || id.into())
                 .px(px(12.))
                 .py(px(6.))
-                .rounded(px(4.))
+                .rounded(px(crate::config::corners::CONTROL))
                 .border_1()
                 .cursor_pointer()
         };

@@ -37,8 +37,9 @@ rules. `--socket` must name the binary **client** socket, not the JSON API socke
 in the single-row status bar and host rows. Endpoints reconnect independently with
 bounded backoff; Terminal > Reconnect retries the selected endpoint immediately,
 without input replay. Detach pauses retries for that endpoint until Reconnect.
-The status dot pulses amber during local daemon startup, is green when connected,
-and red otherwise.
+The status dot pulses amber during local daemon startup and is red when disconnected.
+Healthy connections leave the status bar quiet; connection indicators live in the
+device picker. Startup, disconnection, and operation errors remain in the status bar.
 
 The Rust GitHub updater verifies signed archive manifests and presents a shared
 GPUI panel through **app updates** in the sidebar menu or **Herdr > Check for
@@ -91,7 +92,7 @@ hosts remain visible. Host and repository collapse state is endpoint-scoped, and
 Agents aggregates all connected endpoints with host labels. The catalog is read
 through `herdr-client` every two seconds; changes to targets, sessions, enablement,
 and ordering are reflected without restarting. Catalog errors preserve the last
-valid list. The GUI never edits saved hosts or installs remote software.
+valid list. Saved-host edits and remote provisioning are delegated to Herdr's CLI.
 An explicit `--socket` is isolated: it never loads or connects saved hosts, or
 reads/writes saved selection. Other launches read `client/endpoint-selection.json`
 once, under the same release/dev state root as the catalog. Local remains usable
@@ -104,8 +105,26 @@ catalog selection (normally Local), matching upstream. Live removal/disable
 returns to Local and cancels pending restoration; re-enabling does not steal focus.
 Automatic activation failure returns to Local without overwriting the saved
 preference or repeatedly attempting the same handoff. Write failures are shown
-in the status bar and do not undo the UI choice. Host editing remains in
-`herdr machine`.
+in the status bar and do not undo the UI choice. Rename, remove, enable, and
+disable remain available through `herdr machine`.
+
+The fixed bottom-left device picker offers **All Devices**, **Local**, saved SSH
+devices, and **Add Device…**. All Devices shows Spaces and Agents across hosts
+without changing the active terminal. Choosing a device filters both lists and
+switches the terminal through the existing surface handoff. While filtered,
+navigation to another device follows that device; removal or disable falls back
+to Local. The filter is window-local and starts at All Devices. The adjacent gear
+opens the existing Settings page (also available with `Cmd-,`).
+
+**Add Device…** accepts an SSH target, label, and optional remote session (default:
+`default`). **Add device** runs the installed `herdr machine add` in macOS
+Terminal or an available Linux terminal. Herdr handles SSH prompts, approval to
+install/update remote software, server startup, and saving the machine only after
+successful setup. Continue any prompts in that terminal; opening it is not proof
+that setup succeeded. The saved device appears automatically on the next catalog
+refresh. Closing the GUI's dialog does not cancel setup in the external terminal.
+No credentials are collected by the GUI. Explicit-socket and development-catalog
+windows do not offer setup, and saved SSH devices remain unsupported on Windows.
 
 Switching revokes the old host's focus before releasing its surface, then resizes
 and activates the selected host. Input waits for the activation acknowledgement

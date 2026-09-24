@@ -598,7 +598,7 @@ impl HerdrWindow {
                                 div()
                                     .id("tab-rename-submit")
                                     .p(px(6.))
-                                    .rounded(px(4.))
+                                    .rounded(px(crate::config::corners::CONTROL))
                                     .bg(rgb(theme.active))
                                     .cursor_pointer()
                                     .child(if tab.pending.is_some() {

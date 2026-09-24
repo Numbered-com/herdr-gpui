@@ -705,6 +705,7 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         config_load_revision: 0,
         git: Default::default(),
         sidebar_visible: true,
+        device_filter: None,
         endpoints: vec![crate::endpoint::Endpoint::new(
             crate::endpoint::LOCAL.into(),
             "Local".into(),
@@ -875,9 +876,10 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     assert!(cx.debug_bounds("github-agent-launcher").is_some());
     assert!(cx.debug_bounds("github-sidebar-child").is_none());
     assert!(cx.debug_bounds("github-review").is_none());
-    assert!(spaces.size.height > px(200.));
-    assert!(agents.size.height > px(200.));
-    assert!(agents.bottom() <= sidebar.bottom());
+    let footer = cx.debug_bounds("device-footer").unwrap();
+    assert!(spaces.size.height + footer.size.height / 2. > px(200.));
+    assert!(agents.size.height + footer.size.height / 2. > px(200.));
+    assert!(agents.bottom() <= footer.top());
     let parent = cx.debug_bounds("name-agent-launcher").unwrap();
     for (name, detail) in [
         ("name-sidebar-child", "detail-sidebar-child"),
@@ -1822,7 +1824,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
         cx.update(|window, cx| full_draw(window, cx).clear());
         let status = cx.debug_bounds("connection-status").unwrap();
         let report = cx.debug_bounds("report-issue").unwrap();
-        assert!(report.size.width > px(50.));
+        assert!(report.size.width >= px(33.));
         assert!(report.left() >= status.left());
         assert!(report.right() <= status.right());
         assert!(report.top() >= status.top());
@@ -1874,7 +1876,8 @@ fn the_sidebar_follows_the_selection_without_undoing_manual_scrolling(
     let mut snapshot = cx
         .update(|_, cx| view.update(cx, |view, _| view.live.snapshot.take()))
         .unwrap();
-    cx.simulate_resize(size(px(800.), px(600.)));
+    // Reserve the new footer while retaining this test's original list viewport.
+    cx.simulate_resize(size(px(800.), px(640.)));
     cx.run_until_parked();
     cx.update(|window, cx| full_draw(window, cx).clear());
     // The fixture's grouped worktrees stay contiguous, so w30 is the 31st row.
@@ -2465,6 +2468,220 @@ fn the_sidebar_menu_stays_clear_of_the_window_chrome(cx: &mut gpui::TestAppConte
 }
 
 #[gpui::test]
+fn device_footer_filters_both_lists_and_opens_settings(cx: &mut gpui::TestAppContext) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        crate::bind_keys(cx);
+        let view = cx.new(|cx| fixture_window(window, cx));
+        cx.observe(&view, |_, _, cx| cx.notify()).detach();
+        SidebarFixture(view)
+    });
+    let view = cx.update(|_, cx| fixture.read(cx).0.clone());
+    cx.update(|_, cx| {
+        view.update(cx, |view, _| {
+            let mut remote = crate::endpoint::Endpoint::new(
+                "ssh:fixture".into(),
+                "A very long remote device label that must fit".into(),
+                ConnectTarget::Ssh {
+                    target: "example.invalid".into(),
+                    session: "default".into(),
+                },
+                true,
+            );
+            remote.live.snapshot = view.live.snapshot.clone();
+            view.endpoints.push(remote);
+        })
+    });
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.run_until_parked();
+    cx.update(|window, cx| full_draw(window, cx).clear());
+    assert!(cx.debug_bounds("host-ssh:fixture").is_some());
+    let all_counts = cx.update(|_, cx| {
+        view.read(cx)
+            .sidebar_scroll
+            .each_ref()
+            .map(|scroll| scroll.children_count())
+    });
+    let footer = cx.debug_bounds("device-footer").unwrap();
+    let sidebar = cx.debug_bounds("sidebar").unwrap();
+    assert_eq!(footer.bottom(), sidebar.bottom());
+    let status = cx.debug_bounds("connection-status").unwrap();
+    assert_eq!(sidebar.bottom(), px(600.));
+    assert_eq!(status.bottom(), sidebar.bottom());
+    assert_eq!(status.left(), sidebar.right());
+    assert_eq!(footer.size.height, px(40.));
+    assert!(cx.debug_bounds("agents-scroll").unwrap().bottom() <= footer.top());
+
+    let picker_bounds = cx.debug_bounds("device-picker").unwrap();
+    let picker = picker_bounds.center();
+    for position in [
+        picker_bounds.origin + point(px(2.), px(2.)),
+        point(
+            picker_bounds.right() - px(2.),
+            picker_bounds.bottom() - px(2.),
+        ),
+    ] {
+        cx.simulate_click(position, Modifiers::default());
+        cx.update(|window, cx| full_draw(window, cx).clear());
+        let menu = cx.debug_bounds("menu-panel").unwrap();
+        assert_eq!(menu.size.width, px(280.));
+        assert_eq!(menu.left(), picker_bounds.left());
+        assert_eq!(picker_bounds.top() - menu.bottom(), px(12.));
+        for (row, marker) in [
+            ("device-row-0", "device-check-0"),
+            ("device-row-1", "device-dot-1"),
+        ] {
+            let row = cx.debug_bounds(row).unwrap();
+            let marker = cx.debug_bounds(marker).unwrap();
+            assert!((row.center().y - marker.center().y).abs() <= px(0.5));
+        }
+        cx.simulate_keystrokes("escape");
+        cx.update(|window, cx| full_draw(window, cx).clear());
+    }
+    cx.simulate_click(picker, Modifiers::default());
+    cx.update(|window, cx| full_draw(window, cx).clear());
+    assert!(cx.debug_bounds("menu-panel").unwrap().bottom() <= footer.bottom());
+    // All Devices -> Local. An explicit-socket fixture must not touch the catalog.
+    cx.simulate_keystrokes("down enter");
+    cx.update(|window, cx| {
+        assert_eq!(view.read(cx).device_filter.as_deref(), Some("local"));
+        assert!(!view.read(cx).device_visible("ssh:fixture"));
+        assert!(view.read(cx).focus.is_focused(window));
+        full_draw(window, cx).clear();
+    });
+    cx.update(|_, cx| {
+        let local_counts = view
+            .read(cx)
+            .sidebar_scroll
+            .each_ref()
+            .map(|scroll| scroll.children_count());
+        assert_eq!(local_counts.map(|count| count * 2), all_counts);
+    });
+    cx.simulate_click(picker, Modifiers::default());
+    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.simulate_keystrokes("enter");
+    cx.update(|window, cx| {
+        assert!(view.read(cx).device_filter.is_none());
+        assert_eq!(view.read(cx).selected_endpoint, 0);
+        full_draw(window, cx).clear();
+    });
+    assert!(cx.debug_bounds("host-ssh:fixture").is_some());
+    let settings = cx.debug_bounds("device-settings").unwrap().center();
+    cx.simulate_click(settings, Modifiers::default());
+    cx.update(|_, cx| {
+        assert_eq!(
+            view.read(cx).menu.page,
+            Some(crate::menu::Page::Preferences)
+        )
+    });
+    cx.simulate_keystrokes("escape");
+    // A narrow sidebar retains both controls without spilling into the terminal.
+    cx.update(|window, cx| {
+        view.update(cx, |view, _| view.sidebar_width = Some(140.));
+        full_draw(window, cx).clear();
+    });
+    let footer = cx.debug_bounds("device-footer").unwrap();
+    assert!(cx.debug_bounds("device-settings").unwrap().right() <= footer.right());
+    assert!(
+        cx.debug_bounds("device-picker").unwrap().right()
+            < cx.debug_bounds("device-settings").unwrap().left()
+    );
+}
+
+#[gpui::test]
+fn healthy_connection_status_is_quiet_but_diagnostics_remain(cx: &mut gpui::TestAppContext) {
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut view = fixture_window(window, cx);
+        view.live.status = crate::state::ConnectionStatus::Connected;
+        view
+    });
+    cx.update(|window, cx| full_draw(window, cx).clear());
+    assert!(cx.debug_bounds("connection-message").is_none());
+    assert!(cx.debug_bounds("status-theme").is_some());
+    for status in [
+        crate::state::ConnectionStatus::Connected,
+        crate::state::ConnectionStatus::Disconnected,
+    ] {
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.live.status = status;
+                view.local_error = Some("Local operation failed".into());
+                view.live.error = Some("Connection interrupted".into());
+                cx.notify();
+            });
+            full_draw(window, cx).clear();
+        });
+        assert!(cx.debug_bounds("connection-message").unwrap().size.width > px(0.));
+    }
+}
+
+#[gpui::test]
+fn add_device_form_keeps_input_local_and_validates_before_launch(cx: &mut gpui::TestAppContext) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        crate::bind_keys(cx);
+        let view = cx.new(|cx| fixture_window(window, cx));
+        cx.observe(&view, |_, _, cx| cx.notify()).detach();
+        SidebarFixture(view)
+    });
+    let view = cx.update(|_, cx| fixture.read(cx).0.clone());
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.run_until_parked();
+    cx.update(|window, cx| full_draw(window, cx).clear());
+    let picker = cx.debug_bounds("device-picker").unwrap().center();
+    cx.simulate_click(picker, Modifiers::default());
+    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.simulate_keystrokes("down down enter");
+    cx.update(|_, cx| assert_eq!(view.read(cx).menu.page, Some(crate::menu::Page::Devices)));
+    cx.simulate_keystrokes("escape");
+    if cfg!(windows) {
+        return;
+    }
+    // Enable the form without enabling the fixture's isolated catalog worker.
+    cx.update(|window, cx| {
+        view.update(cx, |view, _| {
+            view.endpoints[0].connection.target = ConnectTarget::Local
+        });
+        full_draw(window, cx).clear();
+    });
+    cx.simulate_click(picker, Modifiers::default());
+    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.simulate_keystrokes("down down enter");
+    cx.update(|window, cx| {
+        assert_eq!(view.read(cx).menu.page, Some(crate::menu::Page::AddDevice));
+        full_draw(window, cx).clear();
+    });
+    for (width, height) in [(320., 300.), (800., 600.)] {
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.update(|window, cx| full_draw(window, cx).clear());
+        let panel = cx.debug_bounds("menu-panel").unwrap();
+        let header = cx.debug_bounds("device-setup-header").unwrap();
+        let close = cx.debug_bounds("device-setup-close").unwrap();
+        let body = cx.debug_bounds("device-setup-body").unwrap();
+        let footer = cx.debug_bounds("device-setup-footer").unwrap();
+        let submit = cx.debug_bounds("device-setup-submit").unwrap();
+        assert!(close.top() >= header.top() && close.bottom() <= header.bottom());
+        assert!(close.center().x > panel.center().x);
+        assert!((body.top() - header.bottom()).abs() <= px(1.));
+        assert!((body.bottom() - footer.top()).abs() <= px(1.));
+        assert!(submit.top() >= footer.top() && submit.bottom() <= footer.bottom());
+        assert!(footer.bottom() <= panel.bottom());
+        assert!(panel.bottom() <= px(height));
+    }
+    cx.simulate_input("-invalid-host");
+    cx.simulate_keystrokes("tab");
+    cx.simulate_input("Test device");
+    cx.simulate_keystrokes("tab enter");
+    cx.update(|_, cx| assert_eq!(view.read(cx).menu.page, Some(crate::menu::Page::AddDevice)));
+    // Native shortcuts cannot escape a device form into the underlying terminal.
+    cx.simulate_keystrokes("cmd-b");
+    cx.update(|_, cx| assert!(view.read(cx).sidebar_visible));
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| {
+        assert!(view.read(cx).menu.page.is_none());
+        assert!(view.read(cx).focus.is_focused(window));
+    });
+}
+
+#[gpui::test]
 fn the_agents_header_toggles_between_grouped_and_priority(cx: &mut gpui::TestAppContext) {
     use crate::preferences::AgentSort;
     let (fixture, cx) = cx.add_window_view(|window, cx| {
@@ -3033,11 +3250,12 @@ fn sidebar_split_drag_clamps_releases_outside_and_resets(cx: &mut gpui::TestAppC
     let sidebar = cx.debug_bounds("sidebar").unwrap();
     let initial_spaces = cx.debug_bounds("spaces-section").unwrap();
     let initial_agents = cx.debug_bounds("agents-section").unwrap();
+    let footer = cx.debug_bounds("device-footer").unwrap();
     assert!((initial_spaces.size.height - initial_agents.size.height).abs() <= px(1.));
 
     for (requested, expected) in [(0.7, 0.7), (0.3, 0.3), (-0.5, 0.1), (1.5, 0.9)] {
         let divider = cx.debug_bounds("sidebar-split-resize").unwrap();
-        let available = sidebar.size.height - divider.size.height;
+        let available = sidebar.size.height - divider.size.height - footer.size.height;
         // Move and release outside the sidebar as well as outside the divider.
         let end = point(
             sidebar.right() + px(100.),
@@ -3059,7 +3277,7 @@ fn sidebar_split_drag_clamps_releases_outside_and_resets(cx: &mut gpui::TestAppC
         assert!((agents.size.height - available * (1. - expected)).abs() <= px(1.));
         assert_eq!(spaces.bottom(), divider.top());
         assert_eq!(divider.bottom(), agents.top());
-        assert_eq!(agents.bottom(), sidebar.bottom());
+        assert_eq!(agents.bottom(), footer.top());
 
         cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         let released = view.read_with(cx, |view, _| {
@@ -3169,6 +3387,7 @@ fn sidebar_split_preserves_independent_scrolling_and_agents_toggle(cx: &mut gpui
             assert_eq!(
                 current_spaces.size.height,
                 cx.debug_bounds("sidebar").unwrap().size.height
+                    - cx.debug_bounds("device-footer").unwrap().size.height
             );
         }
     }

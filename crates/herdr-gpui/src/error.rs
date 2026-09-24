@@ -288,6 +288,12 @@ pub enum Error {
     Client(#[from] herdr_client::Error),
     #[error("neither XDG_STATE_HOME nor HOME is set")]
     MissingStateRoot,
+    #[error("{0}")]
+    DeviceSetupInput(&'static str),
+    #[error("Could not open the setup terminal (exit status {0})")]
+    DeviceSetupTerminal(std::process::ExitStatus),
+    #[error("Opening the setup terminal timed out")]
+    DeviceSetupTimeout,
     #[error("preferences must be an object")]
     PreferencesNotObject,
     #[error("sidebar_width_px must be finite and positive, or null")]

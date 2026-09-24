@@ -200,7 +200,7 @@ impl HerdrWindow {
             .h(px(self.config.ui.line_height() + 10.))
             .px(px(6.))
             .py(px(5.))
-            .rounded(px(4.))
+            .rounded(px(crate::config::corners::CONTROL))
             .bg(rgb(self.theme.active))
             .overflow_hidden()
             .on_mouse_down(

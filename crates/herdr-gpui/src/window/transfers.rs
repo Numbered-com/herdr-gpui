@@ -294,7 +294,7 @@ impl HerdrWindow {
                     .max(px(0.))
                     .min(px(340.)))
                 .occlude()
-                .rounded(px(6.))
+                .rounded(px(crate::config::corners::PANEL))
                 .border_1()
                 .border_color(rgb(accent))
                 .bg(rgb(self.theme.surface))
@@ -315,7 +315,7 @@ impl HerdrWindow {
                         .debug_selector(|| "file-transfer-track".into())
                         .w_full()
                         .h(px(6.))
-                        .rounded(px(3.))
+                        .rounded(px(crate::config::corners::CONTROL))
                         .overflow_hidden()
                         .bg(rgb(self.theme.active))
                         .child(

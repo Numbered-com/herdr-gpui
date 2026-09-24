@@ -414,7 +414,7 @@ fn button(id: &'static str, label: impl Into<SharedString>, theme: &Theme) -> St
         .debug_selector(move || id.into())
         .px_2()
         .py_1()
-        .rounded_sm()
+        .rounded(px(crate::config::corners::CONTROL))
         .bg(rgb(theme.surface))
         .cursor_pointer()
         .hover(move |style| style.bg(rgb(active)))

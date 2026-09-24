@@ -47,7 +47,7 @@ impl HerdrWindow {
                     .gap(px(5.))
                     .px(px(10.))
                     .py(px(5.))
-                    .rounded(px(4.))
+                    .rounded(px(crate::config::corners::CONTROL))
                     .border_1()
                     .border_color(if inert {
                         transparent_black()
