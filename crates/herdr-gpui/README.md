@@ -453,7 +453,7 @@ bridge files, they are not owned or deleted by Herdr on disconnect. Network loss
 can prevent cleanup, and kernel-blocked local filesystem operations cannot be
 forcibly interrupted. A copy stalls out after 30 seconds without progress.
 
-## Remote Images
+## Images
 
 On a selected SSH endpoint, drop one PNG, JPEG, GIF, WebP, or BMP image onto a pane
 or popup to send it through Herdr's existing image bridge. Clipboard images use
@@ -462,7 +462,12 @@ image-paste shortcut). Ctrl-V retains its normal terminal meaning when the
 clipboard has no image. A pasted absolute image-file path is also recognized,
 including the quoted/backslash-escaped paths used by terminal file drops.
 
-The remote daemon writes a temporary file and pastes its remote path into the
+Local endpoints on macOS and Linux use the same bridge for Cmd-V clipboard
+images, because a GUI text paste cannot carry image data. Local drops and pasted
+paths stay ordinary path pastes, and local Ctrl-V is sent to the terminal
+unchanged so agents can read the shared clipboard themselves.
+
+The daemon writes a temporary file and pastes its path into the
 target terminal. OpenCode or another agent can recognize that path as an image;
 the GUI never presses Enter or claims that the agent accepted an attachment.
 Files are connection-owned and Herdr removes them when the client disconnects.
@@ -501,8 +506,8 @@ chunks and a three-second deadline between reads, but an OS-blocked network/FUSE
 filesystem operation cannot be forcibly interrupted. Such a read stays isolated
 from the UI and holds its bounded preparation slot until it returns.
 
-Local terminals retain text/path paste behavior, as in Herdr's remote-only image
-bridge. Windows SSH and image uploads remain unsupported. Native clipboard/drop
+Windows SSH and image uploads, including local clipboard images, remain
+unsupported. Native clipboard/drop
 and real SSH behavior require explicit desktop/host verification in addition to
 the mock-peer and headless tests.
 
