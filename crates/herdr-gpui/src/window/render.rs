@@ -147,11 +147,8 @@ impl Render for HerdrWindow {
         // The highlight is grid coordinates, so it paints with the frame that
         // owns the cells rather than being recomputed from the pointer here.
         let selection = self.selection.clone();
-        self.hovered_terminal_link = self.terminal_link_at(window.mouse_position()).is_some()
-            && (window.modifiers().shift
-                || self
-                    .terminal_mouse_at(window.mouse_position())
-                    .is_none_or(|hit| !hit.mouse_reporting));
+        self.hovered_terminal_link =
+            self.terminal_link_hovered(window.mouse_position(), window.modifiers());
         // Pad the terminal itself: the canvas bounds that painting, hit testing,
         // and IME placement all read then already exclude the gap.
         let sidebar_gap = if self.sidebar_visible {
@@ -168,16 +165,24 @@ impl Render for HerdrWindow {
             })
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                 this.terminal_mouse_hover(event, cx);
-                let hovered = this.terminal_link_at(event.position).is_some()
-                    && (event.modifiers.shift
-                        || this
-                            .terminal_mouse_at(event.position)
-                            .is_none_or(|hit| !hit.mouse_reporting));
+                let hovered = this.terminal_link_hovered(event.position, event.modifiers);
                 if hovered != this.hovered_terminal_link {
                     this.hovered_terminal_link = hovered;
                     cx.notify();
                 }
             }))
+            // Holding the link modifier over a link in a mouse-reporting
+            // application changes what a click does, so the pointer follows.
+            .on_modifiers_changed(
+                cx.listener(|this, event: &ModifiersChangedEvent, window, cx| {
+                    let hovered =
+                        this.terminal_link_hovered(window.mouse_position(), event.modifiers);
+                    if hovered != this.hovered_terminal_link {
+                        this.hovered_terminal_link = hovered;
+                        cx.notify();
+                    }
+                }),
+            )
             .on_click(cx.listener(Self::open_terminal_link))
             .relative()
             .flex_1()
