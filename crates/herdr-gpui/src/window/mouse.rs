@@ -155,10 +155,9 @@ impl HerdrWindow {
         cx: &mut Context<Self>,
     ) -> bool {
         self.cancel_terminal_mouse(cx);
-        let Some(hit) = self
-            .terminal_mouse_at(event.position)
-            .filter(|hit| hit.mouse_reporting && !event.modifiers.shift)
-        else {
+        let Some(hit) = self.terminal_mouse_at(event.position).filter(|hit| {
+            hit.mouse_reporting && !self.link_modifier_held(event.position, event.modifiers)
+        }) else {
             return false;
         };
         self.pressed_terminal_link = None;

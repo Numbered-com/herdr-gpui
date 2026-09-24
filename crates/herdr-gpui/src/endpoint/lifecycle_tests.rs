@@ -435,7 +435,7 @@ fn connected_image_paste_captures_pane_before_immediate_text_and_enter(
     );
     for event in [
         ClientPaneInputEvent::TextCommit("after image".into()),
-        crate::terminal::key_input(&enter).unwrap(),
+        crate::terminal::key_input(&enter, true).unwrap(),
     ] {
         assert_eq!(
             server.receive(),
@@ -844,7 +844,7 @@ fn connected_image_paste_key_down_ctrl_v_and_cmd_v(cx: &mut gpui::TestAppContext
                         ClientMessage::ClientShellPaneInput {
                             pane_id: "w1:p1".into(),
                             events: vec![if key == "ctrl-v" {
-                                crate::terminal::key_input(&event).unwrap()
+                                crate::terminal::key_input(&event, true).unwrap()
                             } else {
                                 ClientPaneInputEvent::Paste("clipboard text".into())
                             }],

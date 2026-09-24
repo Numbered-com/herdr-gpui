@@ -38,6 +38,32 @@ impl HerdrWindow {
         }
     }
 
+    /// Whether the modifiers keep a press here from a mouse-reporting
+    /// application. Shift keeps any gesture local; the platform link modifier
+    /// (cmd on macOS, ctrl elsewhere) claims only a press on a link, so the
+    /// application still receives it everywhere else.
+    pub(crate) fn link_modifier_held(
+        &self,
+        position: gpui::Point<gpui::Pixels>,
+        modifiers: gpui::Modifiers,
+    ) -> bool {
+        modifiers.shift || (modifiers.secondary() && self.terminal_link_at(position).is_some())
+    }
+
+    /// Whether a left click here would open a link, which the pointer shows.
+    pub(crate) fn terminal_link_hovered(
+        &self,
+        position: gpui::Point<gpui::Pixels>,
+        modifiers: gpui::Modifiers,
+    ) -> bool {
+        self.terminal_link_at(position).is_some()
+            && (modifiers.secondary()
+                || modifiers.shift
+                || self
+                    .terminal_mouse_at(position)
+                    .is_none_or(|hit| !hit.mouse_reporting))
+    }
+
     pub(crate) fn terminal_link_at(&self, position: gpui::Point<gpui::Pixels>) -> Option<String> {
         if self.menu.page.is_some()
             || !self.live.surface_ready()
@@ -137,6 +163,10 @@ impl HerdrWindow {
         {
             self.input_probe.keys += 1;
         }
+        let alt_keys = self
+            .config
+            .option_as_alt
+            .sends_alt(cx.keyboard_layout().id());
         if event.keystroke.modifiers.platform && event.keystroke.key == "v" {
             self.paste(cx);
             cx.stop_propagation();
@@ -148,11 +178,11 @@ impl HerdrWindow {
             // Local agents read the shared clipboard themselves on Ctrl-V.
             && self.accepts_remote_images()
         {
-            self.paste_native_clipboard(true, key_input(event), cx);
+            self.paste_native_clipboard(true, key_input(event, alt_keys), cx);
             cx.stop_propagation();
             window.prevent_default();
         } else if self.marked.is_empty()
-            && let Some(input) = key_input(event)
+            && let Some(input) = key_input(event, alt_keys)
         {
             self.send(input, cx);
             cx.stop_propagation();
