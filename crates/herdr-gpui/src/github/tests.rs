@@ -100,10 +100,23 @@ fn only_a_signed_release_build_uses_the_keychain() {
     if !store::FILE {
         assert_eq!(Store::select(&config), Store::Environment);
         assert!(matches!(
-            credentials::store(std::path::Path::new("."), Some(&"token".into()), true),
+            credentials::store(
+                std::path::Path::new("."),
+                c"github-credentials",
+                Some(&"token".into()),
+                true
+            ),
             Err(Error::CredentialUnsupported)
         ));
-        assert!(credentials::store(std::path::Path::new("."), None, false).is_ok());
+        assert!(
+            credentials::store(
+                std::path::Path::new("."),
+                c"github-credentials",
+                None,
+                false
+            )
+            .is_ok()
+        );
     }
 }
 #[test]

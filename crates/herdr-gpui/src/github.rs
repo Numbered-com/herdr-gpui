@@ -15,7 +15,7 @@ pub(crate) use {
     auth::Auth,
     device::{Profile, VERIFY_URL},
     http::graphql,
-    store::{Note, Store},
+    store::{Account, Note, Store},
 };
 
 use crate::Result;

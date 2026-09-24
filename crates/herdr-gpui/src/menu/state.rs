@@ -49,6 +49,9 @@ pub(crate) struct MenuState {
         Option<std::sync::Weak<std::sync::Mutex<crate::state::LiveState>>>,
     pub(super) pr_snapshot: Option<std::sync::Weak<ClientShellSnapshot>>,
     pub(crate) github: crate::github::Auth,
+    /// Saved SSH devices' own accounts, keyed by endpoint ID. A device without
+    /// one signed in looks up pull requests with `github`.
+    pub(crate) github_hosts: std::collections::HashMap<String, crate::github::Auth>,
     pub(super) github_selected: Option<github::Action>,
     pub(super) github_scroll: ScrollHandle,
     pub(super) pr_connection: Option<std::sync::Weak<std::sync::Mutex<crate::state::LiveState>>>,
@@ -196,6 +199,7 @@ impl MenuState {
             pr_cache_connection: None,
             pr_snapshot: None,
             github: Default::default(),
+            github_hosts: Default::default(),
             github_selected: None,
             github_scroll: ScrollHandle::new(),
             pr_connection: None,

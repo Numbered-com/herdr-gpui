@@ -40,6 +40,6 @@ pub use event::ClientEvent;
 pub use handle::{Client, ClientHandle};
 pub use method::Method;
 pub use options::ConnectOptions;
-pub use ssh::{HostProbe, probe_host};
+pub use ssh::{HostProbe, probe_host, remote_origin_url};
 pub use transport::Stream;
 pub use upload::{remove_uploaded_files, upload_files};

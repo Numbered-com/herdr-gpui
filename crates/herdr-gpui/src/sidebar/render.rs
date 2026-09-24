@@ -249,7 +249,13 @@ impl HerdrWindow {
                                 .map_or(RowIcon::Mark, RowIcon::Avatar)
                         },
                         arrow,
-                        workspace_badge(workspace, &self.menu.pr_cache, &self.git, theme),
+                        workspace_badge(
+                            workspace,
+                            (endpoint_index == self.selected_endpoint)
+                                .then_some(&self.menu.pr_cache),
+                            &self.git,
+                            theme,
+                        ),
                         look,
                         (font, theme),
                     )

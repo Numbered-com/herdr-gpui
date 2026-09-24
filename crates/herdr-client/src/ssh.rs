@@ -158,6 +158,45 @@ pub fn probe_host(target: &str, session: &str) -> Result<HostProbe> {
     classify_probe(&output).ok_or(Error::SshClosed)
 }
 
+/// The `remote.origin.url` of a repository on a saved host, read without a
+/// prompt. `git_dir` is the absolute Git directory the daemon reported for the
+/// workspace. `None` when the repository has no origin remote. Blocks for at
+/// most `timeout`: call it from a background thread.
+#[cfg(unix)]
+pub fn remote_origin_url(
+    target: &str,
+    git_dir: &str,
+    timeout: Duration,
+    cancelled: impl Fn() -> bool,
+) -> Result<Option<String>> {
+    validate_target(target)?;
+    if !git_dir.starts_with('/') || git_dir.chars().any(char::is_control) {
+        return Err(Error::InvalidGitDir);
+    }
+    let (status, output) = run_remote(target, &origin_command(git_dir), timeout, cancelled)?;
+    match status.code() {
+        Some(0) => {}
+        // `git config --get` exits 1 when the key is absent.
+        Some(1) => return Ok(None),
+        _ => return Err(Error::RemoteCommand(status)),
+    }
+    let url = String::from_utf8(output).map_err(|_| Error::RemoteOutput)?;
+    let url = url.trim_end_matches(['\r', '\n']);
+    if url.is_empty() || url.len() > 2048 || url.chars().any(char::is_control) {
+        return Err(Error::RemoteOutput);
+    }
+    Ok(Some(url.to_owned()))
+}
+
+#[cfg(unix)]
+fn origin_command(git_dir: &str) -> String {
+    let script = format!(
+        "exec git -c core.fsmonitor=false --git-dir {} config --get remote.origin.url",
+        quote(git_dir)
+    );
+    format!("/bin/sh -c {}", quote(&script))
+}
+
 /// Runs one noninteractive SSH command, keeping at most `PROBE_OUTPUT_LIMIT`
 /// bytes of stdout and never stderr, which can carry banners or secrets.
 #[cfg(unix)]
@@ -209,6 +248,17 @@ fn run_remote(
 pub fn probe_host(target: &str, session: &str) -> Result<HostProbe> {
     validate_target(target)?;
     session_socket(Path::new(""), session)?;
+    Err(Error::SshUnsupported)
+}
+
+#[cfg(windows)]
+pub fn remote_origin_url(
+    target: &str,
+    _git_dir: &str,
+    _timeout: std::time::Duration,
+    _cancelled: impl Fn() -> bool,
+) -> Result<Option<String>> {
+    validate_target(target)?;
     Err(Error::SshUnsupported)
 }
 
@@ -498,6 +548,59 @@ esac
         std::fs::write(root.join("up"), "").unwrap();
         assert_eq!(run(), Some(HostProbe::Running));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn origin_command_reads_only_the_named_repository() {
+        let root =
+            std::env::temp_dir().join(format!("herdr-origin-{}-a ' $(b)", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let git = |args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .arg("-C")
+                    .arg(&root)
+                    .args(args)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        };
+        git(&["init", "-q"]);
+        let git_dir = root.join(".git");
+        let run = || {
+            Command::new("/bin/sh")
+                .args(["-c", &origin_command(git_dir.to_str().unwrap())])
+                .output()
+                .unwrap()
+        };
+        // No origin: `git config --get` exits 1, which callers read as none.
+        assert_eq!(run().status.code(), Some(1));
+        git(&["remote", "add", "origin", "git@github.com:owner/repo.git"]);
+        let output = run();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"git@github.com:owner/repo.git\n");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn origin_lookup_rejects_relative_or_control_git_dirs_before_ssh() {
+        for dir in ["relative/.git", "/repo\n/.git", ""] {
+            assert!(matches!(
+                remote_origin_url("host", dir, Duration::from_secs(1), || false),
+                Err(Error::InvalidGitDir)
+            ));
+        }
+        assert!(matches!(
+            remote_origin_url(
+                "-oProxyCommand=x",
+                "/repo/.git",
+                Duration::from_secs(1),
+                || false
+            ),
+            Err(Error::InvalidSshTarget)
+        ));
     }
 
     #[test]

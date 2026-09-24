@@ -15,8 +15,10 @@ impl HerdrWindow {
             return;
         }
         self.menu.page = Some(Page::GitHub);
-        if connect && !self.menu.github.connected() && !self.menu.github.loading_profile() {
-            self.menu.github.start(&self.config);
+        // A device already covered by the main account opens the page rather
+        // than starting a second sign-in for itself.
+        if connect && self.pr_profile().is_none() && !self.github_auth().loading_profile() {
+            self.start_github();
         }
         cx.notify();
     }
@@ -205,12 +207,7 @@ impl HerdrWindow {
     }
 
     pub(super) fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let image = self
-            .menu
-            .github
-            .profile
-            .as_ref()
-            .and_then(|p| p.avatar.clone());
+        let image = self.pr_profile().and_then(|p| p.avatar.clone());
         render(self.theme.surface)
             .children(self.render_git_button(cx))
             .child(

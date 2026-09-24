@@ -754,8 +754,8 @@ Windows setup) nothing is saved and the window says so.
   is the last selectable menu action: click it or use arrows and Enter to open the
    validated URL. Cache-only menu opening shows prefetched results immediately,
    or loading for an initial miss; no separate Open/Refresh controls or O/R shortcuts.
-   One background Git/native HTTPS GraphQL worker refreshes eligible Local workspace
-   metadata every 90 seconds, with a 128-entry LRU cache, 128 queued jobs, and
+   One background Git/native HTTPS GraphQL worker refreshes the selected device's
+   eligible workspace metadata every 90 seconds, with a 128-entry LRU cache, 128 queued jobs, and
    alternating open/focused priority and round-robin scheduling. Failed refreshes
    retain successful data. Ordinary failures back off five minutes; auth/rate-limit
    errors pause the account for an hour by default, honoring numeric retry/reset
@@ -766,9 +766,27 @@ Windows setup) nothing is saved and the window says so.
   On macOS, all socket modes (including explicit/inherited sockets) require a
   same-user kernel peer at the standard configured session socket, with owned,
   non-group/world-writable socket and parent. Executable upgrades/removal do not
-  invalidate this local endpoint trust. SSH and sockets elsewhere remain blocked;
-  a same-user proxy deliberately replacing the trusted socket is not detectable.
-  Reconnect rechecks the endpoint. See
+  invalidate this local endpoint trust. Sockets elsewhere remain blocked; a
+  same-user proxy deliberately replacing the trusted socket is not detectable.
+  Reconnect rechecks the endpoint.
+  On a saved SSH device, the checkout lives on that host, so local Git cannot
+  verify it. The worker instead reads the repository's `remote.origin.url` over
+  the same noninteractive SSH options as the bridge (`BatchMode=yes`, strict host
+  keys, no master connection), keeping stdout bounded and discarding stderr.
+  Each resolved repository is reused for ten minutes, so refreshes do not dial the
+  host each time. The daemon-reported branch is trusted as-is. Sidebar PR badges
+  show only on the selected device's rows, because the cache holds that device's
+  lookups and the same path and branch may exist on another host.
+- Each saved SSH device can have its own GitHub account, for hosts whose
+  repositories another account owns. Select the device, open the GitHub panel,
+  and choose **Use another account** to run the same device sign-in for that
+  device only. It is stored with the main account's mechanism (the app's Keychain
+  service under a per-device account name, or its own private
+  `github-credentials-<device-id>` file) and renewed the same way. Pull requests on
+  that device then use it; a device without one uses the main account. Signing
+  out in that panel removes only the device's credential. `GH_TOKEN` /
+  `GITHUB_TOKEN` apply only to the main account. Removing a device keeps its
+  saved credential until you sign out of it, so re-adding the device finds it. See
   [PR lookup scope and limits](../../README.md) for authentication and remote limits.
    The same worktree-registry path supports both current and older daemons without
     `workspace.get`. No Git or HTTP requests run from menu-open or render paths.

@@ -46,7 +46,7 @@ pub enum Error {
     #[error("Audio playback cancelled")]
     SoundCancelled,
     #[error(
-        "PR lookup requires your owned local session socket. Select Local using its standard socket; SSH and other socket locations are unsupported."
+        "PR lookup requires your owned local session socket or a saved SSH device. Other socket locations are unsupported."
     )]
     PrUntrustedEndpoint,
     #[error("The selected pane is no longer on screen.")]

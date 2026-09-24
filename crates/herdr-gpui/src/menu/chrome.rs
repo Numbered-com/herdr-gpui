@@ -503,7 +503,7 @@ impl HerdrWindow {
                         })),
                 );
             }
-            if self.menu.github.connected() {
+            if self.pr_profile().is_some() {
                 panel = panel.child(self.render_workspace_pr(
                     (px(340.).min((viewport.width - px(24.)).max(px(0.))) - px(30.)).max(px(0.)),
                     cx,
