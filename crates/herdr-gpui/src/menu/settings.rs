@@ -122,11 +122,6 @@ impl HerdrWindow {
                         if config.keybindings != this.config.keybindings {
                             crate::actions::rebind_keys(cx);
                         }
-                        if this.avatars.is_some() && this.menu.github.initialize(&config) {
-                            this.menu.pr_cache.clear();
-                            this.menu.pr.clear();
-                            this.menu.pr_connection = None;
-                        }
                         if !this.config.notifications.enabled && config.notifications.enabled {
                             let cutoff = std::time::Instant::now();
                             for endpoint in &mut this.endpoints {
@@ -147,7 +142,18 @@ impl HerdrWindow {
                         this.last_queued_options = None;
                         this.local_error = None;
                     }
-                    Err(error) => this.local_error = Some(format!("Load GUI config: {error}")),
+                    Err(error) => {
+                        tracing::warn!(%error, "Could not load GUI config; keeping current settings");
+                        this.local_error = Some(format!("Load GUI config: {error}"));
+                    }
+                }
+                // A config another build wrote, such as a setting this version
+                // does not know, must not sign GitHub out: restore the saved
+                // credential under the settings already in effect.
+                if this.avatars.is_some() && this.menu.github.initialize(&this.config) {
+                    this.menu.pr_cache.clear();
+                    this.menu.pr.clear();
+                    this.menu.pr_connection = None;
                 }
                 cx.notify();
             });
@@ -634,6 +640,26 @@ mod tests {
                 });
             }
         }
+    }
+
+    #[gpui::test]
+    fn failed_config_load_still_restores_the_saved_github_sign_in(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        view.update(cx, |view, cx| {
+            view.avatars = Some(crate::avatars::Avatars::new());
+            view.load_gui_config_with(|| Err(crate::Error::MissingHome), cx);
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert!(view.local_error.is_some());
+            // The restore is queued under the settings already in effect; the
+            // next poll reads the saved credential off the UI thread.
+            assert!(view.menu.github.loading_profile());
+            assert_eq!(
+                view.menu.github.store(),
+                crate::github::Store::select(&view.config)
+            );
+        });
     }
 
     #[gpui::test]
