@@ -36,12 +36,12 @@ pub(crate) fn github_mark(color: u32) -> Svg {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum RowKind {
     Workspace,
-    Agent,
+    Agent(crate::icons::AgentIcon),
 }
 
 /// Name color, name weight, and detail color for a row.
 pub(super) fn row_text(kind: RowKind, focused: bool, theme: &Theme) -> (u32, FontWeight, u32) {
-    let weight = if focused || kind == RowKind::Agent {
+    let weight = if focused || matches!(kind, RowKind::Agent(_)) {
         FontWeight::BOLD
     } else {
         FontWeight::NORMAL
@@ -259,7 +259,7 @@ pub(super) fn row(
     let padding = layout.padding();
     let gap = layout.gap();
     let vertical_padding = layout.row_padding();
-    let show_detail = kind == RowKind::Agent
+    let show_detail = matches!(kind, RowKind::Agent(_))
         || if tree == RowTree::None {
             layout.workspace_details()
         } else {
@@ -291,6 +291,17 @@ pub(super) fn row(
         0.
     };
     let label_width = (available - pr_reserve).max(0.);
+    let agent_icon = match kind {
+        RowKind::Agent(icon) => Some(icon),
+        RowKind::Workspace => None,
+    };
+    // An orphan's name is on the first line; normal rows name the agent below
+    // its location. Reserve the same fixed icon + gap on whichever line owns it.
+    let agent_first = agent_icon.filter(|_| detail.is_empty());
+    let agent_detail = agent_icon.filter(|_| !detail.is_empty());
+    let agent_size = line_height(font).min(12.);
+    let agent_reserve = agent_size + 4.;
+    let name_reserve = icon_reserve + agent_first.map_or(0., |_| agent_reserve);
     div()
         .debug_selector(|| format!("row-{key}"))
         .h(px(
@@ -379,6 +390,9 @@ pub(super) fn row(
                         .relative()
                         .w(px(label_width))
                         .h(px(line_height(font)))
+                        .when_some(agent_first, |line, icon| {
+                            line.child(agent_mark(key, icon, agent_size, name_color, font))
+                        })
                         .when(!matches!(workspace_icon, RowIcon::None), |title| {
                             title.child(
                                 div()
@@ -408,21 +422,37 @@ pub(super) fn row(
                             name_line(
                                 name,
                                 (name_color, weight, theme.muted),
-                                (label_width - icon_reserve).max(0.),
+                                (label_width - name_reserve).max(0.),
                                 font,
                             )
                             .debug_selector(|| format!("name-{key}"))
-                            .ml(px(icon_reserve)),
+                            .ml(px(name_reserve.min(label_width))),
                         ),
                 )
                 .when(show_detail, |column| {
                     column.child(
                         div()
-                            .debug_selector(|| format!("detail-{key}"))
+                            .relative()
                             .w(px(label_width))
-                            .truncate()
-                            .text_color(rgb(detail_color))
-                            .child(label_text(detail)),
+                            .h(px(line_height(font)))
+                            .when_some(agent_detail, |line, icon| {
+                                line.child(agent_mark(key, icon, agent_size, detail_color, font))
+                            })
+                            .child(
+                                div()
+                                    .debug_selector(|| format!("detail-{key}"))
+                                    .ml(px(if agent_detail.is_some() {
+                                        agent_reserve.min(label_width)
+                                    } else {
+                                        0.
+                                    }))
+                                    .w(px((label_width
+                                        - agent_detail.map_or(0., |_| agent_reserve))
+                                    .max(0.)))
+                                    .truncate()
+                                    .text_color(rgb(detail_color))
+                                    .child(label_text(detail)),
+                            ),
                     )
                 }),
         )
@@ -503,6 +533,22 @@ pub(super) fn row(
                     }),
             )
         })
+}
+
+fn agent_mark(
+    key: &str,
+    icon: crate::icons::AgentIcon,
+    size: f32,
+    color: u32,
+    font: &FontConfig,
+) -> Div {
+    div()
+        .debug_selector(|| format!("agent-icon-{key}"))
+        .absolute()
+        .left_0()
+        .top(px((line_height(font) - size) / 2.))
+        .size(px(size))
+        .child(svg().path(icon.path()).size_full().text_color(rgb(color)))
 }
 
 #[cfg(not(any(test, feature = "integration-test")))]

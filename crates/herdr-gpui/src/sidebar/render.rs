@@ -360,7 +360,9 @@ impl HerdrWindow {
                         &format!("agent-{id}"),
                         &name,
                         detail,
-                        RowKind::Agent,
+                        RowKind::Agent(crate::icons::AgentIcon::from_identity(
+                            agent.agent.as_deref(),
+                        )),
                         agent.agent_status,
                         false,
                         selected && agent.focused,
