@@ -60,5 +60,6 @@ tracing-subscriber   = { default-features = false, features = ["registry", "std"
 unicode-segmentation = "1"
 unicode-width        = "0.2.2"
 ureq                 = "3"
+uuid                 = { features = ["serde"], version = "1" }
 windows-sys          = { features = ["Win32_Foundation", "Win32_System_Pipes"], version = "0.61.2" }
 zeroize              = "=1.9.0"

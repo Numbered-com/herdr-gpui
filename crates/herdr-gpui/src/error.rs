@@ -19,6 +19,8 @@ fn daemon_error_message(error: &serde_json::Value) -> &str {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("Invalid saved window geometry or too many saved windows")]
+    InvalidWindowState,
     #[error("ui.toast.delay_seconds must be between 0 and 3600")]
     SoundDelay,
     #[error("Sound configuration exceeds 1 MiB")]
