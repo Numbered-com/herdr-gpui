@@ -18,6 +18,7 @@ pub enum Command {
     NextPane,
     PreviousPane,
     Zoom,
+    ClearPane,
     ClosePane,
     CloseTab,
     TabNumber(u8),
@@ -148,6 +149,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         name: "toggle_zoom",
         label: "Toggle Pane Zoom",
         shortcuts: &["cmd-shift-enter"],
+    },
+    CommandInfo {
+        command: Command::ClearPane,
+        name: "clear_pane",
+        label: "Clear Pane",
+        shortcuts: &["cmd-k"],
     },
     CommandInfo {
         command: Command::ClosePane,
@@ -376,6 +383,7 @@ pub fn request(command: Command, snapshot: &ClientShellSnapshot) -> Option<(Meth
             Method::PaneZoom,
             json!({"pane_id": pane?.pane_id, "mode": "toggle"}),
         ),
+        Command::ClearPane => (Method::PaneClear, json!({"pane_id": pane?.pane_id})),
         Command::ClosePane => (Method::PaneClose, json!({"pane_id": pane?.pane_id})),
         Command::CloseTab => (Method::TabClose, json!({"tab_id": tab?.tab_id})),
         Command::TabNumber(number) => {
@@ -419,7 +427,7 @@ mod tests {
     #[test]
     fn catalog_has_all_native_commands_and_gpui_shortcuts() {
         use Command::*;
-        let expected: [(Command, &[&str]); 40] = [
+        let expected: [(Command, &[&str]); 41] = [
             (OpenNotificationTarget, &["cmd-alt-n"]),
             (Logs, &[]),
             (NewWindow, &["cmd-alt-shift-n"]),
@@ -437,6 +445,7 @@ mod tests {
             (NextPane, &["cmd-alt-]"]),
             (PreviousPane, &["cmd-alt-["]),
             (Zoom, &["cmd-shift-enter"]),
+            (ClearPane, &["cmd-k"]),
             (ClosePane, &["cmd-w"]),
             (CloseTab, &["cmd-shift-w"]),
             (TabNumber(1), &["cmd-1"]),
@@ -551,6 +560,10 @@ mod tests {
             ))
         );
         assert_eq!(
+            request(Command::ClearPane, &s),
+            Some((Method::PaneClear, json!({"pane_id": s.focused_pane_id})))
+        );
+        assert_eq!(
             request(Command::ClosePane, &s),
             Some((Method::PaneClose, json!({"pane_id": s.focused_pane_id})))
         );
@@ -587,6 +600,7 @@ mod tests {
                 Command::NextPane,
                 Command::PreviousPane,
                 Command::Zoom,
+                Command::ClearPane,
                 Command::ClosePane,
                 Command::SplitRight,
                 Command::SplitDown,

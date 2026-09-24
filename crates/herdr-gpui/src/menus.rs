@@ -147,6 +147,12 @@ pub(crate) fn menus() -> Vec<Menu> {
                     },
                 ),
                 MenuItem::action(
+                    "Clear Pane",
+                    RunCommand {
+                        command: Command::ClearPane,
+                    },
+                ),
+                MenuItem::action(
                     "Open Notification Target",
                     RunCommand {
                         command: Command::OpenNotificationTarget,

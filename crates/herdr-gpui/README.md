@@ -779,7 +779,10 @@ Windows setup) nothing is saved and the window says so.
 - Cmd-1 through Cmd-9 focuses the corresponding numbered tab in the current
   workspace. Cmd-Alt-Left/Right/Up/Down focuses a pane in that direction;
   Cmd-Alt-] / Cmd-Alt-[ cycles next/previous pane within the current tab.
-  Cmd-Shift-Enter toggles focused pane zoom.
+  Cmd-Shift-Enter toggles focused pane zoom. Cmd-K clears the focused pane's
+  screen and scrollback through the daemon's `pane.clear`, without sending input
+  to the running program; daemons that do not advertise it (Herdr 0.9.1 and
+  older) leave it out of the palette and report why instead.
 - Cmd-W closes the focused pane and Cmd-Shift-W closes the focused tab only after
   a confirmation dialog (tab confirmation can be disabled with
   `confirm_close_tab = false`). **Cancel is selected by default**: Enter alone cancels;

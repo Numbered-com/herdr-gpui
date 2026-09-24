@@ -176,6 +176,9 @@ impl HerdrWindow {
                 COMMANDS
                     .iter()
                     .filter(|info| info.command != Command::Palette)
+                    .filter(|info| {
+                        info.command != Command::ClearPane || self.live.supports_pane_clear
+                    })
                     .map(|info| Entry {
                         label: info.label.into(),
                         detail: self.config.keybindings.primary(info.command).into(),
@@ -596,6 +599,42 @@ mod tests {
             });
             cx.update(|window, cx| view.update(cx, |view, cx| view.dismiss_menu(window, cx)));
         }
+    }
+
+    #[gpui::test]
+    fn clear_pane_is_offered_and_sent_only_when_the_daemon_advertises_it(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        for supported in [false, true] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.live.supports_pane_clear = supported;
+                    view.open_palette(false, window, cx);
+                    let offered = view
+                        .menu
+                        .palette
+                        .as_ref()
+                        .unwrap()
+                        .entries
+                        .iter()
+                        .any(|entry| matches!(entry.action, Action::Native(Command::ClearPane)));
+                    assert_eq!(offered, supported);
+                    view.dismiss_menu(window, cx);
+                })
+            });
+        }
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.live.supports_pane_clear = false;
+                view.local_error = None;
+                view.command(Command::ClearPane, window, cx);
+                assert!(
+                    view.local_error
+                        .as_deref()
+                        .is_some_and(|error| error.contains("newer Herdr"))
+                );
+                assert!(view.activation_deadline.is_none(), "nothing was sent");
+            })
+        });
     }
 
     #[test]
