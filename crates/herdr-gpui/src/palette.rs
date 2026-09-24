@@ -203,7 +203,7 @@ fn go_to_entries(
                     .map(move |pane| (*tab, pane))
             })
             .collect();
-        for (index, (tab, pane)) in panes.iter().enumerate() {
+        for (tab, pane) in &panes {
             let agent = snapshot
                 .agents
                 .iter()
@@ -226,13 +226,8 @@ fn go_to_entries(
                 .filter(|text| !text.is_empty())
                 .collect::<Vec<_>>()
                 .join("  ");
-            let connector = if index + 1 == panes.len() {
-                "\u{2514}"
-            } else {
-                "\u{251c}"
-            };
             entries.push(Entry {
-                label: format!("{connector} {name}"),
+                label: name.to_owned(),
                 detail,
                 badge: agent.map_or("", |agent| status_badge(agent.agent_status)),
                 action: go(NavigationTarget::Pane(pane.pane_id.clone())),
@@ -654,6 +649,16 @@ impl HerdrWindow {
                                                 .min_w_0()
                                                 .flex()
                                                 .flex_col()
+                                                .when(
+                                                    matches!(
+                                                        &entry.action,
+                                                        Action::Go {
+                                                            target: NavigationTarget::Pane(_),
+                                                            ..
+                                                        }
+                                                    ),
+                                                    |column| column.pl(px(16.)),
+                                                )
                                                 .child(div().truncate().child(entry.label))
                                                 .child(
                                                     div()
@@ -991,13 +996,13 @@ mod tests {
                     NavigationTarget::Workspace("w1".into())
                 ),
                 (
-                    "\u{251c} Claude",
+                    "Claude",
                     "main  /repo",
                     "blocked",
                     NavigationTarget::Pane("w1:p1".into())
                 ),
                 (
-                    "\u{2514} Terminal",
+                    "Terminal",
                     "logs  /repo/logs",
                     "",
                     NavigationTarget::Pane("w1:p2".into())
@@ -1027,7 +1032,7 @@ mod tests {
                 )
             })
             .map(|entry| entry.label.as_str());
-        assert_eq!(matching.next(), Some("\u{2514} Claude"));
+        assert_eq!(matching.next(), Some("Claude"));
         assert_eq!(matching.next(), None);
     }
 
