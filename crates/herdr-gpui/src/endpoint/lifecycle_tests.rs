@@ -367,6 +367,11 @@ fn text_paste_survives_a_settled_navigation(cx: &mut gpui::TestAppContext) {
         }
     );
     wait_image_finished(&view, cx);
+    // Linux sends Cmd-V text synchronously from GPUI's clipboard, so there is
+    // no background read for a navigation to overtake.
+    if cfg!(target_os = "linux") {
+        return;
+    }
 
     // A navigation starting while the clipboard is read cancels that paste.
     cx.update(|window, cx| {
