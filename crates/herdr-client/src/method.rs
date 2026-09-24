@@ -12,6 +12,7 @@
 pub enum Method {
     ClientShellSurfaceSet,
     CommandInvoke,
+    LayoutSetSplitRatio,
     PaneClear,
     PaneClose,
     PaneFocus,
@@ -41,6 +42,7 @@ impl Method {
         match self {
             Self::ClientShellSurfaceSet => "client_shell.surface.set",
             Self::CommandInvoke => "command.invoke",
+            Self::LayoutSetSplitRatio => "layout.set_split_ratio",
             Self::PaneClear => "pane.clear",
             Self::PaneClose => "pane.close",
             Self::PaneFocus => "pane.focus",
@@ -97,5 +99,13 @@ mod tests {
         assert!(Method::PaneClear.advertised_in(&["pane.close".into(), "pane.clear".into()]));
         // Advertisement is an exact match: a method sharing the prefix is not clearing.
         assert!(!Method::PaneClear.advertised_in(&["pane.clear_agent_authority".into()]));
+    }
+
+    #[test]
+    fn split_ratio_wire_name() {
+        assert_eq!(
+            Method::LayoutSetSplitRatio.as_str(),
+            "layout.set_split_ratio"
+        );
     }
 }
