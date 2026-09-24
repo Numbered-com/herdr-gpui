@@ -71,3 +71,17 @@ original generic silhouette for the future account placeholder, not a personal
 identity or GitHub logo. All of them are embedded through a
 minimal GPUI asset source. GPUI renders them as SVG masks tinted with the current
 theme foreground, rather than fixed-color cached images.
+
+## Sidebar agent marks
+
+`agent-{opencode,claude,codex,gemini,cursor,copilot}.svg` use Lobe Icons' monochrome
+brand paths (Codex uses the OpenAI mark). Source attribution and the full MIT
+license are included in the root [NOTICE](../../NOTICE), shipped with releases.
+`agent-generic.svg` is original terminal artwork under this project's Apache-2.0
+license. All are embedded SVG masks, tinted with the adjacent name's theme color.
+
+Mapping follows Herdr's `src/detect/mod.rs` canonical `agent_label` identifiers,
+not editable display labels. The other inspected kinds (`pi`, `devin`, `agy`,
+`cline`, `omp`, `mastracode`, `kimi`, `kiro`, `droid`, `amp`, `grok`,
+`hermes`, `kilo`, `qodercli`, `qwen`, `letta`, `maki`, `muse`) currently use the
+generic mark, as do unknown, empty, and missing identities.

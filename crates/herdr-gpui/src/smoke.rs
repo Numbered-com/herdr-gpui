@@ -199,7 +199,14 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                             LayoutMode::Normal => 10.,
                             LayoutMode::Compact => 16.,
                         };
-                        let expected_width = px(sidebar::LABEL_WIDTH + extra_width - if title_icon { sidebar::ICON_RESERVE } else { 0. });
+                        let icon_reserve = if title_icon {
+                            sidebar::ICON_RESERVE
+                        } else if matches!(input, "Claude Code" | "agent") {
+                            16. // 12px agent mark and 4px gap before its name.
+                        } else {
+                            0.
+                        };
+                        let expected_width = px(sidebar::LABEL_WIDTH + extra_width - icon_reserve);
                         if p.glyph_text != p.cached
                             || (expected_short && p.glyph_text != input)
                             || (!expected_short
@@ -802,28 +809,28 @@ async fn sidebar_hosts(handle: WindowHandle<HerdrWindow>, cx: &mut AsyncApp) -> 
             800.,
             Some(400.),
             284.,
-            359.,
+            343.,
             "Synthetic host",
             "agent-1-with-a",
         ),
-        (360., None, 77., 79., "Synthetic", "agent-1"),
+        (360., None, 77., 63., "Synthetic", "agent-1"),
         (
             800.,
             Some(160.),
             117.,
-            119.,
+            103.,
             "Synthetic host",
-            "agent-1-with-a",
+            "agent-1-with-",
         ),
         (
             800.,
             Some(480.),
             364.,
-            439.,
+            423.,
             REMOTE,
             "agent-1-with-a-deliberately-long-label",
         ),
-        (480., None, 116., 191., "Synthetic host", "agent-1-with-a"),
+        (480., None, 116., 175., "Synthetic host", "agent-1-with-a"),
     ] {
         handle
             .update(cx, |view, window, cx| {

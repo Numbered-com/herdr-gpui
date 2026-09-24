@@ -237,6 +237,12 @@ Normal and Compact show PR numbers without change counts. Status indicators, tre
 guides, and agent-name lines remain visible in every mode; font sizes and terminal
 spacing are unchanged. Saved edits apply automatically; there is no UI toggle yet.
 
+Agent names have small theme-tinted icons for OpenCode, Claude Code, Codex
+(OpenAI), Gemini, Cursor, and GitHub Copilot, selected from the daemon's agent identity. Other
+or missing identities use a generic terminal icon, regardless of custom names.
+Icons sit immediately before the name, including orphan agents whose name is
+on the first line, and reserve space before long names are truncated.
+
 To customize spacing too, use a `[layout]` table **instead of** the top-level
 string. Existing spacing-only tables remain supported and use normal mode:
 

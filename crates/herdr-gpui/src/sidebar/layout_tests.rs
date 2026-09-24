@@ -483,6 +483,78 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+fn agent_icons_follow_names_and_reserve_narrow_label_width(cx: &mut gpui::TestAppContext) {
+    use crate::config::LayoutMode;
+    let label = "Custom agent name with a deliberately long label";
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut view = fixture_window(window, cx);
+        let mut snapshot = snapshot(6);
+        for agent in &mut snapshot.agents {
+            agent.display_agent = Some(label.into());
+        }
+        snapshot.agents[1].workspace_id = "missing-workspace".into();
+        view.live.snapshot = Some(Arc::new(snapshot));
+        view
+    });
+    cx.simulate_resize(size(px(800.), px(900.)));
+    cx.run_until_parked();
+    for mode in [
+        LayoutMode::Compact,
+        LayoutMode::Normal,
+        LayoutMode::Comfortable,
+    ] {
+        for width in [160., 232., 480.] {
+            for identity in [
+                Some("opencode"),
+                Some("claude"),
+                Some("codex"),
+                Some("gemini"),
+                Some("cursor"),
+                Some("copilot"),
+                Some("unknown"),
+                None,
+            ] {
+                view.update(cx, |view, cx| {
+                    view.config.layout.mode = mode;
+                    view.sidebar_width = Some(width);
+                    let snapshot = Arc::make_mut(view.live.snapshot.as_mut().unwrap());
+                    for agent in &mut snapshot.agents {
+                        agent.agent = identity.map(str::to_owned);
+                    }
+                    cx.notify();
+                });
+                cx.update(|window, cx| {
+                    cx.default_global::<TextProbes>().0.clear();
+                    full_draw(window, cx).clear();
+                    let (bounds, rendered, glyphs) = &cx.global::<TextProbes>().0[label];
+                    assert!(*glyphs <= bounds.size.width);
+                    if width == 160. {
+                        assert!(rendered.ends_with('…'));
+                    }
+                });
+                for (icon, name, column) in [
+                    ("agent-icon-agent-p0", "detail-agent-p0", "column-agent-p0"),
+                    ("agent-icon-agent-p1", "name-agent-p1", "column-agent-p1"),
+                ] {
+                    let icon = cx.debug_bounds(icon).unwrap();
+                    let name = cx.debug_bounds(name).unwrap();
+                    let column = cx.debug_bounds(column).unwrap();
+                    assert_eq!(icon.size, size(px(12.), px(12.)));
+                    assert_eq!(icon.left(), column.left());
+                    assert_eq!(name.left(), icon.right() + px(4.));
+                    assert_eq!(name.right(), column.right());
+                    assert_eq!(icon.center().y, name.center().y);
+                    assert!(icon.right() <= column.right());
+                }
+                let location = cx.debug_bounds("name-agent-p0").unwrap();
+                let column = cx.debug_bounds("column-agent-p0").unwrap();
+                assert_eq!(location.left(), column.left());
+            }
+        }
+    }
+}
+
+#[gpui::test]
 fn sidebar_densities_keep_details_and_badges_within_their_rows(cx: &mut gpui::TestAppContext) {
     use crate::config::LayoutMode;
     let (view, cx) = cx.add_window_view(|window, cx| {
