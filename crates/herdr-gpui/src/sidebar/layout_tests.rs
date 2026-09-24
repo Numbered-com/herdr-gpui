@@ -238,14 +238,13 @@ impl ProbeText {
 
 impl PaintedText {
     fn verify_child(&self, input: &str, mode: crate::config::LayoutMode) -> Result<()> {
-        let layout = super::layout::for_mode(mode);
+        let look = super::layout::for_mode(mode);
+        let layout = look.density;
         // Menu labels share text keys, and retained paint probes can still
         // describe the previous layout. Compute the sidebar column directly.
         let left =
-            px(layout.padding() + layout.child_indent() + super::STATUS_WIDTH + layout.gap());
-        let width = px(super::SIDEBAR_WIDTH
-            - 1.
-            - 2. * layout.padding()
+            px(look.content_x() + layout.child_indent() + super::STATUS_WIDTH + layout.gap());
+        let width = px(look.content_width(super::SIDEBAR_WIDTH)
             - super::STATUS_WIDTH
             - layout.gap()
             - layout.child_indent()
@@ -302,11 +301,20 @@ struct SidebarFixture(Entity<HerdrWindow>);
 
 #[test]
 fn native_child_probe_reports_geometry_and_glyph_failures_without_panicking() {
-    use crate::config::LayoutMode;
+    use crate::config::{Density, LayoutMode, Style};
+    // Rounded rows move content in by the highlight's inset, the density's
+    // gap, on both edges.
     for (mode, left, width) in [
-        (LayoutMode::Comfortable, 56., 145.),
-        (LayoutMode::Normal, 44., 161.),
-        (LayoutMode::Compact, 38., 169.),
+        (LayoutMode::from(Density::Comfortable), 56., 145.),
+        (LayoutMode::from(Density::Normal), 44., 161.),
+        (LayoutMode::from(Density::Compact), 38., 169.),
+        (
+            LayoutMode::new(Density::Comfortable, Style::Rounded),
+            64.,
+            129.,
+        ),
+        (LayoutMode::new(Density::Normal, Style::Rounded), 50., 149.),
+        (LayoutMode::new(Density::Compact, Style::Rounded), 42., 161.),
     ] {
         let bounds = Bounds::new(point(px(left), px(100.)), size(px(width), px(16.)));
         let mut probe = PaintedText {
@@ -484,7 +492,7 @@ fn sidebar_allocates_text_width(cx: &mut gpui::TestAppContext) {
 
 #[gpui::test]
 fn agent_icons_follow_names_and_reserve_narrow_label_width(cx: &mut gpui::TestAppContext) {
-    use crate::config::LayoutMode;
+    use crate::config::{Density, LayoutMode, Style};
     let label = "Custom agent name with a deliberately long label";
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut view = fixture_window(window, cx);
@@ -498,11 +506,12 @@ fn agent_icons_follow_names_and_reserve_narrow_label_width(cx: &mut gpui::TestAp
     });
     cx.simulate_resize(size(px(800.), px(900.)));
     cx.run_until_parked();
-    for mode in [
-        LayoutMode::Compact,
-        LayoutMode::Normal,
-        LayoutMode::Comfortable,
-    ] {
+    for mode in [Density::Compact, Density::Normal, Density::Comfortable]
+        .into_iter()
+        .flat_map(|density| {
+            [Style::Flat, Style::Rounded].map(|style| LayoutMode::new(density, style))
+        })
+    {
         for width in [160., 232., 480.] {
             for identity in [
                 Some("opencode"),
@@ -556,7 +565,7 @@ fn agent_icons_follow_names_and_reserve_narrow_label_width(cx: &mut gpui::TestAp
 
 #[gpui::test]
 fn sidebar_densities_keep_details_and_badges_within_their_rows(cx: &mut gpui::TestAppContext) {
-    use crate::config::LayoutMode;
+    use crate::config::{Density, LayoutMode, Style};
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut view = fixture_window(window, cx);
         view.live.snapshot = Some(Arc::new(snapshot(6)));
@@ -579,13 +588,15 @@ fn sidebar_densities_keep_details_and_badges_within_their_rows(cx: &mut gpui::Te
     for font_size in [12., 18.] {
         for width in [160., 232.] {
             // Switching density must restore the corresponding details and spacing.
-            for mode in [
-                LayoutMode::Compact,
-                LayoutMode::Normal,
-                LayoutMode::Comfortable,
-            ] {
-                let compact = mode == LayoutMode::Compact;
-                let comfortable = mode == LayoutMode::Comfortable;
+            for mode in [Density::Compact, Density::Normal, Density::Comfortable]
+                .into_iter()
+                .flat_map(|density| {
+                    [Style::Flat, Style::Rounded].map(|style| LayoutMode::new(density, style))
+                })
+            {
+                let compact = mode.density == Density::Compact;
+                let comfortable = mode.density == Density::Comfortable;
+                let rounded = mode.style == Style::Rounded;
                 view.update(cx, |view, cx| {
                     view.config.layout.mode = mode;
                     view.config.sidebar.size = font_size;
@@ -606,40 +617,72 @@ fn sidebar_densities_keep_details_and_badges_within_their_rows(cx: &mut gpui::Te
                     }
                 });
                 let line = font_size * 4. / 3.;
-                let padding = match mode {
-                    LayoutMode::Compact => 6.,
-                    LayoutMode::Normal => 8.,
-                    LayoutMode::Comfortable => 12.,
+                let density_padding = match mode.density {
+                    Density::Compact => 6.,
+                    Density::Normal => 8.,
+                    Density::Comfortable => 12.,
                 };
-                let vertical_padding = if comfortable { 4. } else { 0. };
-                for (row, name, detail) in [
-                    ("row-herdr", "name-herdr", "detail-herdr"),
+                // Rounded rows sit inside a highlight inset by the density's
+                // gap, with a third of that gap as padding and twice it as
+                // spacing between rows.
+                let (inset, trim) = match (mode.style, mode.density) {
+                    (Style::Flat, _) => (0., 0.),
+                    (Style::Rounded, Density::Compact) => (4., 1.),
+                    (Style::Rounded, Density::Normal) => (6., 2.),
+                    (Style::Rounded, Density::Comfortable) => (8., 3.),
+                };
+                let padding = inset + density_padding;
+                let vertical_padding = if comfortable { 4. } else { 0. } + trim;
+                let spacing = 2. * trim;
+                for (row, name, detail, highlight) in [
+                    ("row-herdr", "name-herdr", "detail-herdr", "highlight-herdr"),
                     (
                         "row-agent-launcher",
                         "name-agent-launcher",
                         "detail-agent-launcher",
+                        "highlight-agent-launcher",
                     ),
                     (
                         "row-sidebar-child",
                         "name-sidebar-child",
                         "detail-sidebar-child",
+                        "highlight-sidebar-child",
+                    ),
+                    (
+                        "row-agent-p0",
+                        "name-agent-p0",
+                        "detail-agent-p0",
+                        "highlight-agent-p0",
                     ),
                 ] {
-                    let show_detail = !compact && (comfortable || row != "row-sidebar-child");
+                    let show_detail = row == "row-agent-p0"
+                        || (!compact && (comfortable || row != "row-sidebar-child"));
+                    let highlight = cx.debug_bounds(highlight).unwrap();
                     let row = cx.debug_bounds(row).unwrap();
                     let name = cx.debug_bounds(name).unwrap();
                     assert_eq!(
                         row.size.height,
-                        px(line * if show_detail { 2. } else { 1. } + 2. * vertical_padding)
+                        px(line * if show_detail { 2. } else { 1. }
+                            + 2. * vertical_padding
+                            + spacing)
                     );
-                    assert_eq!(name.top(), row.top() + px(vertical_padding));
+                    assert_eq!(name.top(), row.top() + px(vertical_padding + spacing / 2.));
+                    // The highlight is the row less its inset and spacing, so a
+                    // click between highlights still lands on a row.
+                    assert_eq!(highlight.left(), row.left() + px(inset));
+                    assert_eq!(highlight.right(), row.right() - px(inset));
+                    assert_eq!(highlight.top(), row.top() + px(spacing / 2.));
+                    assert_eq!(highlight.bottom(), row.bottom() - px(spacing / 2.));
                     assert!(name.right() <= row.right() - px(padding));
                     if show_detail {
                         assert!(cx.debug_bounds(detail).is_some());
                     }
                 }
                 let agent = cx.debug_bounds("row-agent-p0").unwrap();
-                assert_eq!(agent.size.height, px(2. * line + 2. * vertical_padding));
+                assert_eq!(
+                    agent.size.height,
+                    px(2. * line + 2. * vertical_padding + spacing)
+                );
                 assert!(cx.debug_bounds("detail-agent-p0").is_some());
                 let row = cx.debug_bounds("row-sidebar-child").unwrap();
                 let badge = cx.debug_bounds("pr-sidebar-child").unwrap();
@@ -647,16 +690,76 @@ fn sidebar_densities_keep_details_and_badges_within_their_rows(cx: &mut gpui::Te
                 assert!(badge.bottom() <= row.bottom());
                 assert!(cx.debug_bounds("name-sidebar-child").unwrap().right() <= badge.left());
                 assert!(cx.debug_bounds("dirty-sidebar-child").is_some());
-                let gutter = cx.debug_bounds("tree-sidebar-child").unwrap();
-                assert_eq!(
-                    gutter.left(),
-                    cx.debug_bounds("column-agent-launcher").unwrap().left()
-                );
+                // Debug bounds outlive the element that recorded them, so a
+                // rounded frame cannot prove tree lines absent here; see
+                // `rounded_rows_drop_tree_lines_and_title_headers`.
+                if !rounded {
+                    let gutter = cx.debug_bounds("tree-sidebar-child").unwrap();
+                    assert_eq!(
+                        gutter.left(),
+                        cx.debug_bounds("column-agent-launcher").unwrap().left()
+                    );
+                }
                 let arrow = cx.debug_bounds("collapse-3").unwrap();
                 let parent = cx.debug_bounds("row-agent-launcher").unwrap();
                 assert!(arrow.top() >= parent.top() && arrow.bottom() <= parent.bottom());
             }
         }
+    }
+}
+
+#[gpui::test]
+fn rounded_rows_drop_tree_lines_and_title_headers(cx: &mut gpui::TestAppContext) {
+    use crate::config::{Density, LayoutMode, Style};
+    // A fresh window per mode: GPUI keeps debug bounds from earlier frames,
+    // so absence is only observable when the element never rendered.
+    for (style, header) in [(Style::Rounded, "Spaces"), (Style::Flat, "spaces")] {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut view = fixture_window(window, cx);
+            view.live.snapshot = Some(Arc::new(snapshot(6)));
+            view.config.layout.mode = LayoutMode::new(Density::Normal, style);
+            view
+        });
+        cx.simulate_resize(size(px(800.), px(900.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            full_draw(window, cx).clear();
+        });
+        assert!(cx.debug_bounds("row-sidebar-child").is_some());
+        assert_eq!(
+            cx.debug_bounds("tree-sidebar-child").is_some(),
+            style == Style::Flat
+        );
+        let heading = cx.debug_bounds("header-spaces").unwrap();
+        let row = cx.debug_bounds("row-herdr").unwrap();
+        let column = cx.debug_bounds("column-herdr").unwrap();
+        // Headings start where rows' status dots do, inside the highlight.
+        let label = cx.debug_bounds("header-label-spaces").unwrap();
+        assert_eq!(label.left(), column.left() - px(8. + 6.));
+        assert!(heading.left() <= row.left());
+        cx.update(|window, cx| {
+            cx.default_global::<TextProbes>().0.clear();
+            full_draw(window, cx).clear();
+            assert!(
+                cx.global::<TextProbes>().0.contains_key(header),
+                "{header}: {:?}",
+                cx.global::<TextProbes>().0.keys()
+            );
+        });
+        // The row, not its highlight, is the click target: the inset beside a
+        // rounded highlight still selects the row, so there are no dead zones.
+        let row = cx.debug_bounds("row-agent-launcher").unwrap();
+        let highlight = cx.debug_bounds("highlight-agent-launcher").unwrap();
+        let margin = point(row.left() + px(2.), row.center().y);
+        assert_eq!(highlight.contains(&margin), style == Style::Flat);
+        view.read_with(cx, |view, _| assert!(view.pending_navigation.is_none()));
+        cx.simulate_click(margin, Default::default());
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.pending_navigation,
+                Some(crate::NavigationTarget::Workspace("w3".into()))
+            );
+        });
     }
 }
 
@@ -766,7 +869,7 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         // above exercise all three modes independently of the default.
         config: crate::config::Config {
             layout: crate::config::Layout {
-                mode: crate::config::LayoutMode::Comfortable,
+                mode: crate::config::LayoutMode::from(crate::config::Density::Comfortable),
                 ..Default::default()
             },
             ..Default::default()

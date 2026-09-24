@@ -137,7 +137,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
             }
         };
         eprintln!("SIDEBAR native symbol cascade: {cascade}");
-        for frame in 0..36 {
+        for frame in 0..72 {
             timer.timer(Duration::from_millis(100)).await;
             let result = AnyWindowHandle::from(handle).update(
                 cx,
@@ -147,10 +147,16 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         [(1200., 780.), (640., 400.), (1000., 650.), (800., 600.)][(frame % 12) / 3];
                     // Retain the glyph fixture's list viewport while reserving
                     // the fixed device footer below both scrollable sections.
-                    let h = h + sidebar::DEVICE_FOOTER_HEIGHT;
-                    use crate::config::LayoutMode;
-                    let mode = [LayoutMode::Comfortable, LayoutMode::Normal, LayoutMode::Compact][frame / 12];
-                    let compact = mode == LayoutMode::Compact;
+                    use crate::config::{Density, LayoutMode, Style};
+                    let density = [Density::Comfortable, Density::Normal, Density::Compact][frame / 12 % 3];
+                    let style = [Style::Flat, Style::Rounded][frame / 36];
+                    // Rounded rows are taller; grow both sections so the probed
+                    // rows stay inside their lists at the smallest size too.
+                    let h = h
+                        + sidebar::DEVICE_FOOTER_HEIGHT
+                        + if style == Style::Rounded { 160. } else { 0. };
+                    let mode = LayoutMode::new(density, style);
+                    let compact = density == Density::Compact;
                     if frame % 3 == 0 {
                         window.resize(fixture_size(w, h));
                     } else if window.viewport_size() != fixture_size(w, h) {
@@ -194,10 +200,17 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                         }
                         let expected_short = input.len() < 20;
                         let title_icon = matches!(input, "herdr" | "herdr-gpui-sidebar-rendering-regression-investigation");
-                        let extra_width = match mode {
-                            LayoutMode::Comfortable => 0.,
-                            LayoutMode::Normal => 10.,
-                            LayoutMode::Compact => 16.,
+                        // Rounded rows give up the highlight's inset, the
+                        // density's gap, on both edges.
+                        let extra_width = match density {
+                            Density::Comfortable => 0.,
+                            Density::Normal => 10.,
+                            Density::Compact => 16.,
+                        } - match (style, density) {
+                            (Style::Flat, _) => 0.,
+                            (Style::Rounded, Density::Comfortable) => 16.,
+                            (Style::Rounded, Density::Normal) => 12.,
+                            (Style::Rounded, Density::Compact) => 8.,
                         };
                         let icon_reserve = if title_icon {
                             sidebar::ICON_RESERVE
@@ -239,7 +252,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
         let _ = handle.update(cx, |view, _, cx| {
             // Later fixtures add PR badges and dialogs that change label budgets.
             cx.set_global(sidebar::layout_tests::VerifyChildGeometry(false));
-            view.config.layout.mode = crate::config::LayoutMode::Comfortable;
+            view.config.layout.mode = crate::config::LayoutMode::from(crate::config::Density::Comfortable);
             cx.notify();
         });
         #[cfg(target_os = "macos")]
@@ -528,7 +541,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
             eprintln!("SIDEBAR native paint FAIL: {probes:?}");
             std::process::exit(1);
         }
-        eprintln!("SIDEBAR native PASS: {cascade}; 24 Menlo draws, normal/compact layouts at 4 sizes, collapse/expand, menu isolation, PR title/stats glyphs, GitHub auth fixtures, right-click dialogs and Unicode fields at 2 sizes; host routing, disabled selection, scoped repositories, resized host/agent glyphs, independent scroll and decoy key window");
+        eprintln!("SIDEBAR native PASS: {cascade}; 24 Menlo draws, flat and rounded normal/compact/comfortable layouts at 4 sizes, collapse/expand, menu isolation, PR title/stats glyphs, GitHub auth fixtures, right-click dialogs and Unicode fields at 2 sizes; host routing, disabled selection, scoped repositories, resized host/agent glyphs, independent scroll and decoy key window");
         std::process::exit(0);
     })
     .detach();

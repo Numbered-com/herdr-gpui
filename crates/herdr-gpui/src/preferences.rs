@@ -102,12 +102,7 @@ impl HerdrWindow {
             .child(row(
                 "preferences-layout",
                 "Layout",
-                match self.config.layout.mode {
-                    crate::config::LayoutMode::Normal => "normal",
-                    crate::config::LayoutMode::Compact => "compact",
-                    crate::config::LayoutMode::Comfortable => "comfortable",
-                }
-                .into(),
+                self.config.layout.mode.to_string(),
             ))
             .child(row(
                 "preferences-sidebar-gap",

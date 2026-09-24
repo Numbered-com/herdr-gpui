@@ -224,18 +224,30 @@ Choose sidebar density with a top-level setting in `config-gpui.local.toml`
 layout = "compact"
 ```
 
-Three modes are available:
+Three densities are available:
 
-- `normal` (default): TUI-like spacing, with branch lines beneath root workspaces,
+- `normal` (managed default): TUI-like spacing, with branch lines beneath root workspaces,
   single-line worktree children, and two-line agents. Modest horizontal and heading
   spacing keeps the sidebar readable without padding every row.
 - `compact`: the tightest spacing, hiding all workspace branch lines.
 - `comfortable`: the previous Normal layout, with roomier padding, branch lines
   on all workspace rows, and PR addition/deletion counts.
 
-Normal and Compact show PR numbers without change counts. Status indicators, tree
-guides, and agent-name lines remain visible in every mode; font sizes and terminal
-spacing are unchanged. Saved edits apply automatically; there is no UI toggle yet.
+Add `-rounded` to any density (`normal-rounded`, `compact-rounded`,
+`comfortable-rounded`) for inset rows with rounded corners, a bordered selection,
+and title-case section headings. Rounded rows are a little taller, and worktree
+children keep their indent without tree guides, which would break across the
+gaps between rows.
+
+New installs start with `comfortable-rounded`: the first launch writes it into
+the new `config-gpui.local.toml`. Existing override files and migrated personal
+configs are left alone, so current users keep the managed `normal` default.
+Remove that line to follow the managed default.
+
+Normal and Compact show PR numbers without change counts. Status indicators and
+agent-name lines remain visible in every mode, and flat modes keep tree guides;
+font sizes and terminal spacing are unchanged. Saved edits apply automatically;
+there is no UI toggle yet.
 
 Agent names have small theme-tinted icons for OpenCode, Claude Code, Codex
 (OpenAI), Gemini, Cursor, and GitHub Copilot, selected from the daemon's agent identity. Other
@@ -244,7 +256,8 @@ Icons sit immediately before the name, including orphan agents whose name is
 on the first line, and reserve space before long names are truncated.
 
 To customize spacing too, use a `[layout]` table **instead of** the top-level
-string. Existing spacing-only tables remain supported and use normal mode:
+string, replacing it (including the one a new install writes): TOML rejects a
+file with both. Existing spacing-only tables remain supported and use normal mode:
 
 ```toml
 [layout]

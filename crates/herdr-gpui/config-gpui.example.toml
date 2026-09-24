@@ -25,6 +25,8 @@ show_agents = true
 # "normal" (TUI-like), "comfortable" (the previous roomy Normal), or "compact".
 # Compact hides workspace branch lines and PR change
 # counts, and tightens Spaces and Agents spacing without changing font sizes.
+# Add "-rounded" to any of them ("normal-rounded", "compact-rounded",
+# "comfortable-rounded") for inset rows with rounded, bordered highlights.
 layout = "normal"
 
 [notifications]

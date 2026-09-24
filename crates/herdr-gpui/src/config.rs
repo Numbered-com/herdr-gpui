@@ -20,7 +20,10 @@ use std::{
 const DEFAULT_CONFIG: &str = include_str!("../config-gpui.example.toml");
 // Compare the first line so Windows checkouts and editors can use CRLF.
 const MANAGED_HEADER: &str = "# DO NOT EDIT -- WILL BE OVERWRITTEN";
-const LOCAL_CONFIG: &str = "# Herdr GPUI overrides. Saved changes reload automatically.\n# Unset keys inherit config-gpui.toml; tables merge key by key.\n";
+/// Seeds the overrides file on first launch only. Existing overrides and
+/// migrated personal configs are never rewritten, so settings placed here
+/// reach new installs without changing what current users see.
+const LOCAL_CONFIG: &str = "# Herdr GPUI overrides. Saved changes reload automatically.\n# Unset keys inherit config-gpui.toml; tables merge key by key.\n\n# New installs start with the roomy rounded sidebar. Remove this line for\n# the managed default, or pick another layout listed in config-gpui.toml.\nlayout = \"comfortable-rounded\"\n";
 
 /// Every face is held to this range, whether it comes from the config file or
 /// from a runtime adjustment, so the two can never disagree on what is valid.
@@ -130,19 +133,100 @@ pub struct Layout {
 impl Default for Layout {
     fn default() -> Self {
         Self {
-            mode: LayoutMode::Normal,
+            mode: LayoutMode::new(Density::Normal, Style::Flat),
             sidebar_gap: DEFAULT_SIDEBAR_GAP,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum LayoutMode {
+/// How much the sidebar fits: spacing, indents, and which details show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Density {
     #[default]
     Normal,
     Compact,
     Comfortable,
+}
+
+/// How sidebar rows are drawn, independent of how dense they are.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Style {
+    /// Edge-to-edge rows with square highlights and tree lines.
+    #[default]
+    Flat,
+    /// Inset rows with rounded, bordered highlights.
+    Rounded,
+}
+
+/// A named sidebar layout: `normal`, `compact`, `comfortable`, or any of them
+/// with a `-rounded` suffix.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LayoutMode {
+    pub density: Density,
+    pub style: Style,
+}
+
+impl LayoutMode {
+    const NAMES: &'static [&'static str] = &[
+        "normal",
+        "compact",
+        "comfortable",
+        "normal-rounded",
+        "compact-rounded",
+        "comfortable-rounded",
+    ];
+
+    pub const fn new(density: Density, style: Style) -> Self {
+        Self { density, style }
+    }
+}
+
+impl From<Density> for LayoutMode {
+    fn from(density: Density) -> Self {
+        Self::new(density, Style::Flat)
+    }
+}
+
+impl TryFrom<&str> for LayoutMode {
+    type Error = Error;
+
+    fn try_from(name: &str) -> Result<Self> {
+        let (density, style) = match name.strip_suffix("-rounded") {
+            Some(density) => (density, Style::Rounded),
+            None => (name, Style::Flat),
+        };
+        let density = match density {
+            "normal" => Density::Normal,
+            "compact" => Density::Compact,
+            "comfortable" => Density::Comfortable,
+            _ => return Err(Error::UnknownLayout(name.to_owned())),
+        };
+        Ok(Self::new(density, style))
+    }
+}
+
+impl std::fmt::Display for LayoutMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.density {
+            Density::Normal => "normal",
+            Density::Compact => "compact",
+            Density::Comfortable => "comfortable",
+        })?;
+        match self.style {
+            Style::Flat => Ok(()),
+            Style::Rounded => f.write_str("-rounded"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for LayoutMode {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Self::try_from(name.as_str())
+            .map_err(|_| serde::de::Error::unknown_variant(&name, Self::NAMES))
+    }
 }
 
 impl<'de> Deserialize<'de> for Layout {
@@ -546,10 +630,12 @@ impl Config {
         let local = path.with_extension("local.toml");
         let (text, source) = match fs::read_to_string(&local) {
             Ok(text) => (text, local),
+            // Without overrides or a personal config to migrate, maintenance
+            // will seed the first-launch overrides; show them from frame one.
             Err(error) if error.kind() == ErrorKind::NotFound => match fs::read_to_string(path) {
                 Ok(text) if text.lines().next() != Some(MANAGED_HEADER) => (text, path.to_owned()),
-                Ok(_) => (String::new(), local),
-                Err(error) if error.kind() == ErrorKind::NotFound => (String::new(), local),
+                Ok(_) => (LOCAL_CONFIG.into(), local),
+                Err(error) if error.kind() == ErrorKind::NotFound => (LOCAL_CONFIG.into(), local),
                 Err(error) => return Err(Error::from(error).at_path(path)),
             },
             Err(error) => return Err(Error::from(error).at_path(&local)),
@@ -1643,29 +1729,47 @@ mod tests {
             Config::parse("[layout]")?,
             Config::parse("layout = 'normal'")?,
         ] {
-            assert_eq!(config.layout.mode, LayoutMode::Normal);
+            assert_eq!(config.layout.mode, LayoutMode::default());
+            assert_eq!(config.layout.mode, LayoutMode::from(Density::Normal));
         }
         let config = Config::parse("layout = 'compact'")?;
-        assert_eq!(config.layout.mode, LayoutMode::Compact);
+        assert_eq!(config.layout.mode, LayoutMode::from(Density::Compact));
         assert_eq!(config.layout.sidebar_gap, Layout::default().sidebar_gap);
         assert_eq!(config.sidebar.size, Config::default().sidebar.size);
         let custom = Config::parse("[layout]\nmode = 'compact'\nsidebar_gap = 4")?;
-        assert_eq!(custom.layout.mode, LayoutMode::Compact);
+        assert_eq!(custom.layout.mode, LayoutMode::from(Density::Compact));
         assert_eq!(custom.layout.sidebar_gap, 4.);
-        for (name, mode) in [
-            ("compact", LayoutMode::Compact),
-            ("normal", LayoutMode::Normal),
-            ("comfortable", LayoutMode::Comfortable),
-        ] {
-            assert_eq!(
-                Config::parse(&format!("layout = '{name}'"))?.layout.mode,
-                mode
-            );
-            let config = Config::parse(&format!("[layout]\nmode = '{name}'\nsidebar_gap = 4"))?;
-            assert_eq!(config.layout.mode, mode);
-            assert_eq!(config.layout.sidebar_gap, 4.);
+        for density in [Density::Compact, Density::Normal, Density::Comfortable] {
+            for style in [Style::Flat, Style::Rounded] {
+                let mode = LayoutMode::new(density, style);
+                let name = mode.to_string();
+                assert_eq!(LayoutMode::try_from(name.as_str())?, mode);
+                assert_eq!(
+                    Config::parse(&format!("layout = '{name}'"))?.layout.mode,
+                    mode
+                );
+                let config = Config::parse(&format!("[layout]\nmode = '{name}'\nsidebar_gap = 4"))?;
+                assert_eq!(config.layout.mode, mode);
+                assert_eq!(config.layout.sidebar_gap, 4.);
+            }
         }
-        for value in ["'unknown'", "true", "1"] {
+        assert_eq!(
+            LayoutMode::try_from("compact-rounded")?,
+            LayoutMode::new(Density::Compact, Style::Rounded)
+        );
+        for name in [
+            "rounded",
+            "-rounded",
+            "normal-",
+            "Normal",
+            "normal-rounded-rounded",
+        ] {
+            assert!(matches!(
+                LayoutMode::try_from(name),
+                Err(Error::UnknownLayout(unknown)) if unknown == name
+            ));
+        }
+        for value in ["'unknown'", "'rounded'", "'normal-square'", "true", "1"] {
             assert!(matches!(
                 Config::parse(&format!("layout = {value}")),
                 Err(Error::Toml(_))
@@ -1920,15 +2024,17 @@ mod tests {
         let temp = TempDirectory::new()?;
         let path = temp.0.join("config-gpui.toml");
         let daemon = temp.0.join("absent.toml");
+        // A fresh install's first frame already shows the layout its seeded
+        // overrides will hold, without writing them yet.
         assert_eq!(
             Config::load_startup_path(&path, &daemon)?.layout.mode,
-            LayoutMode::Normal
+            LayoutMode::new(Density::Comfortable, Style::Rounded)
         );
         assert_eq!(fs::read_dir(&temp.0)?.count(), 0);
         let legacy = "layout = 'compact'\ntheme = 'Nord'\n[terminal]\nsize = 18\n";
         fs::write(&path, legacy)?;
         let config = Config::load_startup_path(&path, &daemon)?;
-        assert_eq!(config.layout.mode, LayoutMode::Compact);
+        assert_eq!(config.layout.mode, LayoutMode::from(Density::Compact));
         assert_eq!(config.theme, "Nord");
         assert_eq!(config.terminal.size, 18.);
         assert_eq!(fs::read_to_string(&path)?, legacy);
@@ -1978,7 +2084,7 @@ mod tests {
             let config = Config::load_startup_path(&path, &daemon)?;
             let theme = config.theme()?;
             samples.push(start.elapsed());
-            assert_eq!(config.layout.mode, LayoutMode::Compact);
+            assert_eq!(config.layout.mode, LayoutMode::from(Density::Compact));
             assert_eq!(Some(theme), Theme::builtin("Nord"));
         }
         let first = samples[0];
@@ -1988,6 +2094,62 @@ mod tests {
             samples[50], samples[94]
         );
         // Timing is reported, not gated: filesystem latency is machine-dependent.
+        Ok(())
+    }
+
+    #[test]
+    fn only_new_installs_start_with_the_rounded_comfortable_layout() -> anyhow::Result<()> {
+        let rounded = LayoutMode::new(Density::Comfortable, Style::Rounded);
+        let daemon = Path::new("absent.toml");
+        // The managed defaults keep the flat layout for everyone else.
+        assert_eq!(
+            Config::parse(DEFAULT_CONFIG)?.layout.mode,
+            LayoutMode::default()
+        );
+        assert_eq!(Config::parse(LOCAL_CONFIG)?.layout.mode, rounded);
+
+        let fresh = TempDirectory::new()?;
+        let path = fresh.0.join("config-gpui.toml");
+        assert_eq!(
+            Config::load_startup_path(&path, daemon)?.layout.mode,
+            rounded
+        );
+        assert_eq!(Config::load_path(&path, daemon)?.layout.mode, rounded);
+        assert_eq!(
+            fs::read_to_string(path.with_extension("local.toml"))?,
+            LOCAL_CONFIG
+        );
+        // A later launch reads the seeded file, not the first-launch fallback.
+        assert_eq!(
+            Config::load_startup_path(&path, daemon)?.layout.mode,
+            rounded
+        );
+
+        // Existing overrides without a layout keep the managed default.
+        let existing = TempDirectory::new()?;
+        let path = existing.0.join("config-gpui.toml");
+        fs::write(path.with_extension("local.toml"), "theme = 'Nord'\n")?;
+        for config in [
+            Config::load_startup_path(&path, daemon)?,
+            Config::load_path(&path, daemon)?,
+        ] {
+            assert_eq!(config.layout.mode, LayoutMode::default());
+        }
+        assert_eq!(
+            fs::read_to_string(path.with_extension("local.toml"))?,
+            "theme = 'Nord'\n"
+        );
+
+        // So does a personal config migrated from before local overrides.
+        let legacy = TempDirectory::new()?;
+        let path = legacy.0.join("config-gpui.toml");
+        fs::write(&path, "theme = 'Nord'\n")?;
+        for config in [
+            Config::load_startup_path(&path, daemon)?,
+            Config::load_path(&path, daemon)?,
+        ] {
+            assert_eq!(config.layout.mode, LayoutMode::default());
+        }
         Ok(())
     }
 
@@ -2025,7 +2187,7 @@ mod tests {
         fs::write(&local, overrides)?;
         fs::write(&path, format!("{MANAGED_HEADER}\ntheme = 'old-default'\n"))?;
         let config = Config::load_path(&path, &daemon)?;
-        assert_eq!(config.layout.mode, LayoutMode::Compact);
+        assert_eq!(config.layout.mode, LayoutMode::from(Density::Compact));
         assert_eq!(config.terminal.size, 19.);
         assert_eq!(config.terminal.fallbacks, Some(vec![]));
         assert!(config.notifications.enabled);

@@ -271,10 +271,13 @@ mod tests {
                 theme: "Nord".into(),
                 ..Default::default()
             };
-            config.layout.mode = LayoutMode::Compact;
+            config.layout.mode = LayoutMode::from(crate::config::Density::Compact);
             Ok(config)
         });
-        assert_eq!(appearance.config.layout.mode, LayoutMode::Compact);
+        assert_eq!(
+            appearance.config.layout.mode,
+            LayoutMode::from(crate::config::Density::Compact)
+        );
         assert_eq!(Some(appearance.theme), Theme::builtin("Nord"));
         assert!(appearance.error.is_none());
         for appearance in [
@@ -286,7 +289,10 @@ mod tests {
                 })
             }),
         ] {
-            assert_eq!(appearance.config.layout.mode, LayoutMode::Normal);
+            assert_eq!(
+                appearance.config.layout.mode,
+                LayoutMode::from(crate::config::Density::Normal)
+            );
             assert_eq!(appearance.theme, Theme::default());
             assert!(appearance.error.is_some());
         }
@@ -295,11 +301,13 @@ mod tests {
     #[cfg(feature = "integration-test")]
     #[gpui::test]
     fn first_window_frame_uses_startup_layout(cx: &mut gpui::TestAppContext) {
-        for mode in [
-            LayoutMode::Compact,
-            LayoutMode::Normal,
-            LayoutMode::Comfortable,
-        ] {
+        use crate::config::{Density, Style};
+        for mode in [Density::Compact, Density::Normal, Density::Comfortable]
+            .into_iter()
+            .flat_map(|density| {
+                [Style::Flat, Style::Rounded].map(|style| LayoutMode::new(density, style))
+            })
+        {
             let (view, cx) = cx.add_window_view(|window, cx| {
                 let mut appearance = InitialAppearance::load(|| {
                     Ok(Config {
@@ -327,12 +335,17 @@ mod tests {
             let row = cx
                 .debug_bounds("row-herdr")
                 .unwrap_or_else(|| panic!("missing first-frame row"));
+            // Rounded rows add padding inside their highlight and spacing
+            // around it: a third of the density's gap, each, twice.
             assert_eq!(
                 row.size.height,
-                px(match mode {
-                    LayoutMode::Compact => 16.,
-                    LayoutMode::Normal => 32.,
-                    LayoutMode::Comfortable => 40.,
+                px(match (mode.density, mode.style) {
+                    (Density::Compact, Style::Flat) => 16.,
+                    (Density::Normal, Style::Flat) => 32.,
+                    (Density::Comfortable, Style::Flat) => 40.,
+                    (Density::Compact, Style::Rounded) => 16. + 2. + 2.,
+                    (Density::Normal, Style::Rounded) => 32. + 4. + 4.,
+                    (Density::Comfortable, Style::Rounded) => 40. + 6. + 6.,
                 })
             );
         }
