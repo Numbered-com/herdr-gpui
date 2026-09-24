@@ -395,6 +395,10 @@ pub enum Error {
     PaletteTabRemoved,
     #[error("The original pane no longer exists in its tab. Reopen the palette.")]
     PalettePaneRemoved,
+    #[error("This agent or terminal no longer exists. Reopen the palette.")]
+    PaletteDestinationRemoved,
+    #[error("This host is no longer connected. Reopen the palette.")]
+    PaletteHostUnavailable,
     #[error("The selected connection is not ready.")]
     PaletteConnectionNotReady,
     #[error("No current daemon snapshot.")]

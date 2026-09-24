@@ -12,6 +12,7 @@
 pub enum Method {
     ClientShellSurfaceSet,
     CommandInvoke,
+    PaneClear,
     PaneClose,
     PaneFocus,
     PaneFocusDirection,
@@ -40,6 +41,7 @@ impl Method {
         match self {
             Self::ClientShellSurfaceSet => "client_shell.surface.set",
             Self::CommandInvoke => "command.invoke",
+            Self::PaneClear => "pane.clear",
             Self::PaneClose => "pane.close",
             Self::PaneFocus => "pane.focus",
             Self::PaneFocusDirection => "pane.focus_direction",
@@ -87,5 +89,13 @@ mod tests {
         assert_eq!(Method::PaneRename.to_string(), "pane.rename");
         assert!(Method::PaneRename.advertised_in(&["pane.rename".into()]));
         assert!(!Method::PaneRename.advertised_in(&["tab.rename".into()]));
+    }
+
+    #[test]
+    fn pane_clear_is_only_advertised_by_newer_daemons() {
+        assert_eq!(Method::PaneClear.as_str(), "pane.clear");
+        assert!(Method::PaneClear.advertised_in(&["pane.close".into(), "pane.clear".into()]));
+        // Advertisement is an exact match: a method sharing the prefix is not clearing.
+        assert!(!Method::PaneClear.advertised_in(&["pane.clear_agent_authority".into()]));
     }
 }

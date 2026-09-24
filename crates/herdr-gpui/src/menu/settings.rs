@@ -200,6 +200,7 @@ impl HerdrWindow {
                 | Command::SplitRight
                 | Command::SplitDown
                 | Command::Zoom
+                | Command::ClearPane
                 | Command::ClosePane
                 | Command::CloseTab => 0,
                 Command::NextTab

@@ -216,6 +216,13 @@ impl HerdrWindow {
             Command::ResetFontSize => {
                 self.set_terminal_font_size(self.configured_terminal_size, cx);
             }
+            Command::ClearPane if !self.live.supports_pane_clear => {
+                // Older daemons do not advertise `pane.clear`. Say so rather than
+                // typing `clear` into the pane, which could reach a running program.
+                self.local_error = Some("Clear Pane needs a newer Herdr daemon.".into());
+                cx.notify();
+                return;
+            }
             Command::Reconnect => self.reconnect(),
             Command::Quit => {
                 cx.quit();

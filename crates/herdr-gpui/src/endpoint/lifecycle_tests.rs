@@ -177,6 +177,7 @@ fn connected_endpoint(id: &str) -> (Endpoint, Server) {
             Method::WorkspaceFocus,
             Method::PaneFocusDirection,
             Method::PaneZoom,
+            Method::PaneClear,
             Method::PaneClose,
             Method::TabClose,
             Method::CommandInvoke,
@@ -3043,6 +3044,7 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
         (Command::NextPane, Method::PaneFocus),
         (Command::PreviousPane, Method::PaneFocus),
         (Command::Zoom, Method::PaneZoom),
+        (Command::ClearPane, Method::PaneClear),
         (Command::ClosePane, Method::PaneClose),
         (Command::CloseTab, Method::TabClose),
         (Command::WorkspacePicker, Method::WorkspaceFocus),
@@ -3397,7 +3399,7 @@ fn retry_backoff_resets_only_after_sixty_seconds_of_healthy_connection() {
     endpoint.online_since = None;
     endpoint.poll(now);
     endpoint.poll(now + Duration::from_secs(59));
-    assert_eq!(endpoint.retry_delay(), Duration::from_secs(120));
+    assert_eq!(endpoint.retry_delay(), Duration::from_secs(30));
     endpoint.poll(now + Duration::from_secs(60));
     assert_eq!(endpoint.attempts, 0);
     assert_eq!(endpoint.retry_delay(), Duration::from_millis(500));
@@ -3408,6 +3410,30 @@ fn retry_backoff_resets_only_after_sixty_seconds_of_healthy_connection() {
         now + Duration::from_secs(61) + Duration::from_millis(500)
     );
     assert!(endpoint.online_since.is_none());
+}
+
+#[test]
+fn retry_backoff_doubles_from_half_a_second_to_thirty_seconds() {
+    let mut endpoint = Endpoint::new(
+        LOCAL.into(),
+        LOCAL.into(),
+        ConnectTarget::Socket("/nonexistent".into()),
+        true,
+    );
+    let delays: Vec<_> = (0..10)
+        .map(|attempts| {
+            endpoint.attempts = attempts;
+            endpoint.retry_delay().as_millis()
+        })
+        .collect();
+    assert_eq!(
+        delays,
+        [
+            500, 1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000
+        ]
+    );
+    endpoint.attempts = u32::MAX;
+    assert_eq!(endpoint.retry_delay(), Duration::from_secs(30));
 }
 
 #[test]
@@ -3422,7 +3448,7 @@ fn brief_success_preserves_backoff_and_disconnect_restarts_stability_window() {
     endpoint.poll(now + Duration::from_secs(59));
     assert_eq!(endpoint.attempts, 8);
     assert!(endpoint.online_since.is_none());
-    assert_eq!(endpoint.retry_at, now + Duration::from_secs(59 + 120));
+    assert_eq!(endpoint.retry_at, now + Duration::from_secs(59 + 30));
     endpoint.connect(ConnectOptions::default(), false);
     assert_eq!(
         endpoint.attempts, 9,

@@ -52,6 +52,8 @@ pub struct LiveState {
     /// Same-user peer at the owned standard socket, not executable attestation.
     pub(crate) local_daemon_peer: bool,
     pub(crate) supports_workspace_get: bool,
+    /// `pane.clear` arrived after Herdr 0.9.1; older daemons reject it.
+    pub(crate) supports_pane_clear: bool,
     pub dirty: bool,
     pub(crate) dialog_response: Option<(String, Option<DialogResponse>)>,
     pub(crate) notifications: std::collections::VecDeque<crate::notifications::Notice>,
@@ -98,6 +100,7 @@ impl Default for LiveState {
             missing_installation: false,
             local_daemon_peer: false,
             supports_workspace_get: false,
+            supports_pane_clear: false,
             dirty: true,
             dialog_response: None,
             notifications: Default::default(),
@@ -129,6 +132,7 @@ impl LiveState {
             missing_installation,
             local_daemon_peer,
             supports_workspace_get,
+            supports_pane_clear,
             dirty: _,
             dialog_response,
             notifications,
@@ -160,6 +164,7 @@ impl LiveState {
             && *missing_installation == self.missing_installation
             && *local_daemon_peer == self.local_daemon_peer
             && *supports_workspace_get == self.supports_workspace_get
+            && *supports_pane_clear == self.supports_pane_clear
             && match (dialog_response, &self.dialog_response) {
                 (Some((a, None)), Some((b, None))) => a == b,
                 (a, b) => a.is_none() && b.is_none(),
@@ -248,6 +253,7 @@ impl LiveState {
         match event {
             ClientEvent::Connected(welcome) => {
                 self.supports_workspace_get = Method::WorkspaceGet.advertised_in(&welcome.methods);
+                self.supports_pane_clear = Method::PaneClear.advertised_in(&welcome.methods);
                 self.supports_surface = Method::ClientShellSurfaceSet
                     .advertised_in(&welcome.methods)
                     && ["surface_interest", "presentation_effects_fence"]

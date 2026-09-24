@@ -7,7 +7,12 @@ It starts an installed local `herdr server` when absent; explicit socket and
 development targets remain attach-only. It does not link or install Herdr, stop
 daemons, spawn a local PTY, or emulate a terminal. Herdr's remote bridge may start
 the named remote session. SSH requires an installed POSIX Herdr, noninteractive authentication,
-and an already trusted host key.
+and an already trusted host key. For hosts that need MFA or a password, configure
+`ControlMaster auto` with a `ControlPath` in `~/.ssh/config` and authenticate once
+with `ssh HOST` in a terminal: the app reuses that master connection while it lives,
+but never creates or keeps one itself. Set `ForwardAgent yes` only for trusted hosts;
+Herdr servers that support it then keep remote panes' `SSH_AUTH_SOCK` working
+across reconnects. A failed host is retried with backoff capped at 30 seconds.
 Runtime dependencies include GPUI, `herdr-client`, `serde_json` for API parameters,
 `ureq` for background GitHub owner avatar downloads, and `serde`/`config` (aliased
 as `config_loader`, TOML-only) for GUI configuration. `toml` preserves strict
@@ -808,7 +813,10 @@ Windows setup) nothing is saved and the window says so.
 - Cmd-1 through Cmd-9 focuses the corresponding numbered tab in the current
   workspace. Cmd-Alt-Left/Right/Up/Down focuses a pane in that direction;
   Cmd-Alt-] / Cmd-Alt-[ cycles next/previous pane within the current tab.
-  Cmd-Shift-Enter toggles focused pane zoom.
+  Cmd-Shift-Enter toggles focused pane zoom. Cmd-K clears the focused pane's
+  screen and scrollback through the daemon's `pane.clear`, without sending input
+  to the running program; daemons that do not advertise it (Herdr 0.9.1 and
+  older) leave it out of the palette and report why instead.
 - Cmd-W closes the focused pane and Cmd-Shift-W closes the focused tab only after
   a confirmation dialog (tab confirmation can be disabled with
   `confirm_close_tab = false`). **Cancel is selected by default**: Enter alone cancels;
@@ -816,7 +824,9 @@ Windows setup) nothing is saved and the window says so.
   processes, unlike quitting the GUI, which only detaches.
 - Cmd-Shift-P opens the command palette with native actions and configured daemon
   command entries, including native Themes and Reconnect actions without dedicated
-  shortcuts. Cmd-P opens the workspace picker instead.
+  shortcuts. Cmd-P opens **Go To** instead: every workspace on every connected
+  host, each followed by one row per agent or terminal pane with its status,
+  tab, and directory. Choosing a row on another host switches to it first.
 - Every native shortcut can be rebound in `config-gpui.local.toml` under
   `[keybindings]`, keyed by command name (`new_tab`, `new_workspace`,
   `split_right`, `focus_tab_1`, `quit`, ...). A value is one keystroke or a list;

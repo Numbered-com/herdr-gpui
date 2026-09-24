@@ -66,6 +66,19 @@ pub(super) fn sorted_agents(
     ordered
 }
 
+/// What an agent is called wherever it is listed.
+pub(crate) fn agent_name(agent: &ClientShellAgent) -> &str {
+    first_text(
+        [
+            agent.display_agent.as_deref(),
+            agent.name.as_deref(),
+            agent.agent.as_deref(),
+            agent.title.as_deref(),
+        ],
+        "agent",
+    )
+}
+
 /// Upstream's default agent rows: host, workspace and tab on the first line,
 /// the agent itself on the second. The tab only earns its place when the
 /// workspace has more than one or the user named it, as upstream decides.
@@ -74,15 +87,7 @@ pub(super) fn agent_labels<'a>(
     snapshot: &'a ClientShellSnapshot,
     host: Option<&'a str>,
 ) -> (Vec<(&'a str, bool)>, &'a str) {
-    let name = first_text(
-        [
-            agent.display_agent.as_deref(),
-            agent.name.as_deref(),
-            agent.agent.as_deref(),
-            agent.title.as_deref(),
-        ],
-        "agent",
-    );
+    let name = agent_name(agent);
     // A pane whose workspace has gone leaves the agent to name the row.
     let Some(workspace) = snapshot
         .workspaces

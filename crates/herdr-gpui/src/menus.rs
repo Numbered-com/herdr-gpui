@@ -68,7 +68,7 @@ pub(crate) fn menus() -> Vec<Menu> {
                     },
                 ),
                 MenuItem::action(
-                    "Switch Workspace",
+                    "Go To",
                     RunCommand {
                         command: Command::WorkspacePicker,
                     },
@@ -144,6 +144,12 @@ pub(crate) fn menus() -> Vec<Menu> {
                     "Toggle Pane Zoom",
                     RunCommand {
                         command: Command::Zoom,
+                    },
+                ),
+                MenuItem::action(
+                    "Clear Pane",
+                    RunCommand {
+                        command: Command::ClearPane,
                     },
                 ),
                 MenuItem::action(
