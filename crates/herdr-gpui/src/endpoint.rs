@@ -20,6 +20,9 @@ use std::{
 pub(super) const LOCAL: &str = "local";
 const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
 const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
+/// Upstream rechecks failed SSH machines every 30 seconds, so authentication
+/// repaired outside the app (a new master, a loaded key) is picked up promptly.
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 /// How much of the window an update changes. Ordered, so several updates
 /// combine into the widest.
@@ -215,7 +218,7 @@ impl Endpoint {
     }
 
     fn retry_delay(&self) -> Duration {
-        Duration::from_millis((500u64 << self.attempts.min(8)).min(120_000))
+        Duration::from_millis(500u64 << self.attempts.min(8)).min(MAX_RETRY_DELAY)
     }
 
     pub fn status(&self) -> &'static str {

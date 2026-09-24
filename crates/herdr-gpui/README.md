@@ -7,7 +7,12 @@ It starts an installed local `herdr server` when absent; explicit socket and
 development targets remain attach-only. It does not link or install Herdr, stop
 daemons, spawn a local PTY, or emulate a terminal. Herdr's remote bridge may start
 the named remote session. SSH requires an installed POSIX Herdr, noninteractive authentication,
-and an already trusted host key.
+and an already trusted host key. For hosts that need MFA or a password, configure
+`ControlMaster auto` with a `ControlPath` in `~/.ssh/config` and authenticate once
+with `ssh HOST` in a terminal: the app reuses that master connection while it lives,
+but never creates or keeps one itself. Set `ForwardAgent yes` only for trusted hosts;
+Herdr servers that support it then keep remote panes' `SSH_AUTH_SOCK` working
+across reconnects. A failed host is retried with backoff capped at 30 seconds.
 Runtime dependencies include GPUI, `herdr-client`, `serde_json` for API parameters,
 `ureq` for background GitHub owner avatar downloads, and `serde`/`config` (aliased
 as `config_loader`, TOML-only) for GUI configuration. `toml` preserves strict

@@ -62,6 +62,14 @@ exit 127"#,
     format!("/bin/sh -c {}", quote(&script))
 }
 
+/// Agent forwarding and connection sharing follow the user's SSH config, as
+/// upstream's client does. `ForwardAgent yes` lets the remote bridge register
+/// the forwarded agent with the daemon, so remote panes keep a working
+/// `SSH_AUTH_SOCK` across reconnects. A configured `ControlPath` lets a master
+/// the user authenticated interactively (MFA, passwords) carry these
+/// noninteractive connections. `ControlMaster=no` still forbids this child from
+/// becoming a master: killing it must never end the user's other sessions, and
+/// it must not leave a persistent background process behind.
 #[cfg(unix)]
 pub(super) fn command(target: &str, remote_command: &str) -> Command {
     let mut command = Command::new("ssh");
@@ -83,15 +91,11 @@ pub(super) fn command(target: &str, remote_command: &str) -> Command {
         "-o",
         "ServerAliveCountMax=4",
         "-o",
-        "ForwardAgent=no",
-        "-o",
         "ForwardX11=no",
         "-o",
         "ClearAllForwardings=yes",
         "-o",
         "ControlMaster=no",
-        "-o",
-        "ControlPath=none",
         "--",
         target,
     ]);
@@ -283,11 +287,16 @@ printf '%s\n' "$hello"
         for option in [
             "BatchMode=yes",
             "StrictHostKeyChecking=yes",
-            "ForwardAgent=no",
-            "ControlPath=none",
+            "ControlMaster=no",
         ] {
             assert!(args.contains(&option));
         }
+        // The user's SSH config decides agent forwarding and which master to share.
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.starts_with("ForwardAgent=") || arg.starts_with("ControlPath="))
+        );
         assert_eq!(args[args.len() - 3], "--");
         assert_eq!(args[args.len() - 2], "user@host;not-a-command");
         assert_eq!(quote("a'b"), "'a'\\''b'");
