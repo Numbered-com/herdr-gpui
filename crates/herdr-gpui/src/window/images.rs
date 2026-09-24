@@ -86,21 +86,25 @@ impl HerdrWindow {
         cx.notify();
     }
 
-    /// The daemon stages clipboard images beside the pane's processes, so the
-    /// bridge serves local endpoints too: GUI text paste cannot carry an image.
-    /// Only macOS and Linux have a bounded background clipboard reader.
-    pub(crate) fn accepts_clipboard_images(&self) -> bool {
-        cfg!(any(target_os = "macos", target_os = "linux"))
-            && self.menu.page.is_none()
+    fn accepts_image_input(&self) -> bool {
+        self.menu.page.is_none()
             && self.live.status.is_connected()
             && self.input_ready()
             && !self.mouse_focus_pending()
     }
 
+    /// The daemon stages clipboard images beside the pane's processes, so the
+    /// bridge serves local endpoints too: GUI text paste cannot carry an image.
+    /// Only macOS and Linux have a bounded background clipboard reader.
+    pub(crate) fn accepts_clipboard_images(&self) -> bool {
+        cfg!(any(target_os = "macos", target_os = "linux")) && self.accepts_image_input()
+    }
+
     /// Dropped files and pasted image paths need bridging only when the pane
     /// runs on another host; a local pane can already read the original path.
+    /// File drops do not read the clipboard, so this has no platform gate.
     pub(crate) fn accepts_remote_images(&self) -> bool {
-        self.selected_is_remote() && self.accepts_clipboard_images()
+        self.selected_is_remote() && self.accepts_image_input()
     }
 
     fn selected_is_remote(&self) -> bool {
@@ -281,7 +285,9 @@ impl HerdrWindow {
         prepare: impl FnOnce() -> crate::Result<Prepared> + Send + 'static,
         cx: &mut Context<Self>,
     ) {
-        if !self.accepts_clipboard_images() {
+        // Callers choose clipboard or remote eligibility. Unsupported platforms
+        // still report the client's typed reservation error below.
+        if !self.accepts_image_input() {
             return;
         }
         // Keep a cancelled preparation until it actually exits. Reconnecting or
