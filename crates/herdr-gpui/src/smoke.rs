@@ -24,6 +24,10 @@ pub static EXIT_CODE: AtomicU8 = AtomicU8::new(0);
 #[path = "smoke_selection.rs"]
 mod selection;
 
+#[cfg(target_os = "macos")]
+#[path = "smoke_clipboard.rs"]
+mod clipboard;
+
 fn banner_height() -> f32 {
     if env!("HERDR_BUILD_WORKTREE") == "1" {
         22.
@@ -1306,6 +1310,13 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
         }
         if completed {
             #[cfg(target_os = "macos")]
+            if let Err(error) = clipboard::verify(handle, cx).await {
+                EXIT_CODE.store(1, Ordering::SeqCst);
+                eprintln!("GUI clipboard FAIL: {error:#}");
+                let _ = cx.update(|cx| cx.quit());
+                return;
+            }
+            #[cfg(target_os = "macos")]
             if let Err(error) = selection::verify(handle, cx).await {
                 EXIT_CODE.store(1, Ordering::SeqCst);
                 eprintln!("GUI selection FAIL: {error:#}");
@@ -1314,6 +1325,13 @@ pub fn start(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
             }
             match second_window(handle, cx).await {
                 Ok(()) => {
+                    #[cfg(target_os = "macos")]
+                    if let Err(error) = clipboard::verify_remote(cx).await {
+                        EXIT_CODE.store(1, Ordering::SeqCst);
+                        eprintln!("GUI remote clipboard FAIL: {error:#}");
+                        let _ = cx.update(|cx| cx.quit());
+                        return;
+                    }
                     eprintln!("GUI integration PASS: same boot={boot}, 3 workspaces / 4 tabs, persisted shell output after reconnect, external workspace pushed to idle GUI, second window on its own space");
                     EXIT_CODE.store(0, Ordering::SeqCst);
                 }
@@ -1507,6 +1525,9 @@ fn has_output(frame: &FrameData, marker: &str) -> bool {
             row.iter()
                 .map(|cell| cell.symbol.as_str())
                 .collect::<String>()
+                // The daemon paints a scrollbar after the terminal's last column
+                // once this fixture has produced more than a screen of output.
+                .trim_end_matches(['▕', '▐'])
                 .trim()
                 == marker
         })

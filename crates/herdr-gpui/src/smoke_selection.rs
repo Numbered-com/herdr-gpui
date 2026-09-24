@@ -14,6 +14,10 @@ pub(super) async fn verify(handle: WindowHandle<HerdrWindow>, cx: &mut AsyncApp)
 }
 
 async fn cases(handle: WindowHandle<HerdrWindow>, cx: &mut AsyncApp) -> Result<()> {
+    wait(handle, cx, "selection input readiness", |view, _, cx| {
+        Ok(view.read(cx).input_ready().then_some(()))
+    })
+    .await?;
     for (index, (expected, reverse)) in
         [("你好世界", false), ("你好世界", true), ("A你 好B ", false)]
             .into_iter()
@@ -164,14 +168,14 @@ async fn cases(handle: WindowHandle<HerdrWindow>, cx: &mut AsyncApp) -> Result<(
     Ok(())
 }
 
-fn key(name: &str, window: &mut Window, cx: &mut App) -> Result<()> {
+pub(super) fn key(name: &str, window: &mut Window, cx: &mut App) -> Result<()> {
     if !window.dispatch_keystroke(Keystroke::parse(name)?, cx) {
         bail!("unhandled CJK fixture key {name}");
     }
     Ok(())
 }
 
-async fn wait<T>(
+pub(super) async fn wait<T>(
     handle: WindowHandle<HerdrWindow>,
     cx: &mut AsyncApp,
     label: &str,
@@ -204,6 +208,17 @@ async fn wait<T>(
             return Ok(result);
         }
         if Instant::now() >= deadline {
+            // This harness only connects to the parent's isolated synthetic shell.
+            handle.update(cx, |view, _, _| {
+                if let Some(surface) = &view.live.surface {
+                    for row in surface.frame.cells.chunks(usize::from(surface.frame.width)) {
+                        eprintln!(
+                            "fixture row: {:?}",
+                            row.iter().map(|c| c.symbol.as_str()).collect::<String>()
+                        );
+                    }
+                }
+            })?;
             bail!("timed out waiting for {label}");
         }
         cx.background_executor()

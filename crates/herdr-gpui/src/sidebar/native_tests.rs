@@ -60,6 +60,32 @@ impl Target {
         unsafe { msg_send![self.window, isKeyWindow] }
     }
 
+    pub(crate) fn paste(&self) -> Result<()> {
+        let characters = objc2_foundation::NSString::from_str("v");
+        let characters = (&*characters as *const objc2_foundation::NSString)
+            .cast_mut()
+            .cast::<objc::runtime::Object>();
+        // GPUI exposes no safe native event-injection API. These retained AppKit
+        // objects are main-thread-only and live across this callback; dispatch
+        // outside an App update so the native key equivalent can reenter GPUI.
+        unsafe {
+            let number: isize = msg_send![self.window, windowNumber];
+            let event: id = msg_send![class!(NSEvent), keyEventWithType: 10_usize
+                location: NSPoint::new(0., 0.) modifierFlags: (1_usize << 20)
+                timestamp: 0_f64 windowNumber: number context: nil
+                characters: characters charactersIgnoringModifiers: characters
+                isARepeat: false keyCode: 9_u16];
+            if event == nil {
+                bail!("cannot create native Cmd-V event");
+            }
+            let handled: bool = msg_send![self.window, performKeyEquivalent: event];
+            if !handled {
+                let _: () = msg_send![self.window, sendEvent: event];
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn click(&self, x: f64, y: f64) -> Result<()> {
         self.pointer_events(&[(1, x, y), (2, x, y)])
     }
