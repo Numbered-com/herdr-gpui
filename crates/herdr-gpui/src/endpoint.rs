@@ -21,6 +21,17 @@ pub(super) const LOCAL: &str = "local";
 const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
 const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
 
+/// How much of the window an update changes. Ordered, so several updates
+/// combine into the widest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Redraw {
+    #[default]
+    None,
+    /// Only the terminal surface: the sidebar keeps its last layout.
+    Terminal,
+    Window,
+}
+
 pub(super) struct Release {
     inbox: Arc<Mutex<LiveState>>,
     drained: Arc<AtomicBool>,
@@ -157,9 +168,14 @@ impl Endpoint {
         self.retry_at = Instant::now() + self.retry_delay();
     }
 
-    fn poll(&mut self, now: Instant) -> bool {
-        let mut changed = false;
+    fn poll(&mut self, now: Instant) -> Redraw {
+        let mut changed = Redraw::None;
         if let Some(mut state) = self.connection.take_update() {
+            changed = if self.live.only_surface_changed(&state) {
+                Redraw::Terminal
+            } else {
+                Redraw::Window
+            };
             if state.notifications_lost
                 || !state.status.is_connected()
                 || self
@@ -173,7 +189,6 @@ impl Endpoint {
             }
             self.toasts.receive(state.notifications.drain(..));
             self.live = state;
-            changed = true;
         }
         if self
             .connection
@@ -183,7 +198,7 @@ impl Endpoint {
         {
             self.connection.handle = None;
             self.retry_at = now + self.retry_delay();
-            changed = true;
+            changed = Redraw::Window;
         }
         if self.connection.handle.is_some()
             && self.live.status.is_connected()
@@ -547,7 +562,7 @@ impl HerdrWindow {
                 }
             }
         }
-        let mut changed = false;
+        let mut changed = Redraw::None;
         for (index, endpoint) in self.endpoints.iter_mut().enumerate() {
             let updated = endpoint.poll(Instant::now());
             self.sound.poll(
@@ -556,9 +571,9 @@ impl HerdrWindow {
                 index == self.selected_endpoint && self.active,
                 Instant::now(),
             );
-            changed |= updated;
+            changed = changed.max(updated);
             // Remote cwd strings must never be resolved against this machine's Git repos.
-            if updated
+            if updated == Redraw::Window
                 && index == 0
                 && let (Some(avatars), Some(snapshot)) =
                     (&mut self.avatars, &endpoint.live.snapshot)
@@ -573,20 +588,22 @@ impl HerdrWindow {
                 && Instant::now() >= endpoint.retry_at
             {
                 endpoint.connect(self.options, index == 0 && self.selected_endpoint == 0);
-                changed = true;
+                changed = Redraw::Window;
             }
         }
         self.restore_selection(cx);
-        changed |= self.tick_toasts(
+        if self.tick_toasts(
             self.menu.page.is_some() || self.toasts_hidden,
             Instant::now(),
-        );
+        ) {
+            changed = Redraw::Window;
+        }
         let endpoint = &mut self.endpoints[self.selected_endpoint];
         if self.selected_generation != endpoint.generation {
             self.reset_selected();
         }
         let endpoint = &mut self.endpoints[self.selected_endpoint];
-        if changed {
+        if changed != Redraw::None {
             self.live = endpoint.live.clone();
             if !self.live.status.is_connected() {
                 self.local_error = None;
@@ -629,7 +646,7 @@ impl HerdrWindow {
                     self.activation_deadline = Some(Instant::now());
                 }
             }
-            changed = true;
+            changed = Redraw::Window;
         }
         if self.navigation_ready() {
             self.activation_deadline = None;
@@ -659,10 +676,12 @@ impl HerdrWindow {
                 self.reconnect();
             }
             self.local_error = Some(error);
-            changed = true;
+            changed = Redraw::Window;
         }
-        if changed {
-            cx.notify();
+        match changed {
+            Redraw::None => {}
+            Redraw::Terminal => self.redraw_terminal(cx),
+            Redraw::Window => cx.notify(),
         }
     }
 
@@ -790,13 +809,13 @@ mod tests {
             )));
         }
         let now = Instant::now();
-        assert!(local.poll(now));
-        assert!(remote.poll(now));
+        assert_eq!(local.poll(now), Redraw::Window);
+        assert_eq!(remote.poll(now), Redraw::Window);
         assert!(local.live.notifications.is_empty());
         assert!(remote.live.notifications.is_empty());
         assert_eq!(local.toasts.entries[0].1.title, "Local");
         assert_eq!(remote.toasts.entries[0].1.title, "Remote");
-        assert!(!remote.poll(now));
+        assert_eq!(remote.poll(now), Redraw::None);
         local.stop();
         assert!(local.toasts.entries.is_empty());
         assert_eq!(remote.toasts.entries.len(), 1);
@@ -853,7 +872,7 @@ mod tests {
             assert_eq!(state.notifications.len(), PENDING_LIMIT);
             assert!(state.notifications.iter().all(|n| n.pane_id.is_none()));
         }
-        assert!(endpoint.poll(Instant::now()));
+        assert_eq!(endpoint.poll(Instant::now()), Redraw::Window);
         assert_eq!(endpoint.toasts.entries.len(), PENDING_LIMIT);
         assert!(
             endpoint
@@ -864,7 +883,11 @@ mod tests {
         );
         // The loss marker moves with the batch exactly once, not every snapshot.
         inbox.lock().unwrap().dirty = true;
-        assert!(endpoint.poll(Instant::now()));
+        assert_eq!(
+            endpoint.poll(Instant::now()),
+            Redraw::Terminal,
+            "an update that changes nothing the chrome reads spares the sidebar"
+        );
         assert!(!endpoint.live.notifications_lost);
         assert_eq!(endpoint.toasts.entries.len(), PENDING_LIMIT);
     }

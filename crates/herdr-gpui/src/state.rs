@@ -113,6 +113,77 @@ impl Default for LiveState {
 }
 
 impl LiveState {
+    /// Whether `next` repaints only the terminal: everything else the window
+    /// draws from, the sidebar above all, reads as it did in `self`. Every
+    /// field is named so a new one must decide whether it can change quietly.
+    pub(crate) fn only_surface_changed(&self, next: &Self) -> bool {
+        let Self {
+            sound_events,
+            reload_sound,
+            sound_cancel,
+            sound_connection_cancel,
+            snapshot,
+            surface: _,
+            status,
+            error,
+            missing_installation,
+            local_daemon_peer,
+            supports_workspace_get,
+            dirty: _,
+            dialog_response,
+            notifications,
+            notifications_lost,
+            outer_focused,
+            activation,
+            supports_surface,
+            tab_rename,
+            pane_rename,
+            scroll_request,
+        } = next;
+        let same_arc = |a: &Option<Arc<_>>, b: &Option<Arc<_>>| match (a, b) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (a, b) => a.is_none() && b.is_none(),
+        };
+        let pending_rename = |a: &Option<RenameResult>, b: &Option<RenameResult>| match (a, b) {
+            (Some(a), Some(b)) => {
+                a.request == b.request && a.result.is_none() && b.result.is_none()
+            }
+            (a, b) => a.is_none() && b.is_none(),
+        };
+        sound_events.is_empty()
+            && !reload_sound
+            && Arc::ptr_eq(sound_cancel, &self.sound_cancel)
+            && Arc::ptr_eq(sound_connection_cancel, &self.sound_connection_cancel)
+            && same_arc(snapshot, &self.snapshot)
+            && *status == self.status
+            && *error == self.error
+            && *missing_installation == self.missing_installation
+            && *local_daemon_peer == self.local_daemon_peer
+            && *supports_workspace_get == self.supports_workspace_get
+            && match (dialog_response, &self.dialog_response) {
+                (Some((a, None)), Some((b, None))) => a == b,
+                (a, b) => a.is_none() && b.is_none(),
+            }
+            && notifications.is_empty()
+            && !notifications_lost
+            && *outer_focused == self.outer_focused
+            && match (activation, &self.activation) {
+                (Some(a), Some(b)) => {
+                    a.request == b.request
+                        && a.boot == b.boot
+                        && a.revision == b.revision
+                        && a.failed == b.failed
+                        && a.focus == b.focus
+                        && a.active == b.active
+                }
+                (a, b) => a.is_none() && b.is_none(),
+            }
+            && *supports_surface == self.supports_surface
+            && pending_rename(tab_rename, &self.tab_rename)
+            && pending_rename(pane_rename, &self.pane_rename)
+            && *scroll_request == self.scroll_request
+    }
+
     fn has_operation_result(&self, request_id: &str) -> bool {
         self.dialog_response
             .as_ref()
@@ -972,5 +1043,50 @@ mod tests {
         assert!(state.snapshot.is_none() && state.surface.is_none());
         assert!(!state.status.is_connected());
         assert_eq!(state.error.as_deref(), Some("closed"));
+    }
+
+    #[test]
+    fn only_a_new_surface_spares_the_chrome() {
+        let snapshot = snapshot();
+        let mut old = LiveState::default();
+        old.apply(ClientEvent::Snapshot(snapshot.clone()));
+        old.apply(ClientEvent::Surface(surface(&snapshot)));
+        // The mailbox hands the window clones: shared snapshot, new surface.
+        let mut next = old.clone();
+        next.apply(ClientEvent::Surface(Arc::new(PaneSurfaceFrame {
+            surface_revision: 2,
+            ..(*surface(&snapshot)).clone()
+        })));
+        assert!(old.only_surface_changed(&next));
+        assert!(old.only_surface_changed(&old.clone()));
+
+        type Change = (&'static str, fn(&mut LiveState));
+        let changes: [Change; 9] = [
+            ("snapshot", |s| {
+                s.snapshot = s.snapshot.as_deref().cloned().map(Arc::new);
+            }),
+            ("status", |s| s.status = ConnectionStatus::Disconnected),
+            ("error", |s| s.error = Some("lost".into())),
+            ("notification lost", |s| s.notifications_lost = true),
+            ("sound", |s| s.reload_sound = true),
+            ("dialog answer", |s| {
+                s.dialog_response = Some(("remove".into(), Some(Ok(serde_json::Value::Null))));
+            }),
+            ("rename answer", |s| {
+                s.pane_rename = Some(RenameResult {
+                    request: "rename".into(),
+                    result: Some(Ok(())),
+                });
+            }),
+            ("scroll answer", |s| {
+                s.scroll_request = Some("scroll".into())
+            }),
+            ("outer focus", |s| s.outer_focused = Some(true)),
+        ];
+        for (what, change) in changes {
+            let mut changed = next.clone();
+            change(&mut changed);
+            assert!(!old.only_surface_changed(&changed), "{what}");
+        }
     }
 }

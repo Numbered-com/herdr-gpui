@@ -124,9 +124,31 @@ pub(crate) struct HerdrWindow {
     pub(crate) sidebar_revealed: [std::cell::Cell<Option<usize>>; 2],
     pub(crate) _poll: Task<()>,
     pub(crate) _activation: Subscription,
+    /// The sidebar as a cached view; see `sidebar::SidebarView`.
+    pub(crate) sidebar_view: Entity<sidebar::SidebarView>,
+    /// Notified in place of this view by a surface-only update, which redraws
+    /// the window while the cached sidebar keeps its layout.
+    pub(crate) surface_signal: Entity<SurfaceSignal>,
+    pub(crate) _sidebar_invalidation: Subscription,
 }
 
+/// See `HerdrWindow::surface_signal`.
+pub(crate) struct SurfaceSignal;
+
 impl HerdrWindow {
+    /// Redraws for a surface-only update. Notifying this view instead would
+    /// also invalidate the cached sidebar, rebuilding every row for a frame
+    /// whose rows did not change.
+    pub(crate) fn redraw_terminal(&mut self, cx: &mut Context<Self>) {
+        self.surface_signal.update(cx, |_, cx| cx.notify());
+    }
+
+    /// Every notification of this view reaches the cached sidebar, so it
+    /// redraws exactly when it did as part of this view.
+    pub(crate) fn invalidate_sidebar(cx: &mut Context<Self>) -> Subscription {
+        cx.observe_self(|this, cx| this.sidebar_view.update(cx, |_, cx| cx.notify()))
+    }
+
     /// Runs every display frame while the window draws, so a new surface is
     /// shown on the refresh it arrives for instead of on the next timer tick.
     fn poll_on_frame(this: WeakEntity<Self>, window: &mut Window) {
@@ -231,6 +253,8 @@ impl HerdrWindow {
         };
         let focus = cx.focus_handle();
         window.focus(&focus);
+        let weak = cx.weak_entity();
+        let sidebar_view = cx.new(|_| sidebar::SidebarView::new(weak));
         let timer = cx.background_executor().clone();
         let poll = cx.spawn_in(window, async move |this, cx| {
             loop {
@@ -322,6 +346,9 @@ impl HerdrWindow {
             sidebar_scroll: Default::default(),
             sidebar_revealed: Default::default(),
             _poll: poll,
+            sidebar_view,
+            surface_signal: cx.new(|_| SurfaceSignal),
+            _sidebar_invalidation: Self::invalidate_sidebar(cx),
             _activation: cx.observe_window_activation(window, |this, window, cx| {
                 this.active = window.is_window_active();
                 if !this.active {

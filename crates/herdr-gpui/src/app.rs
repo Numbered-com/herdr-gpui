@@ -311,7 +311,7 @@ mod tests {
                 assert_eq!(state.config.layout.mode, mode);
                 assert_eq!(Some(state.theme.clone()), Theme::builtin("Nord"));
                 assert!(state.config_load.is_none());
-                window.draw(cx).clear();
+                crate::sidebar::layout_tests::full_draw(window, cx).clear();
             });
             let row = cx
                 .debug_bounds("row-herdr")

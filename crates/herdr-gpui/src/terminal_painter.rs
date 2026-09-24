@@ -1,14 +1,14 @@
+mod glyphs;
 mod graphics;
 
+use self::glyphs::GlyphCache;
 use self::graphics::Graphic;
 use crate::config::Theme;
 use crate::terminal::*;
 use gpui::*;
 use herdr_client::protocol::{CellData, FrameData, PaneSurfacePane, SurfaceRect};
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-const CACHE_LIMIT: usize = 4096;
 /// The selection tints the cells it covers instead of replacing their colors:
 /// a terminal's own background is meaningful, and the glyphs above it stay
 /// readable on every theme.
@@ -76,8 +76,7 @@ pub(crate) struct TerminalPainter {
     config: Option<Font>,
     // Resolved foreground includes reverse, dim and hidden; only bold/italic
     // affect shaping. Decorations remain at exact cell-grid coordinates.
-    lines: HashMap<(u32, u16), HashMap<String, ShapedLine>>,
-    entries: usize,
+    glyphs: GlyphCache,
     cell_width: Option<f32>,
     diagnostics: PaintDiagnostics,
     #[cfg(feature = "integration-test")]
@@ -91,8 +90,7 @@ impl Default for TerminalPainter {
             cell_height: CELL_HEIGHT,
             theme: Theme::default(),
             config: None,
-            lines: HashMap::new(),
-            entries: 0,
+            glyphs: GlyphCache::default(),
             cell_width: None,
             diagnostics: PaintDiagnostics::new(Instant::now()),
             #[cfg(feature = "integration-test")]
@@ -143,10 +141,6 @@ fn paint_glyphs(
     Ok(())
 }
 
-fn style(cell: &CellData, theme: &Theme) -> (u32, u16) {
-    (cell_colors(cell, theme).0, cell.modifier & (BOLD | ITALIC))
-}
-
 fn background_spans<'a>(
     row: &'a [CellData],
     theme: &'a Theme,
@@ -170,8 +164,7 @@ impl TerminalPainter {
             self.font_size = font_size;
             self.cell_height = cell_height;
             self.theme = theme;
-            self.lines.clear();
-            self.entries = 0;
+            self.glyphs.clear();
             self.cell_width = None;
         }
     }
@@ -179,8 +172,7 @@ impl TerminalPainter {
     #[cfg(feature = "integration-test")]
     pub fn reset_cache(&mut self) {
         self.config = None;
-        self.lines.clear();
-        self.entries = 0;
+        self.glyphs.clear();
         self.cell_width = None;
     }
 
@@ -189,40 +181,45 @@ impl TerminalPainter {
         let Some(base) = &self.config else {
             anyhow::bail!("missing font config");
         };
-        for ((color, flags), lines) in &self.lines {
-            let mut font = base.clone();
-            if flags & BOLD != 0 {
-                font.weight = FontWeight::BOLD;
-            }
-            if flags & ITALIC != 0 {
-                font.style = FontStyle::Italic;
-            }
-            for (symbol, cached) in lines {
-                let fresh = window.text_system().shape_line(
-                    symbol.clone().into(),
-                    px(self.font_size),
-                    &[TextRun {
-                        len: symbol.len(),
-                        font: font.clone(),
-                        color: rgb(*color).into(),
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    }],
-                    None,
-                );
-                // Includes native glyph IDs/positions, font IDs, metrics and colors.
-                if format!("{fresh:?}") != format!("{cached:?}") {
-                    anyhow::bail!("cached glyph/style mismatch: {symbol:?}");
-                }
+        for (style, symbol, cached) in self.glyphs.iter() {
+            let fresh = self.shape(base, style, &symbol, window);
+            // Includes native glyph IDs/positions, font IDs and metrics.
+            if format!("{fresh:?}") != format!("{cached:?}") {
+                anyhow::bail!("cached glyph/style mismatch: {symbol:?}");
             }
         }
-        Ok(self.entries)
+        Ok(self.glyphs.len())
     }
+
+    /// Glyphs for one cell symbol. Color is left to `paint_glyphs`, so one
+    /// shape serves every color the symbol is drawn in.
+    fn shape(&self, font: &Font, style: usize, symbol: &str, window: &Window) -> ShapedLine {
+        let mut font = font.clone();
+        let modifier = glyphs::style_modifier(style);
+        if modifier & BOLD != 0 {
+            font.weight = FontWeight::BOLD;
+        }
+        if modifier & ITALIC != 0 {
+            font.style = FontStyle::Italic;
+        }
+        window.text_system().shape_line(
+            SharedString::from(symbol.to_owned()),
+            px(self.font_size),
+            &[TextRun {
+                len: symbol.len(),
+                font,
+                color: Hsla::default(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        )
+    }
+
     fn configure(&mut self, font: &Font) {
         if self.config.as_ref() != Some(font) {
-            self.lines.clear();
-            self.entries = 0;
+            self.glyphs.clear();
             self.cell_width = None;
             self.config = Some(font.clone());
         }
@@ -371,47 +368,25 @@ impl TerminalPainter {
                 {
                     continue;
                 }
-                let key = style(cell, &self.theme);
-                let mut overflow = HashMap::new();
-                let lines = if self.entries < CACHE_LIMIT || self.lines.contains_key(&key) {
-                    self.lines.entry(key).or_default()
-                } else {
-                    &mut overflow
-                };
-                let existing = cached.then(|| lines.get(cell.symbol.as_str())).flatten();
+                let style = glyphs::style(cell.modifier);
                 let newly_shaped;
-                let shaped = if let Some(line) = existing {
-                    line
-                } else {
-                    let mut font = font.clone();
-                    if key.1 & BOLD != 0 {
-                        font.weight = FontWeight::BOLD;
-                    }
-                    if key.1 & ITALIC != 0 {
-                        font.style = FontStyle::Italic;
-                    }
-                    #[cfg(feature = "integration-test")]
-                    {
-                        counts.shapes += 1;
-                    }
-                    newly_shaped = window.text_system().shape_line(
-                        cell.symbol.clone().into(),
-                        px(self.font_size),
-                        &[TextRun {
-                            len: cell.symbol.len(),
-                            font,
-                            color: rgb(key.0).into(),
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        }],
-                        None,
-                    );
-                    if cached && self.entries < CACHE_LIMIT {
-                        self.entries += 1;
-                        lines.entry(cell.symbol.clone()).or_insert(newly_shaped)
-                    } else {
-                        &newly_shaped
+                let shaped = match cached
+                    .then(|| self.glyphs.get(style, &cell.symbol))
+                    .flatten()
+                {
+                    Some(line) => line,
+                    None => {
+                        #[cfg(feature = "integration-test")]
+                        {
+                            counts.shapes += 1;
+                        }
+                        let line = self.shape(font, style, &cell.symbol, window);
+                        if cached && self.glyphs.has_room() {
+                            self.glyphs.insert(style, &cell.symbol, line)
+                        } else {
+                            newly_shaped = line;
+                            &newly_shaped
+                        }
                     }
                 };
                 let position = origin
@@ -419,8 +394,8 @@ impl TerminalPainter {
                         px((index % usize::from(frame.width)) as f32 * cell_width),
                         px((index / usize::from(frame.width)) as f32 * self.cell_height),
                     );
-                let result =
-                    paint_glyphs(shaped, position, px(self.cell_height), rgb(key.0), window);
+                let color = rgb(cell_colors(cell, &self.theme).0);
+                let result = paint_glyphs(shaped, position, px(self.cell_height), color, window);
                 paint_errors += u64::from(result.is_err());
                 #[cfg(feature = "integration-test")]
                 {
@@ -446,7 +421,7 @@ impl TerminalPainter {
                     .then(|| Graphic::from_symbol(&cell.symbol))
                     .flatten()
                 {
-                    let color = rgb(style(cell, &self.theme).0);
+                    let color = rgb(cell_colors(cell, &self.theme).0);
                     graphic.rectangles(
                         Bounds::new(position, size(px(cell_width), px(self.cell_height))),
                         window.scale_factor(),
@@ -704,7 +679,7 @@ mod tests {
                             window,
                             cx,
                         );
-                        assert_eq!(painter.entries, 0);
+                        assert_eq!(painter.glyphs.len(), 0);
                         assert_eq!(
                             cx.default_global::<crate::performance::Counts>()
                                 .decorations
@@ -746,22 +721,16 @@ mod tests {
     }
 
     #[test]
-    fn cache_style_includes_resolved_color_and_font_but_not_grid_decorations() {
-        let theme = Theme::default();
-        let base = cell("e\u{301}");
-        let mut changed = base.clone();
-        changed.modifier = 8 | 256;
-        changed.hyperlink = Some(1);
-        assert_eq!(style(&base, &theme), style(&changed, &theme));
-        for modifier in [1, 4, 2, 64, 128] {
-            changed.modifier = modifier;
-            assert_ne!(style(&base, &theme), style(&changed, &theme));
+    fn cache_style_is_the_font_face_alone() {
+        // Color, dim, reverse, hidden and grid decorations are painted, not shaped.
+        for modifier in [0, 2, 8, 64, 128, 256, 2 | 64 | 128 | 256] {
+            assert_eq!(glyphs::style(modifier), 0, "{modifier}");
         }
-        changed.modifier = 0;
-        changed.bg = 0x02abcdef;
-        assert_eq!(style(&base, &theme), style(&changed, &theme));
-        changed.fg = 0x02123456;
-        assert_ne!(style(&base, &theme), style(&changed, &theme));
+        let styles = [BOLD, ITALIC, BOLD | ITALIC].map(glyphs::style);
+        assert_eq!(styles, [1, 2, 3]);
+        for style in 0..4 {
+            assert_eq!(glyphs::style(glyphs::style_modifier(style)), style);
+        }
     }
 
     #[cfg(feature = "integration-test")]
@@ -816,7 +785,7 @@ mod tests {
                             cx,
                         );
                         let after = cx.default_global::<crate::performance::Counts>();
-                        assert_eq!(painter.entries, 0);
+                        assert_eq!(painter.glyphs.len(), 0);
                         assert_eq!(after.shapes, before.shapes);
                         assert_eq!(after.glyphs, before.glyphs);
                         assert_eq!(after.decorations - before.decorations, 2);
@@ -835,7 +804,8 @@ mod tests {
                         cx,
                     );
                     assert_eq!(
-                        painter.entries, 1,
+                        painter.glyphs.len(),
+                        1,
                         "ordinary text still uses the glyph cache"
                     );
                 },
@@ -888,13 +858,13 @@ mod tests {
             });
         };
         draw(frame.clone(), font("Menlo"));
-        assert_eq!(painter.borrow().entries, 3);
+        assert_eq!(painter.borrow().glyphs.len(), 3);
         let original_width = painter.borrow().cell_width.unwrap_or_default();
         painter
             .borrow_mut()
             .set_appearance(FONT_SIZE, CELL_HEIGHT, Theme::default());
         assert_eq!(
-            painter.borrow().entries,
+            painter.borrow().glyphs.len(),
             3,
             "unchanged appearance retains glyphs"
         );
@@ -908,31 +878,36 @@ mod tests {
             painter
                 .borrow_mut()
                 .set_appearance(font_size, cell_height, theme.clone());
-            assert_eq!(painter.borrow().entries, 0);
-            assert!(painter.borrow().lines.is_empty());
+            assert_eq!(painter.borrow().glyphs.len(), 0);
             assert!(painter.borrow().cell_width.is_none());
             draw(frame.clone(), font("Menlo"));
-            assert_eq!(painter.borrow().entries, 3);
+            assert_eq!(painter.borrow().glyphs.len(), 3);
             assert!(painter.borrow().cell_width.unwrap_or_default() > original_width * 1.5);
             let painter = painter.borrow();
-            for lines in painter.lines.values() {
-                for line in lines.values() {
-                    assert_eq!(line.font_size, px(font_size));
-                }
+            for (_, _, line) in painter.glyphs.iter() {
+                assert_eq!(line.font_size, px(font_size));
             }
         }
         painter
             .borrow_mut()
             .set_appearance(FONT_SIZE, CELL_HEIGHT, Theme::default());
         draw(frame.clone(), font("Menlo"));
-        assert_eq!(painter.borrow().entries, 3);
+        assert_eq!(painter.borrow().glyphs.len(), 3);
         let mut changed = frame.clone();
         changed.cells[0].fg = 0x02123456;
         changed.cells[1].modifier = 1 | 4;
         draw(changed, font("Menlo"));
-        assert_eq!(painter.borrow().entries, 5);
+        assert_eq!(
+            painter.borrow().glyphs.len(),
+            4,
+            "a new color reuses the glyph; only bold italic shapes again"
+        );
         draw(frame.clone(), font("Courier"));
-        assert_eq!(painter.borrow().entries, 3, "new font discards old glyphs");
+        assert_eq!(
+            painter.borrow().glyphs.len(),
+            3,
+            "new font discards old glyphs"
+        );
         // A changed icon cascade reshapes every cell: the same family can now
         // resolve Private Use Area glyphs a text face does not carry.
         let with_fallbacks = |families: &[&str]| {
@@ -947,19 +922,19 @@ mod tests {
         assert_ne!(cascaded, font("Courier"));
         draw(frame.clone(), cascaded.clone());
         assert_eq!(
-            painter.borrow().entries,
+            painter.borrow().glyphs.len(),
             3,
             "an added cascade discards old glyphs"
         );
         assert_eq!(painter.borrow().config.as_ref(), Some(&cascaded));
         draw(frame.clone(), with_fallbacks(&["Hack Nerd Font Mono"]));
         assert_eq!(
-            painter.borrow().entries,
+            painter.borrow().glyphs.len(),
             3,
             "a reordered cascade discards old glyphs"
         );
         draw(frame, font("Courier"));
-        let many = FrameData {
+        let colors = FrameData {
             width: 100,
             height: 50,
             cells: (0..5000)
@@ -972,9 +947,26 @@ mod tests {
             hyperlinks: vec![],
             graphics: vec![],
         };
-        draw(many, font("Menlo"));
-        assert_eq!(painter.borrow().entries, CACHE_LIMIT);
-        assert_eq!(painter.borrow().lines.len(), CACHE_LIMIT);
+        draw(colors, font("Menlo"));
+        assert_eq!(
+            painter.borrow().glyphs.len(),
+            1,
+            "truecolor output shares one glyph"
+        );
+        let symbols = FrameData {
+            width: 100,
+            height: 50,
+            cells: (0..5000)
+                .filter_map(|i| char::from_u32(0x4e00 + i))
+                .map(|symbol| cell(&symbol.to_string()))
+                .collect(),
+            cursor: None,
+            hyperlinks: vec![],
+            graphics: vec![],
+        };
+        draw(symbols, font("Menlo"));
+        assert_eq!(painter.borrow().glyphs.len(), glyphs::CACHE_LIMIT);
+        assert_eq!(painter.borrow().glyphs.iter().count(), glyphs::CACHE_LIMIT);
     }
 
     #[test]
@@ -998,7 +990,7 @@ mod tests {
             background_spans(&row, &theme).collect::<Vec<_>>(),
             vec![(0, 2, theme.background)]
         );
-        assert_eq!(style(&row[0], &theme).0, theme.foreground);
-        assert_eq!(style(&row[1], &theme).0, theme.palette[1]);
+        assert_eq!(cell_colors(&row[0], &theme).0, theme.foreground);
+        assert_eq!(cell_colors(&row[1], &theme).0, theme.palette[1]);
     }
 }

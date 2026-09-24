@@ -15,6 +15,11 @@ mod tests;
 
 impl Graphic {
     pub(super) fn from_symbol(symbol: &str) -> Option<Self> {
+        // Every graphic below is one character in U+2500..=U+259F, three UTF-8
+        // bytes; this rejects ASCII, most of any grid, before decoding.
+        if symbol.len() != 3 {
+            return None;
+        }
         let mut chars = symbol.chars();
         let ch = chars.next()?;
         // Do not swallow combining marks or variation selectors.
