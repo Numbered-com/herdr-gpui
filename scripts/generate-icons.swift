@@ -13,12 +13,22 @@ let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UU
 try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: temporary) }
 
-func render(_ sourceName: String, pixels: Int) throws -> Data {
+// Sequoia's Template - Icon - App.sketch uses pixel-aligned margins that vary
+// by resolution, rather than uniformly scaling the 1024px icon. See assets/icons/README.md.
+let macOSInsets = [16: 1, 32: 2, 64: 6, 128: 12, 256: 25, 512: 50, 1024: 100]
+
+func render(_ sourceName: String, pixels: Int, macOS: Bool) throws -> Data {
   let output = temporary.appendingPathComponent("render.png")
   let renderer = Process()
   renderer.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+  // The rounded source has an 896px tile centered in a 1024px canvas. Fit
+  // that tile to Apple's footprint before rasterizing, preserving vector detail.
+  let width = macOS ? Double(pixels - 2 * macOSInsets[pixels]!) * 1024 / 896 : Double(pixels)
+  let offset = (Double(pixels) - width) / 2
   renderer.arguments = [
-    "rsvg-convert", "--width", String(pixels), "--height", String(pixels),
+    "rsvg-convert", "--width", String(width), "--height", String(width),
+    "--page-width", String(pixels), "--page-height", String(pixels),
+    "--left", String(offset), "--top", String(offset),
     "--output", output.path, assets.appendingPathComponent(sourceName).path,
   ]
   try renderer.run()
@@ -54,7 +64,7 @@ func worktreePNG(_ source: Data) -> Data {
 }
 
 for (sourceName, redName, bundleName) in variants {
-  let source = try render(sourceName, pixels: 1024)
+  let source = try render(sourceName, pixels: 1024, macOS: bundleName != nil)
   let redPNG = worktreePNG(source)
   let pngURL = assets.appendingPathComponent(sourceName).deletingPathExtension().appendingPathExtension("png")
   try source.write(to: pngURL)
@@ -67,7 +77,7 @@ for (sourceName, redName, bundleName) in variants {
     for size in [16, 32, 128, 256, 512] {
       for scale in [1, 2] {
         let pixels = size * scale
-        let rendered = try render(sourceName, pixels: pixels)
+        let rendered = try render(sourceName, pixels: pixels, macOS: true)
         let png = isWorktree ? worktreePNG(rendered) : rendered
         let suffix = scale == 2 ? "@2x" : ""
         try png.write(to: iconset.appendingPathComponent("icon_\(size)x\(size)\(suffix).png"))
