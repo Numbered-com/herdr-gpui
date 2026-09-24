@@ -513,6 +513,40 @@ unsupported. Native clipboard/drop
 and real SSH behavior require explicit desktop/host verification in addition to
 the mock-peer and headless tests.
 
+### Native Clipboard Regression Test (macOS)
+
+With an active desktop, Xcode command-line tools (`/usr/bin/python3`), and an
+explicitly selected installed daemon:
+
+```sh
+just test-gui /opt/homebrew/bin/herdr
+# Only the daemon-backed native test:
+HERDR_TEST_BINARY=/opt/homebrew/bin/herdr cargo test --locked -p herdr-gpui \
+  --features integration-test --test live_gui native_gui_live \
+  -- --ignored --nocapture --test-threads=1
+```
+
+The parent process preserves every OS clipboard item/type as opaque in-memory
+data, then restores it after the GUI exits, including failure/timeout cleanup.
+Do not copy new content while this test owns the clipboard. No clipboard backup
+is logged or written to disk; only synthetic fixtures reach the test GUI.
+
+The test launches a private daemon and the real application (not GPUI's headless
+test platform). It publishes UTF-8 plain text, Unicode, multiline text, PNG-only,
+and TIFF-only pasteboards, and sends an AppKit Cmd-V key equivalent to the exact
+fixture window. A raw-mode process in the daemon's terminal checks the exact
+bracketed-paste bytes followed immediately by typing and Enter. Image checks
+verify the pasted path, unchanged PNG bytes, and lossless TIFF-to-PNG pixels.
+Local image-file paths remain literal; remote paths must be staged by the daemon.
+
+The same matrix exercises the real SSH connection worker and remote paste policy
+through a sandbox-only `ssh` substitute that relays to the isolated daemon socket.
+It never invokes OpenSSH, contacts a network host, or discovers a personal daemon.
+This covers the process/wire/remote-routing path, not SSH authentication or a
+different remote operating system. AppKit injection verifies native key routing,
+not hardware keyboard delivery or global shortcut interception. Headless clipboard
+tests remain useful for cancellation and ordering, but do not exercise NSPasteboard.
+
 ## Terminal Links
 
 Click an explicit terminal hyperlink or a visible `http://` / `https://` URL to
