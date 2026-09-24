@@ -137,6 +137,10 @@ impl HerdrWindow {
         {
             self.input_probe.keys += 1;
         }
+        let alt_keys = self
+            .config
+            .option_as_alt
+            .sends_alt(cx.keyboard_layout().id());
         if event.keystroke.modifiers.platform && event.keystroke.key == "v" {
             self.paste(cx);
             cx.stop_propagation();
@@ -148,11 +152,11 @@ impl HerdrWindow {
             // Local agents read the shared clipboard themselves on Ctrl-V.
             && self.accepts_remote_images()
         {
-            self.paste_native_clipboard(true, key_input(event), cx);
+            self.paste_native_clipboard(true, key_input(event, alt_keys), cx);
             cx.stop_propagation();
             window.prevent_default();
         } else if self.marked.is_empty()
-            && let Some(input) = key_input(event)
+            && let Some(input) = key_input(event, alt_keys)
         {
             self.send(input, cx);
             cx.stop_propagation();
