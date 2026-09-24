@@ -6,7 +6,7 @@ use super::{
     ARROW_RESERVE, DEVICE_FOOTER_HEIGHT, HOST_ARROW_WIDTH, HOST_GAP, SidebarDrag,
     agents::agent_labels,
     agents_sort, label_text,
-    layout::{self, SidebarLayout},
+    layout::{self, SidebarLook},
     line_height,
     row::first_text,
     row::{RowIcon, RowKind, RowTree, row},
@@ -28,14 +28,13 @@ impl HerdrWindow {
     ) -> Stateful<Div> {
         let width = sidebar_width(self.sidebar_width, f32::from(window.viewport_size().width));
         let split = self.sidebar_split.unwrap_or(0.5).clamp(0.1, 0.9);
-        let layout = layout::for_mode(self.config.layout.mode);
-        let padding = layout.padding();
+        let look = layout::for_mode(self.config.layout.mode);
+        let layout = look.density;
+        let content_x = look.content_x();
         let gap = layout.gap();
         // Hide secondary status in narrow windows, retaining useful host label space.
         let show_host_status = width >= 200.;
-        let host_label_width = (width
-            - 1.
-            - 2. * padding
+        let host_label_width = (look.content_width(width)
             - HOST_ARROW_WIDTH
             - HOST_GAP
             - if show_host_status { HOST_GAP + 67. } else { 0. })
@@ -80,13 +79,18 @@ impl HerdrWindow {
                     div()
                         .id(SharedString::from(format!("host-{endpoint_id}")))
                         .debug_selector(|| format!("host-{endpoint_id}"))
-                        .h(px(line_height(font) + 2. * layout.host_padding()))
+                        .h(px(line_height(font)
+                            + 2. * layout.host_padding()
+                            + look.chrome_height()))
                         .flex_none()
+                        .relative()
                         .flex()
                         .items_center()
                         .gap(px(HOST_GAP))
-                        .px(px(padding))
-                        .when(selected, |row| row.bg(rgb(theme.active)))
+                        .px(px(content_x))
+                        // Hosts mark selection only; they do not join the rows'
+                        // hover group.
+                        .child(look.highlight(&format!("host-{endpoint_id}"), selected, theme))
                         .text_color(rgb(if endpoint.enabled {
                             theme.foreground
                         } else {
@@ -246,7 +250,7 @@ impl HerdrWindow {
                         },
                         arrow,
                         workspace_badge(workspace, &self.menu.pr_cache, &self.git, theme),
-                        layout,
+                        look,
                         (font, theme),
                     )
                     .on_mouse_down(
@@ -370,7 +374,7 @@ impl HerdrWindow {
                         RowIcon::None,
                         None,
                         None,
-                        layout,
+                        look,
                         (font, theme),
                     )
                     .id(SharedString::from(format!("agent-{endpoint_id}-{id}")))
@@ -410,7 +414,7 @@ impl HerdrWindow {
         if agent_count == 0 {
             agents = agents.child(
                 div()
-                    .px(px(padding))
+                    .px(px(content_x))
                     .text_color(rgb(theme.muted))
                     .truncate()
                     .child("no agents"),
@@ -448,13 +452,13 @@ impl HerdrWindow {
                     })
                     .min_h_0()
                     .overflow_hidden()
-                    .child(header("spaces", font, theme, layout))
+                    .child(header("spaces", font, theme, look))
                     .child(spaces)
                     .child(
                         div()
                             .flex_none()
                             .h(px(line_height(font) + 2. * layout.footer_padding()))
-                            .px(px(padding))
+                            .px(px(content_x))
                             .flex()
                             .items_center()
                             // Menu hugs the sidebar's edge, as in the terminal client.
@@ -528,7 +532,7 @@ impl HerdrWindow {
                             .min_h_0()
                             .overflow_hidden()
                             .child(
-                                header("agents", font, theme, layout)
+                                header("agents", font, theme, look)
                                     .justify_between()
                                     .child(agents_sort(self, cx)),
                             )
@@ -631,15 +635,20 @@ pub(super) fn header(
     label: &'static str,
     font: &FontConfig,
     theme: &Theme,
-    layout: &dyn SidebarLayout,
+    look: SidebarLook,
 ) -> Div {
     div()
+        .debug_selector(|| format!("header-{label}"))
         .flex_none()
-        .h(px(line_height(font) + 2. * layout.header_padding()))
-        .px(px(layout.padding()))
+        .h(px(line_height(font) + 2. * look.density.header_padding()))
+        .px(px(look.content_x()))
         .flex()
         .items_center()
         .text_size(px(font.size))
         .text_color(rgb(theme.muted))
-        .child(label)
+        .child(
+            div()
+                .debug_selector(|| format!("header-label-{label}"))
+                .child(label_text(&look.header_label(label))),
+        )
 }

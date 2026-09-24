@@ -5,8 +5,9 @@
 #[cfg(any(test, feature = "integration-test"))]
 use super::layout_tests;
 use super::{
-    ARROW_RESERVE, ICON_RESERVE, STATUS_WIDTH, glyph_width, layout::SidebarLayout, line_height,
-    segment_budgets, status_indicator,
+    ARROW_RESERVE, ICON_RESERVE, STATUS_WIDTH, glyph_width,
+    layout::{SidebarDensity, SidebarLook},
+    line_height, segment_budgets, status_indicator,
 };
 use crate::config::{FontConfig, Theme};
 use gpui::{prelude::*, *};
@@ -120,7 +121,7 @@ impl RowBadge {
         (pr.is_some() || dirty).then_some(Self { pr, dirty })
     }
 
-    pub(super) fn width(&self, font: &FontConfig, layout: &dyn SidebarLayout) -> f32 {
+    pub(super) fn width(&self, font: &FontConfig, layout: &dyn SidebarDensity) -> f32 {
         let pr = self.pr.as_ref().map_or(0., |pr| pr.width(font, layout));
         // Reserve the icon and the gap before the PR number, even at small fonts.
         pr + if self.dirty {
@@ -153,7 +154,7 @@ impl PrBadge {
     /// Reserved width. Sidebar labels are monospace by default and digits are
     /// near-uniform elsewhere, so an em-fraction per glyph bounds both lines;
     /// a wider face truncates the counts rather than eating the label.
-    pub(super) fn width(&self, font: &FontConfig, layout: &dyn SidebarLayout) -> f32 {
+    pub(super) fn width(&self, font: &FontConfig, layout: &dyn SidebarDensity) -> f32 {
         let mut glyphs = self.number.chars().count();
         if layout.pr_counts() {
             glyphs =
@@ -252,13 +253,18 @@ pub(super) fn row(
     workspace_icon: RowIcon,
     arrow: Option<Stateful<Div>>,
     badge: Option<RowBadge>,
-    layout: &dyn SidebarLayout,
+    look: SidebarLook,
     appearance: (&FontConfig, &Theme),
 ) -> Div {
     let (font, theme) = appearance;
+    let layout = look.density;
     let padding = layout.padding();
+    let content_x = look.content_x();
     let gap = layout.gap();
-    let vertical_padding = layout.row_padding();
+    let vertical_padding = look.row_padding();
+    // Content starts below the highlight's edge, which sits half the row
+    // spacing in from the row's own.
+    let content_top = vertical_padding + look.spacing() / 2.;
     let show_detail = kind == RowKind::Agent
         || if tree == RowTree::None {
             layout.workspace_details()
@@ -279,7 +285,7 @@ pub(super) fn row(
     let arrow_reserve = if reserve_arrow { ARROW_RESERVE } else { 0. };
     let arrow_absent = arrow.is_none();
     let available =
-        (width - 1. - 2. * padding - STATUS_WIDTH - gap - indent - arrow_reserve).max(0.);
+        (look.content_width(width) - STATUS_WIDTH - gap - indent - arrow_reserve).max(0.);
     // Narrow sidebars and large fonts can leave less room than a badge needs.
     // Clip its column within the row rather than painting over the terminal.
     let badge_width = badge.as_ref().map_or(0., |badge| {
@@ -293,34 +299,34 @@ pub(super) fn row(
     let label_width = (available - pr_reserve).max(0.);
     div()
         .debug_selector(|| format!("row-{key}"))
-        .h(px(
-            line_height(font) * if show_detail { 2. } else { 1. } + 2. * vertical_padding
-        ))
+        .h(px(look.row_height(
+            line_height(font) * if show_detail { 2. } else { 1. },
+        )))
         .w_full()
         .min_w_0()
         .flex_none()
         .relative()
-        .pl(px(padding + indent))
-        .pr(px(padding))
+        .pl(px(content_x + indent))
+        .pr(px(content_x))
         .flex()
         .items_start()
         .gap(px(gap))
-        .py(px(vertical_padding))
+        .py(px(content_top))
         .cursor_pointer()
-        .when(focused, |s| s.bg(rgb(theme.active)))
-        .hover(|s| s.bg(rgb(theme.active)))
+        .map(|row| look.hover_group(row))
+        .child(look.highlight(key, focused, theme))
         // Tree lines run in the indent the row already reserves, so a child is
         // tied to its parent without box-drawing glyphs in the label.
-        .when(tree != RowTree::None, |row| {
+        .when(tree != RowTree::None && look.style.tree_lines(), |row| {
             let (color, font) = (theme.muted, font.clone());
-            let gutter = layout.tree_gutter();
+            let gutter = look.tree_gutter();
             row.child(
                 div()
                     .debug_selector(|| format!("tree-{key}"))
                     .absolute()
                     // Between the parent's label column and this row's own dot.
                     .left(px(gutter))
-                    .w(px(padding + indent - gutter))
+                    .w(px(padding + indent - layout.tree_gutter()))
                     .top_0()
                     .bottom_0()
                     .child(
@@ -331,7 +337,7 @@ pub(super) fn row(
                                     bounds,
                                     tree,
                                     &font,
-                                    vertical_padding,
+                                    content_top,
                                     window.scale_factor(),
                                 ) {
                                     window.paint_quad(fill(line, rgb(color)));

@@ -25,6 +25,8 @@ pub enum Error {
     SoundDelay,
     #[error("Sound configuration exceeds 1 MiB")]
     SoundConfigSize,
+    #[error("Unknown sidebar layout {0:?}")]
+    UnknownLayout(String),
     #[error("Could not open audio output: {0}")]
     SoundDevice(#[from] rodio::DeviceSinkError),
     #[error("Audio output failed: {0}")]
