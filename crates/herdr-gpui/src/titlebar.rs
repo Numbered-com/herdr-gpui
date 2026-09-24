@@ -69,7 +69,7 @@ impl HerdrWindow {
                                 .gap(px(4.))
                                 .h(px(24.))
                                 .px(px(6.))
-                                .rounded(px(4.))
+                                .rounded(px(crate::config::corners::CONTROL))
                                 .cursor_pointer()
                                 .hover(|link| {
                                     link.bg(background.blend(rgba((theme.foreground << 8) | 0x14)))
@@ -170,7 +170,7 @@ impl HerdrWindow {
                         .gap(px(4.))
                         .h(px(24.))
                         .px(px(6.))
-                        .rounded(px(4.))
+                        .rounded(px(crate::config::corners::CONTROL))
                         .cursor_pointer()
                         .hover(|button| {
                             button.bg(background.blend(rgba((theme.foreground << 8) | 0x14)))

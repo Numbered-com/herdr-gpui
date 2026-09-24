@@ -278,7 +278,7 @@ impl HerdrWindow {
                                                 .flex_none()
                                                 .px(px(6.))
                                                 .py(px(2.))
-                                                .rounded(px(4.))
+                                                .rounded(px(crate::config::corners::SMALL))
                                                 .border_1()
                                                 .border_color(rgb(theme.active))
                                                 .bg(rgb(theme.background))
@@ -359,7 +359,7 @@ impl HerdrWindow {
                             .flex_none()
                             .px(px(8.))
                             .py(px(4.))
-                            .rounded(px(4.))
+                            .rounded(px(crate::config::corners::CONTROL))
                             .cursor_pointer()
                             .text_color(rgb(theme.muted))
                             .hover(|style| {

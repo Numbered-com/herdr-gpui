@@ -467,6 +467,9 @@ impl HerdrWindow {
             self.pending_releases.clear();
         }
         self.selected_endpoint = index;
+        if self.device_filter.is_some() {
+            self.device_filter = Some(id.to_owned());
+        }
         self.reset_selected();
         self.activation_deadline =
             (!self.endpoints[index].detached).then(|| Instant::now() + ACTIVATION_TIMEOUT);
@@ -1133,6 +1136,33 @@ mod tests {
             view.reconcile_catalog(vec![], cx);
             assert_eq!(view.selected_endpoint, 0);
             assert_eq!(view.endpoints.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn device_filter_follows_navigation_and_catalog_retirement(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        view.update(cx, |view, cx| {
+            view.reconcile_catalog(vec![host("a", true), host("b", true)], cx);
+            assert!(view.select_endpoint("ssh:a", cx));
+            assert!(
+                view.device_filter.is_none(),
+                "All Devices stays an aggregate"
+            );
+            view.device_filter = Some("ssh:a".into());
+            assert!(view.select_endpoint("ssh:b", cx));
+            assert_eq!(view.device_filter.as_deref(), Some("ssh:b"));
+            let mut renamed = host("b", true);
+            renamed.label = "Renamed device".into();
+            view.reconcile_catalog(vec![renamed], cx);
+            assert_eq!(view.device_filter.as_deref(), Some("ssh:b"));
+            view.reconcile_catalog(vec![host("b", false)], cx);
+            assert_eq!(view.device_filter.as_deref(), Some(LOCAL));
+            assert!(!view.select_endpoint("ssh:b", cx));
+            view.reconcile_catalog(vec![host("b", true)], cx);
+            assert!(view.select_endpoint("ssh:b", cx));
+            view.reconcile_catalog(vec![], cx);
+            assert_eq!(view.device_filter.as_deref(), Some(LOCAL));
         });
     }
 

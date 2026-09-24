@@ -594,7 +594,7 @@ impl HerdrWindow {
                                     .px_2()
                                     .py_1()
                                     .cursor_pointer()
-                                    .rounded(px(4.))
+                                    .rounded(px(crate::config::corners::CONTROL))
                                     .hover(|s| s.bg(rgb(theme.active)))
                                     .child("Close")
                                     .on_click(cx.listener(|this, _, window, cx| {

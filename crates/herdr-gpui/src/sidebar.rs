@@ -38,6 +38,8 @@ use metrics::*;
 use row::{RowBadge, first_text};
 use workspaces::visible_workspace_entries;
 
+pub(crate) const DEVICE_FOOTER_HEIGHT: f32 = 40.;
+
 #[derive(Clone, Copy)]
 pub(crate) enum SidebarDrag {
     Width { start: f32, width: f32 },

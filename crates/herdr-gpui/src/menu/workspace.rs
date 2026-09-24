@@ -874,7 +874,7 @@ impl HerdrWindow {
                 .child(
                     div()
                         .debug_selector(|| "dialog-checkout".into())
-                        .rounded(px(4.))
+                        .rounded(px(crate::config::corners::CONTROL))
                         .bg(rgb(theme.active))
                         .px(px(10.))
                         .py(px(6.))
@@ -889,7 +889,7 @@ impl HerdrWindow {
                 .child(
                     div()
                         .debug_selector(|| "dialog-path".into())
-                        .rounded(px(4.))
+                        .rounded(px(crate::config::corners::CONTROL))
                         .bg(rgb(theme.active))
                         .px(px(10.))
                         .py(px(6.))
@@ -929,7 +929,7 @@ impl HerdrWindow {
             body = body.child(
                 div()
                     .debug_selector(|| "dialog-error".into())
-                    .rounded(px(4.))
+                    .rounded(px(crate::config::corners::CONTROL))
                     .bg(rgb(theme.active))
                     .px(px(10.))
                     .py(px(6.))
@@ -952,7 +952,7 @@ impl HerdrWindow {
                 .debug_selector(move || id.into())
                 .px(px(12.))
                 .py(px(6.))
-                .rounded(px(4.))
+                .rounded(px(crate::config::corners::CONTROL))
                 .border_1()
                 .cursor_pointer()
         };
@@ -1019,7 +1019,7 @@ impl HerdrWindow {
                                 .flex_none()
                                 .px_2()
                                 .py_1()
-                                .rounded(px(4.))
+                                .rounded(px(crate::config::corners::CONTROL))
                                 .cursor_pointer()
                                 .text_color(rgb(theme.muted))
                                 .hover(|button| {

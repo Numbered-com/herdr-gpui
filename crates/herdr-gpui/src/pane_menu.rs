@@ -861,7 +861,7 @@ impl HerdrWindow {
                                 div()
                                     .id("pane-rename-submit")
                                     .p(px(6.))
-                                    .rounded(px(4.))
+                                    .rounded(px(crate::config::corners::CONTROL))
                                     .bg(rgb(self.theme.active))
                                     .cursor_pointer()
                                     .child(if pane.pending.is_some() {

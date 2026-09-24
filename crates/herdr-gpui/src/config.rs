@@ -29,6 +29,14 @@ pub const FONT_SIZE_RANGE: RangeInclusive<f32> = 8.0..=48.0;
 /// One logical pixel: the smallest step that can move the terminal cell grid.
 pub const FONT_SIZE_STEP: f32 = 1.0;
 
+/// Shared logical-pixel radii for native-style chrome, independent of the
+/// terminal grid. Small badges/keycaps retain a tighter curve than controls.
+pub(crate) mod corners {
+    pub(crate) const PANEL: f32 = 12.;
+    pub(crate) const CONTROL: f32 = 8.;
+    pub(crate) const SMALL: f32 = 4.;
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub theme: String,

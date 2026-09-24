@@ -237,7 +237,7 @@ impl HerdrWindow {
                     // Lift the popup off the terminal behind it, as the pickers do.
                     .shadow_lg()
             })
-            .when(page == Page::Menu, |panel| {
+            .when(matches!(page, Page::Menu | Page::Devices), |panel| {
                 // Open on whichever side of the anchor has room, and keep a
                 // margin from the window chrome and the bottom edge: a clamped
                 // list then reads as scrollable rather than clipped.
@@ -247,11 +247,29 @@ impl HerdrWindow {
                 let room = |side: Pixels| side.clamp(px(0.), band).max(px(60.)).min(band);
                 let above = room(self.menu.anchor.y - px(12. + MENU_MARGIN) - chrome);
                 let below = room(viewport.height - self.menu.anchor.y - px(12. + MENU_MARGIN));
-                let panel = panel.absolute().left(px(56.)).w(px(180.));
+                let panel = panel
+                    .absolute()
+                    .left(if page == Page::Devices {
+                        self.menu.anchor.x
+                    } else {
+                        px(56.)
+                    })
+                    .w(px(if page == Page::Devices {
+                        super::devices::MENU_WIDTH
+                    } else {
+                        180.
+                    })
+                    .min((viewport.width - px(16.)).max(px(0.))));
                 if above >= below {
                     panel
                         .bottom(
-                            (viewport.height - self.menu.anchor.y + px(12.)).max(px(MENU_MARGIN)),
+                            (viewport.height - self.menu.anchor.y
+                                + px(if page == Page::Devices {
+                                    super::devices::MENU_GAP
+                                } else {
+                                    12.
+                                }))
+                            .max(px(MENU_MARGIN)),
                         )
                         .max_h(above)
                 } else {
@@ -291,7 +309,9 @@ impl HerdrWindow {
                 },
             )
             .when(
-                page != Page::Menu && !pointer_anchored && !matches!(page, Page::Dialog(_)),
+                !matches!(page, Page::Menu | Page::Devices)
+                    && !pointer_anchored
+                    && !matches!(page, Page::Dialog(_)),
                 |panel| {
                     panel
                         .w((viewport.width - px(32.)).max(px(0.)).min(px(480.)))
@@ -307,6 +327,7 @@ impl HerdrWindow {
                         | Page::Preferences
                         | Page::AppUpdate
                         | Page::GitHub
+                        | Page::AddDevice
                 ),
                 |panel| {
                     // Dialogs draw their own full-bleed header and footer rules,
@@ -344,13 +365,13 @@ impl HerdrWindow {
                     .w((viewport.width - px(24.)).max(px(0.)).min(px(420.)))
                     .max_h((viewport.height - px(24.)).max(px(0.)))
             })
-            .when(page == Page::AppUpdate, |panel| {
+            .when(matches!(page, Page::AppUpdate | Page::AddDevice), |panel| {
                 panel.flex().flex_col().overflow_hidden().shadow_lg()
             })
             .when(page == Page::About, |panel| {
                 panel.w((viewport.width - px(24.)).max(px(0.)).min(px(340.)))
             })
-            .rounded(px(5.))
+            .rounded(px(crate::config::corners::PANEL))
             .border_1()
             .border_color(rgb(theme.active))
             .bg(rgb(theme.surface))
@@ -401,6 +422,10 @@ impl HerdrWindow {
                         })),
                 );
             }
+        } else if page == Page::Devices {
+            panel = panel.child(self.render_devices(cx));
+        } else if page == Page::AddDevice {
+            panel = panel.child(self.render_add_device(cx));
         } else if page == Page::GitHub {
             panel = panel.child(self.render_github_auth(cx));
         } else if page == Page::Workspace {
@@ -449,7 +474,7 @@ impl HerdrWindow {
                         .items_center()
                         .gap(px(8.))
                         .cursor_pointer()
-                        .rounded(px(3.))
+                        .rounded(px(crate::config::corners::CONTROL))
                         .when(Some(action) == self.menu.workspace_selected, |row| {
                             row.bg(rgb(theme.active))
                         })
@@ -525,7 +550,7 @@ impl HerdrWindow {
                                 .id("menu-install")
                                 .debug_selector(|| "menu-install".into())
                                 .p(px(8.))
-                                .rounded(px(3.))
+                                .rounded(px(crate::config::corners::CONTROL))
                                 .bg(rgb(theme.active))
                                 .cursor_pointer()
                                 .child("Install")
@@ -539,7 +564,7 @@ impl HerdrWindow {
                                 .id("menu-dismiss")
                                 .debug_selector(|| "menu-dismiss".into())
                                 .p(px(8.))
-                                .rounded(px(3.))
+                                .rounded(px(crate::config::corners::CONTROL))
                                 .hover(|button| button.bg(rgb(theme.active)))
                                 .cursor_pointer()
                                 .child("Dismiss")
@@ -590,13 +615,16 @@ impl HerdrWindow {
             .id("menu-overlay")
             .absolute()
             .inset_0()
-            .when(page != Page::Menu && !pointer_anchored, |overlay| {
-                overlay
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(rgba((theme.background << 8) | 0xb0))
-            })
+            .when(
+                !matches!(page, Page::Menu | Page::Devices) && !pointer_anchored,
+                |overlay| {
+                    overlay
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(rgba((theme.background << 8) | 0xb0))
+                },
+            )
             .occlude()
             .track_focus(&self.menu.focus)
             .on_action(
@@ -689,6 +717,10 @@ impl HerdrWindow {
                 }
                 if matches!(this.menu.page, Some(Page::Pane | Page::RenamePane)) {
                     this.pane_menu_key(event, window, cx);
+                    return;
+                }
+                if matches!(this.menu.page, Some(Page::Devices | Page::AddDevice)) {
+                    this.devices_key(event, window, cx);
                     return;
                 }
                 if this.menu.page == Some(Page::Palette) {

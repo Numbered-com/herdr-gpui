@@ -118,7 +118,7 @@ impl HerdrWindow {
                     .mt(px(14.))
                     .px(px(16.))
                     .py(px(6.))
-                    .rounded(px(4.))
+                    .rounded(px(crate::config::corners::CONTROL))
                     .border_1()
                     .border_color(rgb(theme.active))
                     .bg(rgb(theme.active))

@@ -5,6 +5,7 @@
 
 mod chrome;
 mod colors;
+mod devices;
 mod git;
 mod github;
 mod page;

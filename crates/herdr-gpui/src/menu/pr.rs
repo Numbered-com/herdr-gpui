@@ -197,7 +197,7 @@ impl HerdrWindow {
                             .px(px(8.))
                             .py(px(6.))
                             .flex_none()
-                            .rounded(px(3.))
+                            .rounded(px(crate::config::corners::CONTROL))
                             .cursor_pointer()
                             .when(self.menu.workspace_selected == Some(action), |row| {
                                 row.bg(rgb(theme.active))
@@ -249,7 +249,7 @@ impl HerdrWindow {
                                 div()
                                     .flex_none()
                                     .px(px(6.))
-                                    .rounded(px(3.))
+                                    .rounded(px(crate::config::corners::CONTROL))
                                     .bg(rgba((color << 8) | 0x20))
                                     .text_color(rgb(color))
                                     .child(value.lifecycle()),

@@ -6,6 +6,8 @@ pub(crate) enum Page {
     Menu,
     About,
     Preferences,
+    Devices,
+    AddDevice,
     Keybinds,
     Themes,
     Palette,
