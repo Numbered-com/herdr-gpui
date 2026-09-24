@@ -3,7 +3,7 @@
 //! here is the same geometry used for hit testing and IME placement.
 
 use super::{MENU_MARGIN, Page, WorkspaceAction};
-use crate::{HerdrWindow, fonts::StyledFont};
+use crate::{HerdrWindow, actions, fonts::StyledFont};
 use gpui::{prelude::*, *};
 use herdr_client::Method;
 
@@ -13,6 +13,30 @@ impl HerdrWindow {
             return;
         }
         self.menu.page = Some(Page::Install);
+    }
+
+    /// An Edit menu item while a menu page holds focus. Only the targets the
+    /// overlay's key handler gives these shortcuts to are reached: a dialog's
+    /// text draft, and the GitHub page's device code for Copy. Search fields
+    /// take the action themselves before it bubbles here. Handlers that act
+    /// without stopping propagation are never called, so a shortcut the
+    /// overlay leaves unhandled cannot run twice through the menu bar.
+    fn menu_edit(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let event = actions::edit_key(key);
+        if self.menu.page == Some(Page::Dialog(WorkspaceAction::OpenWorktree))
+            || self.worktree_listing()
+        {
+            return;
+        }
+        if let Some(input) = self.menu.input.as_mut() {
+            if input.key(&event.keystroke, cx) {
+                cx.notify();
+            }
+            return;
+        }
+        if self.menu.page == Some(Page::GitHub) {
+            self.github_key(&event, window, cx);
+        }
     }
 
     pub(crate) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -575,6 +599,18 @@ impl HerdrWindow {
             })
             .occlude()
             .track_focus(&self.menu.focus)
+            .on_action(
+                cx.listener(|this, _: &actions::Cut, window, cx| this.menu_edit("x", window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::Copy, window, cx| this.menu_edit("c", window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::Paste, window, cx| this.menu_edit("v", window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &actions::SelectAll, window, cx| {
+                this.menu_edit("a", window, cx)
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {

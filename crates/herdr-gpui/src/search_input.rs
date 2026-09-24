@@ -8,6 +8,7 @@ use gpui::{
     prelude::*, px, rgb, size,
 };
 
+use crate::actions;
 use crate::config::{Config, FontConfig, Theme};
 use crate::fonts::StyledFont;
 
@@ -387,6 +388,18 @@ impl Render for SearchInput {
             .track_focus(&self.focus)
             .cursor(CursorStyle::IBeam)
             .on_key_down(cx.listener(Self::key_down))
+            .on_action(cx.listener(|this, _: &actions::Cut, window, cx| {
+                this.key_down(&actions::edit_key("x"), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::Copy, window, cx| {
+                this.key_down(&actions::edit_key("c"), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::Paste, window, cx| {
+                this.key_down(&actions::edit_key("v"), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::SelectAll, window, cx| {
+                this.key_down(&actions::edit_key("a"), window, cx)
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {

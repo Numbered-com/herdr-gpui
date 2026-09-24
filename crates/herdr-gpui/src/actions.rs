@@ -3,7 +3,7 @@
 //! menu bar, and the keymap cannot drift apart.
 
 use crate::controls::Command;
-use gpui::{Action, App, KeyBinding, actions};
+use gpui::{Action, App, KeyBinding, KeyDownEvent, Keystroke, Modifiers, actions};
 
 actions!(
     herdr,
@@ -18,6 +18,32 @@ actions!(
         ShowUpdateHomebrewPreview
     ]
 );
+
+// Edit menu items. Each element registers only the ones it can perform, so
+// GPUI disables the rest while that element has focus.
+actions!(edit, [Cut, Copy, Paste, SelectAll]);
+
+/// No element sets this context, so these bindings never match a keystroke.
+/// They exist only so the Edit menu shows its standard shortcuts. The focused
+/// element's key handler keeps owning Cmd-X/C/V/A, as it did before the menu.
+const EDIT_MENU_LABELS: &str = "EditMenuLabels";
+
+/// The keystroke an Edit menu item stands for. A menu click replays it
+/// through the focused element's own key handler, so choosing the item and
+/// pressing its shortcut cannot behave differently.
+pub(crate) fn edit_key(key: &str) -> KeyDownEvent {
+    KeyDownEvent {
+        keystroke: Keystroke {
+            modifiers: Modifiers {
+                platform: true,
+                ..Modifiers::default()
+            },
+            key: key.into(),
+            key_char: None,
+        },
+        is_held: false,
+    }
+}
 
 #[derive(Clone, PartialEq, serde::Deserialize, Action)]
 #[action(no_json)]
@@ -53,6 +79,12 @@ pub(crate) fn bind_keys(cx: &mut App) {
         }
     }));
     cx.bind_keys(crate::log_window::key_bindings());
+    cx.bind_keys([
+        KeyBinding::new("cmd-x", Cut, Some(EDIT_MENU_LABELS)),
+        KeyBinding::new("cmd-c", Copy, Some(EDIT_MENU_LABELS)),
+        KeyBinding::new("cmd-v", Paste, Some(EDIT_MENU_LABELS)),
+        KeyBinding::new("cmd-a", SelectAll, Some(EDIT_MENU_LABELS)),
+    ]);
 }
 
 /// Replaces every binding after a config reload. The menu bar reads its
