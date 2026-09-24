@@ -1,5 +1,5 @@
 use crate::{
-    Error, HerdrWindow, NavigationTarget, Result,
+    Error, HerdrWindow, NavigationTarget, OwnedNavigationTarget, Result,
     controls::{COMMANDS, Command},
     menu::Page,
     search_input::{Changed, SearchInput},
@@ -7,14 +7,19 @@ use crate::{
 use gpui::{prelude::*, *};
 use herdr_client::{
     Method,
-    protocol::{ClientShellCommandAction, ClientShellSnapshot},
+    protocol::{AgentStatus, ClientShellCommandAction, ClientShellSnapshot},
 };
 use serde_json::{Value, json};
 
 #[derive(Clone)]
 enum Action {
     Native(Command),
-    Workspace(String),
+    /// A Go To destination, qualified by the host and daemon boot it was listed from.
+    Go {
+        endpoint: String,
+        boot: String,
+        target: OwnedNavigationTarget,
+    },
     Configured(String, ClientShellCommandAction),
 }
 
@@ -110,6 +115,132 @@ impl Target {
     }
 }
 
+/// Whether a Go To destination listed from `boot` still exists in `snapshot`.
+fn destination_exists(
+    snapshot: &ClientShellSnapshot,
+    boot: &str,
+    target: NavigationTarget<&str>,
+) -> Result<()> {
+    if boot.is_empty() || boot != snapshot.boot_id {
+        return Err(Error::PaletteSessionChanged);
+    }
+    match target {
+        NavigationTarget::Workspace(id) => snapshot
+            .workspaces
+            .iter()
+            .any(|w| w.workspace_id == id)
+            .then_some(())
+            .ok_or(Error::PaletteWorkspaceRemoved),
+        NavigationTarget::Tab(id) => snapshot
+            .tabs
+            .iter()
+            .any(|t| t.tab_id == id)
+            .then_some(())
+            .ok_or(Error::PaletteTabRemoved),
+        NavigationTarget::Pane(id) => snapshot
+            .panes
+            .iter()
+            .any(|p| p.pane_id == id)
+            .then_some(())
+            .ok_or(Error::PaletteDestinationRemoved),
+    }
+}
+
+fn status_badge(status: AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::Blocked => "blocked",
+        AgentStatus::Done => "done",
+        AgentStatus::Working => "working",
+        AgentStatus::Idle => "idle",
+        AgentStatus::Unknown => "",
+    }
+}
+
+/// One host's Go To rows: each workspace, then every pane in it, one row per
+/// agent or terminal so no split is hidden behind its tab.
+fn go_to_entries(
+    endpoint: &str,
+    host: Option<&str>,
+    snapshot: &ClientShellSnapshot,
+    entries: &mut Vec<Entry>,
+) {
+    let go = |target| Action::Go {
+        endpoint: endpoint.to_owned(),
+        boot: snapshot.boot_id.clone(),
+        target,
+    };
+    for workspace in &snapshot.workspaces {
+        let detail = [
+            host,
+            Some(&*format!("#{}", workspace.number)),
+            workspace.branch.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("  ");
+        entries.push(Entry {
+            label: workspace.label.clone(),
+            detail,
+            badge: "",
+            action: go(NavigationTarget::Workspace(workspace.workspace_id.clone())),
+        });
+        let tabs: Vec<_> = snapshot
+            .tabs
+            .iter()
+            .filter(|tab| tab.workspace_id == workspace.workspace_id)
+            .collect();
+        let panes: Vec<_> = tabs
+            .iter()
+            .flat_map(|tab| {
+                snapshot
+                    .panes
+                    .iter()
+                    .filter(move |pane| {
+                        pane.workspace_id == workspace.workspace_id && pane.tab_id == tab.tab_id
+                    })
+                    .map(move |pane| (*tab, pane))
+            })
+            .collect();
+        for (index, (tab, pane)) in panes.iter().enumerate() {
+            let agent = snapshot
+                .agents
+                .iter()
+                .find(|agent| agent.pane_id == pane.pane_id);
+            let name = match agent {
+                Some(agent) => crate::sidebar::agent_name(agent),
+                None => pane
+                    .label
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|label| !label.is_empty())
+                    .unwrap_or("Terminal"),
+            };
+            // As in the sidebar, the tab only earns its place when there is a choice.
+            let tab = (tabs.len() > 1 || tab.custom_label).then_some(tab.label.as_str());
+            let path = pane.foreground_cwd.as_deref().or(pane.cwd.as_deref());
+            let detail = [host, tab, path]
+                .into_iter()
+                .flatten()
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("  ");
+            let connector = if index + 1 == panes.len() {
+                "\u{2514}"
+            } else {
+                "\u{251c}"
+            };
+            entries.push(Entry {
+                label: format!("{connector} {name}"),
+                detail,
+                badge: agent.map_or("", |agent| status_badge(agent.agent_status)),
+                action: go(NavigationTarget::Pane(pane.pane_id.clone())),
+            });
+        }
+    }
+}
+
 fn matches_query(text: &str, query: &str) -> bool {
     let text = text.to_lowercase();
     query
@@ -137,8 +268,8 @@ impl Palette {
             .enumerate()
             .filter_map(|(index, entry)| {
                 let id = match &entry.action {
-                    Action::Configured(id, _) | Action::Workspace(id) => id.as_str(),
-                    Action::Native(_) => "",
+                    Action::Configured(id, _) => id.as_str(),
+                    Action::Native(_) | Action::Go { .. } => "",
                 };
                 matches_query(
                     &format!("{} {} {} {id}", entry.label, entry.detail, entry.badge),
@@ -187,20 +318,29 @@ impl HerdrWindow {
                     }),
             );
         }
+        if workspaces_only {
+            // The selected host first, so Enter on an unfiltered list stays local
+            // to what is on screen; the other connected hosts follow in order.
+            let selected = self.selected_endpoint;
+            let order = std::iter::once(selected)
+                .chain((0..self.endpoints.len()).filter(|index| *index != selected));
+            for index in order {
+                let endpoint = &self.endpoints[index];
+                let live = if index == selected {
+                    &self.live
+                } else {
+                    &endpoint.live
+                };
+                let Some(snapshot) = live.snapshot.as_ref().filter(|_| endpoint.enabled) else {
+                    continue;
+                };
+                let host =
+                    (endpoint.id != crate::endpoint::LOCAL).then_some(endpoint.label.as_str());
+                go_to_entries(&endpoint.id, host, snapshot, &mut entries);
+            }
+        }
         let target = self.live.snapshot.as_ref().map(|snapshot| {
-            if workspaces_only {
-                entries.extend(snapshot.workspaces.iter().map(|workspace| Entry {
-                    label: workspace.label.clone(),
-                    detail: format!(
-                        "#{}  {}",
-                        workspace.number,
-                        workspace.branch.as_deref().unwrap_or("")
-                    ),
-                    // Every row here is a workspace; a badge saying so is noise.
-                    badge: "",
-                    action: Action::Workspace(workspace.workspace_id.clone()),
-                }));
-            } else {
+            if !workspaces_only {
                 entries.extend(snapshot.commands.iter().map(|command| {
                     let mut bindings = command.binding_labels.clone();
                     if !command.binding_label.is_empty()
@@ -234,7 +374,7 @@ impl HerdrWindow {
         search.update(cx, |input, cx| {
             input.set_placeholder(
                 if workspaces_only {
-                    "Search workspaces..."
+                    "Search workspaces, agents, and terminals..."
                 } else {
                     "Search commands..."
                 },
@@ -272,6 +412,30 @@ impl HerdrWindow {
             self.command(command, window, cx);
             return;
         }
+        if let Action::Go {
+            endpoint,
+            boot,
+            target,
+        } = &action
+        {
+            match self.go_to_ready(endpoint, boot, target.as_deref()) {
+                Ok(selected) => {
+                    self.dismiss_menu(window, cx);
+                    if selected {
+                        self.navigate(target.as_deref(), cx);
+                    } else {
+                        self.navigate_endpoint(endpoint, target.as_deref(), cx);
+                    }
+                }
+                Err(error) => {
+                    if let Some(palette) = &mut self.menu.palette {
+                        palette.error = Some(error.to_string());
+                    }
+                    cx.notify();
+                }
+            }
+            return;
+        }
         let result = (|| {
             if !self.input_ready() {
                 return Err(Error::PaletteConnectionNotReady);
@@ -284,27 +448,16 @@ impl HerdrWindow {
                 .and_then(|p| p.target.as_ref())
                 .ok_or(Error::NoPaletteSession)?;
             match &action {
-                Action::Workspace(id) => target.workspace_exists(snapshot, id).map(|()| None),
-                Action::Configured(id, action) => {
-                    let params = target.invocation(snapshot, id, *action)?;
-                    Ok(Some(params))
-                }
-                Action::Native(_) => unreachable!(),
+                Action::Configured(id, action) => target.invocation(snapshot, id, *action),
+                Action::Native(_) | Action::Go { .. } => unreachable!(),
             }
         })();
         match result {
             Ok(params) => {
-                if let Some(params) = params {
-                    self.request_focus_change(
-                        Method::CommandInvoke.as_str(),
-                        None,
-                        |handle, boot| handle.request(boot, Method::CommandInvoke, params),
-                    );
-                }
+                self.request_focus_change(Method::CommandInvoke.as_str(), None, |handle, boot| {
+                    handle.request(boot, Method::CommandInvoke, params)
+                });
                 self.dismiss_menu(window, cx);
-                if let Action::Workspace(id) = action {
-                    self.navigate(NavigationTarget::Workspace(&id), cx);
-                }
             }
             Err(error) => {
                 if let Some(palette) = &mut self.menu.palette {
@@ -313,6 +466,37 @@ impl HerdrWindow {
                 cx.notify();
             }
         }
+    }
+
+    /// Checks a Go To destination against its host's current snapshot, and
+    /// reports whether that host is the selected one. Another host is selected
+    /// by the navigation itself, which waits for its surface when needed.
+    fn go_to_ready(
+        &self,
+        endpoint: &str,
+        boot: &str,
+        target: NavigationTarget<&str>,
+    ) -> Result<bool> {
+        let index = self
+            .endpoints
+            .iter()
+            .position(|e| e.id == endpoint && e.enabled)
+            .ok_or(Error::PaletteHostUnavailable)?;
+        let selected = index == self.selected_endpoint;
+        let live = if selected {
+            &self.live
+        } else {
+            &self.endpoints[index].live
+        };
+        let snapshot = live
+            .snapshot
+            .as_ref()
+            .ok_or(Error::PaletteHostUnavailable)?;
+        destination_exists(snapshot, boot, target)?;
+        if selected && !self.input_ready() {
+            return Err(Error::PaletteConnectionNotReady);
+        }
+        Ok(selected)
     }
 
     pub(super) fn palette_key(
@@ -388,7 +572,7 @@ impl HerdrWindow {
                                     .text_size(px(self.config.ui.size * 1.35))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(if palette.workspaces_only {
-                                        "Switch Workspace"
+                                        "Go To"
                                     } else {
                                         "Command Palette"
                                     }),
@@ -566,7 +750,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn only_mixed_palettes_carry_badges(cx: &mut TestAppContext) {
+    fn command_badges_mark_daemon_commands_and_go_to_badges_mark_agent_status(
+        cx: &mut TestAppContext,
+    ) {
         let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
         cx.update(|_, cx| {
             view.update(cx, |view, _| {
@@ -590,10 +776,22 @@ mod tests {
             view.read_with(cx, |view, _| {
                 let entries = &view.menu.palette.as_ref().unwrap().entries;
                 assert!(!entries.is_empty());
-                // The workspace switcher lists nothing else, so it needs no badges;
-                // the command palette still separates daemon commands from native ones.
+                for entry in entries {
+                    let expected = match entry.action {
+                        Action::Native(_) => "",
+                        Action::Configured(..) => "Herdr command",
+                        Action::Go {
+                            target: NavigationTarget::Pane(_),
+                            ..
+                        } => "blocked",
+                        Action::Go { .. } => "",
+                    };
+                    assert_eq!(entry.badge, expected, "{}", entry.label);
+                }
                 assert_eq!(
-                    entries.iter().all(|entry| entry.badge.is_empty()),
+                    entries
+                        .iter()
+                        .any(|entry| matches!(entry.action, Action::Go { .. })),
                     workspaces_only
                 );
             });
@@ -635,6 +833,234 @@ mod tests {
                 assert!(view.activation_deadline.is_none(), "nothing was sent");
             })
         });
+    }
+
+    #[gpui::test]
+    fn go_to_rejects_a_disabled_or_missing_host_and_keeps_the_palette_open(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.open_palette(true, window, cx);
+                let boot = view.live.snapshot.as_ref().unwrap().boot_id.clone();
+                for endpoint in ["missing-host", crate::endpoint::LOCAL] {
+                    if endpoint == crate::endpoint::LOCAL {
+                        view.endpoints[0].enabled = false;
+                    }
+                    view.activate_palette(
+                        Action::Go {
+                            endpoint: endpoint.into(),
+                            boot: boot.clone(),
+                            target: NavigationTarget::Pane("w1:p1".into()),
+                        },
+                        window,
+                        cx,
+                    );
+                    let palette = view.menu.palette.as_ref().unwrap();
+                    assert_eq!(
+                        palette.error.as_deref(),
+                        Some(Error::PaletteHostUnavailable.to_string().as_str())
+                    );
+                    assert!(view.pending_navigation.is_none());
+                }
+            })
+        });
+    }
+
+    #[gpui::test]
+    fn go_to_lists_the_selected_host_first_and_switches_host_for_a_remote_row(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut view = crate::sidebar::layout_tests::fixture_window(window, cx);
+            let mut remote = crate::endpoint::Endpoint::new(
+                "ssh:box".into(),
+                "Box".into(),
+                herdr_client::ConnectTarget::Ssh {
+                    target: "unused".into(),
+                    session: "default".into(),
+                },
+                true,
+            );
+            remote.live.snapshot = Some(std::sync::Arc::new(snapshot()));
+            view.endpoints.push(remote);
+            view
+        });
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.open_palette(true, window, cx);
+                let entries = &view.menu.palette.as_ref().unwrap().entries;
+                let hosts: Vec<_> = entries
+                    .iter()
+                    .map(|entry| match &entry.action {
+                        Action::Go { endpoint, .. } => endpoint.as_str(),
+                        _ => panic!("Go To lists only destinations"),
+                    })
+                    .collect();
+                let local = hosts
+                    .iter()
+                    .take_while(|host| **host == crate::endpoint::LOCAL)
+                    .count();
+                assert!(local > 0 && local < hosts.len());
+                assert!(hosts[local..].iter().all(|host| *host == "ssh:box"));
+                assert!(entries[..local].iter().all(|e| !e.detail.contains("Box")));
+                assert!(entries[local..].iter().all(|e| e.detail.starts_with("Box")));
+                let remote_pane = entries[local..]
+                    .iter()
+                    .find(|entry| {
+                        matches!(
+                            entry.action,
+                            Action::Go {
+                                target: NavigationTarget::Pane(_),
+                                ..
+                            }
+                        )
+                    })
+                    .unwrap()
+                    .action
+                    .clone();
+                let Action::Go { target, .. } = &remote_pane else {
+                    unreachable!()
+                };
+                let target = target.clone();
+                view.activate_palette(remote_pane, window, cx);
+                assert!(view.menu.page.is_none(), "a valid row closes the picker");
+                assert_eq!(view.endpoints[view.selected_endpoint].id, "ssh:box");
+                // The remote host has no connection yet, so navigation waits for it.
+                assert_eq!(view.pending_navigation, Some(target));
+            })
+        });
+    }
+
+    fn go_to_fixture() -> ClientShellSnapshot {
+        let mut snapshot = snapshot();
+        let mut tab = snapshot.tabs[0].clone();
+        tab.tab_id = "w1:t2".into();
+        tab.label = "logs".into();
+        snapshot.tabs.push(tab);
+        let mut terminal = snapshot.panes[0].clone();
+        terminal.pane_id = "w1:p2".into();
+        terminal.tab_id = "w1:t2".into();
+        terminal.label = Some("  ".into());
+        terminal.foreground_cwd = None;
+        terminal.cwd = Some("/repo/logs".into());
+        snapshot.panes.push(terminal);
+        let mut empty = snapshot.workspaces[0].clone();
+        empty.workspace_id = "w2".into();
+        empty.number = 2;
+        empty.label = "empty".into();
+        empty.branch = None;
+        snapshot.workspaces.push(empty);
+        snapshot
+    }
+
+    #[test]
+    fn go_to_lists_every_pane_under_its_workspace() {
+        let snapshot = go_to_fixture();
+        let mut entries = Vec::new();
+        go_to_entries(crate::endpoint::LOCAL, None, &snapshot, &mut entries);
+        let rows: Vec<_> = entries
+            .iter()
+            .map(|entry| {
+                let Action::Go {
+                    endpoint,
+                    boot,
+                    target,
+                } = &entry.action
+                else {
+                    panic!("Go To lists only destinations");
+                };
+                assert_eq!(endpoint, crate::endpoint::LOCAL);
+                assert_eq!(boot, "boot-v1");
+                (
+                    entry.label.as_str(),
+                    entry.detail.as_str(),
+                    entry.badge,
+                    target.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (
+                    "repo",
+                    "#1  main",
+                    "",
+                    NavigationTarget::Workspace("w1".into())
+                ),
+                (
+                    "\u{251c} Claude",
+                    "main  /repo",
+                    "blocked",
+                    NavigationTarget::Pane("w1:p1".into())
+                ),
+                (
+                    "\u{2514} Terminal",
+                    "logs  /repo/logs",
+                    "",
+                    NavigationTarget::Pane("w1:p2".into())
+                ),
+                ("empty", "#2", "", NavigationTarget::Workspace("w2".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn go_to_names_remote_hosts_and_hides_a_lone_default_tab() {
+        let snapshot = snapshot();
+        let mut entries = Vec::new();
+        go_to_entries("ssh:box", Some("Box"), &snapshot, &mut entries);
+        let details: Vec<_> = entries.iter().map(|entry| entry.detail.as_str()).collect();
+        assert_eq!(details, ["Box  #1  main", "Box  /repo"]);
+        assert!(entries.iter().all(|entry| matches!(
+            &entry.action,
+            Action::Go { endpoint, .. } if endpoint == "ssh:box"
+        )));
+        let mut matching = entries
+            .iter()
+            .filter(|entry| {
+                matches_query(
+                    &format!("{} {} {}", entry.label, entry.detail, entry.badge),
+                    "box claude",
+                )
+            })
+            .map(|entry| entry.label.as_str());
+        assert_eq!(matching.next(), Some("\u{2514} Claude"));
+        assert_eq!(matching.next(), None);
+    }
+
+    #[test]
+    fn go_to_destinations_are_revalidated_against_the_current_snapshot() {
+        let snapshot = go_to_fixture();
+        for target in [
+            NavigationTarget::Workspace("w2"),
+            NavigationTarget::Tab("w1:t2"),
+            NavigationTarget::Pane("w1:p2"),
+        ] {
+            assert!(destination_exists(&snapshot, "boot-v1", target.clone()).is_ok());
+            assert!(matches!(
+                destination_exists(&snapshot, "boot-v2", target.clone()),
+                Err(Error::PaletteSessionChanged)
+            ));
+            assert!(matches!(
+                destination_exists(&snapshot, "", target),
+                Err(Error::PaletteSessionChanged)
+            ));
+        }
+        assert!(matches!(
+            destination_exists(&snapshot, "boot-v1", NavigationTarget::Workspace("gone")),
+            Err(Error::PaletteWorkspaceRemoved)
+        ));
+        assert!(matches!(
+            destination_exists(&snapshot, "boot-v1", NavigationTarget::Tab("gone")),
+            Err(Error::PaletteTabRemoved)
+        ));
+        assert!(matches!(
+            destination_exists(&snapshot, "boot-v1", NavigationTarget::Pane("gone")),
+            Err(Error::PaletteDestinationRemoved)
+        ));
     }
 
     #[test]

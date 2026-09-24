@@ -20,6 +20,7 @@ pub(crate) mod layout_tests;
 pub(crate) mod native_tests;
 
 pub(crate) use {
+    agents::agent_name,
     hover::{HoverMenu, HoverRest},
     metrics::{ARROW_RESERVE, HOST_ARROW_WIDTH, HOST_GAP, ICON_RESERVE, LABEL_GAP},
     row::{compact, github_mark, label_text},

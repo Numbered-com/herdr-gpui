@@ -790,7 +790,9 @@ Windows setup) nothing is saved and the window says so.
   processes, unlike quitting the GUI, which only detaches.
 - Cmd-Shift-P opens the command palette with native actions and configured daemon
   command entries, including native Themes and Reconnect actions without dedicated
-  shortcuts. Cmd-P opens the workspace picker instead.
+  shortcuts. Cmd-P opens **Go To** instead: every workspace on every connected
+  host, each followed by one row per agent or terminal pane with its status,
+  tab, and directory. Choosing a row on another host switches to it first.
 - Every native shortcut can be rebound in `config-gpui.local.toml` under
   `[keybindings]`, keyed by command name (`new_tab`, `new_workspace`,
   `split_right`, `focus_tab_1`, `quit`, ...). A value is one keystroke or a list;

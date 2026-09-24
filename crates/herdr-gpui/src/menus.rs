@@ -68,7 +68,7 @@ pub(crate) fn menus() -> Vec<Menu> {
                     },
                 ),
                 MenuItem::action(
-                    "Switch Workspace",
+                    "Go To",
                     RunCommand {
                         command: Command::WorkspacePicker,
                     },

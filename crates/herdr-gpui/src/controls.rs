@@ -267,7 +267,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         command: Command::WorkspacePicker,
         name: "workspace_picker",
-        label: "Workspace Picker",
+        label: "Go To",
         shortcuts: &["cmd-p"],
     },
     CommandInfo {
