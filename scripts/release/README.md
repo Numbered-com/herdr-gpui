@@ -11,7 +11,8 @@ prerelease/build suffixes, or leading zeros.
 Packaging and `just bundle` require Python 3 and read a versioned identity record
 embedded in the supplied executable, never the packaging checkout's Git state.
 Linked-worktree binaries select `assets/icons/herdr-square-worktree-1024.png` or
-`assets/icons/Herdr-worktree.icns`; other builds use the standard assets. On
+`assets/icons/Herdr-worktree.icns` and `Herdr-worktree.car`; other builds use the
+standard assets. On
 Linux a release installs `herdr-icon-square-clean.svg` as the hicolor `scalable`
 icon, because icon themes list no size above 512x512; the worktree PNG goes to
 `share/pixmaps`, the lookup fallback. Distribution packages are built only from

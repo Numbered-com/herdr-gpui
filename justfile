@@ -87,7 +87,9 @@ bundle profile="release" features="":
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
     cp target/{{profile}}/herdr-gpui "$app/Contents/MacOS/Herdr"
     cp assets/macos/Info.plist "$app/Contents/Info.plist"
-    cp "$(python3 scripts/release/build-icon.py icns "$app/Contents/MacOS/Herdr")" "$app/Contents/Resources/Herdr.icns"
+    icons=$(python3 scripts/release/build-icon.py macos "$app/Contents/MacOS/Herdr")
+    cp "${icons%$'\n'*}" "$app/Contents/Resources/Herdr.icns"
+    cp "${icons##*$'\n'}" "$app/Contents/Resources/Assets.car"
     plutil -lint "$app/Contents/Info.plist"
 
 # Link the actual optimized application and exercise its CLI without a desktop.

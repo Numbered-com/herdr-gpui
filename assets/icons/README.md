@@ -17,11 +17,13 @@ Transparent margins keep the rounded tile aligned with other macOS Dock icons.
 Their generated 1024x1024 PNG exports serve the README and About box
 (rounded); Linux packages install the square SVG itself as the scalable icon.
 On macOS, install the SVG renderer with
-`brew install librsvg`, then run `just icons` after changing either SVG.
+`brew install librsvg` and Xcode 26 or later, then run `just icons` after
+changing either SVG.
 The generator uses `rsvg-convert` to rasterize the vector artwork directly at
 each iconset resolution, rather than downsampling a PNG, and Apple's `iconutil`
-to package `Herdr.icns`. It also regenerates the PNG exports.
-Assets are checked in, so ordinary builds do not require Swift or librsvg.
+to package `Herdr.icns`. It also compiles `Herdr.car` (see below) and
+regenerates the PNG exports.
+Assets are checked in, so ordinary builds do not require Swift, librsvg, or Xcode.
 
 ### macOS sizing
 
@@ -50,13 +52,24 @@ representations, as described in Apple's
 Run `swift scripts/check-icons.swift` on macOS to verify the committed PNGs and
 every representation extracted from both `.icns` files.
 
-These are precomposed icons for macOS 15 and later. The newer
-[Icon Composer guidance](https://developer.apple.com/design/human-interface-guidelines/app-icons)
-for full-bleed, unmasked layers applies to a different, layered icon pipeline.
+### macOS 26 and later
+
+macOS 26 and later redraw a flattened `.icns` with Liquid Glass lighting, which
+softens its edges and shades its flat colors in the Dock. Bundles therefore also
+ship `Herdr.car` as `Contents/Resources/Assets.car`, selected by
+`CFBundleIconName`. The generator builds it from an
+[Icon Composer](https://developer.apple.com/design/human-interface-guidelines/app-icons)
+document: the ivory tile is the document's solid fill, and the ram path from
+`herdr-ui-icon-clean.svg` becomes a full-bleed vector layer. Glass, specular
+highlights, translucency, and shadows are off, preserving the flat design.
+`xcrun actool` compiles the document and its flattened fallbacks for older
+systems, under the icon name `Herdr` for both variants. Test the rendering with
+`NSWorkspace.icon(forFile:)` on a bundle, or in the Dock.
 
 The same generator uses CoreImage to map each rendered image's luminance to a red
 palette, retaining transparency, producing `herdr-worktree-1024.png`,
-`herdr-square-worktree-1024.png`, and `Herdr-worktree.icns`.
+`herdr-square-worktree-1024.png`, `Herdr-worktree.icns`, and
+`Herdr-worktree.car`; the catalog's two flat colors pass through the same mapping.
 These derived assets identify linked-worktree builds;
 the normal artwork remains unchanged. macOS development runs select the embedded
 multi-resolution `.icns` at compile time for the Dock, while macOS/Linux packaging reads the executable's build
