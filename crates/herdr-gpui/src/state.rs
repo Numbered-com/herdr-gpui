@@ -199,6 +199,18 @@ impl LiveState {
                 .any(|rename| rename.request == request_id)
     }
 
+    /// Whether a navigation barrier is unacknowledged, failed, or still waiting
+    /// for its focus. An acknowledged activation stays recorded afterwards, so
+    /// its presence alone does not mean navigation is in flight.
+    pub fn activation_pending(&self) -> bool {
+        self.activation.as_ref().is_some_and(|activation| {
+            activation.failed
+                || !activation.active
+                || activation.revision.is_none()
+                || activation.focus.is_some()
+        })
+    }
+
     pub fn surface_ready(&self) -> bool {
         let (Some(snapshot), Some(surface)) = (&self.snapshot, &self.surface) else {
             return false;

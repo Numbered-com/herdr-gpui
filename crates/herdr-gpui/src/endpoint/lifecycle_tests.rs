@@ -328,6 +328,71 @@ fn wait_image_finished(view: &gpui::Entity<HerdrWindow>, cx: &mut gpui::VisualTe
     });
 }
 
+/// Navigation leaves its acknowledged activation recorded. Cmd-V must still
+/// paste afterwards, and only a navigation still in flight may drop it.
+#[gpui::test]
+fn text_paste_survives_a_settled_navigation(cx: &mut gpui::TestAppContext) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
+    });
+    let view = fixture.update(cx, |fixture, _| fixture.0.clone());
+    let (endpoint, mut server) = connected_endpoint("image");
+    let paste = gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("cmd-v").unwrap(),
+        is_held: false,
+    };
+    let settled = |view: &HerdrWindow| crate::state::SurfaceActivation {
+        request: "activate-1".into(),
+        boot: view.live.snapshot.as_ref().unwrap().boot_id.clone(),
+        revision: Some(view.live.surface.as_ref().unwrap().projection_revision),
+        failed: false,
+        focus: None,
+        active: true,
+    };
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            prepare_mouse(view, endpoint);
+            view.live.activation = Some(settled(view));
+            assert!(view.live.surface_ready() && !view.live.activation_pending());
+            cx.write_to_clipboard(ClipboardItem::new_string("after navigation".into()));
+            view.key_down(&paste, window, cx);
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        server.receive(),
+        ClientMessage::ClientShellPaneInput {
+            pane_id: "w1:p1".into(),
+            events: vec![ClientPaneInputEvent::Paste("after navigation".into())],
+        }
+    );
+    wait_image_finished(&view, cx);
+
+    // A navigation starting while the clipboard is read cancels that paste.
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string("stale target".into()));
+            view.key_down(&paste, window, cx);
+            view.live.activation.as_mut().unwrap().revision = None;
+            assert!(view.live.activation_pending());
+        });
+    });
+    cx.run_until_parked();
+    wait_image_finished(&view, cx);
+    view.update(cx, |view, cx| {
+        view.live.activation = Some(settled(view));
+        view.send(ClientPaneInputEvent::TextCommit("sentinel".into()), cx);
+    });
+    assert_eq!(
+        server.receive(),
+        ClientMessage::ClientShellPaneInput {
+            pane_id: "w1:p1".into(),
+            events: vec![ClientPaneInputEvent::TextCommit("sentinel".into())],
+        }
+    );
+    view.read_with(cx, |view, _| assert!(view.local_error.is_none()));
+}
+
 #[gpui::test]
 fn connected_image_paste_captures_pane_before_immediate_text_and_enter(
     cx: &mut gpui::TestAppContext,

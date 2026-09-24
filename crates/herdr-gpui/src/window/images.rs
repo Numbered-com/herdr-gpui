@@ -134,7 +134,7 @@ impl HerdrWindow {
             || self.menu.page.is_some()
             || !self.live.status.is_connected()
             || self.pending_navigation.is_some()
-            || self.live.activation.is_some()
+            || self.live.activation_pending()
             || image.epoch != self.selection_epoch
             || image.generation != endpoint.generation
             || image.endpoint != endpoint.id
