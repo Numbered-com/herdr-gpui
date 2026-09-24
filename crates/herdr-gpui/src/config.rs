@@ -20,7 +20,10 @@ use std::{
 const DEFAULT_CONFIG: &str = include_str!("../config-gpui.example.toml");
 // Compare the first line so Windows checkouts and editors can use CRLF.
 const MANAGED_HEADER: &str = "# DO NOT EDIT -- WILL BE OVERWRITTEN";
-const LOCAL_CONFIG: &str = "# Herdr GPUI overrides. Saved changes reload automatically.\n# Unset keys inherit config-gpui.toml; tables merge key by key.\n";
+/// Seeds the overrides file on first launch only. Existing overrides and
+/// migrated personal configs are never rewritten, so settings placed here
+/// reach new installs without changing what current users see.
+const LOCAL_CONFIG: &str = "# Herdr GPUI overrides. Saved changes reload automatically.\n# Unset keys inherit config-gpui.toml; tables merge key by key.\n\n# New installs start with the roomy rounded sidebar. Remove this line for\n# the managed default, or pick another layout listed in config-gpui.toml.\nlayout = \"comfortable-rounded\"\n";
 
 /// Every face is held to this range, whether it comes from the config file or
 /// from a runtime adjustment, so the two can never disagree on what is valid.
@@ -627,10 +630,12 @@ impl Config {
         let local = path.with_extension("local.toml");
         let (text, source) = match fs::read_to_string(&local) {
             Ok(text) => (text, local),
+            // Without overrides or a personal config to migrate, maintenance
+            // will seed the first-launch overrides; show them from frame one.
             Err(error) if error.kind() == ErrorKind::NotFound => match fs::read_to_string(path) {
                 Ok(text) if text.lines().next() != Some(MANAGED_HEADER) => (text, path.to_owned()),
-                Ok(_) => (String::new(), local),
-                Err(error) if error.kind() == ErrorKind::NotFound => (String::new(), local),
+                Ok(_) => (LOCAL_CONFIG.into(), local),
+                Err(error) if error.kind() == ErrorKind::NotFound => (LOCAL_CONFIG.into(), local),
                 Err(error) => return Err(Error::from(error).at_path(path)),
             },
             Err(error) => return Err(Error::from(error).at_path(&local)),
@@ -2019,9 +2024,11 @@ mod tests {
         let temp = TempDirectory::new()?;
         let path = temp.0.join("config-gpui.toml");
         let daemon = temp.0.join("absent.toml");
+        // A fresh install's first frame already shows the layout its seeded
+        // overrides will hold, without writing them yet.
         assert_eq!(
             Config::load_startup_path(&path, &daemon)?.layout.mode,
-            LayoutMode::from(Density::Normal)
+            LayoutMode::new(Density::Comfortable, Style::Rounded)
         );
         assert_eq!(fs::read_dir(&temp.0)?.count(), 0);
         let legacy = "layout = 'compact'\ntheme = 'Nord'\n[terminal]\nsize = 18\n";
@@ -2087,6 +2094,62 @@ mod tests {
             samples[50], samples[94]
         );
         // Timing is reported, not gated: filesystem latency is machine-dependent.
+        Ok(())
+    }
+
+    #[test]
+    fn only_new_installs_start_with_the_rounded_comfortable_layout() -> anyhow::Result<()> {
+        let rounded = LayoutMode::new(Density::Comfortable, Style::Rounded);
+        let daemon = Path::new("absent.toml");
+        // The managed defaults keep the flat layout for everyone else.
+        assert_eq!(
+            Config::parse(DEFAULT_CONFIG)?.layout.mode,
+            LayoutMode::default()
+        );
+        assert_eq!(Config::parse(LOCAL_CONFIG)?.layout.mode, rounded);
+
+        let fresh = TempDirectory::new()?;
+        let path = fresh.0.join("config-gpui.toml");
+        assert_eq!(
+            Config::load_startup_path(&path, daemon)?.layout.mode,
+            rounded
+        );
+        assert_eq!(Config::load_path(&path, daemon)?.layout.mode, rounded);
+        assert_eq!(
+            fs::read_to_string(path.with_extension("local.toml"))?,
+            LOCAL_CONFIG
+        );
+        // A later launch reads the seeded file, not the first-launch fallback.
+        assert_eq!(
+            Config::load_startup_path(&path, daemon)?.layout.mode,
+            rounded
+        );
+
+        // Existing overrides without a layout keep the managed default.
+        let existing = TempDirectory::new()?;
+        let path = existing.0.join("config-gpui.toml");
+        fs::write(path.with_extension("local.toml"), "theme = 'Nord'\n")?;
+        for config in [
+            Config::load_startup_path(&path, daemon)?,
+            Config::load_path(&path, daemon)?,
+        ] {
+            assert_eq!(config.layout.mode, LayoutMode::default());
+        }
+        assert_eq!(
+            fs::read_to_string(path.with_extension("local.toml"))?,
+            "theme = 'Nord'\n"
+        );
+
+        // So does a personal config migrated from before local overrides.
+        let legacy = TempDirectory::new()?;
+        let path = legacy.0.join("config-gpui.toml");
+        fs::write(&path, "theme = 'Nord'\n")?;
+        for config in [
+            Config::load_startup_path(&path, daemon)?,
+            Config::load_path(&path, daemon)?,
+        ] {
+            assert_eq!(config.layout.mode, LayoutMode::default());
+        }
         Ok(())
     }
 
