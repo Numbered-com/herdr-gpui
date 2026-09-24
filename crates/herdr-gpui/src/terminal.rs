@@ -1,5 +1,6 @@
 mod links;
 mod selection;
+pub(crate) mod splits;
 pub(crate) use links::link_at;
 pub(crate) use selection::Selection;
 

@@ -916,6 +916,8 @@ pub(crate) fn fixture_window(window: &mut Window, cx: &mut Context<HerdrWindow>)
         pressed_terminal_link: None,
         terminal_mouse: None,
         scrollbar_drag: None,
+        split_drag: None,
+        split_cursor: None,
         pending_images: Vec::new(),
         file_transfer: None,
         presentation: Default::default(),
