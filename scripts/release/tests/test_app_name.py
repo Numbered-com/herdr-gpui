@@ -28,7 +28,12 @@ class AppNameTests(unittest.TestCase):
                 ["xcrun", "assetutil", "--info", ROOT / "assets/icons" / catalog],
                 check=True, capture_output=True,
             ).stdout
-            icons = {item.get("Name") for item in json.loads(info) if item.get("AssetType") == "IconImageStack"}
+            # Older assetutil releases list only the flattened renditions that
+            # macOS 15 reads, not the layered Icon Composer stack.
+            icons = {
+                item.get("Name") for item in json.loads(info)
+                if item.get("AssetType") in ("IconImageStack", "MultiSized Image", "Icon Image")
+            }
             self.assertEqual(icons, {name}, catalog)
 
     def test_development_recipes_launch_the_bundled_executable(self):
