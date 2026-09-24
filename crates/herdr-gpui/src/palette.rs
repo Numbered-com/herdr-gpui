@@ -29,6 +29,9 @@ struct Entry {
     detail: String,
     badge: &'static str,
     action: Action,
+    /// Index of the row this one nests under, indented only while that row
+    /// is visible so a search never leaves it hanging beneath nothing.
+    parent: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -180,11 +183,13 @@ fn go_to_entries(
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
         .join("  ");
+        let parent = entries.len();
         entries.push(Entry {
             label: workspace.label.clone(),
             detail,
             badge: "",
             action: go(NavigationTarget::Workspace(workspace.workspace_id.clone())),
+            parent: None,
         });
         let tabs: Vec<_> = snapshot
             .tabs
@@ -231,6 +236,7 @@ fn go_to_entries(
                 detail,
                 badge: agent.map_or("", |agent| status_badge(agent.agent_status)),
                 action: go(NavigationTarget::Pane(pane.pane_id.clone())),
+                parent: Some(parent),
             });
         }
     }
@@ -241,6 +247,14 @@ fn matches_query(text: &str, query: &str) -> bool {
     query
         .split_whitespace()
         .all(|token| text.contains(&token.to_lowercase()))
+}
+
+/// Whether a row sits under its parent in the visible list. `filtered` keeps
+/// entry order, so it stays sorted.
+fn is_nested(entry: &Entry, filtered: &[usize]) -> bool {
+    entry
+        .parent
+        .is_some_and(|parent| filtered.binary_search(&parent).is_ok())
 }
 
 pub(super) struct Palette {
@@ -310,6 +324,7 @@ impl HerdrWindow {
                         detail: self.config.keybindings.primary(info.command).into(),
                         badge: "",
                         action: Action::Native(info.command),
+                        parent: None,
                     }),
             );
         }
@@ -361,6 +376,7 @@ impl HerdrWindow {
                         },
                         badge: "Herdr command",
                         action: Action::Configured(command.command_id.clone(), command.action),
+                        parent: None,
                     }
                 }));
             }
@@ -627,6 +643,7 @@ impl HerdrWindow {
                             range
                                 .map(|index| {
                                     let entry = palette.entries[palette.filtered[index]].clone();
+                                    let nested = is_nested(&entry, &palette.filtered);
                                     div()
                                         .id(index)
                                         .debug_selector(move || format!("palette-row-{index}"))
@@ -649,16 +666,7 @@ impl HerdrWindow {
                                                 .min_w_0()
                                                 .flex()
                                                 .flex_col()
-                                                .when(
-                                                    matches!(
-                                                        &entry.action,
-                                                        Action::Go {
-                                                            target: NavigationTarget::Pane(_),
-                                                            ..
-                                                        }
-                                                    ),
-                                                    |column| column.pl(px(16.)),
-                                                )
+                                                .when(nested, |column| column.pl(px(16.)))
                                                 .child(div().truncate().child(entry.label))
                                                 .child(
                                                     div()
@@ -1034,6 +1042,22 @@ mod tests {
             .map(|entry| entry.label.as_str());
         assert_eq!(matching.next(), Some("Claude"));
         assert_eq!(matching.next(), None);
+    }
+
+    #[test]
+    fn go_to_panes_indent_only_beneath_a_visible_workspace() {
+        let snapshot = go_to_fixture();
+        let mut entries = Vec::new();
+        go_to_entries(crate::endpoint::LOCAL, None, &snapshot, &mut entries);
+        let nested = |filtered: &[usize]| {
+            filtered
+                .iter()
+                .map(|index| is_nested(&entries[*index], filtered))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(nested(&[0, 1, 2, 3]), [false, true, true, false]);
+        // A search that matches a pane but not its workspace leaves it flush.
+        assert_eq!(nested(&[1, 3]), [false, false]);
     }
 
     #[test]
