@@ -19,6 +19,7 @@ pub(crate) fn menus() -> Vec<Menu> {
     vec![
         Menu {
             name: "Herdr".into(),
+            disabled: false,
             items: vec![
                 MenuItem::action(
                     "About Herdr",
@@ -52,6 +53,7 @@ pub(crate) fn menus() -> Vec<Menu> {
         },
         Menu {
             name: "File".into(),
+            disabled: false,
             items: vec![
                 MenuItem::action(
                     "New Workspace",
@@ -96,6 +98,7 @@ pub(crate) fn menus() -> Vec<Menu> {
         // the file panels, the way every macOS app's Edit menu does.
         Menu {
             name: "Edit".into(),
+            disabled: false,
             items: vec![
                 MenuItem::os_action("Cut", Cut, OsAction::Cut),
                 MenuItem::os_action("Copy", Copy, OsAction::Copy),
@@ -106,6 +109,7 @@ pub(crate) fn menus() -> Vec<Menu> {
         },
         Menu {
             name: "View".into(),
+            disabled: false,
             items: vec![
                 MenuItem::action(
                     "Increase Font Size",
@@ -130,6 +134,7 @@ pub(crate) fn menus() -> Vec<Menu> {
         },
         Menu {
             name: "Terminal".into(),
+            disabled: false,
             items: vec![
                 MenuItem::action(
                     "Split Vertically (Right)",
@@ -191,6 +196,7 @@ pub(crate) fn menus() -> Vec<Menu> {
         },
         Menu {
             name: "Window".into(),
+            disabled: false,
             items: vec![
                 MenuItem::action(
                     "New Window",
@@ -205,6 +211,7 @@ pub(crate) fn menus() -> Vec<Menu> {
         #[cfg(feature = "qa-menu")]
         Menu {
             name: "QA".into(),
+            disabled: false,
             items: vec![
                 MenuItem::action("Show herdr non-detected modal", ShowHerdrNotDetected),
                 MenuItem::action("Show app update available", ShowUpdatePreview),
@@ -405,7 +412,7 @@ mod tests {
         });
         let available = |cx: &mut gpui::VisualTestContext| {
             cx.update(|window, cx| {
-                full_draw(window, cx).clear();
+                full_draw(window, cx).clear(cx);
                 LABELS
                     .into_iter()
                     .filter(|label| window.is_action_available(edit_action(label).as_ref(), cx))
@@ -418,7 +425,7 @@ mod tests {
         };
 
         // A released selection is already copied; the terminal only pastes.
-        cx.update(|window, cx| view.read(cx).focus.focus(window));
+        cx.update(|window, cx| view.read(cx).focus.clone().focus(window, cx));
         assert_eq!(available(cx), ["Paste"]);
 
         cx.update(|window, cx| {

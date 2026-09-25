@@ -233,7 +233,7 @@ mod tests {
         for width in [800., 360.] {
             cx.update(|window, cx| view.update(cx, |view, cx| view.open_about(window, cx)));
             cx.simulate_resize(size(px(width), px(600.)));
-            cx.update(|window, cx| window.draw(cx).clear());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
             let about = cx.debug_bounds("about").unwrap();
             let icon = cx.debug_bounds("about-icon").unwrap();
             let name = cx.debug_bounds("about-name").unwrap();
@@ -275,7 +275,7 @@ mod tests {
             cx.simulate_click(close.center(), Modifiers::default());
             view.read_with(cx, |view, _| assert!(view.menu.page.is_none()));
             cx.update(|window, cx| view.update(cx, |view, cx| view.open_about(window, cx)));
-            cx.update(|window, cx| window.draw(cx).clear());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.simulate_keystrokes("escape");
             view.read_with(cx, |view, _| assert!(view.menu.page.is_none()));
         }
@@ -292,7 +292,7 @@ mod tests {
                 view.open_menu(window, cx);
             })
         });
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let row = cx.debug_bounds("menu-about").unwrap();
         cx.simulate_click(row.center(), Modifiers::default());
         view.read_with(cx, |view, _| assert_eq!(view.menu.page, Some(Page::About)));

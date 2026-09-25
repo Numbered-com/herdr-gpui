@@ -442,14 +442,14 @@ fn terminal_redraws_reuse_the_cached_sidebar(cx: &mut gpui::TestAppContext) {
     let renders = |cx: &mut gpui::VisualTestContext| {
         cx.update(|_, cx| view.read(cx).sidebar_view.read(cx).renders)
     };
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     let first = renders(cx);
     assert!(first > 0);
 
     // Terminal output: the window redraws, the rows do not rebuild.
     for _ in 0..3 {
         view.update(cx, |view, cx| view.redraw_terminal(cx));
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
     }
     assert_eq!(renders(cx), first);
 
@@ -458,10 +458,10 @@ fn terminal_redraws_reuse_the_cached_sidebar(cx: &mut gpui::TestAppContext) {
         view.sidebar_width = Some(200.);
         cx.notify();
     });
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_eq!(renders(cx), first + 1);
     // Debug bounds are only recorded when painted, so read them from a full frame.
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     assert_eq!(renders(cx), first + 2);
     assert_eq!(
         cx.debug_bounds("sidebar").map(|b| b.size.width),
@@ -473,7 +473,7 @@ fn terminal_redraws_reuse_the_cached_sidebar(cx: &mut gpui::TestAppContext) {
         view.sidebar_visible = false;
         cx.notify();
     });
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     assert_eq!(renders(cx), first + 2);
 }
 
@@ -534,7 +534,7 @@ fn agent_icons_follow_names_and_reserve_narrow_label_width(cx: &mut gpui::TestAp
                 });
                 cx.update(|window, cx| {
                     cx.default_global::<TextProbes>().0.clear();
-                    full_draw(window, cx).clear();
+                    full_draw(window, cx).clear(cx);
                     let (bounds, rendered, glyphs) = &cx.global::<TextProbes>().0[label];
                     assert!(*glyphs <= bounds.size.width);
                     if width == 160. {
@@ -606,7 +606,7 @@ fn sidebar_densities_keep_details_and_badges_within_their_rows(cx: &mut gpui::Te
                 cx.update(|window, cx| {
                     cx.default_global::<TextProbes>().0.clear();
                     window.refresh();
-                    full_draw(window, cx).clear();
+                    full_draw(window, cx).clear(cx);
                     let probes = &cx.global::<TextProbes>().0;
                     assert_eq!(probes.contains_key("main"), !compact);
                     for text in ["worktree/sidebar-child", "+234", "-567"] {
@@ -723,7 +723,7 @@ fn rounded_rows_drop_tree_lines_and_title_headers(cx: &mut gpui::TestAppContext)
         cx.simulate_resize(size(px(800.), px(900.)));
         cx.run_until_parked();
         cx.update(|window, cx| {
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
         });
         assert!(cx.debug_bounds("row-sidebar-child").is_some());
         assert_eq!(
@@ -739,7 +739,7 @@ fn rounded_rows_drop_tree_lines_and_title_headers(cx: &mut gpui::TestAppContext)
         assert!(heading.left() <= row.left());
         cx.update(|window, cx| {
             cx.default_global::<TextProbes>().0.clear();
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
             assert!(
                 cx.global::<TextProbes>().0.contains_key(header),
                 "{header}: {:?}",
@@ -964,11 +964,11 @@ fn palette_rejects_changed_endpoint_epoch_or_generation(cx: &mut gpui::TestAppCo
     for reconnect in [false, true] {
         cx.update(|window, cx| {
             view.update(cx, |view, cx| view.open_palette(false, window, cx));
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
         });
         cx.simulate_input("toggle sidebar");
         cx.run_until_parked();
-        cx.update(|window, cx| full_draw(window, cx).clear());
+        cx.update(|window, cx| full_draw(window, cx).clear(cx));
         // Selection paints as a row: the fill spans the list, not the label.
         let row = cx.debug_bounds("palette-row-0").unwrap();
         let status = cx.debug_bounds("palette-status").unwrap();
@@ -1211,7 +1211,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
         cx.update(|window, cx| {
             cx.default_global::<TextProbes>().0.clear();
             window.refresh();
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
             let view = view.read(cx);
             assert_eq!(view.live.snapshot.as_deref(), Some(&before));
             assert_eq!(view.marked, "selection must survive toggle");
@@ -1230,14 +1230,14 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     let menu = cx.debug_bounds("sidebar-menu").unwrap();
     cx.simulate_click(menu.center(), Default::default());
     cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     assert!(cx.debug_bounds("menu-panel").is_some());
     assert!(cx.debug_bounds("menu-reload GUI config").is_some());
     crate::menu::workspace_tests::check_menu_interactions(&view, cx);
     cx.simulate_keystrokes("down down enter");
     cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         assert!(view.read(cx).menu.page == Some(crate::menu::Page::Keybinds));
     });
     let panel = cx.debug_bounds("menu-panel").unwrap();
@@ -1258,7 +1258,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     }
     cx.simulate_resize(size(px(360.), px(240.)));
     cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     let panel = cx.debug_bounds("menu-panel").unwrap();
     assert_eq!(panel.size.width, px(328.));
@@ -1273,7 +1273,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     assert!(footer.bottom() <= panel.bottom());
     let first_row = cx.debug_bounds("shortcut-New Workspace").unwrap();
     cx.simulate_keystrokes("pagedown");
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     assert!(cx.debug_bounds("shortcut-New Workspace").unwrap().top() < first_row.top());
     assert_eq!(cx.debug_bounds("keybinds-header").unwrap(), header);
     assert_eq!(cx.debug_bounds("keybinds-footer").unwrap(), footer);
@@ -1283,7 +1283,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
         assert!(view.read(cx).menu.page.is_none());
         assert!(view.read(cx).focus.is_focused(window));
         view.update(cx, |view, cx| view.open_keybinds(window, cx));
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     assert_eq!(
         cx.debug_bounds("shortcut-New Workspace").unwrap(),
@@ -1292,12 +1292,12 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.simulate_keystrokes("escape");
     cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         assert!(view.read(cx).menu.page.is_none());
     });
     cx.simulate_click(menu.center(), Default::default());
     cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     cx.simulate_click(point(px(700.), px(500.)), Default::default());
     cx.update(|_, cx| assert!(view.read(cx).menu.page.is_none()));
@@ -1312,7 +1312,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     cx.simulate_mouse_down(parent.center(), MouseButton::Right, Default::default());
     cx.simulate_mouse_up(parent.center(), MouseButton::Right, Default::default());
     cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         assert!(view.read(cx).menu.page == Some(crate::menu::Page::Workspace));
         assert_eq!(view.read(cx).live.snapshot.as_deref(), Some(&before));
     });
@@ -1364,7 +1364,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
                     }
                     cx.notify();
                 });
-                full_draw(window, cx).clear();
+                full_draw(window, cx).clear(cx);
             });
             let panel = cx.debug_bounds("menu-panel").unwrap();
             assert!(panel.left() >= px(0.) && panel.right() <= px(width));
@@ -1407,7 +1407,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
                     view.menu.anchor = anchor;
                     cx.notify();
                 });
-                full_draw(window, cx).clear();
+                full_draw(window, cx).clear(cx);
             });
             let panel = cx.debug_bounds("menu-panel").unwrap();
             assert_eq!(panel.size.width, px(if dialog { 420. } else { 340. }));
@@ -1440,7 +1440,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
             view.menu.anchor = parent.center();
             cx.notify();
         });
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     cx.simulate_input("\u{65e5}\u{672c}\u{1f600}");
     cx.update(|window, cx| {
@@ -1465,7 +1465,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
             view.command(crate::controls::Command::Workspace, window, cx);
             assert!(view.local_error.is_none());
         });
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         view.update(cx, |view, cx| {
             let bounds = view
                 .bounds_for_range(3..3, Bounds::default(), window, cx)
@@ -1494,7 +1494,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     cx.simulate_input("   ");
     cx.simulate_keystrokes("enter");
     cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         assert_eq!(view.read(cx).menu.input.as_ref().unwrap().text, "   ");
         assert!(
             view.read(cx).menu.page
@@ -1518,7 +1518,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
             view.open_keybinds(window, cx);
             assert!(view.marked.is_empty());
         });
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         assert!(!view.read(cx).focus.is_focused(window));
     });
     let line_height = cx.update(|_, cx| super::line_height(&view.read(cx).config.sidebar));
@@ -1545,26 +1545,26 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     cx.update(|window, cx| assert!(view.read(cx).focus.is_focused(window)));
     cx.simulate_keystrokes("cmd-/");
     let shortcut_search = cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         let search = view.read(cx).menu.keybinds_search.as_ref().unwrap().clone();
         assert!(search.read(cx).focus.is_focused(window));
         search
     });
     cx.simulate_input("pane zoom");
     cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         assert_eq!(shortcut_search.read(cx).text(), "pane zoom");
     });
     assert!(cx.debug_bounds("shortcut-Toggle Pane Zoom").is_some());
     cx.simulate_keystrokes("cmd-a");
     cx.simulate_input("no-shortcut-matches-xyz");
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     assert!(cx.debug_bounds("keybinds-empty").is_some());
     cx.simulate_keystrokes("cmd-w");
     cx.update(|_, cx| assert!(view.read(cx).menu.page == Some(crate::menu::Page::Keybinds)));
     cx.simulate_keystrokes("escape cmd-/");
     cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         let search = view.read(cx).menu.keybinds_search.as_ref().unwrap().clone();
         assert!(search.read(cx).text().is_empty());
         search.update(cx, |input, cx| {
@@ -1588,7 +1588,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     });
     cx.simulate_keystrokes("escape cmd-,");
     cx.simulate_resize(size(px(360.), px(240.)));
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     let header = cx.debug_bounds("preferences-header").unwrap();
     let footer = cx.debug_bounds("preferences-footer").unwrap();
     let body = cx.debug_bounds("preferences-body").unwrap();
@@ -1597,7 +1597,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     assert!(header.bottom() <= body.top());
     assert!(body.bottom() <= footer.top());
     cx.simulate_keystrokes("pagedown");
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     assert!(cx.debug_bounds("preferences-theme").unwrap().top() < theme_row.top());
     assert_eq!(cx.debug_bounds("preferences-header").unwrap(), header);
     assert_eq!(cx.debug_bounds("preferences-footer").unwrap(), footer);
@@ -1622,7 +1622,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
                         view.menu.github = crate::github::Auth::requesting_fixture();
                     }
                 });
-                full_draw(window, cx).clear();
+                full_draw(window, cx).clear(cx);
                 assert_eq!(
                     cx.read_from_clipboard().unwrap().text().as_deref(),
                     Some("unchanged")
@@ -1642,10 +1642,12 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
             if state == 3 {
                 assert!(panel.size.height <= px(230.));
             }
-            let footer = cx.debug_bounds("github-footer").unwrap();
+            let footer = cx.debug_bounds("github-footer");
             let body = cx.debug_bounds("github-body").unwrap();
             assert!(body.size.height > px(0.));
-            if state != 4 {
+            // A pending request offers no footer actions, so none is drawn.
+            assert_eq!(footer.is_none(), state == 4);
+            if let Some(footer) = footer {
                 // Content-sized layouts can round adjacent edges to half pixels.
                 assert!(body.bottom() <= footer.top() + px(1.));
                 assert!(footer.bottom() <= panel.bottom() + px(1.));
@@ -1673,9 +1675,9 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
             } else if state == 2 {
                 let status = cx.debug_bounds("github-status").unwrap();
                 cx.simulate_keystrokes("pagedown");
-                cx.update(|window, cx| full_draw(window, cx).clear());
+                cx.update(|window, cx| full_draw(window, cx).clear(cx));
                 assert!(cx.debug_bounds("github-status").unwrap().top() < status.top());
-                assert_eq!(cx.debug_bounds("github-footer").unwrap(), footer);
+                assert_eq!(cx.debug_bounds("github-footer"), footer);
             }
             cx.simulate_keystrokes("c escape");
             cx.update(|window, cx| {
@@ -1688,7 +1690,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     }
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.simulate_keystrokes("cmd-,");
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     let choose_theme = cx.debug_bounds("preferences-choose-theme").unwrap();
     cx.simulate_click(choose_theme.center(), Default::default());
     cx.update(|_, cx| assert!(view.read(cx).menu.page == Some(crate::menu::Page::Themes)));
@@ -1696,7 +1698,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
 
     let search = cx.update(|window, cx| {
         view.update(cx, |view, cx| view.open_theme_picker(window, cx));
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         let search = view.read(cx).menu.themes.as_ref().unwrap().search.clone();
         assert!(search.read(cx).focus.is_focused(window));
         cx.write_to_clipboard(gpui::ClipboardItem::new_string("catppuccin mocha".into()));
@@ -1705,7 +1707,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     cx.simulate_keystrokes("cmd-v");
     cx.run_until_parked();
     cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         assert_eq!(search.read(cx).text(), "catppuccin mocha");
         assert!(view.read(cx).marked.is_empty());
     });
@@ -1719,7 +1721,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     cx.simulate_keystrokes("cmd-a n o r d");
     cx.run_until_parked();
     cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         assert_eq!(search.read(cx).text(), "nord");
         assert!(
             view.read(cx)
@@ -1738,7 +1740,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     });
     cx.simulate_keystrokes("cmd-v");
     cx.run_until_parked();
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     assert!(cx.debug_bounds("theme-empty").is_some());
     // Enter with no results must neither write a config nor dismiss the picker.
     cx.simulate_keystrokes("down enter");
@@ -1747,7 +1749,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     cx.update(|window, cx| {
         assert!(view.read(cx).focus.is_focused(window));
         view.update(cx, |view, cx| view.open_theme_picker(window, cx));
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         assert!(search.read(cx).text().is_empty());
     });
     cx.update(|window, cx| {
@@ -1761,7 +1763,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
                 cx,
             );
         });
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     cx.simulate_keystrokes("enter");
     cx.update(|_, cx| {
@@ -1779,7 +1781,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
 
     cx.simulate_keystrokes("cmd-shift-p");
     let palette_search = cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         assert!(view.read(cx).menu.page == Some(crate::menu::Page::Palette));
         view.read(cx).menu.palette.as_ref().unwrap().search.clone()
     });
@@ -1790,7 +1792,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     cx.update(|_, cx| assert_eq!(palette_search.read(cx).text(), "toggle sidebar"));
     cx.simulate_keystrokes("enter");
     cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         assert!(!view.read(cx).sidebar_visible);
         assert!(view.read(cx).menu.page.is_none());
         assert!(view.read(cx).focus.is_focused(window));
@@ -1802,7 +1804,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     });
     cx.simulate_keystrokes("escape cmd-p");
     cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         assert!(view.read(cx).menu.page == Some(crate::menu::Page::Palette));
         let search = &view.read(cx).menu.palette.as_ref().unwrap().search;
         assert!(search.read(cx).text().is_empty());
@@ -1834,7 +1836,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     });
     cx.simulate_keystrokes("cmd-shift-w tab enter");
     cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         assert!(
             view.read(cx).menu.page == Some(crate::menu::Page::ConfirmClose),
             "disconnected confirmation stays open with error"
@@ -1855,7 +1857,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
         view.update(cx, |view, cx| view.show_install_modal(window, cx));
     });
     cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         let view = view.read(cx);
         assert!(view.menu.page == Some(crate::menu::Page::Install));
         assert!(!view.live.missing_installation);
@@ -1872,7 +1874,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     cx.update(|window, cx| window.dispatch_action(Box::new(crate::CheckForUpdates), cx));
     assert!(cx.pending_prompt().is_none());
     cx.update(|window, cx| {
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
         assert!(view.read(cx).menu.page == Some(crate::menu::Page::AppUpdate));
         assert_eq!(view.read(cx).live.snapshot, before_install);
     });
@@ -1900,7 +1902,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
         cx.update(|window, cx| window.dispatch_action(Box::new(crate::ShowUpdatePreview), cx));
         for ready in [false, true] {
             cx.update(|window, cx| {
-                full_draw(window, cx).clear();
+                full_draw(window, cx).clear(cx);
                 let view = view.read(cx);
                 assert_eq!(view.updater.state(), &updater_before);
                 assert_eq!(view.live.snapshot, before_install);
@@ -1970,7 +1972,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     // The same panel is reachable without native menus, including on Linux.
     cx.update(|window, cx| {
         view.update(cx, |view, cx| view.open_menu(window, cx));
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     let updates = cx
         .debug_bounds("menu-app updates")
@@ -1999,7 +2001,7 @@ fn check_sidebar(fixture: Entity<SidebarFixture>, cx: &mut gpui::VisualTestConte
     });
     for width in [480., 800.] {
         cx.simulate_resize(size(px(width), px(600.)));
-        cx.update(|window, cx| full_draw(window, cx).clear());
+        cx.update(|window, cx| full_draw(window, cx).clear(cx));
         let status = cx.debug_bounds("connection-status").unwrap();
         let report = cx.debug_bounds("report-issue").unwrap();
         assert!(report.size.width >= px(33.));
@@ -2057,7 +2059,7 @@ fn the_sidebar_follows_the_selection_without_undoing_manual_scrolling(
     // Reserve the new footer while retaining this test's original list viewport.
     cx.simulate_resize(size(px(800.), px(640.)));
     cx.run_until_parked();
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     // The fixture's grouped worktrees stay contiguous, so w30 is the 31st row.
     const ROW: usize = 30;
     {
@@ -2075,7 +2077,7 @@ fn the_sidebar_follows_the_selection_without_undoing_manual_scrolling(
     });
     cx.update(|window, cx| {
         window.refresh();
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     cx.update(|_, cx| {
         let view = view.read(cx);
@@ -2092,7 +2094,7 @@ fn the_sidebar_follows_the_selection_without_undoing_manual_scrolling(
     cx.update(|window, cx| {
         view.read(cx).sidebar_scroll[0].set_offset(point(px(0.), px(0.)));
         window.refresh();
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     cx.update(|_, cx| {
         assert_eq!(view.read(cx).sidebar_scroll[0].offset().y, px(0.));
@@ -2110,7 +2112,7 @@ fn the_sidebar_follows_the_selection_without_undoing_manual_scrolling(
     });
     cx.update(|window, cx| {
         window.refresh();
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     cx.update(|_, cx| {
         let view = view.read(cx);
@@ -2146,7 +2148,7 @@ fn the_sidebar_follows_the_selection_without_undoing_manual_scrolling(
         });
         cx.update(|window, cx| {
             window.refresh();
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
         });
         cx.update(|_, cx| {
             let spaces = &view.read(cx).sidebar_scroll[0];
@@ -2173,7 +2175,7 @@ fn worktree_rows_wear_their_cached_pull_request(cx: &mut gpui::TestAppContext) {
     let view = cx.update(|_, cx| fixture.read(cx).0.clone());
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.run_until_parked();
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     // Rows w3..w5 are the fixture's worktree group; w4 is a linked checkout.
     let bare = cx.debug_bounds("name-sidebar-child").unwrap();
     assert!(cx.debug_bounds("pr-sidebar-child").is_none());
@@ -2219,7 +2221,7 @@ fn worktree_rows_wear_their_cached_pull_request(cx: &mut gpui::TestAppContext) {
     cx.update(|window, cx| {
         cx.default_global::<TextProbes>().0.clear();
         window.refresh();
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     let badge = cx.debug_bounds("pr-sidebar-child").unwrap();
     let row = cx.debug_bounds("row-sidebar-child").unwrap();
@@ -2266,7 +2268,7 @@ fn worktree_rows_mark_uncommitted_work(cx: &mut gpui::TestAppContext) {
     let view = cx.update(|_, cx| fixture.read(cx).0.clone());
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.run_until_parked();
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     let clean_label = cx.debug_bounds("name-sidebar-child").unwrap();
     cx.update(|_, cx| {
         view.update(cx, |view, cx| {
@@ -2297,7 +2299,7 @@ fn worktree_rows_mark_uncommitted_work(cx: &mut gpui::TestAppContext) {
     });
     cx.update(|window, cx| {
         window.refresh();
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     let row = cx.debug_bounds("row-sidebar-child").unwrap();
     let badge = cx.debug_bounds("pr-sidebar-child").unwrap();
@@ -2344,12 +2346,12 @@ fn workspace_right_click_survives_redraw_release_and_pointer_movement(
         // macOS can deliver Left when Control is released before the mouse.
         (true, MouseButton::Left),
     ] {
-        cx.update(|window, cx| full_draw(window, cx).clear());
+        cx.update(|window, cx| full_draw(window, cx).clear(cx));
         let position = cx.debug_bounds("row-agent-launcher").unwrap().center();
         cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
         cx.update(|window, cx| {
             if redraw {
-                full_draw(window, cx).clear();
+                full_draw(window, cx).clear(cx);
             }
             assert_eq!(view.read(cx).menu.page, Some(crate::menu::Page::Workspace));
         });
@@ -2367,7 +2369,7 @@ fn workspace_right_click_survives_redraw_release_and_pointer_movement(
                 view.poll_tab_rename(window, cx);
                 view.poll_pane_rename(window, cx);
             });
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
             assert_eq!(view.read(cx).menu.page, Some(crate::menu::Page::Workspace));
             assert!(view.read(cx).menu.focus.is_focused(window));
             assert!(!view.read(cx).menu.opening_right_click);
@@ -2412,7 +2414,7 @@ fn workspace_popover_header_and_right_click_retargeting(cx: &mut gpui::TestAppCo
     .into_iter()
     .enumerate()
     {
-        cx.update(|window, cx| full_draw(window, cx).clear());
+        cx.update(|window, cx| full_draw(window, cx).clear(cx));
         let row = cx.debug_bounds(selector).unwrap();
         let position = point(px(200. - index as f32 * 80.), row.center().y);
         if let Some(panel) = cx.debug_bounds("menu-panel") {
@@ -2423,7 +2425,7 @@ fn workspace_popover_header_and_right_click_retargeting(cx: &mut gpui::TestAppCo
         }
         cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
         cx.update(|window, cx| {
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
             assert_eq!(view.read(cx).menu.page, Some(Page::Workspace));
             assert_eq!(target_id(view.read(cx)), Some(id));
             assert_eq!(
@@ -2464,7 +2466,7 @@ fn workspace_popover_header_and_right_click_retargeting(cx: &mut gpui::TestAppCo
         view.update(cx, |view, cx| {
             view.open_workspace_menu("w1", point(px(20.), px(100.)), window, cx)
         });
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     let panel = cx.debug_bounds("menu-panel").unwrap();
     for selector in ["workspace-menu-name", "workspace-menu-branch"] {
@@ -2473,7 +2475,7 @@ fn workspace_popover_header_and_right_click_retargeting(cx: &mut gpui::TestAppCo
     }
     // Once an action opens a dialog, outside right-clicks only dismiss it.
     cx.simulate_keystrokes("down enter");
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     let row = cx.debug_bounds("row-herdr").unwrap();
     let position = point(px(5.), row.center().y);
     cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
@@ -2487,7 +2489,7 @@ fn workspace_popover_header_and_right_click_retargeting(cx: &mut gpui::TestAppCo
             view.open_workspace_menu("w0", point(px(20.), px(100.)), window, cx);
         });
         window.refresh();
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     let header = cx.debug_bounds("workspace-menu-header").unwrap();
     let name = cx.debug_bounds("workspace-menu-name").unwrap();
@@ -2515,7 +2517,7 @@ fn the_workspace_menu_folds_and_unfolds_a_worktree_group(cx: &mut gpui::TestAppC
     });
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.run_until_parked();
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     for (item, icon, collapsed) in [
         (
             "workspace-menu-Collapse group",
@@ -2532,7 +2534,7 @@ fn the_workspace_menu_folds_and_unfolds_a_worktree_group(cx: &mut gpui::TestAppC
         cx.simulate_mouse_down(parent.center(), MouseButton::Right, Modifiers::default());
         cx.simulate_mouse_up(parent.center(), MouseButton::Right, Modifiers::default());
         cx.update(|window, cx| {
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
             assert!(view.read(cx).menu.page == Some(crate::menu::Page::Workspace));
         });
         let row = cx
@@ -2543,7 +2545,7 @@ fn the_workspace_menu_folds_and_unfolds_a_worktree_group(cx: &mut gpui::TestAppC
         cx.update(|window, cx| {
             cx.default_global::<TextProbes>().0.clear();
             window.refresh();
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
             let view = view.read(cx);
             // Folding is the client's own view of the list, not a daemon request.
             assert!(view.menu.page.is_none(), "{item} left the menu open");
@@ -2627,7 +2629,7 @@ fn the_sidebar_menu_stays_clear_of_the_window_chrome(cx: &mut gpui::TestAppConte
                 view.menu.anchor = point(px(120.), anchor);
                 view.open_menu(window, cx);
             });
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
             assert!(view.read(cx).menu.page == Some(crate::menu::Page::Menu));
         });
         let panel = cx.debug_bounds("menu-panel").unwrap();
@@ -2641,7 +2643,7 @@ fn the_sidebar_menu_stays_clear_of_the_window_chrome(cx: &mut gpui::TestAppConte
         // Whatever the room, the list keeps enough height to scroll through.
         assert!(panel.size.height >= px(60.), "anchor {anchor:?}: {panel:?}");
         cx.simulate_keystrokes("escape");
-        cx.update(|window, cx| full_draw(window, cx).clear());
+        cx.update(|window, cx| full_draw(window, cx).clear(cx));
     }
 }
 
@@ -2671,7 +2673,7 @@ fn device_footer_filters_both_lists_and_opens_settings(cx: &mut gpui::TestAppCon
     });
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.run_until_parked();
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     assert!(cx.debug_bounds("host-ssh:fixture").is_some());
     let all_counts = cx.update(|_, cx| {
         view.read(cx)
@@ -2699,7 +2701,7 @@ fn device_footer_filters_both_lists_and_opens_settings(cx: &mut gpui::TestAppCon
         ),
     ] {
         cx.simulate_click(position, Modifiers::default());
-        cx.update(|window, cx| full_draw(window, cx).clear());
+        cx.update(|window, cx| full_draw(window, cx).clear(cx));
         let menu = cx.debug_bounds("menu-panel").unwrap();
         assert_eq!(menu.size.width, px(280.));
         assert_eq!(menu.left(), picker_bounds.left());
@@ -2713,10 +2715,10 @@ fn device_footer_filters_both_lists_and_opens_settings(cx: &mut gpui::TestAppCon
             assert!((row.center().y - marker.center().y).abs() <= px(0.5));
         }
         cx.simulate_keystrokes("escape");
-        cx.update(|window, cx| full_draw(window, cx).clear());
+        cx.update(|window, cx| full_draw(window, cx).clear(cx));
     }
     cx.simulate_click(picker, Modifiers::default());
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     assert!(cx.debug_bounds("menu-panel").unwrap().bottom() <= footer.bottom());
     // All Devices -> Local. An explicit-socket fixture must not touch the catalog.
     cx.simulate_keystrokes("down enter");
@@ -2724,7 +2726,7 @@ fn device_footer_filters_both_lists_and_opens_settings(cx: &mut gpui::TestAppCon
         assert_eq!(view.read(cx).device_filter.as_deref(), Some("local"));
         assert!(!view.read(cx).device_visible("ssh:fixture"));
         assert!(view.read(cx).focus.is_focused(window));
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     cx.update(|_, cx| {
         let local_counts = view
@@ -2735,12 +2737,12 @@ fn device_footer_filters_both_lists_and_opens_settings(cx: &mut gpui::TestAppCon
         assert_eq!(local_counts.map(|count| count * 2), all_counts);
     });
     cx.simulate_click(picker, Modifiers::default());
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     cx.simulate_keystrokes("enter");
     cx.update(|window, cx| {
         assert!(view.read(cx).device_filter.is_none());
         assert_eq!(view.read(cx).selected_endpoint, 0);
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     assert!(cx.debug_bounds("host-ssh:fixture").is_some());
     let settings = cx.debug_bounds("device-settings").unwrap().center();
@@ -2755,7 +2757,7 @@ fn device_footer_filters_both_lists_and_opens_settings(cx: &mut gpui::TestAppCon
     // A narrow sidebar retains both controls without spilling into the terminal.
     cx.update(|window, cx| {
         view.update(cx, |view, _| view.sidebar_width = Some(140.));
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     let footer = cx.debug_bounds("device-footer").unwrap();
     assert!(cx.debug_bounds("device-settings").unwrap().right() <= footer.right());
@@ -2772,7 +2774,7 @@ fn healthy_connection_status_is_quiet_but_diagnostics_remain(cx: &mut gpui::Test
         view.live.status = crate::state::ConnectionStatus::Connected;
         view
     });
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     assert!(cx.debug_bounds("connection-message").is_none());
     assert!(cx.debug_bounds("status-theme").is_some());
     for status in [
@@ -2786,7 +2788,7 @@ fn healthy_connection_status_is_quiet_but_diagnostics_remain(cx: &mut gpui::Test
                 view.live.error = Some("Connection interrupted".into());
                 cx.notify();
             });
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
         });
         assert!(cx.debug_bounds("connection-message").unwrap().size.width > px(0.));
     }
@@ -2803,10 +2805,10 @@ fn add_device_form_keeps_input_local_and_validates_before_launch(cx: &mut gpui::
     let view = cx.update(|_, cx| fixture.read(cx).0.clone());
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.run_until_parked();
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     let picker = cx.debug_bounds("device-picker").unwrap().center();
     cx.simulate_click(picker, Modifiers::default());
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     cx.simulate_keystrokes("down down enter");
     cx.update(|_, cx| assert_eq!(view.read(cx).menu.page, Some(crate::menu::Page::Devices)));
     cx.simulate_keystrokes("escape");
@@ -2818,18 +2820,18 @@ fn add_device_form_keeps_input_local_and_validates_before_launch(cx: &mut gpui::
         view.update(cx, |view, _| {
             view.endpoints[0].connection.target = ConnectTarget::Local
         });
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     cx.simulate_click(picker, Modifiers::default());
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     cx.simulate_keystrokes("down down enter");
     cx.update(|window, cx| {
         assert_eq!(view.read(cx).menu.page, Some(crate::menu::Page::AddDevice));
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     for (width, height) in [(320., 300.), (800., 600.)] {
         cx.simulate_resize(size(px(width), px(height)));
-        cx.update(|window, cx| full_draw(window, cx).clear());
+        cx.update(|window, cx| full_draw(window, cx).clear(cx));
         let panel = cx.debug_bounds("menu-panel").unwrap();
         let header = cx.debug_bounds("device-setup-header").unwrap();
         let close = cx.debug_bounds("device-setup-close").unwrap();
@@ -2880,7 +2882,7 @@ fn the_agents_header_toggles_between_grouped_and_priority(cx: &mut gpui::TestApp
     });
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.run_until_parked();
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     let (first, second) = ("row-agent-p0", "row-agent-p1");
     let sort = cx.debug_bounds("agents-sort").unwrap();
     let header = cx.debug_bounds("sidebar").unwrap();
@@ -2910,7 +2912,7 @@ fn the_agents_header_toggles_between_grouped_and_priority(cx: &mut gpui::TestApp
         cx.update(|window, cx| {
             cx.default_global::<TextProbes>().0.clear();
             window.refresh();
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
         });
     }
     // Toggling twice returns to the stored default without a daemon request.
@@ -2935,7 +2937,7 @@ fn resting_on_a_workspace_opens_its_menu_once(cx: &mut gpui::TestAppContext) {
         view
     });
     cx.simulate_resize(size(px(900.), px(700.)));
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     let row = cx.debug_bounds("row-herdr").unwrap().center();
     let settle = |view: &Entity<HerdrWindow>,
                   cx: &mut gpui::VisualTestContext,
@@ -2944,7 +2946,7 @@ fn resting_on_a_workspace_opens_its_menu_once(cx: &mut gpui::TestAppContext) {
             view.update(cx, |view, cx| {
                 view.poll_hover_menu(std::time::Instant::now() + elapsed, window, cx);
             });
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
         });
     };
 
@@ -3008,7 +3010,7 @@ fn resting_on_a_workspace_opens_its_menu_once(cx: &mut gpui::TestAppContext) {
             assert!(view.hover.is_some(), "the next row keeps its dwell");
             assert!(view.hover_menu.is_none());
         });
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
 
     // A menu opened any other way is not the pointer's to close.
@@ -3016,7 +3018,7 @@ fn resting_on_a_workspace_opens_its_menu_once(cx: &mut gpui::TestAppContext) {
         view.update(cx, |view, cx| {
             view.open_workspace_menu("w0", point(px(20.), px(20.)), window, cx);
         });
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     cx.simulate_mouse_move(point(px(700.), px(600.)), None, Modifiers::default());
     settle(&view, cx, super::HOVER_MENU_DELAY);
@@ -3034,23 +3036,28 @@ fn resting_on_a_workspace_opens_its_menu_once(cx: &mut gpui::TestAppContext) {
         assert!(view.read_with(cx, |view, _| view.menu.page.is_none()));
     }
 
-    // Scrolling slides another row under the pointer without a hover event of
-    // its own, so the row it entered can no longer speak for what it covers.
+    // Scrolling slides another row under a still pointer, so the row it entered
+    // can no longer speak for what it covers. GPUI may report the newly covered
+    // row as hovered, but that fresh arm still waits for the pointer to move.
     let away = point(px(700.), px(400.));
     cx.simulate_mouse_move(away, None, Modifiers::default());
     cx.simulate_mouse_move(row, None, Modifiers::default());
     cx.simulate_mouse_move(row + point(px(4.), px(4.)), None, Modifiers::default());
-    assert!(
-        view.read_with(cx, |view, _| view.hover.is_some()),
-        "row armed"
-    );
+    let armed = view.read_with(cx, |view, _| {
+        view.hover.as_ref().map(|hover| hover.workspace.clone())
+    });
+    assert!(armed.is_some(), "row armed");
     cx.update(|_, cx| {
         view.read(cx).sidebar_scroll[0].set_offset(point(px(0.), px(-40.)));
     });
     settle(&view, cx, super::HOVER_MENU_DELAY);
     view.read_with(cx, |view, _| {
         assert!(view.menu.page.is_none());
-        assert!(view.hover.is_none());
+        assert!(
+            view.hover
+                .as_ref()
+                .is_none_or(|hover| Some(&hover.workspace) != armed.as_ref() && !hover.moved)
+        );
     });
 
     // An inactive window keeps its menus closed under the same pointer.
@@ -3084,7 +3091,7 @@ fn preferences_list_feature_flags(cx: &mut gpui::TestAppContext) {
                 view.config.features.sidebar_hover_menu = enabled;
                 view.open_preferences(window, cx);
             });
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
         });
         let body = cx.debug_bounds("preferences-body").unwrap();
         for (id, label, _) in crate::preferences::feature_rows(&Default::default()) {
@@ -3096,7 +3103,7 @@ fn preferences_list_feature_flags(cx: &mut gpui::TestAppContext) {
                     scroll.offset() + point(px(0.), body.center().y - bounds.center().y),
                 );
                 window.refresh();
-                full_draw(window, cx).clear();
+                full_draw(window, cx).clear(cx);
             });
             let bounds = cx.debug_bounds(id).unwrap_or_else(|| panic!("{label} row"));
             assert!(
@@ -3120,7 +3127,7 @@ fn resting_on_a_workspace_opens_nothing_by_default(cx: &mut gpui::TestAppContext
     });
     assert!(!crate::config::Config::default().features.sidebar_hover_menu);
     cx.simulate_resize(size(px(900.), px(700.)));
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     let row = cx.debug_bounds("row-herdr").unwrap().center();
 
     cx.simulate_mouse_move(row, None, Modifiers::default());
@@ -3142,7 +3149,7 @@ fn resting_on_a_workspace_opens_nothing_by_default(cx: &mut gpui::TestAppContext
             assert!(view.hover.is_none());
             assert!(view.hover_menu.is_none());
         });
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
 }
 
@@ -3159,7 +3166,7 @@ fn draw_update_state(
             view.update_preview = Some(state.clone());
             cx.notify();
         });
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     let panel = cx.debug_bounds("app-update-panel").unwrap();
     (panel, cx.debug_bounds("app-update-action"))
@@ -3204,7 +3211,7 @@ fn a_homebrew_upgrade_in_progress_offers_nothing_to_interrupt(cx: &mut gpui::Tes
             );
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| view.dismiss_menu(window, cx));
-                full_draw(window, cx).clear();
+                full_draw(window, cx).clear(cx);
             });
         }
     }
@@ -3224,8 +3231,8 @@ fn qa_update_progress_actions_are_isolated_and_dismissible(cx: &mut gpui::TestAp
     let before = view.read_with(cx, |view, _| view.updater.state().clone());
     for homebrew in [false, true] {
         cx.update(|window, cx| {
-            window.focus(&view.read(cx).focus);
-            full_draw(window, cx).clear();
+            window.focus(&view.read(cx).focus.clone(), cx);
+            full_draw(window, cx).clear(cx);
         });
         cx.update(|window, cx| {
             if homebrew {
@@ -3235,7 +3242,7 @@ fn qa_update_progress_actions_are_isolated_and_dismissible(cx: &mut gpui::TestAp
             }
         });
         cx.update(|window, cx| {
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
             let view = view.read(cx);
             assert_eq!(view.menu.page, Some(crate::menu::Page::AppUpdate));
             assert_eq!(view.updater.state(), &before);
@@ -3412,7 +3419,7 @@ fn the_homebrew_update_states_stay_inside_the_panel(cx: &mut gpui::TestAppContex
             cx.update(|_, cx| assert_eq!(view.read(cx).updater.state(), &disabled));
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| view.dismiss_menu(window, cx));
-                full_draw(window, cx).clear();
+                full_draw(window, cx).clear(cx);
             });
         }
     }
@@ -3424,7 +3431,7 @@ fn sidebar_split_drag_clamps_releases_outside_and_resets(cx: &mut gpui::TestAppC
 
     let (view, cx) = cx.add_window_view(fixture_window);
     cx.simulate_resize(size(px(800.), px(600.)));
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     let sidebar = cx.debug_bounds("sidebar").unwrap();
     let initial_spaces = cx.debug_bounds("spaces-section").unwrap();
     let initial_agents = cx.debug_bounds("agents-section").unwrap();
@@ -3441,7 +3448,7 @@ fn sidebar_split_drag_clamps_releases_outside_and_resets(cx: &mut gpui::TestAppC
         );
         cx.simulate_mouse_down(divider.center(), MouseButton::Left, Modifiers::default());
         cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
-        cx.update(|window, cx| full_draw(window, cx).clear());
+        cx.update(|window, cx| full_draw(window, cx).clear(cx));
         view.read_with(cx, |view, _| {
             assert!(view.sidebar_drag.is_some());
             assert!((view.sidebar_split.unwrap() - expected).abs() < 0.0001);
@@ -3463,7 +3470,7 @@ fn sidebar_split_drag_clamps_releases_outside_and_resets(cx: &mut gpui::TestAppC
             view.sidebar_split
         });
         cx.simulate_mouse_move(sidebar.center(), None, Modifiers::default());
-        cx.update(|window, cx| full_draw(window, cx).clear());
+        cx.update(|window, cx| full_draw(window, cx).clear(cx));
         assert_eq!(view.read_with(cx, |view, _| view.sidebar_split), released);
         assert_eq!(cx.debug_bounds("spaces-section").unwrap(), spaces);
     }
@@ -3477,7 +3484,7 @@ fn sidebar_split_drag_clamps_releases_outside_and_resets(cx: &mut gpui::TestAppC
     });
     cx.simulate_mouse_move(sidebar.center(), MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_up(sidebar.center(), MouseButton::Left, Modifiers::default());
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     view.read_with(cx, |view, _| {
         assert_eq!(view.sidebar_split, None);
         assert!(view.sidebar_drag.is_none());
@@ -3504,13 +3511,13 @@ fn sidebar_split_preserves_independent_scrolling_and_agents_toggle(cx: &mut gpui
         view
     });
     cx.simulate_resize(size(px(800.), px(600.)));
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     let divider = cx.debug_bounds("sidebar-split-resize").unwrap();
     let end = divider.center() + point(px(0.), px(-80.));
     cx.simulate_mouse_down(divider.center(), MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     let split = view.read_with(cx, |view, _| view.sidebar_split.unwrap());
     assert!(split < 0.5);
     let spaces = cx.debug_bounds("spaces-section").unwrap();
@@ -3526,7 +3533,7 @@ fn sidebar_split_preserves_independent_scrolling_and_agents_toggle(cx: &mut gpui
             delta: ScrollDelta::Pixels(point(px(0.), px(-40.))),
             ..Default::default()
         });
-        cx.update(|window, cx| full_draw(window, cx).clear());
+        cx.update(|window, cx| full_draw(window, cx).clear(cx));
         view.read_with(cx, |view, _| {
             assert!(view.sidebar_scroll[index].offset().y < before[index].y);
             assert_eq!(view.sidebar_scroll[1 - index].offset(), before[1 - index]);
@@ -3544,7 +3551,7 @@ fn sidebar_split_preserves_independent_scrolling_and_agents_toggle(cx: &mut gpui
             });
             cx.default_global::<TextProbes>().0.clear();
             window.refresh();
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
             assert_eq!(
                 cx.global::<TextProbes>().0.contains_key("Claude Code"),
                 show_agents
@@ -3586,7 +3593,7 @@ fn hiding_agents_reclaims_sidebar_height(cx: &mut gpui::TestAppContext) {
                 });
                 cx.default_global::<TextProbes>().0.clear();
                 window.refresh();
-                full_draw(window, cx).clear();
+                full_draw(window, cx).clear(cx);
             });
             cx.update(|_, cx| {
                 assert_eq!(
@@ -3635,12 +3642,12 @@ fn hiding_agents_preserves_scrolled_multi_endpoint_lists(cx: &mut gpui::TestAppC
     for width in [800., 360.] {
         cx.simulate_resize(size(px(width), px(600.)));
         cx.update(|window, cx| {
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
             for scroll in &view.read(cx).sidebar_scroll {
                 scroll.set_offset(point(px(0.), px(-40.)));
             }
             window.refresh();
-            full_draw(window, cx).clear();
+            full_draw(window, cx).clear(cx);
         });
         let spaces_height = cx.debug_bounds("spaces-scroll").unwrap().size.height;
         for show_agents in [false, true] {
@@ -3651,7 +3658,7 @@ fn hiding_agents_preserves_scrolled_multi_endpoint_lists(cx: &mut gpui::TestAppC
                 });
                 cx.default_global::<TextProbes>().0.clear();
                 window.refresh();
-                full_draw(window, cx).clear();
+                full_draw(window, cx).clear(cx);
                 for label in ["Claude Code", "Remote Agent"] {
                     assert_eq!(
                         cx.global::<TextProbes>().0.contains_key(label),
@@ -3699,7 +3706,7 @@ fn holding_a_workspace_row_lifts_it_and_a_release_picks_the_gap(cx: &mut gpui::T
         view
     });
     cx.simulate_resize(size(px(800.), px(900.)));
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     let target = |view: &Entity<HerdrWindow>, cx: &mut gpui::VisualTestContext| {
         view.read_with(cx, |view, _| {
             let drag = view.workspace_drag.as_ref()?;
@@ -3724,7 +3731,7 @@ fn holding_a_workspace_row_lifts_it_and_a_release_picks_the_gap(cx: &mut gpui::T
     });
     cx.executor().advance_clock(super::reorder::LIFT_DELAY);
     cx.run_until_parked();
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     view.read_with(cx, |view, _| {
         assert!(view.workspace_drag.as_ref().unwrap().lifted)
     });
@@ -3738,7 +3745,7 @@ fn holding_a_workspace_row_lifts_it_and_a_release_picks_the_gap(cx: &mut gpui::T
     // Past the second row's middle, it lands before the third.
     let below = point(first.center().x, second.bottom() - px(2.));
     cx.simulate_mouse_move(below, MouseButton::Left, Modifiers::default());
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     assert_eq!(
         target(&view, cx),
         Some(serde_json::json!({"workspace_ids": ["w0"], "before_workspace_id": "w2"}))
@@ -3760,7 +3767,7 @@ fn holding_a_workspace_row_lifts_it_and_a_release_picks_the_gap(cx: &mut gpui::T
     let passed = "row-herdr-gpui-sidebar-rendering-regression-investigation";
     assert_eq!(cx.debug_bounds(passed).unwrap().top(), first.top());
     cx.simulate_mouse_move(below, MouseButton::Left, Modifiers::default());
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     assert_eq!(
         target(&view, cx),
         Some(serde_json::json!({"workspace_ids": ["w0"], "before_workspace_id": "w2"}))
@@ -3770,17 +3777,17 @@ fn holding_a_workspace_row_lifts_it_and_a_release_picks_the_gap(cx: &mut gpui::T
     // enough, though that row now paints higher.
     let past = point(below.x, first.center().y + second.size.height / 2. + px(2.));
     cx.simulate_mouse_move(past, MouseButton::Left, Modifiers::default());
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     assert_eq!(
         target(&view, cx),
         Some(serde_json::json!({"workspace_ids": ["w0"], "before_workspace_id": "w2"}))
     );
     cx.simulate_mouse_move(below, MouseButton::Left, Modifiers::default());
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
 
     // The release is the drop, not a click on the row under it.
     cx.simulate_mouse_up(below, MouseButton::Left, Modifiers::default());
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     view.read_with(cx, |view, _| assert!(view.workspace_drag.is_none()));
     // Nothing was sent without a daemon, so every row is back in place.
     assert_eq!(cx.debug_bounds("row-herdr").unwrap(), first);
@@ -3796,14 +3803,14 @@ fn holding_a_workspace_row_lifts_it_and_a_release_picks_the_gap(cx: &mut gpui::T
             MouseButton::Left,
             Modifiers::default(),
         );
-        cx.update(|window, cx| full_draw(window, cx).clear());
+        cx.update(|window, cx| full_draw(window, cx).clear(cx));
     }
     assert_eq!(
         target(&view, cx),
         Some(serde_json::json!({"workspace_ids": ["w4"], "before_workspace_id": "w6"}))
     );
     cx.simulate_keystrokes("escape");
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
     view.read_with(cx, |view, _| assert!(view.workspace_drag.is_none()));
     assert_eq!(cx.debug_bounds("row-sidebar-child").unwrap(), child);
 }

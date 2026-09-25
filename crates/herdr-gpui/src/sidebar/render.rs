@@ -151,7 +151,7 @@ impl HerdrWindow {
                         })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.select_endpoint(&select_id, cx);
-                            window.focus(&this.focus);
+                            window.focus(&this.focus, cx);
                         })),
                 );
                 space_rows += 1;
@@ -387,7 +387,7 @@ impl HerdrWindow {
                         NavigationTarget::Workspace(&id),
                         cx,
                     );
-                    window.focus(&this.focus);
+                    window.focus(&this.focus, cx);
                 }))
                 // Only the selected endpoint's rows arm the hover menu:
                 // another endpoint's menu would have to select it first, and
@@ -459,7 +459,7 @@ impl HerdrWindow {
                     })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.navigate_endpoint(&navigate_endpoint, NavigationTarget::Pane(&id), cx);
-                        window.focus(&this.focus);
+                        window.focus(&this.focus, cx);
                     })),
                 );
             }
