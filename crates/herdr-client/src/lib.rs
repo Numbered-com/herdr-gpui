@@ -41,6 +41,8 @@ pub use event::ClientEvent;
 pub use handle::{Client, ClientHandle};
 pub use method::Method;
 pub use options::ConnectOptions;
+#[cfg(unix)]
+pub use ssh::script_command;
 pub use ssh::{Destination, HostProbe, probe_host, remote_origin_url, resolve_destination};
 pub use transport::Stream;
 pub use upload::{remove_uploaded_files, upload_files};

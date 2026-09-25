@@ -45,6 +45,8 @@ pub struct Config {
     pub theme: String,
     pub confirm_close_tab: bool,
     pub show_agents: bool,
+    /// Plan usage of the selected host's AI services in the status bar.
+    pub usage: crate::usage::UsageConfig,
     pub option_as_alt: OptionAsAlt,
     pub sidebar: FontConfig,
     pub tabs: FontConfig,
@@ -528,6 +530,7 @@ impl Default for Config {
             github: GitHubConfig::default(),
             confirm_close_tab: true,
             show_agents: true,
+            usage: crate::usage::UsageConfig::default(),
             option_as_alt: OptionAsAlt::default(),
             features: Features::default(),
             notifications: NotificationConfig::default(),
@@ -550,6 +553,7 @@ struct Settings {
     theme: Option<String>,
     confirm_close_tab: Option<bool>,
     show_agents: Option<bool>,
+    usage: crate::usage::UsageConfig,
     option_as_alt: OptionAsAlt,
     sidebar: FontSettings,
     tabs: FontSettings,
@@ -590,7 +594,7 @@ struct FontSettings {
 }
 
 /// Windows sets `USERPROFILE` rather than `HOME`, and upstream Herdr reads both.
-fn home() -> Result<PathBuf> {
+pub(crate) fn home() -> Result<PathBuf> {
     let variable = |name| env::var_os(name).filter(|value: &std::ffi::OsString| !value.is_empty());
     variable("HOME")
         .or_else(|| {
@@ -903,6 +907,8 @@ impl Config {
         }
         config.confirm_close_tab = settings.confirm_close_tab.unwrap_or(true);
         config.show_agents = settings.show_agents.unwrap_or(true);
+        settings.usage.validate()?;
+        config.usage = settings.usage;
         config.option_as_alt = settings.option_as_alt;
         for (name, font, settings) in [
             ("sidebar", &mut config.sidebar, settings.sidebar),

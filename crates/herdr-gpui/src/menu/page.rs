@@ -7,6 +7,8 @@ pub(crate) enum Page {
     About,
     Preferences,
     Devices,
+    /// Plan usage details for one agent on the selected host.
+    Usage(crate::usage::Provider),
     AddDevice,
     /// A saved SSH device's context menu, from its sidebar host header.
     Host,
