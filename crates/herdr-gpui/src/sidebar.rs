@@ -2,8 +2,10 @@
 //! menu a resting pointer opens.
 
 mod agents;
+mod cell;
 mod hover;
 mod layout;
+mod layouts;
 mod metrics;
 mod render;
 mod reorder;

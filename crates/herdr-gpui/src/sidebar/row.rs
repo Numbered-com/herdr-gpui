@@ -5,7 +5,9 @@
 #[cfg(any(test, feature = "integration-test"))]
 use super::layout_tests;
 use super::{
-    ARROW_RESERVE, ICON_RESERVE, STATUS_WIDTH, glyph_width,
+    ARROW_RESERVE, ICON_RESERVE, STATUS_WIDTH,
+    cell::RowState,
+    glyph_width,
     layout::{SidebarDensity, SidebarLook},
     line_height, segment_budgets, status_indicator,
 };
@@ -21,6 +23,23 @@ pub(super) enum RowIcon {
     None,
     Mark,
     Avatar(Arc<Image>),
+}
+
+impl RowIcon {
+    /// The icon filling its parent, or nothing for rows without one. An
+    /// avatar still loading or failing to decode shows the mark instead.
+    pub(super) fn element(self, color: u32) -> AnyElement {
+        match self {
+            Self::None => Empty.into_any_element(),
+            Self::Mark => github_mark(color).size_full().into_any_element(),
+            Self::Avatar(image) => img(image)
+                .size_full()
+                .rounded_full()
+                .with_fallback(move || github_mark(color).size_full().into_any_element())
+                .with_loading(move || github_mark(color).size_full().into_any_element())
+                .into_any_element(),
+        }
+    }
 }
 
 /// The mark paints as vector rather than a rasterized image, so it stays sharp
@@ -62,8 +81,9 @@ pub(super) fn row_text(kind: RowKind, focused: bool, theme: &Theme) -> (u32, Fon
 
 /// Where a row stands while a workspace is dragged: rows the lifted card
 /// passes over stop answering hover, so only the drop line marks a place.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum RowLift {
+    #[default]
     Resting,
     Passed,
     Lifted,
@@ -119,8 +139,8 @@ pub(super) fn tree_lines(
 /// What a row shows on its right edge: the cached pull request, and whether
 /// the checkout has work that is not committed yet.
 pub(super) struct RowBadge {
-    pr: Option<PrBadge>,
-    dirty: bool,
+    pub(super) pr: Option<PrBadge>,
+    pub(super) dirty: bool,
 }
 
 impl RowBadge {
@@ -144,10 +164,10 @@ impl RowBadge {
 /// Cached pull request state for a worktree row: the number carries the
 /// lifecycle/readiness color, the counts sit under it.
 pub(super) struct PrBadge {
-    number: String,
-    color: u32,
-    additions: String,
-    deletions: String,
+    pub(super) number: String,
+    pub(super) color: u32,
+    pub(super) additions: String,
+    pub(super) deletions: String,
 }
 
 impl PrBadge {
@@ -275,8 +295,7 @@ pub(super) fn row(
     kind: RowKind,
     status: AgentStatus,
     removing: bool,
-    focused: bool,
-    lift: RowLift,
+    state: RowState,
     tree: RowTree,
     reserve_arrow: bool,
     width: f32,
@@ -287,6 +306,7 @@ pub(super) fn row(
     appearance: (&FontConfig, &Theme),
 ) -> Div {
     let (font, theme) = appearance;
+    let focused = state.selected;
     let layout = look.density;
     let padding = layout.padding();
     let content_x = look.content_x();
@@ -354,15 +374,7 @@ pub(super) fn row(
         .gap(px(gap))
         .py(px(content_top))
         .cursor_pointer()
-        .map(|row| match lift {
-            RowLift::Resting => look.hover_group(row),
-            RowLift::Passed | RowLift::Lifted => row,
-        })
-        .child(if lift == RowLift::Lifted {
-            look.lifted(key, focused, theme)
-        } else {
-            look.highlight(key, focused, theme)
-        })
+        .map(|row| look.mark(row, key, state, theme))
         // Tree lines run in the indent the row already reserves, so a child is
         // tied to its parent without box-drawing glyphs in the label.
         .when(tree != RowTree::None && look.style.tree_lines(), |row| {
@@ -429,19 +441,7 @@ pub(super) fn row(
                                     .size(px(12.))
                                     .flex_none()
                                     .overflow_hidden()
-                                    .child(match workspace_icon {
-                                        RowIcon::Avatar(image) => img(image)
-                                            .size_full()
-                                            .rounded_full()
-                                            .with_fallback(move || {
-                                                github_mark(muted).size_full().into_any_element()
-                                            })
-                                            .with_loading(move || {
-                                                github_mark(muted).size_full().into_any_element()
-                                            })
-                                            .into_any_element(),
-                                        _ => github_mark(muted).size_full().into_any_element(),
-                                    }),
+                                    .child(workspace_icon.element(muted)),
                             )
                         })
                         .child(

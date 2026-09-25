@@ -249,6 +249,64 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                 std::process::exit(1);
             }
         }
+        // The other row layouts place text by their own geometry, so they are
+        // held to what every layout owes: shaped glyphs match the text they
+        // were given, and none is cropped or wider than its box.
+        {
+            use crate::config::LayoutMode;
+            cx.update(|cx| cx.set_global(sidebar::layout_tests::VerifyChildGeometry(false)));
+            for mode in [LayoutMode::Superset, LayoutMode::Orca, LayoutMode::Minimal] {
+                        timer.timer(Duration::from_millis(100)).await;
+                        let result = AnyWindowHandle::from(handle).update(
+                            cx,
+                            |root, window, cx| -> Result<()> {
+                                use crate::sidebar::layout_tests::PaintedProbes;
+                                cx.default_global::<PaintedProbes>().0.clear();
+                                root.downcast::<HerdrWindow>()
+                                    .map_err(|_| anyhow!("unexpected root"))?
+                                    .update(cx, |view, cx| {
+                                        view.config.layout.mode = mode;
+                                        cx.notify();
+                                    });
+                                window.refresh();
+                                window.draw(cx).clear(cx);
+                                cx.default_global::<PaintedProbes>().check()?;
+                                let probes = &cx.global::<PaintedProbes>().0;
+                                // The long name must be cut short in every
+                                // layout, which proves ellipsizing natively.
+                                const LONG: &str =
+                                    "herdr-gpui-sidebar-rendering-regression-investigation";
+                                if !probes.get(LONG).is_some_and(|p| p.glyph_text.ends_with('\u{2026}')) {
+                                    bail!("{mode}: {LONG:?} was not ellipsized");
+                                }
+                                for input in ["herdr", "Claude Code", LONG] {
+                                    let p = probes
+                                        .get(input)
+                                        .with_context(|| format!("missing paint: {input}"))?;
+                                    // Orca shares one line between an agent and
+                                    // its place, so a name may end in an ellipsis.
+                                    let shown = p.glyph_text == input
+                                        || p.glyph_text.strip_suffix('\u{2026}').is_some_and(
+                                            |kept| input.starts_with(kept.trim_end()),
+                                        );
+                                    if p.glyph_text != p.cached
+                                        || !shown
+                                        || p.clipped
+                                        || p.width > p.bounds.size.width
+                                    {
+                                        bail!("{mode}: bad paint {input:?} {p:?}");
+                                    }
+                                }
+                                eprintln!("SIDEBAR verified layout={mode}");
+                                Ok(())
+                            },
+                        );
+                        if !matches!(result, Ok(Ok(()))) {
+                            eprintln!("SIDEBAR native FAIL: {result:?}");
+                            std::process::exit(1);
+                        }
+            }
+        }
         let _ = handle.update(cx, |view, _, cx| {
             // Later fixtures add PR badges and dialogs that change label budgets.
             cx.set_global(sidebar::layout_tests::VerifyChildGeometry(false));

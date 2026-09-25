@@ -171,7 +171,7 @@ fn notification_delay<'de, D: serde::Deserializer<'de>>(
     Ok(seconds)
 }
 
-/// Sidebar density and spacing the config file can adjust.
+/// Sidebar layout and spacing the config file can adjust.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {
     pub mode: LayoutMode,
@@ -184,7 +184,7 @@ pub struct Layout {
 impl Default for Layout {
     fn default() -> Self {
         Self {
-            mode: LayoutMode::new(Density::Normal, Style::Flat),
+            mode: LayoutMode::default(),
             sidebar_gap: DEFAULT_SIDEBAR_GAP,
         }
     }
@@ -209,15 +209,29 @@ pub enum Style {
     Rounded,
 }
 
-/// A named sidebar layout: `normal`, `compact`, `comfortable`, or any of them
-/// with a `-rounded` suffix.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct LayoutMode {
-    pub density: Density,
-    pub style: Style,
+/// A named sidebar layout. Each one draws its rows differently: Herdr's own
+/// rows at a density, flat or rounded, or a design of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutMode {
+    /// Herdr's rows: `normal`, `compact`, `comfortable`, or any of them with a
+    /// `-rounded` suffix.
+    Classic { density: Density, style: Style },
+    /// Single-line rows with an icon slot and pull request counts.
+    Superset,
+    /// Rounded cards with a meta line for host, branch, and pull request.
+    Orca,
+    /// One line per row with only the status and the name.
+    Minimal,
+}
+
+impl Default for LayoutMode {
+    fn default() -> Self {
+        Self::new(Density::Normal, Style::Flat)
+    }
 }
 
 impl LayoutMode {
+    /// `ALL`'s names, for errors that list what a config may say.
     const NAMES: &'static [&'static str] = &[
         "normal",
         "compact",
@@ -225,10 +239,79 @@ impl LayoutMode {
         "normal-rounded",
         "compact-rounded",
         "comfortable-rounded",
+        "superset",
+        "orca",
+        "minimal",
+    ];
+
+    /// Every named layout, in the order menus list them.
+    pub const ALL: [Self; 9] = [
+        Self::new(Density::Normal, Style::Flat),
+        Self::new(Density::Compact, Style::Flat),
+        Self::new(Density::Comfortable, Style::Flat),
+        Self::new(Density::Normal, Style::Rounded),
+        Self::new(Density::Compact, Style::Rounded),
+        Self::new(Density::Comfortable, Style::Rounded),
+        Self::Superset,
+        Self::Orca,
+        Self::Minimal,
     ];
 
     pub const fn new(density: Density, style: Style) -> Self {
-        Self { density, style }
+        Self::Classic { density, style }
+    }
+
+    /// The spacing the list around the rows uses. Layouts with their own
+    /// design fix theirs, so no second setting half-changes them.
+    pub const fn density(self) -> Density {
+        match self {
+            Self::Classic { density, .. } => density,
+            Self::Superset | Self::Minimal => Density::Normal,
+            Self::Orca => Density::Comfortable,
+        }
+    }
+
+    /// The highlight shape and heading case the list uses.
+    pub const fn style(self) -> Style {
+        match self {
+            Self::Classic { style, .. } => style,
+            Self::Superset | Self::Minimal => Style::Flat,
+            Self::Orca => Style::Rounded,
+        }
+    }
+
+    /// The config value that selects it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Classic { density, style } => match (density, style) {
+                (Density::Normal, Style::Flat) => "normal",
+                (Density::Compact, Style::Flat) => "compact",
+                (Density::Comfortable, Style::Flat) => "comfortable",
+                (Density::Normal, Style::Rounded) => "normal-rounded",
+                (Density::Compact, Style::Rounded) => "compact-rounded",
+                (Density::Comfortable, Style::Rounded) => "comfortable-rounded",
+            },
+            Self::Superset => "superset",
+            Self::Orca => "orca",
+            Self::Minimal => "minimal",
+        }
+    }
+
+    /// How menus title it.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Classic { density, style } => match (density, style) {
+                (Density::Normal, Style::Flat) => "Normal",
+                (Density::Compact, Style::Flat) => "Compact",
+                (Density::Comfortable, Style::Flat) => "Comfortable",
+                (Density::Normal, Style::Rounded) => "Normal Rounded",
+                (Density::Compact, Style::Rounded) => "Compact Rounded",
+                (Density::Comfortable, Style::Rounded) => "Comfortable Rounded",
+            },
+            Self::Superset => "Superset",
+            Self::Orca => "Orca",
+            Self::Minimal => "Minimal",
+        }
     }
 }
 
@@ -242,31 +325,16 @@ impl TryFrom<&str> for LayoutMode {
     type Error = Error;
 
     fn try_from(name: &str) -> Result<Self> {
-        let (density, style) = match name.strip_suffix("-rounded") {
-            Some(density) => (density, Style::Rounded),
-            None => (name, Style::Flat),
-        };
-        let density = match density {
-            "normal" => Density::Normal,
-            "compact" => Density::Compact,
-            "comfortable" => Density::Comfortable,
-            _ => return Err(Error::UnknownLayout(name.to_owned())),
-        };
-        Ok(Self::new(density, style))
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.name() == name)
+            .ok_or_else(|| Error::UnknownLayout(name.to_owned()))
     }
 }
 
 impl std::fmt::Display for LayoutMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self.density {
-            Density::Normal => "normal",
-            Density::Compact => "compact",
-            Density::Comfortable => "comfortable",
-        })?;
-        match self.style {
-            Style::Flat => Ok(()),
-            Style::Rounded => f.write_str("-rounded"),
-        }
+        f.write_str(self.name())
     }
 }
 
@@ -938,6 +1006,42 @@ impl Config {
             document["theme"] = toml_edit::Item::Value(value);
             write_config(path, &document.to_string())?;
             Ok(())
+        })();
+        result.map_err(|error| error.at_path(path))
+    }
+
+    /// Persist only the sidebar layout, retaining the latest on-disk
+    /// settings: a `layout = "..."` name is replaced in place, and a
+    /// `[layout]` table gets its `mode`.
+    pub fn save_layout(mode: LayoutMode) -> Result<()> {
+        let (_lock, local) = Self::prepare_files(&Self::path()?)?;
+        Self::save_layout_path(mode, &local)
+    }
+
+    fn save_layout_path(mode: LayoutMode, path: &Path) -> Result<()> {
+        let result = (|| -> Result<()> {
+            let text = match fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(error) if error.kind() == ErrorKind::NotFound => LOCAL_CONFIG.into(),
+                Err(error) => return Err(error.into()),
+            };
+            let mut document = text.parse::<toml_edit::DocumentMut>()?;
+            match document.get_mut("layout") {
+                Some(item) if item.is_table_like() => {
+                    if let Some(layout) = item.as_table_like_mut() {
+                        layout.insert("mode", toml_edit::value(mode.name()));
+                    }
+                }
+                Some(toml_edit::Item::Value(named)) => {
+                    let decor = named.decor().clone();
+                    *named = toml_edit::Value::from(mode.name());
+                    *named.decor_mut() = decor;
+                }
+                _ => {
+                    document.insert("layout", toml_edit::value(mode.name()));
+                }
+            }
+            write_config(path, &document.to_string())
         })();
         result.map_err(|error| error.at_path(path))
     }
@@ -1791,6 +1895,74 @@ mod tests {
         }
         for value in ["'left'", "'true'", "1"] {
             assert!(Config::parse(&format!("option_as_alt = {value}")).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn every_layout_has_its_own_name_and_label() -> anyhow::Result<()> {
+        assert_eq!(LayoutMode::NAMES, LayoutMode::ALL.map(LayoutMode::name));
+        let labels: std::collections::HashSet<_> =
+            LayoutMode::ALL.iter().map(|mode| mode.label()).collect();
+        assert_eq!(labels.len(), LayoutMode::ALL.len());
+        for mode in LayoutMode::ALL {
+            let name = mode.name();
+            assert_eq!(LayoutMode::try_from(name)?, mode);
+            assert_eq!(
+                Config::parse(&format!("layout = '{name}'"))?.layout.mode,
+                mode
+            );
+            let table = Config::parse(&format!("[layout]\nmode = '{name}'\nsidebar_gap = 4"))?;
+            assert_eq!((table.layout.mode, table.layout.sidebar_gap), (mode, 4.));
+        }
+        // Layouts with a design of their own fix their spacing.
+        assert_eq!(
+            (LayoutMode::Orca.density(), LayoutMode::Orca.style()),
+            (Density::Comfortable, Style::Rounded)
+        );
+        // A second setting for rows no longer exists.
+        assert!(Config::parse("[layout]\nrows = 'orca'").is_err());
+        assert!(Config::parse("layout = 'herdr'").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn saving_a_layout_keeps_every_other_setting() -> anyhow::Result<()> {
+        let temp = TempDirectory::new()?;
+        let path = temp.0.join("config-gpui.local.toml");
+        let mode = |path: &Path| -> anyhow::Result<Layout> {
+            Ok(Config::parse(&fs::read_to_string(path)?)?.layout)
+        };
+        // A new install's plain name is replaced in place, comments and all,
+        // and still layers over the managed file.
+        Config::save_layout_path(LayoutMode::Orca, &path)?;
+        let text = fs::read_to_string(&path)?;
+        assert!(text.contains("layout = \"orca\""), "{text}");
+        assert!(text.contains("# New installs start"), "{text}");
+        let merged =
+            Config::parse_layers([DEFAULT_CONFIG, text.as_str()], ClipboardToast::default())?;
+        assert_eq!(merged.layout.mode, LayoutMode::Orca);
+        // A table gets its mode beside the gap, and keeps its comments.
+        fs::write(
+            &path,
+            "# mine\ntheme = 'Nord'\n\n[layout] # sidebar\nmode = 'compact'\nsidebar_gap = 4\n",
+        )?;
+        for chosen in LayoutMode::ALL {
+            Config::save_layout_path(chosen, &path)?;
+            let layout = mode(&path)?;
+            assert_eq!((layout.mode, layout.sidebar_gap), (chosen, 4.));
+        }
+        let text = fs::read_to_string(&path)?;
+        assert!(
+            text.contains("# mine") && text.contains("# sidebar"),
+            "{text}"
+        );
+        assert_eq!(Config::parse(&text)?.theme, "Nord");
+        // Inline tables and files without a layout work too.
+        for original in ["layout = { sidebar_gap = 4 }\n", "theme = 'Nord'\n"] {
+            fs::write(&path, original)?;
+            Config::save_layout_path(LayoutMode::Minimal, &path)?;
+            assert_eq!(mode(&path)?.mode, LayoutMode::Minimal, "{original}");
         }
         Ok(())
     }

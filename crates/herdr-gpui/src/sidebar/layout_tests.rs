@@ -563,6 +563,122 @@ fn agent_icons_follow_names_and_reserve_narrow_label_width(cx: &mut gpui::TestAp
     }
 }
 
+#[cfg(test)]
+/// Every layout keeps its text inside the box it was measured for and its
+/// rows inside the sidebar, and marks the focused row.
+fn check_layouts(modes: &[crate::config::LayoutMode], cx: &mut gpui::TestAppContext) {
+    use crate::config::LayoutMode;
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut view = fixture_window(window, cx);
+        view.live.snapshot = Some(Arc::new(snapshot(6)));
+        let input = crate::pull_request::Input {
+            checkout: None,
+            repo_key: REPO_KEY.into(),
+            branch: "worktree/sidebar-child".into(),
+        };
+        let now = std::time::Instant::now();
+        let mut pr = crate::pull_request::fixture().unwrap();
+        pr.number = 7;
+        pr.additions = 234;
+        pr.deletions = 567;
+        view.menu.pr_cache.seed(input.clone(), pr, now);
+        view.git.seed_probe(input, true, now);
+        view
+    });
+    cx.simulate_resize(size(px(800.), px(900.)));
+    cx.run_until_parked();
+    for font_size in [12., 18.] {
+        for width in [160., 232., 480.] {
+            for &mode in modes {
+                view.update(cx, |view, cx| {
+                    view.config.layout.mode = mode;
+                    view.config.sidebar.size = font_size;
+                    view.sidebar_width = Some(width);
+                    cx.notify();
+                });
+                let context = format!("{mode} at {width}px, {font_size}pt");
+                cx.update(|window, cx| {
+                    cx.default_global::<TextProbes>().0.clear();
+                    full_draw(window, cx).clear(cx);
+                    let probes = &cx.global::<TextProbes>().0;
+                    for text in ["herdr", "agent-launcher", "Claude Code"] {
+                        assert!(probes.contains_key(text), "{context}: {text} missing");
+                    }
+                    for (text, (bounds, _, glyphs)) in probes {
+                        // Headers and the device footer are not rows; the
+                        // rows' own text must fit where it was placed.
+                        // A box too narrow for an ellipsis clips instead;
+                        // subpixel shaping may overhang a whole-pixel box.
+                        assert!(
+                            *glyphs <= bounds.size.width + px(1.)
+                                || bounds.size.width < px(2. * font_size),
+                            "{context}: {text:?} overflows {bounds:?} with {glyphs:?}"
+                        );
+                    }
+                });
+                let sidebar = cx.debug_bounds("sidebar").unwrap();
+                for (row, name) in [
+                    ("row-herdr", "name-herdr"),
+                    ("row-agent-launcher", "name-agent-launcher"),
+                    ("row-sidebar-child", "name-sidebar-child"),
+                    ("row-agent-p0", "name-agent-p0"),
+                ] {
+                    let row_bounds = cx
+                        .debug_bounds(row)
+                        .unwrap_or_else(|| panic!("{context}: {row} missing"));
+                    assert!(row_bounds.right() <= sidebar.right(), "{context}: {row}");
+                    let name_bounds = cx.debug_bounds(name).unwrap();
+                    assert!(
+                        name_bounds.right() <= row_bounds.right(),
+                        "{context}: {name}"
+                    );
+                    assert!(
+                        name_bounds.bottom() <= row_bounds.bottom(),
+                        "{context}: {name}"
+                    );
+                }
+                // Minimal rows show no pull request or uncommitted work.
+                if mode != LayoutMode::Minimal {
+                    let row = cx.debug_bounds("row-sidebar-child").unwrap();
+                    let badge = cx.debug_bounds("pr-sidebar-child").unwrap();
+                    assert!(
+                        badge.right() <= row.right(),
+                        "{context}: badge {badge:?} {row:?}"
+                    );
+                    assert!(
+                        badge.bottom() <= row.bottom(),
+                        "{context}: badge {badge:?} {row:?}"
+                    );
+                    assert!(cx.debug_bounds("dirty-sidebar-child").is_some());
+                }
+                // Only the focused workspace draws a selection mark in the
+                // layouts whose highlight exists only while selected.
+                assert!(cx.debug_bounds("highlight-herdr").is_some() || mode == LayoutMode::Orca);
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn classic_layouts_fit_the_sidebar(cx: &mut gpui::TestAppContext) {
+    check_layouts(&crate::config::LayoutMode::ALL[..6], cx);
+}
+
+#[gpui::test]
+fn superset_layout_fits_the_sidebar(cx: &mut gpui::TestAppContext) {
+    check_layouts(&[crate::config::LayoutMode::Superset], cx);
+}
+
+#[gpui::test]
+fn orca_layout_fits_the_sidebar(cx: &mut gpui::TestAppContext) {
+    check_layouts(&[crate::config::LayoutMode::Orca], cx);
+}
+
+#[gpui::test]
+fn minimal_layout_fits_the_sidebar(cx: &mut gpui::TestAppContext) {
+    check_layouts(&[crate::config::LayoutMode::Minimal], cx);
+}
+
 #[gpui::test]
 fn sidebar_densities_keep_details_and_badges_within_their_rows(cx: &mut gpui::TestAppContext) {
     use crate::config::{Density, LayoutMode, Style};
@@ -594,9 +710,9 @@ fn sidebar_densities_keep_details_and_badges_within_their_rows(cx: &mut gpui::Te
                     [Style::Flat, Style::Rounded].map(|style| LayoutMode::new(density, style))
                 })
             {
-                let compact = mode.density == Density::Compact;
-                let comfortable = mode.density == Density::Comfortable;
-                let rounded = mode.style == Style::Rounded;
+                let compact = mode.density() == Density::Compact;
+                let comfortable = mode.density() == Density::Comfortable;
+                let rounded = mode.style() == Style::Rounded;
                 view.update(cx, |view, cx| {
                     view.config.layout.mode = mode;
                     view.config.sidebar.size = font_size;
@@ -617,7 +733,7 @@ fn sidebar_densities_keep_details_and_badges_within_their_rows(cx: &mut gpui::Te
                     }
                 });
                 let line = font_size * 4. / 3.;
-                let density_padding = match mode.density {
+                let density_padding = match mode.density() {
                     Density::Compact => 6.,
                     Density::Normal => 8.,
                     Density::Comfortable => 12.,
@@ -625,7 +741,7 @@ fn sidebar_densities_keep_details_and_badges_within_their_rows(cx: &mut gpui::Te
                 // Rounded rows sit inside a highlight inset by the density's
                 // gap, with a third of that gap as padding and twice it as
                 // spacing between rows.
-                let (inset, trim) = match (mode.style, mode.density) {
+                let (inset, trim) = match (mode.style(), mode.density()) {
                     (Style::Flat, _) => (0., 0.),
                     (Style::Rounded, Density::Compact) => (4., 1.),
                     (Style::Rounded, Density::Normal) => (6., 2.),
@@ -3813,4 +3929,146 @@ fn holding_a_workspace_row_lifts_it_and_a_release_picks_the_gap(cx: &mut gpui::T
     cx.update(|window, cx| full_draw(window, cx).clear(cx));
     view.read_with(cx, |view, _| assert!(view.workspace_drag.is_none()));
     assert_eq!(cx.debug_bounds("row-sidebar-child").unwrap(), child);
+}
+
+/// Dragging works the same in every row layout: the carried row follows the
+/// pointer, the row it passes closes its place, and a release without a
+/// daemon puts every row back.
+#[cfg(test)]
+fn check_row_drag(style: crate::config::LayoutMode, cx: &mut gpui::TestAppContext) {
+    use gpui::{MouseButton, point};
+
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut view = fixture_window(window, cx);
+        view.config.layout.mode = style;
+        view.live.status = crate::state::ConnectionStatus::Connected;
+        view
+    });
+    cx.simulate_resize(size(px(800.), px(900.)));
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
+    let passed = "row-herdr-gpui-sidebar-rendering-regression-investigation";
+    let first = cx.debug_bounds("row-herdr").unwrap();
+    let second = cx.debug_bounds(passed).unwrap();
+    cx.simulate_mouse_down(first.center(), MouseButton::Left, Modifiers::default());
+    cx.executor().advance_clock(super::reorder::LIFT_DELAY);
+    cx.run_until_parked();
+    let below = point(first.center().x, second.bottom() - px(2.));
+    for _ in 0..2 {
+        cx.simulate_mouse_move(below, MouseButton::Left, Modifiers::default());
+        cx.update(|window, cx| full_draw(window, cx).clear(cx));
+    }
+    view.read_with(cx, |view, _| {
+        let drag = view.workspace_drag.as_ref().unwrap();
+        assert!(drag.lifted, "{style:?}");
+        assert_eq!(
+            drag.target.as_ref().map(|target| target.params()),
+            Some(serde_json::json!({"workspace_ids": ["w0"], "before_workspace_id": "w2"})),
+            "{style:?}"
+        );
+    });
+    let lifted = cx.debug_bounds("row-herdr").unwrap();
+    assert_eq!(
+        lifted.top() - first.top(),
+        below.y - first.center().y,
+        "{style:?}"
+    );
+    assert_eq!(
+        lifted.size, first.size,
+        "{style:?}: lifting resized the row"
+    );
+    assert_eq!(
+        cx.debug_bounds(passed).unwrap().top(),
+        first.top(),
+        "{style:?}"
+    );
+    cx.simulate_mouse_up(below, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
+    view.read_with(cx, |view, _| assert!(view.workspace_drag.is_none()));
+    assert_eq!(cx.debug_bounds("row-herdr").unwrap(), first, "{style:?}");
+    assert_eq!(cx.debug_bounds(passed).unwrap(), second, "{style:?}");
+}
+
+#[gpui::test]
+fn superset_rows_lift_and_drop(cx: &mut gpui::TestAppContext) {
+    check_row_drag(crate::config::LayoutMode::Superset, cx);
+}
+
+#[gpui::test]
+fn orca_rows_lift_and_drop(cx: &mut gpui::TestAppContext) {
+    check_row_drag(crate::config::LayoutMode::Orca, cx);
+}
+
+#[gpui::test]
+fn minimal_rows_lift_and_drop(cx: &mut gpui::TestAppContext) {
+    check_row_drag(crate::config::LayoutMode::Minimal, cx);
+}
+
+#[gpui::test]
+fn choosing_a_layout_redraws_the_sidebar_and_saves_it(cx: &mut gpui::TestAppContext) {
+    use crate::config::{Density, LayoutMode, Style};
+    use std::sync::{Arc as SyncArc, Mutex};
+
+    let (view, cx) = cx.add_window_view(fixture_window);
+    cx.simulate_resize(size(px(800.), px(900.)));
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
+    assert!(cx.debug_bounds("icon-herdr").is_none());
+    let saved = SyncArc::new(Mutex::new(Vec::new()));
+    let compact = LayoutMode::new(Density::Compact, Style::Rounded);
+    let modes = [LayoutMode::Superset, LayoutMode::Superset, compact];
+    for mode in modes {
+        let record = saved.clone();
+        view.update(cx, |view, cx| {
+            view.set_layout_with(
+                mode,
+                move |mode| {
+                    record.lock().unwrap().push(mode);
+                    Ok(())
+                },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| full_draw(window, cx).clear(cx));
+        view.read_with(cx, |view, _| assert_eq!(view.config.layout.mode, mode));
+        if mode == LayoutMode::Superset {
+            assert!(cx.debug_bounds("icon-herdr").is_some());
+        }
+    }
+    // Choosing the layout already in use saves nothing.
+    assert_eq!(*saved.lock().unwrap(), vec![modes[0], modes[2]]);
+}
+
+/// Every entry under View > Layout draws the sidebar its own way: no two
+/// share the same row heights, name placement, and highlight.
+#[gpui::test]
+fn every_layout_looks_different(cx: &mut gpui::TestAppContext) {
+    use crate::config::LayoutMode;
+    let mut seen: Vec<(LayoutMode, Vec<Pixels>)> = Vec::new();
+    for mode in LayoutMode::ALL {
+        // A fresh window per layout: debug bounds outlive their elements.
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let mut view = fixture_window(window, cx);
+            view.config.layout.mode = mode;
+            view
+        });
+        cx.simulate_resize(size(px(800.), px(900.)));
+        cx.update(|window, cx| full_draw(window, cx).clear(cx));
+        let row = cx.debug_bounds("row-herdr").unwrap();
+        let name = cx.debug_bounds("name-herdr").unwrap();
+        let agent = cx.debug_bounds("row-agent-p0").unwrap();
+        let highlight = cx
+            .debug_bounds("highlight-herdr")
+            .map_or(px(-1.), |h| h.left() - row.left());
+        let signature = vec![
+            row.size.height,
+            agent.size.height,
+            name.left() - row.left(),
+            name.top() - row.top(),
+            highlight,
+        ];
+        if let Some((other, _)) = seen.iter().find(|(_, other)| *other == signature) {
+            panic!("{mode} draws the same as {other}: {signature:?}");
+        }
+        seen.push((mode, signature));
+    }
 }

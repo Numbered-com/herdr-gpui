@@ -580,8 +580,14 @@ impl HerdrWindow {
             }
         }
         let mut changed = Redraw::None;
+        // Whether the selected endpoint itself moved on. Only then does the
+        // window take its state: another endpoint changing, or this one's
+        // inbox being busy for a poll, must not replace what the window has
+        // stamped since, such as the split drag request it is waiting on.
+        let mut selected_changed = false;
         for (index, endpoint) in self.endpoints.iter_mut().enumerate() {
             let updated = endpoint.poll(Instant::now());
+            selected_changed |= index == self.selected_endpoint && updated != Redraw::None;
             self.sound.poll(
                 &mut endpoint.sounds,
                 &mut endpoint.live,
@@ -605,6 +611,7 @@ impl HerdrWindow {
                 && Instant::now() >= endpoint.retry_at
             {
                 endpoint.connect(self.options, index == 0 && self.selected_endpoint == 0);
+                selected_changed |= index == self.selected_endpoint;
                 changed = Redraw::Window;
             }
         }
@@ -620,7 +627,7 @@ impl HerdrWindow {
             self.reset_selected();
         }
         let endpoint = &mut self.endpoints[self.selected_endpoint];
-        if changed != Redraw::None {
+        if selected_changed {
             self.live = endpoint.live.clone();
             if !self.live.status.is_connected() {
                 self.local_error = None;

@@ -121,6 +121,9 @@ impl HerdrWindow {
                         });
                         if config.keybindings != this.config.keybindings {
                             crate::actions::rebind_keys(cx);
+                        } else if config.layout.mode != this.config.layout.mode {
+                            // The View menu checks the layout in use.
+                            crate::menus::install(cx);
                         }
                         if !this.config.notifications.enabled && config.notifications.enabled {
                             let cutoff = std::time::Instant::now();

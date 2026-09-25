@@ -3,7 +3,8 @@
 
 use crate::{
     CheckForUpdates, Quit, RunCommand, ShowLogs,
-    actions::{Copy, Cut, Paste, SelectAll},
+    actions::{Copy, Cut, Paste, SelectAll, SetLayout},
+    config::{Layout, LayoutMode},
     controls::Command,
 };
 #[cfg(feature = "qa-menu")]
@@ -11,11 +12,35 @@ use crate::{
     PlaySound, ShowHerdrNotDetected, ShowUpdatePreview,
     actions::{ShowToastPreview, ShowUpdateDownloadPreview, ShowUpdateHomebrewPreview},
 };
-use gpui::{Menu, MenuItem, OsAction};
+use gpui::{App, Menu, MenuItem, OsAction};
 #[cfg(feature = "qa-menu")]
 use herdr_client::protocol::SemanticNotificationKind;
 
-pub(crate) fn menus() -> Vec<Menu> {
+/// Installs the menu bar, checking the layout the latest config picked.
+pub(crate) fn install(cx: &mut App) {
+    let layout = cx
+        .try_global::<crate::app::InitialAppearance>()
+        .map_or_else(Layout::default, |appearance| appearance.config.layout);
+    cx.set_menus(menus(layout));
+}
+
+/// View > Layout: Herdr's densities, their rounded versions, then the
+/// layouts with a design of their own, the one in use checked.
+fn layout_menu(current: LayoutMode) -> MenuItem {
+    let items = LayoutMode::ALL
+        .iter()
+        .enumerate()
+        .flat_map(|(index, &mode)| {
+            let group = matches!(index, 3 | 6).then(MenuItem::separator);
+            group.into_iter().chain([
+                MenuItem::action(mode.label(), SetLayout { mode }).checked(mode == current)
+            ])
+        });
+    MenuItem::submenu(Menu::new("Layout").items(items))
+}
+
+/// The menu bar, with `layout`'s mode checked under View > Layout.
+pub(crate) fn menus(layout: Layout) -> Vec<Menu> {
     vec![
         Menu {
             name: "Herdr".into(),
@@ -130,6 +155,8 @@ pub(crate) fn menus() -> Vec<Menu> {
                         command: Command::ResetFontSize,
                     },
                 ),
+                MenuItem::separator(),
+                layout_menu(layout.mode),
             ],
         },
         Menu {
@@ -269,7 +296,7 @@ mod tests {
     #[test]
     #[cfg(feature = "qa-menu")]
     fn badge_preview_is_available_only_in_the_macos_qa_menu() {
-        let menus = menus();
+        let menus = menus(Layout::default());
         let qa = menus
             .iter()
             .find(|menu| menu.name.as_ref() == "QA")
@@ -294,7 +321,7 @@ mod tests {
     #[test]
     #[cfg(feature = "qa-menu")]
     fn qa_menu_carries_update_progress_previews() {
-        let menus = menus();
+        let menus = menus(Layout::default());
         let qa = menus
             .iter()
             .find(|menu| menu.name.as_ref() == "QA")
@@ -320,8 +347,64 @@ mod tests {
     }
 
     #[test]
+    fn view_menu_lists_every_layout_in_groups_and_checks_the_current_one() {
+        for current in LayoutMode::ALL {
+            let menus = menus(Layout {
+                mode: current,
+                ..Layout::default()
+            });
+            let view = menus
+                .iter()
+                .find(|menu| menu.name.as_ref() == "View")
+                .unwrap();
+            assert!(
+                !view.items.iter().any(
+                    |item| matches!(item, MenuItem::Submenu(menu) if menu.name.as_ref() == "Rows")
+                ),
+                "one layout setting, one menu"
+            );
+            let layout = view
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    MenuItem::Submenu(menu) if menu.name.as_ref() == "Layout" => Some(menu),
+                    _ => None,
+                })
+                .unwrap();
+            // Densities, their rounded versions, then the other designs.
+            let separators: Vec<usize> = layout
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| matches!(item, MenuItem::Separator))
+                .map(|(index, _)| index)
+                .collect();
+            assert_eq!(separators, vec![3, 7]);
+            let actions: Vec<_> = layout
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    MenuItem::Action {
+                        name,
+                        action,
+                        checked,
+                        ..
+                    } => Some((name, action, *checked)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(actions.len(), LayoutMode::ALL.len());
+            for ((name, action, checked), mode) in actions.into_iter().zip(LayoutMode::ALL) {
+                assert_eq!(name.as_ref(), mode.label());
+                assert!(action.partial_eq(&SetLayout { mode }));
+                assert_eq!(checked, mode == current, "{current}");
+            }
+        }
+    }
+
+    #[test]
     fn qa_menu_requires_explicit_feature() {
-        let menus = menus();
+        let menus = menus(Layout::default());
         let names: Vec<_> = menus.iter().map(|menu| menu.name.as_ref()).collect();
         let mut expected = vec!["Herdr", "File", "Edit", "View", "Terminal", "Window"];
         if cfg!(feature = "qa-menu") {
@@ -331,7 +414,7 @@ mod tests {
     }
 
     fn edit_action(label: &str) -> Box<dyn gpui::Action> {
-        menus()
+        menus(Layout::default())
             .into_iter()
             .find(|menu| menu.name.as_ref() == "Edit")
             .unwrap()
@@ -348,7 +431,7 @@ mod tests {
     /// every macOS app shows, and labels that do not claim the keystrokes.
     #[gpui::test]
     fn edit_menu_carries_standard_items_and_shortcut_labels(cx: &mut gpui::TestAppContext) {
-        let items = &menus()
+        let items = &menus(Layout::default())
             .into_iter()
             .find(|menu| menu.name.as_ref() == "Edit")
             .unwrap()
@@ -483,7 +566,7 @@ mod tests {
     /// an action of its own.
     #[test]
     fn view_menu_carries_the_font_size_commands() {
-        let menus = menus();
+        let menus = menus(Layout::default());
         let view = menus
             .iter()
             .find(|menu| menu.name.as_ref() == "View")

@@ -188,7 +188,7 @@ pub(crate) fn run() -> std::process::ExitCode {
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.on_action(|_: &ShowLogs, cx| log_window::open(cx));
             bind_keys(cx);
-            cx.set_menus(menus());
+            menus::install(cx);
             cx.on_window_closed(move |cx, _| {
                 if cx.windows().is_empty() {
                     #[cfg(feature = "integration-test")]
@@ -341,7 +341,7 @@ mod tests {
             // around it: a third of the density's gap, each, twice.
             assert_eq!(
                 row.size.height,
-                px(match (mode.density, mode.style) {
+                px(match (mode.density(), mode.style()) {
                     (Density::Compact, Style::Flat) => 16.,
                     (Density::Normal, Style::Flat) => 32.,
                     (Density::Comfortable, Style::Flat) => 40.,

@@ -2921,7 +2921,7 @@ fn qa_play_sound_dispatches_without_daemon_or_pane(cx: &mut gpui::TestAppContext
     cx.update(|window, cx| {
         view.read(cx).focus.clone().focus(window, cx);
         window.draw(cx).clear(cx);
-        let menus = crate::menus();
+        let menus = crate::menus(Default::default());
         let qa = menus
             .iter()
             .find(|menu| menu.name.as_ref() == "QA")
@@ -3579,6 +3579,37 @@ fn split_request(server: &mut Server) -> serde_json::Value {
     let request: serde_json::Value = serde_json::from_str(&request).unwrap();
     assert_eq!(request["method"], "layout.set_split_ratio");
     request
+}
+
+/// Another host changing redraws the window but leaves the selected host's
+/// window state alone: a split request the window is still waiting on must
+/// not vanish because a different endpoint had news, and the selected host's
+/// own news still arrives.
+#[gpui::test]
+fn another_endpoint_changing_keeps_the_selected_window_state(cx: &mut gpui::TestAppContext) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
+    });
+    let view = fixture.update(cx, |fixture, _| fixture.0.clone());
+    let (selected, _server) = connected_endpoint("ssh:selected");
+    let (other, _other_server) = connected_endpoint("ssh:other");
+    cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            prepare_mouse(view, selected);
+            view.endpoints.push(other);
+            view.poll_endpoints(cx);
+            view.live.drag_request = Some("gpui-pending".into());
+
+            view.endpoints[2].connection.inbox.lock().unwrap().dirty = true;
+            view.poll_endpoints(cx);
+            assert_eq!(view.live.drag_request.as_deref(), Some("gpui-pending"));
+
+            view.endpoints[1].connection.inbox.lock().unwrap().error = Some("news".into());
+            view.endpoints[1].connection.inbox.lock().unwrap().dirty = true;
+            view.poll_endpoints(cx);
+            assert_eq!(view.live.error.as_deref(), Some("news"));
+        });
+    });
 }
 
 #[gpui::test]
