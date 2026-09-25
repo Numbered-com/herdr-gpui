@@ -40,7 +40,7 @@ impl HerdrWindow {
             .id("usage")
             .debug_selector(|| "usage".into())
             .flex()
-            .flex_shrink()
+            .flex_shrink_1()
             .min_w_0()
             .overflow_hidden()
             .items_center()
@@ -78,7 +78,7 @@ impl HerdrWindow {
         Some(
             div()
                 .flex()
-                .flex_shrink()
+                .flex_shrink_1()
                 .min_w_0()
                 .items_center()
                 .gap(px(4.))

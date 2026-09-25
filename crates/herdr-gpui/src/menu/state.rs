@@ -40,6 +40,7 @@ pub(crate) struct MenuState {
     pub(crate) palette: Option<crate::palette::Palette>,
     pub(crate) close: Option<crate::close_modal::CloseConfirmation>,
     pub(crate) tab: Option<crate::tab_menu::TabMenu>,
+    pub(crate) host: Option<super::devices::HostMenu>,
     pub(crate) pane: Option<crate::pane_menu::PaneMenu>,
     /// The new worktree dialog's tabs and the GitHub listing behind them.
     pub(crate) worktree: Option<super::WorktreeSource>,
@@ -50,6 +51,13 @@ pub(crate) struct MenuState {
         Option<std::sync::Weak<std::sync::Mutex<crate::state::LiveState>>>,
     pub(super) pr_snapshot: Option<std::sync::Weak<ClientShellSnapshot>>,
     pub(crate) github: crate::github::Auth,
+    /// Saved SSH devices' own accounts, keyed by endpoint ID. A device without
+    /// one signed in looks up pull requests with `github`.
+    pub(crate) github_hosts: std::collections::HashMap<String, crate::github::Auth>,
+    /// Saved devices whose removal is running, by endpoint ID. Kept after
+    /// success until the catalog drops the device, so its header pulses
+    /// until it disappears; the confirmation closes as soon as it starts.
+    pub(crate) removing_devices: std::collections::HashSet<String>,
     pub(super) github_selected: Option<github::Action>,
     pub(super) github_scroll: ScrollHandle,
     pub(super) pr_connection: Option<std::sync::Weak<std::sync::Mutex<crate::state::LiveState>>>,
@@ -198,10 +206,13 @@ impl MenuState {
             pr_cache_connection: None,
             pr_snapshot: None,
             github: Default::default(),
+            github_hosts: Default::default(),
+            removing_devices: Default::default(),
             github_selected: None,
             github_scroll: ScrollHandle::new(),
             pr_connection: None,
             tab: None,
+            host: None,
             pane: None,
             worktree: None,
         }
@@ -213,6 +224,7 @@ impl MenuState {
         self.usage_scroll.set_offset(Point::default());
         self.opening_right_click = false;
         self.tab = None;
+        self.host = None;
         self.pane = None;
         self.github_selected = None;
         self.github_scroll.set_offset(Point::default());

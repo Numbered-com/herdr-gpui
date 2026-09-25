@@ -15,7 +15,7 @@ use std::time::Duration;
 
 impl Render for HerdrWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.restore_menu_focus(window);
+        self.restore_menu_focus(window, cx);
         let font = self.config.terminal.font();
         let cell_height = self.config.terminal.line_height();
         self.painter.borrow_mut().set_appearance(
@@ -129,7 +129,7 @@ impl Render for HerdrWindow {
                         )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.navigate(NavigationTarget::Tab(&id), cx);
-                            window.focus(&this.focus);
+                            window.focus(&this.focus, cx);
                         })),
                 );
             }
@@ -249,7 +249,7 @@ impl Render for HerdrWindow {
                         cx.stop_propagation();
                         return;
                     }
-                    window.focus(&this.focus);
+                    window.focus(&this.focus, cx);
                     if this.input_ready()
                         && let Some(surface) = &this.live.surface
                     {
@@ -528,7 +528,7 @@ impl Render for HerdrWindow {
                                     // Tabs size to their content and shrink when the
                                     // row is full, so the button sits after the last
                                     // tab instead of at the far right of the window.
-                                    .child(tabs.flex_shrink().min_w_0())
+                                    .child(tabs.flex_shrink_1().min_w_0())
                                     .child(
                                         div()
                                             .id("new-tab")
@@ -621,7 +621,7 @@ impl Render for HerdrWindow {
                         div()
                                     .id("status-theme")
                                     .debug_selector(|| "status-theme".into())
-                                    .flex_shrink()
+                                    .flex_shrink_1()
                                     .min_w(px(33.))
                             .flex()
                             .items_center()
@@ -645,7 +645,7 @@ impl Render for HerdrWindow {
                         div()
                                     .id("status-keybinds")
                                     .debug_selector(|| "status-keybinds".into())
-                                    .flex_shrink()
+                                    .flex_shrink_1()
                                     .min_w(px(33.))
                             .flex()
                             .items_center()
@@ -669,7 +669,7 @@ impl Render for HerdrWindow {
                         div()
                                     .id("report-issue")
                                     .debug_selector(|| "report-issue".into())
-                                    .flex_shrink()
+                                    .flex_shrink_1()
                                     .min_w(px(33.))
                             .flex()
                             .items_center()

@@ -60,6 +60,15 @@ pub(super) fn row_text(kind: RowKind, focused: bool, theme: &Theme) -> (u32, Fon
     (name, weight, detail)
 }
 
+/// Where a row stands while a workspace is dragged: rows the lifted card
+/// passes over stop answering hover, so only the drop line marks a place.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RowLift {
+    Resting,
+    Passed,
+    Lifted,
+}
+
 /// Where a row sits in its worktree group, which decides whether the gutter
 /// carries a trunk through the row or ends in an elbow.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -236,6 +245,26 @@ pub(super) fn name_line(
     line
 }
 
+/// The pulsing dot shown while something this row names is being removed,
+/// shared by worktree rows and device headers so both read the same way.
+pub(super) fn removing_dot(selector: &'static str, theme: &Theme) -> Div {
+    div()
+        .debug_selector(move || selector.into())
+        .size(px(STATUS_WIDTH))
+        .flex_none()
+        .child(
+            div()
+                .size_full()
+                .rounded_full()
+                .bg(rgb(theme.primary()))
+                .with_animation(
+                    SharedString::from(format!("{selector}-pulse")),
+                    Animation::new(std::time::Duration::from_secs(1)).repeat(),
+                    |dot, delta| dot.opacity(0.3 + 0.7 * (delta * std::f32::consts::PI).sin()),
+                ),
+        )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn row(
     // Rows are probed by key, not by label: an agent names its workspace, which
@@ -247,6 +276,7 @@ pub(super) fn row(
     status: AgentStatus,
     removing: bool,
     focused: bool,
+    lift: RowLift,
     tree: RowTree,
     reserve_arrow: bool,
     width: f32,
@@ -324,8 +354,15 @@ pub(super) fn row(
         .gap(px(gap))
         .py(px(content_top))
         .cursor_pointer()
-        .map(|row| look.hover_group(row))
-        .child(look.highlight(key, focused, theme))
+        .map(|row| match lift {
+            RowLift::Resting => look.hover_group(row),
+            RowLift::Passed | RowLift::Lifted => row,
+        })
+        .child(if lift == RowLift::Lifted {
+            look.lifted(key, focused, theme)
+        } else {
+            look.highlight(key, focused, theme)
+        })
         // Tree lines run in the indent the row already reserves, so a child is
         // tied to its parent without box-drawing glyphs in the label.
         .when(tree != RowTree::None && look.style.tree_lines(), |row| {
@@ -360,24 +397,7 @@ pub(super) fn row(
             )
         })
         .child(if removing {
-            div()
-                .debug_selector(|| "worktree-removing".into())
-                .size(px(STATUS_WIDTH))
-                .mt(px((line_height(font) - STATUS_WIDTH) / 2.))
-                .flex_none()
-                .child(
-                    div()
-                        .size_full()
-                        .rounded_full()
-                        .bg(rgb(theme.primary()))
-                        .with_animation(
-                            "worktree-removing-pulse",
-                            Animation::new(std::time::Duration::from_secs(1)).repeat(),
-                            |dot, delta| {
-                                dot.opacity(0.3 + 0.7 * (delta * std::f32::consts::PI).sin())
-                            },
-                        ),
-                )
+            removing_dot("worktree-removing", theme).mt(px((line_height(font) - STATUS_WIDTH) / 2.))
         } else {
             status_indicator(status, font)
         })

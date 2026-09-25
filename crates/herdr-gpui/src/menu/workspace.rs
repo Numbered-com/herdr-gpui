@@ -238,7 +238,7 @@ impl HerdrWindow {
         self.menu.page = Some(Page::Workspace);
         self.refresh_workspace_pr();
         self.marked.clear();
-        window.focus(&self.menu.focus);
+        window.focus(&self.menu.focus, cx);
         cx.notify();
     }
 
@@ -401,7 +401,7 @@ impl HerdrWindow {
             .into_iter()
             .map(|(action, _)| action)
             .collect();
-        if self.menu.github.connected() && self.menu.pr.value.is_some() {
+        if self.pr_profile().is_some() && self.menu.pr.value.is_some() {
             actions.push(WorkspaceMenuAction::PullRequest);
         }
         actions
@@ -670,9 +670,15 @@ impl HerdrWindow {
             .input
             .as_ref()
             .is_some_and(|input| input.marked.is_some())
+            || self
+                .menu
+                .worktree
+                .as_ref()
+                .is_some_and(|source| source.name.read(cx).is_composing())
         {
             return;
         }
+        let name = self.worktree_name(cx);
         let result = (|| {
             if !self.menu_target_current() {
                 return Err(crate::Error::StaleConnection);
@@ -706,6 +712,12 @@ impl HerdrWindow {
                     .unwrap_or("")
             };
             let (method, mut params) = target.request(snapshot, action, text)?;
+            // The daemon names the workspace as it creates it, so no rename follows.
+            if action == WorkspaceAction::NewWorktree
+                && let Some(name) = name
+            {
+                params["label"] = name.into();
+            }
             if action == WorkspaceAction::Close {
                 let Some(check) = &self.menu.close_check else {
                     return Ok(Submission::Awaiting {
@@ -865,12 +877,33 @@ impl HerdrWindow {
                 "Closes {} workspace(s) and terminates their running terminals. Checkout files and branches are not deleted.",
                 target.close_members.len()
             ))),
-            WorkspaceAction::NewWorktree => body
-                .child(div().text_color(rgb(theme.muted)).child(
-                    "Branch for the new checkout. Base: HEAD. Repository trust is not granted.",
-                ))
-                .child(self.render_dialog_input(cx))
-                .child("This creates the checkout folder:")
+            WorkspaceAction::NewWorktree => {
+                // Captions share a column so both fields start at the same edge.
+                let row = |caption: &'static str, field: AnyElement| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .flex_none()
+                                .w(px(font.size * 4.5))
+                                .text_color(rgb(theme.muted))
+                                .child(caption),
+                        )
+                        .child(div().flex_1().min_w_0().child(field))
+                };
+                body.children(self.menu.worktree.as_ref().map(|source| {
+                    row(
+                        "Name",
+                        div()
+                            .debug_selector(|| "worktree-name".into())
+                            .child(source.name.clone())
+                            .into_any_element(),
+                    )
+                }))
+                .child(row("Branch", self.render_dialog_input(cx).into_any_element()))
+                .child("Creates this folder from HEAD, without granting repository trust:")
                 .child(
                     div()
                         .debug_selector(|| "dialog-checkout".into())
@@ -879,7 +912,8 @@ impl HerdrWindow {
                         .px(px(10.))
                         .py(px(6.))
                         .child(self.checkout_preview()),
-                ),
+                )
+            }
             WorkspaceAction::DeleteWorktree => body
                 .child(if force {
                     "This force removes the checkout folder:"

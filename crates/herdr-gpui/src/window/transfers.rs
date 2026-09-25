@@ -347,7 +347,7 @@ impl HerdrWindow {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::{FileTransfer, HerdrWindow, transfer_progress};
@@ -435,13 +435,14 @@ mod tests {
         }
     }
 
-    struct Peer {
-        client: Client,
+    /// A daemon peer that has sent its welcome and snapshot fixtures.
+    pub(crate) struct Peer {
+        pub(crate) client: Client,
         stream: Stream,
     }
 
     impl Peer {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let (stream, mut server) = Stream::pair().unwrap();
             server
                 .set_read_timeout(Some(Duration::from_secs(3)))
@@ -502,7 +503,7 @@ mod tests {
             }
         }
 
-        fn receive(&mut self) -> ClientMessage {
+        pub(crate) fn receive(&mut self) -> ClientMessage {
             read_message(&mut self.stream, MAX_FRAME_SIZE).unwrap()
         }
 
@@ -653,7 +654,7 @@ mod tests {
         });
         cx.update(|window, cx| {
             window.refresh();
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         let track = cx.debug_bounds("file-transfer-track").unwrap();
         let progress = cx.debug_bounds("file-transfer-progress").unwrap();

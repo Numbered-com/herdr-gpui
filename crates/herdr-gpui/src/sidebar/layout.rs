@@ -323,6 +323,40 @@ impl SidebarLook {
     }
 }
 
+impl SidebarLook {
+    /// The highlight layer as a card carried over the list: opaque so the rows
+    /// it passes stay hidden, shadowed rather than colored so it reads the same
+    /// in every theme, and pulled in from edge-to-edge rows so it looks lifted.
+    /// Only the layer changes, so the row's contents stay where they were.
+    pub(super) fn lifted(&self, key: &str, focused: bool, theme: &Theme) -> Div {
+        let inset = px(self.inset().max(LIFT_INSET));
+        let edge = px(self.spacing() / 2.);
+        let wash = |alpha: u32| rgba((theme.foreground << 8) | alpha);
+        div()
+            .debug_selector(|| format!("highlight-{key}"))
+            .absolute()
+            .left(inset)
+            .right(inset)
+            .top(edge)
+            .bottom(edge)
+            .rounded(px(self.style.radius().max(LIFT_RADIUS)))
+            .bg(rgb(match self.style.highlight() {
+                Highlight::Fill if focused => theme.active,
+                _ => theme.surface,
+            }))
+            .when(self.style.highlight() == Highlight::Outline, |card| {
+                card.border_1()
+                    .border_color(wash(if focused { 0x40 } else { 0x20 }))
+            })
+            .shadow_lg()
+    }
+}
+
+/// How far a lifted card pulls in from rows that run edge to edge.
+const LIFT_INSET: f32 = 6.;
+/// The least rounding a lifted card gets, even from square rows.
+const LIFT_RADIUS: f32 = 4.;
+
 pub(super) fn for_mode(mode: LayoutMode) -> SidebarLook {
     SidebarLook {
         density: match mode.density {

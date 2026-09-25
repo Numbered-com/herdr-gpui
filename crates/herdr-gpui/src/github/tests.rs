@@ -5,7 +5,7 @@ use super::{
     credentials,
     device::TokenResponse,
     http::{LIMIT, authorization, graphql, pr_cooldown, response},
-    log::{header, kind, public_sso},
+    log::{header, kind, public_sso, token_kind},
     store,
     store::{KEYCHAIN, credential_bytes, resolve_token},
     token::Credential,
@@ -100,10 +100,23 @@ fn only_a_signed_release_build_uses_the_keychain() {
     if !store::FILE {
         assert_eq!(Store::select(&config), Store::Environment);
         assert!(matches!(
-            credentials::store(std::path::Path::new("."), Some(&"token".into()), true),
+            credentials::store(
+                std::path::Path::new("."),
+                c"github-credentials",
+                Some(&"token".into()),
+                true
+            ),
             Err(Error::CredentialUnsupported)
         ));
-        assert!(credentials::store(std::path::Path::new("."), None, false).is_ok());
+        assert!(
+            credentials::store(
+                std::path::Path::new("."),
+                c"github-credentials",
+                None,
+                false
+            )
+            .is_ok()
+        );
     }
 }
 #[test]
@@ -787,6 +800,7 @@ fn bounded_http_parsing_and_safe_errors() {
     assert!(response::<Value>("test", reply(200, vec![b' '; LIMIT as usize + 1])).is_err());
     assert!(
         graphql(
+            "test",
             &"fixture".into(),
             "",
             Value::Null,
@@ -944,4 +958,18 @@ fn accepted_token_uses_store_off_thread_and_reports_failure() {
     auth.poll();
     assert_eq!(auth.message.as_deref(), Some("mock Keychain locked"));
     assert!(!auth.busy());
+}
+
+#[test]
+fn token_kind_names_the_credential_without_exposing_it() {
+    for (token, expected) in [
+        ("ghu_fixture", "github_app_user"),
+        ("ghs_fixture", "github_app_installation"),
+        ("gho_fixture", "oauth_app"),
+        ("ghp_fixture", "classic_pat"),
+        ("github_pat_fixture", "fine_grained_pat"),
+        ("fixture", "unknown"),
+    ] {
+        assert_eq!(token_kind(&SecretString::from(token)), expected);
+    }
 }

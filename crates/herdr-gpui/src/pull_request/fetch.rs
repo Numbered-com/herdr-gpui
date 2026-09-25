@@ -2,7 +2,7 @@
 //! checkout, and the bounded subprocess policy they all run under. Output is
 //! size-capped and every call has a deadline, so no step can hang the worker.
 
-use super::{Input, Result, parse_graphql};
+use super::{Input, Origin, Result, parse_graphql};
 use crate::Error;
 #[cfg(unix)]
 use std::os::{fd::OwnedFd, unix::net::UnixStream};
@@ -33,27 +33,90 @@ const QUERY: &str = r#"query($owner: String!, $repo: String!, $branch: String!) 
   }
 }"#;
 
+/// How long a remote repository's origin is trusted before SSH reads it again.
+const ORIGIN_TTL: Duration = Duration::from_secs(10 * 60);
+const ORIGIN_LIMIT: usize = 64;
+
+/// GitHub repositories resolved on saved hosts, keyed by SSH target and Git
+/// directory. Bounded, and owned by the single PR worker thread.
+#[derive(Default)]
+pub(super) struct Origins(Vec<(String, String, Instant, (String, String))>);
+
+impl Origins {
+    fn resolve(
+        &mut self,
+        target: &str,
+        input: &Input,
+        now: Instant,
+        deadline: Instant,
+        cancelled: &impl Fn() -> bool,
+    ) -> crate::Result<(String, String)> {
+        self.0
+            .retain(|(_, _, resolved, _)| now.duration_since(*resolved) < ORIGIN_TTL);
+        if let Some((.., repository)) = self
+            .0
+            .iter()
+            .find(|(host, key, ..)| host == target && key == &input.repo_key)
+        {
+            return Ok(repository.clone());
+        }
+        let timeout = deadline
+            .checked_duration_since(now)
+            .ok_or(Error::PrTimeout)?;
+        // The daemon's branch is trusted as reported: this client cannot run
+        // local Git against the host's checkout to re-verify it.
+        let remote = herdr_client::remote_origin_url(target, &input.repo_key, timeout, cancelled)?
+            .ok_or(Error::PrOrigin)?;
+        let repository = crate::avatars::github_repo(&remote).ok_or(Error::PrOrigin)?;
+        if self.0.len() == ORIGIN_LIMIT {
+            self.0.remove(0);
+        }
+        self.0.push((
+            target.to_owned(),
+            input.repo_key.clone(),
+            now,
+            repository.clone(),
+        ));
+        Ok(repository)
+    }
+}
+
 #[cfg(test)]
 pub(super) fn fetch(
     input: &Input,
     token: &secrecy::SecretString,
     cancelled: impl Fn() -> bool,
 ) -> Result {
-    fetch_with_backoff(input, token, cancelled, &mut None)
+    fetch_with_backoff(
+        input,
+        &Origin::Local,
+        &mut Origins::default(),
+        token,
+        cancelled,
+        &mut None,
+    )
 }
 
 pub(super) fn fetch_with_backoff(
     input: &Input,
+    origin: &Origin,
+    origins: &mut Origins,
     token: &secrecy::SecretString,
     cancelled: impl Fn() -> bool,
     cooldown: &mut Option<Duration>,
 ) -> Result {
     let deadline = Instant::now() + TIMEOUT;
-    let (owner, repo) = local_repository(input, deadline, &cancelled)?;
+    let (owner, repo) = match origin {
+        Origin::Local => local_repository(input, deadline, &cancelled)?,
+        Origin::Ssh(target) => {
+            origins.resolve(target, input, Instant::now(), deadline, &cancelled)?
+        }
+    };
     let timeout = deadline
         .checked_duration_since(Instant::now())
         .ok_or(Error::PrTimeout)?;
     let response = crate::github::graphql(
+        "pull_request",
         token,
         QUERY,
         serde_json::json!({"owner":owner,"repo":repo,"branch":input.branch}),
@@ -85,7 +148,27 @@ pub(crate) fn origin_repository(
         deadline,
         cancelled,
     )?;
-    crate::avatars::github_repo(&remote).ok_or(Error::PrOrigin)
+    crate::avatars::github_repo(&remote).ok_or_else(|| {
+        // An SSH host alias for a second account (`github-work:owner/repo`)
+        // is the usual reason; only the host is logged, never credentials.
+        tracing::debug!(
+            category = "github_origin",
+            host = remote_host(&remote),
+            "Origin remote is not a GitHub.com repository"
+        );
+        Error::PrOrigin
+    })
+}
+
+/// The host of a Git remote, without the user, credentials, or path.
+pub(super) fn remote_host(remote: &str) -> &str {
+    let authority = match remote.split_once("://") {
+        Some((_, rest)) => rest.split('/').next().unwrap_or_default(),
+        None => remote.split(':').next().unwrap_or_default(),
+    };
+    authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host)
 }
 
 /// Resolve the checkout a daemon workspace names and verify it still is that
@@ -390,5 +473,50 @@ fn collect(
                 .map_err(|error| Error::PrEncoding(error.utf8_error()));
         }
         thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    fn input(key: &str) -> Input {
+        Input {
+            checkout: None,
+            repo_key: key.into(),
+            branch: "main".into(),
+        }
+    }
+
+    #[test]
+    fn remote_origins_are_reused_until_they_expire() {
+        // Time only moves forward here: an `Instant` cannot go before boot.
+        let now = Instant::now();
+        let deadline = now + TIMEOUT;
+        // An invalid target fails before SSH, so reaching it proves a miss.
+        let target = "-not-dialled";
+        let mut origins = Origins(vec![(
+            target.into(),
+            "/repo/.git".into(),
+            now,
+            ("owner".into(), "repo".into()),
+        )]);
+        let mut resolve = |key: &str, at: Instant| {
+            origins.resolve(target, &input(key), at, deadline.max(at + TIMEOUT), &|| {
+                false
+            })
+        };
+        assert_eq!(
+            resolve("/repo/.git", now).unwrap(),
+            ("owner".into(), "repo".into())
+        );
+        // Another repository on the same host is not a hit.
+        assert!(matches!(
+            resolve("/other/.git", now),
+            Err(Error::Client(herdr_client::Error::InvalidSshTarget))
+        ));
+        assert!(resolve("/repo/.git", now + ORIGIN_TTL).is_err());
+        assert!(origins.0.is_empty());
     }
 }

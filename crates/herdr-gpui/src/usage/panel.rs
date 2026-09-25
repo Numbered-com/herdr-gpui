@@ -208,7 +208,7 @@ impl HerdrWindow {
             .flex()
             .flex_col()
             .min_h_0()
-            .child(body.flex_shrink())
+            .child(body.flex_shrink_1())
             .when(readings.len() > 1, |panel| {
                 panel.child(
                     div()
