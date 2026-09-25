@@ -276,7 +276,14 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                                 window.draw(cx).clear(cx);
                                 cx.default_global::<PaintedProbes>().check()?;
                                 let probes = &cx.global::<PaintedProbes>().0;
-                                for input in ["herdr", "Claude Code"] {
+                                // The long name must be cut short in every
+                                // layout, which proves ellipsizing natively.
+                                const LONG: &str =
+                                    "herdr-gpui-sidebar-rendering-regression-investigation";
+                                if !probes.get(LONG).is_some_and(|p| p.glyph_text.ends_with('\u{2026}')) {
+                                    bail!("{rows:?} {mode}: {LONG:?} was not ellipsized");
+                                }
+                                for input in ["herdr", "Claude Code", LONG] {
                                     let p = probes
                                         .get(input)
                                         .with_context(|| format!("missing paint: {input}"))?;

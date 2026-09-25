@@ -1,7 +1,8 @@
 //! Pieces row layouts are assembled from, and the [`Line`] that lays them out.
 //!
-//! GPUI 0.2.2 only ellipsizes text whose width is already fixed, so a row
-//! cannot let flexbox divide its width. A line measures its pieces instead:
+//! A row does not let flexbox divide its width: shrinking text would take
+//! its whole natural width first and push the pieces after it off the row.
+//! A line measures its pieces instead:
 //! fixed ones keep their size, shrinking ones take what they need up to a
 //! share of the line, and filling ones split the rest. Every piece ends up
 //! with an explicit width, so nothing can push past the row's edge.
@@ -176,20 +177,16 @@ impl<'a> Line<'a> {
             .into_iter()
             .zip(widths)
             .fold(line, |line, (piece, width)| {
-                // A wrapper is one more element to lay out on every row, so
-                // fixed pieces, already sized, get none. Text keeps its pair:
-                // GPUI 0.2.2 only ellipsizes inside a parent of fixed width.
+                // Each piece is one element: fixed ones are placed as their
+                // callers sized them, and text ellipsizes in its own shell.
                 if let Content::Element(element) = piece.content {
                     return line.child(element);
                 }
                 let shell = piece.shell.w(px(width)).flex_none().overflow_hidden();
                 line.child(match piece.content {
-                    Content::Text(text, inset) => shell.px(px(inset)).child(
-                        div()
-                            .w(px((width - 2. * inset).max(0.)))
-                            .truncate()
-                            .child(label_text(&text)),
-                    ),
+                    Content::Text(text, inset) => {
+                        shell.px(px(inset)).truncate().child(label_text(&text))
+                    }
                     Content::Element(_) | Content::Shell => shell,
                 })
             })
