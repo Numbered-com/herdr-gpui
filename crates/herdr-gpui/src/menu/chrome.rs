@@ -50,7 +50,7 @@ impl HerdrWindow {
         );
         self.menu.page = Some(Page::Menu);
         self.marked.clear();
-        window.focus(&self.menu.focus);
+        window.focus(&self.menu.focus, cx);
         cx.notify();
         true
     }
@@ -64,13 +64,13 @@ impl HerdrWindow {
         self.hover_menu = None;
         self.update_preview = None;
         self.menu.reset();
-        window.focus(&self.focus);
+        window.focus(&self.focus, cx);
         cx.notify();
     }
 
-    pub(crate) fn restore_menu_focus(&self, window: &mut Window) {
+    pub(crate) fn restore_menu_focus(&self, window: &mut Window, cx: &mut App) {
         if self.menu.page.is_none() && self.menu.focus.is_focused(window) {
-            window.focus(&self.focus);
+            window.focus(&self.focus, cx);
         }
     }
 
@@ -693,7 +693,20 @@ impl HerdrWindow {
                 {
                     return;
                 }
-                if let Some(input) = this.menu.input.as_mut().filter(|_| !listing) {
+                // The name field edits itself; only Escape and Enter are left
+                // for the dialog, and neither may reach the branch draft.
+                let naming = this.worktree_name_focused(window, cx);
+                if naming
+                    && (this
+                        .menu
+                        .worktree
+                        .as_ref()
+                        .is_some_and(|source| source.name.read(cx).is_composing())
+                        || !matches!(event.keystroke.key.as_str(), "escape" | "enter"))
+                {
+                    return;
+                }
+                if let Some(input) = this.menu.input.as_mut().filter(|_| !listing && !naming) {
                     if input.key(&event.keystroke, cx) {
                         cx.stop_propagation();
                         window.prevent_default();

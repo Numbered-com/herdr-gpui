@@ -174,80 +174,82 @@ pub(crate) fn run() -> std::process::ExitCode {
     };
     let failed = startup_failed.clone();
     let window_state = (mode == LaunchMode::Normal).then(crate::window_state::WindowState::load);
-    Application::new().with_assets(icons::Icons).run(move |cx| {
-        let window_count = window_state.as_ref().map_or(1, |state| state.count());
-        if let Some(state) = window_state {
-            state.install(cx);
-        }
-        cx.set_global(appearance);
-        app_icon::install();
-        #[cfg(target_os = "macos")]
-        crate::app_badge::install(cx);
-        cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.on_action(|_: &ShowLogs, cx| log_window::open(cx));
-        bind_keys(cx);
-        cx.set_menus(menus());
-        cx.on_window_closed(move |cx| {
-            if cx.windows().is_empty() {
-                #[cfg(feature = "integration-test")]
-                if performance_test {
-                    std::process::exit(1);
-                }
-                cx.quit();
+    gpui_platform::application()
+        .with_assets(icons::Icons)
+        .run(move |cx| {
+            let window_count = window_state.as_ref().map_or(1, |state| state.count());
+            if let Some(state) = window_state {
+                state.install(cx);
             }
-        })
-        .detach();
-        // Native test modes and CLI invocations never start an updater worker.
-        let updater = if mode == LaunchMode::Normal {
-            updater::Updater::start()
-        } else {
-            updater::Updater::default()
-        };
-        let opened = open_window(
-            target.clone(),
-            updater,
-            cx,
-            #[cfg(feature = "integration-test")]
-            {
-                sidebar_test || performance_test
-            },
-        );
-        match opened {
-            Ok(_window) => {
-                if mode == LaunchMode::Normal {
-                    let _ = _window.update(cx, |view, _, _| {
-                        view.sound = crate::sound::Service::new();
-                    });
-                    for _ in 1..window_count {
-                        open_additional_window(target.clone(), cx);
+            cx.set_global(appearance);
+            app_icon::install();
+            #[cfg(target_os = "macos")]
+            crate::app_badge::install(cx);
+            cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.on_action(|_: &ShowLogs, cx| log_window::open(cx));
+            bind_keys(cx);
+            cx.set_menus(menus());
+            cx.on_window_closed(move |cx, _| {
+                if cx.windows().is_empty() {
+                    #[cfg(feature = "integration-test")]
+                    if performance_test {
+                        std::process::exit(1);
+                    }
+                    cx.quit();
+                }
+            })
+            .detach();
+            // Native test modes and CLI invocations never start an updater worker.
+            let updater = if mode == LaunchMode::Normal {
+                updater::Updater::start()
+            } else {
+                updater::Updater::default()
+            };
+            let opened = open_window(
+                target.clone(),
+                updater,
+                cx,
+                #[cfg(feature = "integration-test")]
+                {
+                    sidebar_test || performance_test
+                },
+            );
+            match opened {
+                Ok(_window) => {
+                    if mode == LaunchMode::Normal {
+                        let _ = _window.update(cx, |view, _, _| {
+                            view.sound = crate::sound::Service::new();
+                        });
+                        for _ in 1..window_count {
+                            open_additional_window(target.clone(), cx);
+                        }
+                    }
+                    #[cfg(feature = "integration-test")]
+                    if performance_test {
+                        performance::start(_window, cx);
+                    }
+                    #[cfg(feature = "integration-test")]
+                    if integration_test {
+                        smoke::start(_window, cx);
+                    }
+                    #[cfg(feature = "integration-test")]
+                    if sidebar_test {
+                        smoke::start_sidebar(_window, cx);
                     }
                 }
-                #[cfg(feature = "integration-test")]
-                if performance_test {
-                    performance::start(_window, cx);
-                }
-                #[cfg(feature = "integration-test")]
-                if integration_test {
-                    smoke::start(_window, cx);
-                }
-                #[cfg(feature = "integration-test")]
-                if sidebar_test {
-                    smoke::start_sidebar(_window, cx);
+                Err(error) => {
+                    tracing::error!("Unable to open main window");
+                    eprintln!("Unable to open Herdr window: {error}");
+                    failed.set(true);
+                    #[cfg(feature = "integration-test")]
+                    if performance_test {
+                        std::process::exit(1);
+                    }
+                    cx.quit();
                 }
             }
-            Err(error) => {
-                tracing::error!("Unable to open main window");
-                eprintln!("Unable to open Herdr window: {error}");
-                failed.set(true);
-                #[cfg(feature = "integration-test")]
-                if performance_test {
-                    std::process::exit(1);
-                }
-                cx.quit();
-            }
-        }
-        cx.activate(true);
-    });
+            cx.activate(true);
+        });
     if startup_failed.get() {
         std::process::ExitCode::FAILURE
     } else {
@@ -330,7 +332,7 @@ mod tests {
                 assert_eq!(state.config.layout.mode, mode);
                 assert_eq!(Some(state.theme.clone()), Theme::builtin("Nord"));
                 assert!(state.config_load.is_none());
-                crate::sidebar::layout_tests::full_draw(window, cx).clear();
+                crate::sidebar::layout_tests::full_draw(window, cx).clear(cx);
             });
             let row = cx
                 .debug_bounds("row-herdr")

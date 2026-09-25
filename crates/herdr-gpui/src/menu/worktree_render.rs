@@ -203,7 +203,7 @@ impl HerdrWindow {
                             range.map(|row| this.render_worktree_row(row, cx)).collect()
                         }),
                     )
-                    .track_scroll(source.scroll.clone())
+                    .track_scroll(&source.scroll)
                     .flex_1()
                     .min_h_0(),
                 )

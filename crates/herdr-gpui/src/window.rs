@@ -257,7 +257,7 @@ impl HerdrWindow {
             target
         };
         let focus = cx.focus_handle();
-        window.focus(&focus);
+        window.focus(&focus, cx);
         let weak = cx.weak_entity();
         let sidebar_view = cx.new(|_| sidebar::SidebarView::new(weak));
         let timer = cx.background_executor().clone();

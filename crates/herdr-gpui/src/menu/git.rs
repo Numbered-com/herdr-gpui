@@ -138,7 +138,7 @@ impl HerdrWindow {
             self.menu.pr_cache.refresh(input, std::time::Instant::now());
         }
         self.marked.clear();
-        window.focus(&self.menu.focus);
+        window.focus(&self.menu.focus, cx);
         cx.notify();
     }
 

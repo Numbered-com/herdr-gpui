@@ -243,7 +243,7 @@ impl HerdrWindow {
             });
             self.marked.clear();
         }
-        window.focus(&self.focus);
+        window.focus(&self.focus, cx);
         cx.notify();
     }
 }
