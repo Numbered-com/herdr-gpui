@@ -9,7 +9,13 @@ pub(crate) enum Page {
     Devices,
     /// Local sessions and remote devices, with the state of each.
     Sessions,
+    /// Plan usage details for one agent on the selected host.
+    Usage(crate::usage::Provider),
     AddDevice,
+    /// A saved SSH device's context menu, from its sidebar host header.
+    Host,
+    RenameDevice,
+    RemoveDevice,
     Keybinds,
     Themes,
     Palette,

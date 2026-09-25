@@ -18,6 +18,17 @@ use std::{
 };
 
 pub(super) const LOCAL: &str = "local";
+/// Saved SSH endpoints are keyed `ssh:<profile-id>`, so no catalog ID can
+/// collide with `LOCAL`.
+const SAVED_PREFIX: &str = "ssh:";
+
+/// The catalog profile ID behind a saved SSH endpoint's ID, which is what the
+/// `herdr machine` commands and per-device credentials are keyed by.
+pub(crate) fn saved_profile_id(endpoint_id: &str) -> Option<&str> {
+    endpoint_id
+        .strip_prefix(SAVED_PREFIX)
+        .filter(|id| herdr_client::valid_profile_id(id))
+}
 const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
 const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
 /// Upstream rechecks failed SSH machines every 30 seconds, so authentication
@@ -352,7 +363,7 @@ impl Catalog {
         // Also cancels an in-flight startup restore when Local is clicked.
         self.initialized = true;
         self.restore_pending = false;
-        self.desired = id.strip_prefix("ssh:").map(str::to_owned);
+        self.desired = id.strip_prefix(SAVED_PREFIX).map(str::to_owned);
         if self.development.is_some() {
             self.queued_write = Some(self.desired.clone());
         }
@@ -680,8 +691,14 @@ impl HerdrWindow {
             }
         }
         let mut changed = Redraw::None;
+        // Whether the selected endpoint itself moved on. Only then does the
+        // window take its state: another endpoint changing, or this one's
+        // inbox being busy for a poll, must not replace what the window has
+        // stamped since, such as the split drag request it is waiting on.
+        let mut selected_changed = false;
         for (index, endpoint) in self.endpoints.iter_mut().enumerate() {
             let updated = endpoint.poll(Instant::now());
+            selected_changed |= index == self.selected_endpoint && updated != Redraw::None;
             self.sound.poll(
                 &mut endpoint.sounds,
                 &mut endpoint.live,
@@ -705,6 +722,7 @@ impl HerdrWindow {
                 && Instant::now() >= endpoint.retry_at
             {
                 endpoint.connect(self.options, index == 0 && self.selected_endpoint == 0);
+                selected_changed |= index == self.selected_endpoint;
                 changed = Redraw::Window;
             }
         }
@@ -720,7 +738,7 @@ impl HerdrWindow {
             self.reset_selected();
         }
         let endpoint = &mut self.endpoints[self.selected_endpoint];
-        if changed != Redraw::None {
+        if selected_changed {
             self.live = endpoint.live.clone();
             if !self.live.status.is_connected() {
                 self.local_error = None;
@@ -839,7 +857,12 @@ impl HerdrWindow {
         if !self.catalog.restore_pending {
             return;
         }
-        let Some(id) = self.catalog.desired.as_ref().map(|id| format!("ssh:{id}")) else {
+        let Some(id) = self
+            .catalog
+            .desired
+            .as_ref()
+            .map(|id| format!("{SAVED_PREFIX}{id}"))
+        else {
             return;
         };
         if self.endpoints.iter().any(|endpoint| {
@@ -861,7 +884,7 @@ impl HerdrWindow {
         let selected_id = selected.id.clone();
         let selected_retired = self.selected_endpoint != 0
             && !hosts.iter().any(|host| {
-                format!("ssh:{}", host.id) == selected_id
+                format!("{SAVED_PREFIX}{}", host.id) == selected_id
                     && host.enabled
                     && !entry_changed(selected, host)
             });
@@ -872,7 +895,7 @@ impl HerdrWindow {
         let mut previous = std::mem::take(&mut self.endpoints);
         let mut next = vec![previous.remove(0)];
         for host in hosts {
-            let id = format!("ssh:{}", host.id);
+            let id = format!("{SAVED_PREFIX}{}", host.id);
             let mut endpoint = if let Some(index) = previous.iter().position(|e| e.id == id) {
                 previous.remove(index)
             } else {
@@ -939,6 +962,15 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use herdr_client::ClientEvent;
+
+    #[test]
+    fn saved_profile_ids_are_the_catalog_ids_behind_ssh_endpoints() {
+        let id = "0123456789abcdef0123456789abcdef";
+        assert_eq!(saved_profile_id(&format!("ssh:{id}")), Some(id));
+        for endpoint in [id, LOCAL, "ssh:", "ssh:fixture", "ssh:../x"] {
+            assert_eq!(saved_profile_id(endpoint), None, "{endpoint}");
+        }
+    }
 
     fn host(id: &str, enabled: bool) -> SavedHost {
         SavedHost {

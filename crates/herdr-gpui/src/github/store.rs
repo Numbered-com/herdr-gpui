@@ -23,8 +23,42 @@ pub(crate) const KEYCHAIN_NOTICE: &str =
 
 #[cfg(target_os = "macos")]
 const SERVICE: &str = "dev.herdr.gpui.github";
-#[cfg(target_os = "macos")]
-const ACCOUNT: &str = "github.com";
+
+/// Which saved GitHub sign-in a credential belongs to. Each one is a separate
+/// entry in the same store, so signing one out never touches another.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Account {
+    /// The account used on this device, and on any saved host without its own.
+    #[default]
+    Main,
+    /// A saved SSH device's own account, keyed by its catalog profile ID.
+    Host(String),
+}
+
+impl Account {
+    /// Catalog profile IDs are 32 lowercase hex digits, so they are safe in a
+    /// Keychain account name and a file name. Anything else is refused.
+    pub(crate) fn host(id: &str) -> Option<Self> {
+        herdr_client::valid_profile_id(id).then(|| Self::Host(id.to_owned()))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn keychain_account(&self) -> String {
+        match self {
+            Self::Main => "github.com".into(),
+            Self::Host(id) => format!("github.com/host/{id}"),
+        }
+    }
+
+    fn file_name(&self) -> std::ffi::CString {
+        let name = match self {
+            Self::Main => "github-credentials".to_owned(),
+            Self::Host(id) => format!("github-credentials-{id}"),
+        };
+        // Neither form can contain NUL: `host` admits only hex digits.
+        std::ffi::CString::new(name).unwrap_or_default()
+    }
+}
 
 pub(super) fn valid_token(token: &str) -> bool {
     !token.is_empty() && token.len() <= 4096 && token.bytes().all(|b| b.is_ascii_graphic())
@@ -131,8 +165,9 @@ pub(crate) enum Note {
 }
 
 #[cfg(target_os = "macos")]
-fn keychain_token() -> Result<Option<SecretString>> {
-    match security_framework::passwords::get_generic_password(SERVICE, ACCOUNT) {
+fn keychain_token(account: &Account) -> Result<Option<SecretString>> {
+    match security_framework::passwords::get_generic_password(SERVICE, &account.keychain_account())
+    {
         Ok(bytes) => credential_bytes(bytes).map(Some),
         Err(e) if e.code() == -25300 => Ok(None),
         Err(error) => Err(Error::KeychainRead(error)),
@@ -141,16 +176,17 @@ fn keychain_token() -> Result<Option<SecretString>> {
 
 // `Store::Keychain` is never selected off macOS; the stubs keep the match total.
 #[cfg(not(target_os = "macos"))]
-fn keychain_token() -> Result<Option<SecretString>> {
+fn keychain_token(_: &Account) -> Result<Option<SecretString>> {
     Ok(None)
 }
 
 #[cfg(target_os = "macos")]
-fn keychain_save(token: Option<&SecretString>) -> Result<()> {
+fn keychain_save(token: Option<&SecretString>, account: &Account) -> Result<()> {
     use security_framework::passwords::{delete_generic_password, set_generic_password};
+    let name = account.keychain_account();
     let result = match token {
-        Some(token) => set_generic_password(SERVICE, ACCOUNT, token.expose_secret().as_bytes()),
-        None => delete_generic_password(SERVICE, ACCOUNT),
+        Some(token) => set_generic_password(SERVICE, &name, token.expose_secret().as_bytes()),
+        None => delete_generic_password(SERVICE, &name),
     };
     match result {
         Ok(()) => Ok(()),
@@ -160,19 +196,24 @@ fn keychain_save(token: Option<&SecretString>) -> Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn keychain_save(_: Option<&SecretString>) -> Result<()> {
+fn keychain_save(_: Option<&SecretString>, _: &Account) -> Result<()> {
     Err(Error::CredentialPolicy)
 }
 
-pub(super) fn saved_token(store: Store) -> Result<Option<SecretString>> {
+pub(super) fn saved_token(store: Store, account: &Account) -> Result<Option<SecretString>> {
     match store {
         Store::Environment => Ok(None),
-        Store::Keychain => keychain_token(),
-        Store::File => credentials::read(&credential_directory()?),
+        Store::Keychain => keychain_token(account),
+        Store::File => credentials::read(&credential_directory()?, &account.file_name()),
     }
 }
 
-pub(super) fn load_profile(store: Store) -> Result<Option<Profile>> {
+pub(super) fn load_profile(store: Store, account: &Account) -> Result<Option<Profile>> {
+    // The environment names one account for this device. A host's own sign-in
+    // exists precisely to differ from it, so only the main account reads it.
+    if *account != Account::Main {
+        return transaction(|| load_saved(store, account));
+    }
     let gh = environment_token("GH_TOKEN")?;
     let github = if gh
         .as_ref()
@@ -189,24 +230,7 @@ pub(super) fn load_profile(store: Store) -> Result<Option<Profile>> {
             .as_ref()
             .is_none_or(|s| s.expose_secret().trim().is_empty())
     {
-        return transaction(|| {
-            let saved = saved_token(store)?;
-            tracing::info!(
-                category = "github_restore",
-                ?store,
-                present = saved.is_some(),
-                "Checking saved GitHub sign-in"
-            );
-            saved
-                .map(|token| {
-                    Credential::decode(&token)?.profile_with(
-                        profile,
-                        Credential::refresh,
-                        |value| save_unlocked(Some(value), store),
-                    )
-                })
-                .transpose()
-        });
+        return transaction(|| load_saved(store, account));
     }
     tracing::info!(
         category = "github_restore",
@@ -216,6 +240,25 @@ pub(super) fn load_profile(store: Store) -> Result<Option<Profile>> {
     profile(std::sync::Arc::new(token)).map(Some)
 }
 
+/// Call only inside `transaction`: a renewal rotates the single-use refresh token.
+fn load_saved(store: Store, account: &Account) -> Result<Option<Profile>> {
+    let saved = saved_token(store, account)?;
+    tracing::info!(
+        category = "github_restore",
+        ?store,
+        host = matches!(account, Account::Host(_)),
+        present = saved.is_some(),
+        "Checking saved GitHub sign-in"
+    );
+    saved
+        .map(|token| {
+            Credential::decode(&token)?.profile_with(profile, Credential::refresh, |value| {
+                save_unlocked(Some(value), store, account)
+            })
+        })
+        .transpose()
+}
+
 pub(super) fn credential_directory() -> Result<std::path::PathBuf> {
     crate::config::Config::path()?
         .parent()
@@ -223,17 +266,18 @@ pub(super) fn credential_directory() -> Result<std::path::PathBuf> {
         .ok_or(Error::CredentialDirectory)
 }
 
-pub(super) fn save(token: Option<&SecretString>, store: Store) -> Result<()> {
-    transaction(|| save_unlocked(token, store))
+pub(super) fn save(token: Option<&SecretString>, store: Store, account: &Account) -> Result<()> {
+    transaction(|| save_unlocked(token, store, account))
 }
 
-fn save_unlocked(token: Option<&SecretString>, store: Store) -> Result<()> {
+fn save_unlocked(token: Option<&SecretString>, store: Store, account: &Account) -> Result<()> {
+    let name = account.file_name();
     match store {
-        Store::Keychain => keychain_save(token),
+        Store::Keychain => keychain_save(token, account),
         // Removal stays allowed without an opt-in, so a file written under an
         // earlier policy is still cleaned up by an explicit sign-out.
-        Store::Environment => credentials::store(&credential_directory()?, token, false),
-        Store::File => credentials::store(&credential_directory()?, token, true),
+        Store::Environment => credentials::store(&credential_directory()?, &name, token, false),
+        Store::File => credentials::store(&credential_directory()?, &name, token, true),
     }
 }
 
@@ -246,6 +290,34 @@ mod tests {
         thread,
         time::Duration,
     };
+
+    #[test]
+    fn host_accounts_accept_only_profile_ids_and_use_their_own_entries() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let host = Account::host(id).unwrap();
+        for bad in [
+            "",
+            "../github-credentials",
+            &id.to_uppercase(),
+            &id[1..],
+            "g".repeat(32).as_str(),
+        ] {
+            assert_eq!(Account::host(bad), None, "{bad}");
+        }
+        assert_eq!(
+            Account::Main.file_name().to_str().unwrap(),
+            "github-credentials"
+        );
+        assert_eq!(
+            host.file_name().to_str().unwrap(),
+            format!("github-credentials-{id}")
+        );
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(Account::Main.keychain_account(), "github.com");
+            assert_eq!(host.keychain_account(), format!("github.com/host/{id}"));
+        }
+    }
 
     #[test]
     fn competing_restores_load_the_rotated_credential_inside_the_transaction() {

@@ -50,7 +50,7 @@ impl HerdrWindow {
         );
         self.menu.page = Some(Page::Menu);
         self.marked.clear();
-        window.focus(&self.menu.focus);
+        window.focus(&self.menu.focus, cx);
         cx.notify();
         true
     }
@@ -64,13 +64,13 @@ impl HerdrWindow {
         self.hover_menu = None;
         self.update_preview = None;
         self.menu.reset();
-        window.focus(&self.focus);
+        window.focus(&self.focus, cx);
         cx.notify();
     }
 
-    pub(crate) fn restore_menu_focus(&self, window: &mut Window) {
+    pub(crate) fn restore_menu_focus(&self, window: &mut Window, cx: &mut App) {
         if self.menu.page.is_none() && self.menu.focus.is_focused(window) {
-            window.focus(&self.focus);
+            window.focus(&self.focus, cx);
         }
     }
 
@@ -202,6 +202,8 @@ impl HerdrWindow {
                 | Page::RenameTab
                 | Page::Pane
                 | Page::RenamePane
+                | Page::Host
+                | Page::RemoveDevice
                 | Page::Git
                 | Page::GitCommit
         );
@@ -284,6 +286,30 @@ impl HerdrWindow {
                     }
                 },
             )
+            .when(matches!(page, Page::Usage(_)), |panel| {
+                // Rises from the status bar segment that opened it, kept inside
+                // the window and clear of the titlebar.
+                let chrome = px(crate::titlebar::HEIGHT
+                    + crate::worktree_banner::reserved(env!("HERDR_BUILD_WORKTREE") == "1"));
+                let width = px(crate::usage::PANEL_WIDTH)
+                    .min((viewport.width - px(2. * MENU_MARGIN)).max(px(0.)));
+                panel
+                    .absolute()
+                    .left(
+                        self.menu
+                            .anchor
+                            .x
+                            .min(viewport.width - width - px(MENU_MARGIN))
+                            .max(px(MENU_MARGIN)),
+                    )
+                    .bottom((viewport.height - self.menu.anchor.y).max(px(MENU_MARGIN)))
+                    .w(width)
+                    .max_h((self.menu.anchor.y - chrome - px(MENU_MARGIN)).max(px(60.)))
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .shadow_lg()
+            })
             .when(matches!(page, Page::Git | Page::GitCommit), |panel| {
                 panel
                     .w((viewport.width - px(24.))
@@ -302,12 +328,17 @@ impl HerdrWindow {
             .when(
                 matches!(
                     page,
-                    Page::Tab | Page::RenameTab | Page::Pane | Page::RenamePane
+                    Page::Tab
+                        | Page::RenameTab
+                        | Page::Pane
+                        | Page::RenamePane
+                        | Page::Host
+                        | Page::RemoveDevice
                 ),
                 |panel| {
                     panel
                         .w((viewport.width - px(24.)).max(px(0.)).min(px(
-                            if matches!(page, Page::Tab | Page::Pane) {
+                            if matches!(page, Page::Tab | Page::Pane | Page::Host) {
                                 180.
                             } else {
                                 360.
@@ -317,8 +348,10 @@ impl HerdrWindow {
                 },
             )
             .when(
-                !matches!(page, Page::Menu | Page::Devices | Page::Sessions)
-                    && !pointer_anchored
+                !matches!(
+                    page,
+                    Page::Menu | Page::Devices | Page::Sessions | Page::Usage(_)
+                ) && !pointer_anchored
                     && !matches!(page, Page::Dialog(_)),
                 |panel| {
                     panel
@@ -336,6 +369,8 @@ impl HerdrWindow {
                         | Page::AppUpdate
                         | Page::GitHub
                         | Page::AddDevice
+                        | Page::Usage(_)
+                        | Page::RenameDevice
                 ),
                 |panel| {
                     // Dialogs draw their own full-bleed header and footer rules,
@@ -373,9 +408,10 @@ impl HerdrWindow {
                     .w((viewport.width - px(24.)).max(px(0.)).min(px(420.)))
                     .max_h((viewport.height - px(24.)).max(px(0.)))
             })
-            .when(matches!(page, Page::AppUpdate | Page::AddDevice), |panel| {
-                panel.flex().flex_col().overflow_hidden().shadow_lg()
-            })
+            .when(
+                matches!(page, Page::AppUpdate | Page::AddDevice | Page::RenameDevice),
+                |panel| panel.flex().flex_col().overflow_hidden().shadow_lg(),
+            )
             .when(page == Page::About, |panel| {
                 panel.w((viewport.width - px(24.)).max(px(0.)).min(px(340.)))
             })
@@ -434,6 +470,8 @@ impl HerdrWindow {
             panel = panel.child(self.render_devices(cx));
         } else if page == Page::Sessions {
             panel = panel.child(self.render_sessions(cx));
+        } else if let Page::Usage(provider) = page {
+            panel = panel.child(self.render_usage_panel(provider, cx));
         } else if page == Page::AddDevice {
             panel = panel.child(self.render_add_device(cx));
         } else if page == Page::GitHub {
@@ -513,7 +551,7 @@ impl HerdrWindow {
                         })),
                 );
             }
-            if self.menu.github.connected() {
+            if self.pr_profile().is_some() {
                 panel = panel.child(self.render_workspace_pr(
                     (px(340.).min((viewport.width - px(24.)).max(px(0.))) - px(30.)).max(px(0.)),
                     cx,
@@ -525,6 +563,8 @@ impl HerdrWindow {
             panel = panel.child(self.render_git_menu(cx));
         } else if page == Page::GitCommit {
             panel = panel.child(self.render_git_commit(cx));
+        } else if matches!(page, Page::Host | Page::RenameDevice | Page::RemoveDevice) {
+            panel = panel.child(self.render_host_menu(cx));
         } else if matches!(page, Page::Tab | Page::RenameTab) {
             panel = panel.child(self.render_tab_menu(cx));
         } else if matches!(page, Page::Pane | Page::RenamePane) {
@@ -626,7 +666,10 @@ impl HerdrWindow {
             .absolute()
             .inset_0()
             .when(
-                !matches!(page, Page::Menu | Page::Devices | Page::Sessions) && !pointer_anchored,
+                !matches!(
+                    page,
+                    Page::Menu | Page::Devices | Page::Sessions | Page::Usage(_)
+                ) && !pointer_anchored,
                 |overlay| {
                     overlay
                         .flex()
@@ -703,7 +746,20 @@ impl HerdrWindow {
                 {
                     return;
                 }
-                if let Some(input) = this.menu.input.as_mut().filter(|_| !listing) {
+                // The name field edits itself; only Escape and Enter are left
+                // for the dialog, and neither may reach the branch draft.
+                let naming = this.worktree_name_focused(window, cx);
+                if naming
+                    && (this
+                        .menu
+                        .worktree
+                        .as_ref()
+                        .is_some_and(|source| source.name.read(cx).is_composing())
+                        || !matches!(event.keystroke.key.as_str(), "escape" | "enter"))
+                {
+                    return;
+                }
+                if let Some(input) = this.menu.input.as_mut().filter(|_| !listing && !naming) {
                     if input.key(&event.keystroke, cx) {
                         cx.stop_propagation();
                         window.prevent_default();
@@ -721,12 +777,26 @@ impl HerdrWindow {
                     this.git_key(event, window, cx);
                     return;
                 }
+                if matches!(
+                    this.menu.page,
+                    Some(Page::Host | Page::RenameDevice | Page::RemoveDevice)
+                ) {
+                    this.host_menu_key(event, window, cx);
+                    return;
+                }
                 if matches!(this.menu.page, Some(Page::Tab | Page::RenameTab)) {
                     this.tab_menu_key(event, window, cx);
                     return;
                 }
                 if matches!(this.menu.page, Some(Page::Pane | Page::RenamePane)) {
                     this.pane_menu_key(event, window, cx);
+                    return;
+                }
+                if let Some(Page::Usage(provider)) = this.menu.page
+                    && this.usage_key(provider, event, cx)
+                {
+                    cx.stop_propagation();
+                    window.prevent_default();
                     return;
                 }
                 if matches!(this.menu.page, Some(Page::Devices | Page::AddDevice)) {

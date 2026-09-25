@@ -49,7 +49,7 @@ fn bounds(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> 
 }
 
 fn draw(cx: &mut VisualTestContext) {
-    cx.update(|window, cx| full_draw(window, cx).clear());
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
 }
 
 fn click(cx: &mut VisualTestContext, selector: &'static str) {
@@ -101,7 +101,7 @@ fn the_footer_icon_opens_the_list_between_the_picker_and_the_settings(cx: &mut T
     // A narrow sidebar still fits all three controls.
     cx.update(|window, cx| {
         view.update(cx, |view, _| view.sidebar_width = Some(140.));
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     let footer = bounds(cx, "device-footer");
     for selector in ["device-picker", "device-sessions", "device-settings"] {
@@ -113,7 +113,7 @@ fn the_footer_icon_opens_the_list_between_the_picker_and_the_settings(cx: &mut T
     // The icon opens the session list, anchored above the control that asked.
     cx.update(|window, cx| {
         view.update(cx, |view, _| view.sidebar_width = None);
-        full_draw(window, cx).clear();
+        full_draw(window, cx).clear(cx);
     });
     click(cx, "device-sessions");
     draw(cx);
@@ -143,7 +143,7 @@ fn the_configured_shortcut_opens_the_list_where_the_button_sits(cx: &mut TestApp
     cx.run_until_parked();
     // A keystroke reaches a binding through the focused element, as it does in
     // the running app, where the terminal holds focus from the first frame.
-    cx.update(|window, cx| view.read(cx).focus.focus(window));
+    cx.update(|window, cx| view.read(cx).focus.clone().focus(window, cx));
     draw(cx);
     cx.simulate_keystrokes("cmd-shift-s");
     draw(cx);

@@ -30,6 +30,7 @@ pub use herdr_protocol as protocol;
 
 pub use catalog::{
     SavedHost, load_saved_host_selection, load_saved_hosts, store_saved_host_selection,
+    valid_profile_id,
 };
 pub use clipboard::{ClipboardImageCancellation, ClipboardImageUpload};
 pub use connect::{connect, connect_with_connector, connect_with_surface_active};
@@ -44,5 +45,8 @@ pub use options::ConnectOptions;
 pub use sessions::{
     LocalSession, RemoteSession, SessionState, list_local_sessions, list_remote_sessions,
 };
+#[cfg(unix)]
+pub use ssh::script_command;
+pub use ssh::{Destination, HostProbe, probe_host, remote_origin_url, resolve_destination};
 pub use transport::Stream;
 pub use upload::{remove_uploaded_files, upload_files};

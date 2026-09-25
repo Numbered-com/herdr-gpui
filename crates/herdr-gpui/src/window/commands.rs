@@ -4,7 +4,8 @@
 
 use super::HerdrWindow;
 use crate::{
-    config::{FONT_SIZE_RANGE, FONT_SIZE_STEP},
+    app::InitialAppearance,
+    config::{Config, FONT_SIZE_RANGE, FONT_SIZE_STEP, LayoutMode},
     controls::{self, Command},
     log_window,
     navigation::{NavigationTarget, OwnedNavigationTarget},
@@ -14,6 +15,40 @@ use gpui::{Context, Window};
 use std::time::Duration;
 
 impl HerdrWindow {
+    /// Switches the sidebar layout here at once, then keeps it: the choice is
+    /// saved to the local overrides off the UI thread, and the config watcher
+    /// brings every other window along.
+    pub(crate) fn set_layout(&mut self, mode: LayoutMode, cx: &mut Context<Self>) {
+        self.set_layout_with(mode, Config::save_layout, cx);
+    }
+
+    /// `save` persists the choice; tests pass one that leaves the real
+    /// config alone.
+    pub(crate) fn set_layout_with(
+        &mut self,
+        mode: LayoutMode,
+        save: impl FnOnce(LayoutMode) -> crate::Result<()> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if self.config.layout.mode == mode {
+            return;
+        }
+        self.config.layout.mode = mode;
+        // The menu reads its checkmark from the latest config.
+        if cx.has_global::<InitialAppearance>() {
+            cx.global_mut::<InitialAppearance>().config.layout.mode = mode;
+        }
+        crate::menus::install(cx);
+        cx.notify();
+        let save = cx.background_executor().spawn(async move { save(mode) });
+        cx.spawn(async move |_, _| {
+            if let Err(error) = save.await {
+                tracing::warn!(%error, "Could not save the sidebar layout");
+            }
+        })
+        .detach();
+    }
+
     pub(crate) fn navigate(
         &mut self,
         target: NavigationTarget<&str>,
@@ -249,7 +284,7 @@ impl HerdrWindow {
             });
             self.marked.clear();
         }
-        window.focus(&self.focus);
+        window.focus(&self.focus, cx);
         cx.notify();
     }
 }

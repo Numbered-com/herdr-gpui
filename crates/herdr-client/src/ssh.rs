@@ -37,72 +37,287 @@ pub(super) fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+// PATH first, excluding mise shims, followed by upstream's known install roots.
+// Keep paths in shell variables: discovered executable names are never eval'd.
+#[cfg(unix)]
+pub(super) const CANDIDATES: &str = r#"candidate=$(command -v herdr 2>/dev/null || :)
+case "$candidate" in /*/mise/shims/herdr) candidate=;; /*) ;; *) candidate=;; esac
+for path in "$candidate" "$HOME/.local/bin/herdr" /opt/homebrew/bin/herdr /usr/local/bin/herdr /home/linuxbrew/.linuxbrew/bin/herdr "$HOME/.nix-profile/bin/herdr" "/etc/profiles/per-user/$USER/bin/herdr" /nix/var/nix/profiles/default/bin/herdr /run/current-system/sw/bin/herdr; do"#;
+
+#[cfg(unix)]
+const PROBE_CANDIDATE: &str = "herdr-probe:candidate";
+#[cfg(unix)]
+const PROBE_DONE: &str = "herdr-probe:done";
+#[cfg(unix)]
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(unix)]
+const PROBE_OUTPUT_LIMIT: u64 = 64 * 1024;
+
 #[cfg(unix)]
 fn bridge_command(session: &str) -> String {
-    // Every candidate is checked with `status client --json` before it runs, so a
-    // stale or capability-less install never wins the probe.
-    shell(&herdr_discovery(&format!(
-        r#"status=$("$path" status client --json </dev/null) || continue
-printf '%s\n' "$status"
-printf '\n%s\n' 'herdr-remote-output-ready:1'
-IFS= read -r choice || exit 1
-case "$choice" in
-    accept) exec "$path" --session {session} remote-client-bridge;;
-    accept-idle) exec "$path" --session {session} remote-client-bridge --idle-timeout-v1;;
-esac"#,
-        session = quote(session)
-    )))
-}
-
-/// The candidates a remote Herdr may be, in probe order, as `/bin/sh` words: the
-/// `command -v` result first, then the install roots a non-interactive SSH `PATH`
-/// rarely carries. Shared with the remote session listing on purpose: two
-/// hand-copied lists drift, and then one API finds a Herdr the other reports as
-/// absent. `$HOME` and `$USER` are deliberately kept as variables, already
-/// double-quoted, so the remote shell expands them; a discovered name is never eval'd.
-#[cfg(unix)]
-pub(super) const HERDR_CANDIDATES: &[&str] = &[
-    "\"$candidate\"",
-    "\"$HOME/.local/bin/herdr\"",
-    "/opt/homebrew/bin/herdr",
-    "/usr/local/bin/herdr",
-    "/home/linuxbrew/.linuxbrew/bin/herdr",
-    "\"$HOME/.nix-profile/bin/herdr\"",
-    "\"/etc/profiles/per-user/$USER/bin/herdr\"",
-    "/nix/var/nix/profiles/default/bin/herdr",
-    "/run/current-system/sw/bin/herdr",
-];
-
-/// A `/bin/sh` loop that binds `$path` to the first Herdr a POSIX host can offer,
-/// walking [`HERDR_CANDIDATES`] in order. The `command -v` result is cleared first
-/// when it is a mise shim, because a shim is not the binary. `script` is the loop
-/// body — shell text that runs with `$path` set, where `continue` moves on to the
-/// next candidate — and needs no indentation of its own. The loop always ends `exit 127`, so every caller reports
-/// a host with no usable Herdr the same way.
-#[cfg(unix)]
-pub(super) fn herdr_discovery(script: &str) -> String {
-    let mut body = String::new();
-    for line in script.trim().lines() {
-        body.push_str("        ");
-        body.push_str(line);
-        body.push('\n');
-    }
-    let candidates = HERDR_CANDIDATES.join(" ");
-    format!(
-        r#"candidate=$(command -v herdr 2>/dev/null || :)
-case "$candidate" in /*/mise/shims/herdr) candidate=;; /*) ;; *) candidate=;; esac
-for path in {candidates}; do
+    let script = format!(
+        r#"{CANDIDATES}
     if [ -n "$path" ] && [ -x "$path" ]; then
-{body}    fi
+        status=$("$path" status client --json </dev/null) || continue
+        printf '%s\n' "$status"
+        printf '\n%s\n' 'herdr-remote-output-ready:1'
+        IFS= read -r choice || exit 1
+        case "$choice" in
+            accept) exec "$path" --session {session} remote-client-bridge;;
+            accept-idle) exec "$path" --session {session} remote-client-bridge --idle-timeout-v1;;
+        esac
+    fi
 done
-exit 127"#
-    )
+exit 127"#,
+        session = quote(session)
+    );
+    format!("/bin/sh -c {}", quote(&script))
 }
 
-/// Wrap a `/bin/sh` script as the single argument the SSH child is handed.
+/// What a remote host offers for a saved SSH device, learned without
+/// installing, upgrading, or starting anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostProbe {
+    /// SSH could not run a command without prompting: unknown host key,
+    /// password or passphrase authentication, or an unreachable host.
+    SshFailed,
+    /// No Herdr executable was found in the known install locations.
+    Missing,
+    /// Herdr is installed, but no copy speaks this client's endpoint protocol.
+    Outdated,
+    /// A compatible Herdr is installed and its server for the session is down.
+    Stopped,
+    /// A compatible Herdr server for the session is running.
+    Running,
+}
+
+/// Every candidate reports its client and server status, one block each, so
+/// the choice between them stays with the same rules the bridge applies.
 #[cfg(unix)]
-pub(super) fn shell(script: &str) -> String {
-    format!("/bin/sh -c {}", quote(script))
+fn probe_command(session: &str) -> String {
+    let script = format!(
+        r#"{CANDIDATES}
+    if [ -n "$path" ] && [ -x "$path" ]; then
+        status=$("$path" status client --json </dev/null) || continue
+        server=$("$path" --session {session} status server --json </dev/null) || server=
+        printf '%s\n%s\n%s\n' '{PROBE_CANDIDATE}' "$status" "$server"
+    fi
+done
+printf '%s\n' '{PROBE_DONE}'"#,
+        session = quote(session)
+    );
+    format!("/bin/sh -c {}", quote(&script))
+}
+
+/// `None` when the script never finished, so partial output is not mistaken
+/// for a host without Herdr.
+#[cfg(unix)]
+fn classify_probe(output: &[u8]) -> Option<HostProbe> {
+    // Each block holds one candidate's client status, then its server status.
+    let mut blocks: Vec<Vec<serde_json::Value>> = Vec::new();
+    for line in output.split(|b| *b == b'\n') {
+        if line == PROBE_DONE.as_bytes() {
+            let Some(statuses) = blocks
+                .iter()
+                .find(|statuses| statuses.iter().any(|s| compatible(s).is_some()))
+            else {
+                return Some(if blocks.is_empty() {
+                    HostProbe::Missing
+                } else {
+                    HostProbe::Outdated
+                });
+            };
+            let running = statuses
+                .iter()
+                .any(|s| s["running"].as_bool() == Some(true));
+            return Some(if running {
+                HostProbe::Running
+            } else {
+                HostProbe::Stopped
+            });
+        }
+        if line == PROBE_CANDIDATE.as_bytes() {
+            blocks.push(Vec::new());
+        } else if let (Some(block), Ok(status)) = (blocks.last_mut(), serde_json::from_slice(line))
+        {
+            block.push(status);
+        }
+    }
+    None
+}
+
+/// Blocks for at most `PROBE_TIMEOUT`: call it from a background thread.
+#[cfg(unix)]
+pub fn probe_host(target: &str, session: &str) -> Result<HostProbe> {
+    validate_target(target)?;
+    session_socket(Path::new(""), session)?;
+    let (status, output) = run_remote(target, &probe_command(session), PROBE_TIMEOUT, || false)?;
+    if status.code() == Some(255) {
+        return Ok(HostProbe::SshFailed);
+    }
+    classify_probe(&output).ok_or(Error::SshClosed)
+}
+
+/// The `remote.origin.url` of a repository on a saved host, read without a
+/// prompt. `git_dir` is the absolute Git directory the daemon reported for the
+/// workspace. `None` when the repository has no origin remote. Blocks for at
+/// most `timeout`: call it from a background thread.
+#[cfg(unix)]
+pub fn remote_origin_url(
+    target: &str,
+    git_dir: &str,
+    timeout: Duration,
+    cancelled: impl Fn() -> bool,
+) -> Result<Option<String>> {
+    validate_target(target)?;
+    if !git_dir.starts_with('/') || git_dir.chars().any(char::is_control) {
+        return Err(Error::InvalidGitDir);
+    }
+    let (status, output) = run_remote(target, &origin_command(git_dir), timeout, cancelled)?;
+    match status.code() {
+        Some(0) => {}
+        // `git config --get` exits 1 when the key is absent.
+        Some(1) => return Ok(None),
+        _ => return Err(Error::RemoteCommand(status)),
+    }
+    let url = String::from_utf8(output).map_err(|_| Error::RemoteOutput)?;
+    let url = url.trim_end_matches(['\r', '\n']);
+    if url.is_empty() || url.len() > 2048 || url.chars().any(char::is_control) {
+        return Err(Error::RemoteOutput);
+    }
+    Ok(Some(url.to_owned()))
+}
+
+#[cfg(unix)]
+fn origin_command(git_dir: &str) -> String {
+    let script = format!(
+        "exec git -c core.fsmonitor=false --git-dir {} config --get remote.origin.url",
+        quote(git_dir)
+    );
+    format!("/bin/sh -c {}", quote(&script))
+}
+
+/// Where an SSH target connects, as the local SSH configuration resolves it.
+/// Different spellings of one host (an alias, `user@address`, `ssh://`, or a
+/// config-supplied user or port) resolve to the same value.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Destination {
+    pub user: String,
+    pub host: String,
+    pub port: u16,
+}
+
+/// Resolve `target` with `ssh -G`, which reads configuration only and never
+/// connects. Blocks briefly: call it from a background thread.
+#[cfg(unix)]
+pub fn resolve_destination(target: &str) -> Result<Destination> {
+    validate_target(target)?;
+    let mut command = Command::new("ssh");
+    command.args(["-G", "--", target]);
+    let (status, output) = run(&mut command, Duration::from_secs(5), || false)?;
+    if !status.success() {
+        return Err(Error::RemoteCommand(status));
+    }
+    parse_destination(&output).ok_or(Error::RemoteOutput)
+}
+
+#[cfg(windows)]
+pub fn resolve_destination(target: &str) -> Result<Destination> {
+    validate_target(target)?;
+    Err(Error::SshUnsupported)
+}
+
+#[cfg(unix)]
+fn parse_destination(output: &[u8]) -> Option<Destination> {
+    let text = std::str::from_utf8(output).ok()?;
+    let value = |key: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(key)?.strip_prefix(' '))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    Some(Destination {
+        user: value("user")?.to_owned(),
+        // Host names are case-insensitive; addresses are unaffected.
+        host: value("hostname")?.to_ascii_lowercase(),
+        port: value("port")?.parse().ok()?,
+    })
+}
+
+/// Runs one noninteractive SSH command, keeping at most `PROBE_OUTPUT_LIMIT`
+/// bytes of stdout and never stderr, which can carry banners or secrets.
+#[cfg(unix)]
+fn run_remote(
+    target: &str,
+    remote_command: &str,
+    timeout: Duration,
+    cancelled: impl Fn() -> bool,
+) -> Result<(std::process::ExitStatus, Vec<u8>)> {
+    run(&mut command(target, remote_command), timeout, cancelled)
+}
+
+/// Runs `command` with a deadline, keeping at most `PROBE_OUTPUT_LIMIT` bytes
+/// of stdout and discarding stderr.
+#[cfg(unix)]
+fn run(
+    command: &mut Command,
+    timeout: Duration,
+    cancelled: impl Fn() -> bool,
+) -> Result<(std::process::ExitStatus, Vec<u8>)> {
+    let mut child = SshChild(
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?,
+    );
+    let stdout = child.0.stdout.take().ok_or(Error::SshClosed)?;
+    // The pipe reaches EOF once the child exits or the guard kills it.
+    let reader = std::thread::Builder::new()
+        .name("herdr-ssh-command".into())
+        .spawn(move || {
+            let mut output = Vec::new();
+            stdout
+                .take(PROBE_OUTPUT_LIMIT + 1)
+                .read_to_end(&mut output)
+                .map(|_| output)
+        })?;
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.0.try_wait()? {
+            break status;
+        }
+        if cancelled() {
+            return Err(Error::SshCancelled);
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::SshTimeout);
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    let output = reader.join().map_err(|_| Error::SshClosed)??;
+    if output.len() as u64 > PROBE_OUTPUT_LIMIT {
+        return Err(Error::SshOutputLimit);
+    }
+    Ok((status, output))
+}
+
+#[cfg(windows)]
+pub fn probe_host(target: &str, session: &str) -> Result<HostProbe> {
+    validate_target(target)?;
+    session_socket(Path::new(""), session)?;
+    Err(Error::SshUnsupported)
+}
+
+#[cfg(windows)]
+pub fn remote_origin_url(
+    target: &str,
+    _git_dir: &str,
+    _timeout: std::time::Duration,
+    _cancelled: impl Fn() -> bool,
+) -> Result<Option<String>> {
+    validate_target(target)?;
+    Err(Error::SshUnsupported)
 }
 
 /// Agent forwarding and connection sharing follow the user's SSH config, as
@@ -144,6 +359,15 @@ pub(super) fn command(target: &str, remote_command: &str) -> Command {
     ]);
     command.arg(remote_command);
     command
+}
+
+/// A one-shot, noninteractive `ssh` child that runs `script` under the remote
+/// `/bin/sh`, whatever the login shell, with the bridge's connection policy.
+/// The caller owns the child: its streams, deadline, and reaping.
+#[cfg(unix)]
+pub fn script_command(target: &str, script: &str) -> Result<Command> {
+    validate_target(target)?;
+    Ok(command(target, &format!("/bin/sh -c {}", quote(script))))
 }
 
 #[cfg(unix)]
@@ -200,27 +424,32 @@ fn compatible_status(output: &[u8]) -> Option<bool> {
     output
         .split(|b| *b == b'\n')
         .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
-        .find_map(|status| {
-            if status["endpoint_protocol_generation"].as_u64() != Some(1) {
-                return None;
-            }
-            let capabilities = status["endpoint_capabilities"].as_array()?;
-            if ![
-                "surface_interest",
-                "presentation_effects_fence",
-                "health_check",
-            ]
-            .iter()
-            .all(|required| capabilities.iter().any(|c| c.as_str() == Some(required)))
-            {
-                return None;
-            }
-            Some(
-                status["remote_bridge_idle_timeout"]
-                    .as_bool()
-                    .unwrap_or(false),
-            )
-        })
+        .find_map(|status| compatible(&status))
+}
+
+/// Whether one `status client --json` object can serve as this client's
+/// bridge, and if so whether it supports the idle timeout.
+#[cfg(unix)]
+fn compatible(status: &serde_json::Value) -> Option<bool> {
+    if status["endpoint_protocol_generation"].as_u64() != Some(1) {
+        return None;
+    }
+    let capabilities = status["endpoint_capabilities"].as_array()?;
+    if ![
+        "surface_interest",
+        "presentation_effects_fence",
+        "health_check",
+    ]
+    .iter()
+    .all(|required| capabilities.iter().any(|c| c.as_str() == Some(required)))
+    {
+        return None;
+    }
+    Some(
+        status["remote_bridge_idle_timeout"]
+            .as_bool()
+            .unwrap_or(false),
+    )
 }
 
 /// Read the bridge's banner until the ready line, returning what preceded it.
@@ -324,6 +553,162 @@ printf '%s\n' "$hello"
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn probe_classifies_only_finished_output() {
+        let client = r#"{"endpoint_protocol_generation":1,"endpoint_capabilities":["surface_interest","presentation_effects_fence","health_check"]}"#;
+        let old = r#"{"endpoint_protocol_generation":0,"endpoint_capabilities":[]}"#;
+        let running = r#"{"running":true,"version":"1"}"#;
+        let stopped = r#"{"running":false}"#;
+        let probe = |blocks: &[(&str, &str)], done: bool| {
+            let mut output = String::from("motd banner\n");
+            for (client, server) in blocks {
+                output += &format!("{PROBE_CANDIDATE}\n{client}\n{server}\n");
+            }
+            if done {
+                output += PROBE_DONE;
+                output += "\n";
+            }
+            classify_probe(output.as_bytes())
+        };
+        assert_eq!(probe(&[], true), Some(HostProbe::Missing));
+        assert_eq!(probe(&[(old, running)], true), Some(HostProbe::Outdated));
+        assert_eq!(probe(&[(client, stopped)], true), Some(HostProbe::Stopped));
+        // A failed server status leaves an empty line, which is not running.
+        assert_eq!(probe(&[(client, "")], true), Some(HostProbe::Stopped));
+        // The first compatible copy decides, as it does for the bridge.
+        assert_eq!(
+            probe(&[(old, running), (client, running)], true),
+            Some(HostProbe::Running)
+        );
+        assert_eq!(probe(&[(client, running)], false), None);
+        // A running old server does not make a compatible copy look running.
+        assert_eq!(
+            probe(&[(old, running), (client, stopped)], true),
+            Some(HostProbe::Stopped)
+        );
+    }
+
+    #[test]
+    fn probe_script_reports_the_session_server_without_starting_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!("herdr-probe-{}-a ' b", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let binary = root.join("herdr");
+        std::fs::write(&binary, r#"#!/bin/sh
+case "$*" in
+    "status client --json") printf '%s\n' '{"endpoint_protocol_generation":1,"endpoint_capabilities":["surface_interest","presentation_effects_fence","health_check"]}';;
+    "--session work's status server --json") [ -e "$HOME/up" ] && printf '%s\n' '{"running":true}' || printf '%s\n' '{"running":false}';;
+    *) exit 1;;
+esac
+"#).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let run = || {
+            let output = Command::new("/bin/sh")
+                .args(["-c", &probe_command("work's")])
+                .env("PATH", &root)
+                .env("HOME", &root)
+                .output()
+                .unwrap();
+            classify_probe(&output.stdout)
+        };
+        assert_eq!(run(), Some(HostProbe::Stopped));
+        std::fs::write(root.join("up"), "").unwrap();
+        assert_eq!(run(), Some(HostProbe::Running));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn origin_command_reads_only_the_named_repository() {
+        let root =
+            std::env::temp_dir().join(format!("herdr-origin-{}-a ' $(b)", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let git = |args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .arg("-C")
+                    .arg(&root)
+                    .args(args)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        };
+        git(&["init", "-q"]);
+        let git_dir = root.join(".git");
+        let run = || {
+            Command::new("/bin/sh")
+                .args(["-c", &origin_command(git_dir.to_str().unwrap())])
+                .output()
+                .unwrap()
+        };
+        // No origin: `git config --get` exits 1, which callers read as none.
+        assert_eq!(run().status.code(), Some(1));
+        git(&["remote", "add", "origin", "git@github.com:owner/repo.git"]);
+        let output = run();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"git@github.com:owner/repo.git\n");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn origin_lookup_rejects_relative_or_control_git_dirs_before_ssh() {
+        for dir in ["relative/.git", "/repo\n/.git", ""] {
+            assert!(matches!(
+                remote_origin_url("host", dir, Duration::from_secs(1), || false),
+                Err(Error::InvalidGitDir)
+            ));
+        }
+        assert!(matches!(
+            remote_origin_url(
+                "-oProxyCommand=x",
+                "/repo/.git",
+                Duration::from_secs(1),
+                || false
+            ),
+            Err(Error::InvalidSshTarget)
+        ));
+    }
+
+    #[test]
+    fn destinations_come_from_the_resolved_config_not_the_spelling() {
+        let parsed =
+            parse_destination(b"user penso\nhostname M5Max.Local\nport 2222\nhostkeyalias none\n")
+                .unwrap();
+        assert_eq!(
+            parsed,
+            Destination {
+                user: "penso".into(),
+                host: "m5max.local".into(),
+                port: 2222
+            }
+        );
+        // `hostkeyalias` must not satisfy the `hostname` key.
+        assert_eq!(parse_destination(b"user a\nhostnamex b\nport 22\n"), None);
+        assert_eq!(parse_destination(b"user a\nhostname b\nport x\n"), None);
+        // Spellings of one host agree through the real `ssh -G`.
+        let a = resolve_destination("penso@example.invalid").unwrap();
+        let b = resolve_destination("ssh://penso@EXAMPLE.invalid:22").unwrap();
+        assert_eq!(a, b);
+        assert!(matches!(
+            resolve_destination("-oProxyCommand=x"),
+            Err(Error::InvalidSshTarget)
+        ));
+    }
+
+    #[test]
+    fn probe_rejects_bad_targets_before_spawning_ssh() {
+        assert!(matches!(
+            probe_host("-oProxyCommand=x", "default"),
+            Err(Error::InvalidSshTarget)
+        ));
+        assert!(matches!(
+            probe_host("host", "../escape"),
+            Err(Error::InvalidSession)
+        ));
+    }
+
+    #[test]
     fn command_is_noninteractive_and_target_is_one_argument() {
         let command = command("user@host;not-a-command", "agents");
         let args: Vec<_> = command.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -351,6 +736,18 @@ printf '%s\n' "$hello"
         ] {
             assert!(validate_target(bad).is_err());
         }
+    }
+    #[test]
+    fn script_runs_under_remote_sh_and_rejects_option_targets() {
+        let command = script_command("user@host", "echo 'hi'").unwrap();
+        let args: Vec<_> = command.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(args[args.len() - 3], "--");
+        assert_eq!(args[args.len() - 2], "user@host");
+        assert_eq!(args[args.len() - 1], "/bin/sh -c 'echo '\\''hi'\\'''");
+        assert!(matches!(
+            script_command("-oProxyCommand=bad", "true"),
+            Err(Error::InvalidSshTarget)
+        ));
     }
     #[test]
     fn marker_consumes_banners_not_protocol_bytes() {

@@ -10,7 +10,7 @@ use crate::{
 #[cfg(unix)]
 use crate::{
     limits::POLL,
-    ssh::{SshChild, command as ssh_command, herdr_discovery, shell},
+    ssh::{CANDIDATES, SshChild, script_command},
 };
 use serde::Deserialize;
 use std::{
@@ -183,10 +183,15 @@ pub fn list_remote_sessions(target: &str) -> Result<Vec<RemoteSession>> {
 /// root lists its sessions too, and a run that worked exits 127.
 #[cfg(unix)]
 fn session_list_script() -> String {
-    shell(&herdr_discovery(
-        r#""$path" session list --json || continue
-exit 0"#,
-    ))
+    format!(
+        r#"{CANDIDATES}
+    if [ -n "$path" ] && [ -x "$path" ]; then
+        "$path" session list --json || continue
+        exit 0
+    fi
+done
+exit 127"#
+    )
 }
 
 /// One command's stdout over SSH: killed/reaped on every exit path by `SshChild`'s
@@ -198,7 +203,7 @@ exit 0"#,
 fn remote_stdout(target: &str, script: &str) -> Result<Vec<u8>> {
     let (mut stream, child_stream) = Stream::pair()?;
     stream.set_read_timeout(Some(POLL))?;
-    let mut command = ssh_command(target, script);
+    let mut command = script_command(target, script)?;
     command
         .stdin(Stdio::null())
         .stdout(Stdio::from(OwnedFd::from(child_stream)))
@@ -667,15 +672,14 @@ mod tests {
         assert!(script.contains("command -v herdr"), "{script}");
         // The candidate that answers ends the probe, with a zero status.
         assert!(script.contains("exit 0"), "{script}");
-        for candidate in crate::ssh::HERDR_CANDIDATES {
-            assert!(script.contains(candidate), "missing {candidate}");
-        }
-        let command = ssh_command("host", &script);
+        assert!(script.starts_with(CANDIDATES), "{script}");
+        let command = script_command("host", &script).unwrap();
         let args: Vec<_> = command
             .get_args()
             .map(|arg| arg.to_str().unwrap())
             .collect();
-        assert_eq!(args.last(), Some(&script.as_str()));
+        let wrapped = format!("/bin/sh -c {}", crate::ssh::quote(&script));
+        assert_eq!(args.last(), Some(&wrapped.as_str()));
         assert!(args.contains(&"BatchMode=yes"));
         // A malformed target is rejected before anything is built or spawned.
         assert!(matches!(

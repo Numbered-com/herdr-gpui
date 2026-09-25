@@ -17,6 +17,8 @@ mod render;
 mod selection;
 mod toasts;
 mod transfers;
+#[cfg(test)]
+pub(crate) use transfers::tests::Peer as MockPeer;
 
 #[cfg(test)]
 mod font_size_tests;
@@ -109,6 +111,7 @@ pub(crate) struct HerdrWindow {
     /// A `worktree.remove` queued after its dialog closed.
     pub(crate) removal: Option<menu::Removal>,
     pub(crate) git: git::Git,
+    pub(crate) usage: crate::usage::Usage,
     pub(crate) install_warning_shown: bool,
     pub(crate) collapsed_repos: std::collections::HashSet<String>,
     pub(crate) sidebar_visible: bool,
@@ -116,6 +119,8 @@ pub(crate) struct HerdrWindow {
     pub(crate) wheel: WheelAccumulator,
     pub(crate) sidebar_width: Option<f32>,
     pub(crate) sidebar_drag: Option<sidebar::SidebarDrag>,
+    /// A press on a workspace row that may lift it for reordering.
+    pub(crate) workspace_drag: Option<sidebar::WorkspaceDrag>,
     pub(crate) sidebar_split: Option<f32>,
     pub(crate) sidebar_split_modified: bool,
     pub(crate) sidebar_preferences: Option<preferences::Preferences>,
@@ -218,6 +223,7 @@ impl HerdrWindow {
         self.cancel_stale_image();
         self.poll_file_transfer(cx);
         self.update_workspace_dialog(window, cx);
+        self.poll_device_setup(window, cx);
         self.poll_worktree_source(cx);
         self.poll_hover_menu(std::time::Instant::now(), window, cx);
         if self.tick_flash(std::time::Instant::now()) {
@@ -241,6 +247,9 @@ impl HerdrWindow {
         if self.update_git() {
             cx.notify();
         }
+        if self.update_usage() {
+            cx.notify();
+        }
         if self.live.missing_installation && !self.install_warning_shown {
             self.install_warning_shown = true;
             self.show_install_modal(window, cx);
@@ -248,6 +257,25 @@ impl HerdrWindow {
         self.resize();
         self.report_focus();
         self.sync_window_title(window);
+    }
+
+    /// Plan usage follows the selected host: a remote host reports its own
+    /// agents' sign-ins, never this machine's.
+    fn update_usage(&mut self) -> bool {
+        let host = self
+            .config
+            .usage
+            .show
+            .then(|| self.endpoints.get(self.selected_endpoint))
+            .flatten()
+            .map(|endpoint| crate::usage::Host::from(&endpoint.connection.target));
+        self.usage.poll(
+            host,
+            &self.config.usage,
+            self.config_load_revision,
+            self.active,
+            std::time::Instant::now(),
+        )
     }
 
     pub(crate) fn new(
@@ -263,7 +291,7 @@ impl HerdrWindow {
             target
         };
         let focus = cx.focus_handle();
-        window.focus(&focus);
+        window.focus(&focus, cx);
         let weak = cx.weak_entity();
         let sidebar_view = cx.new(|_| sidebar::SidebarView::new(weak));
         let timer = cx.background_executor().clone();
@@ -343,6 +371,7 @@ impl HerdrWindow {
             menu: menu::MenuState::new(cx),
             removal: None,
             git: git::Git::default(),
+            usage: Default::default(),
             install_warning_shown: false,
             collapsed_repos: Default::default(),
             sidebar_visible: true,
@@ -350,6 +379,7 @@ impl HerdrWindow {
             wheel: WheelAccumulator::default(),
             sidebar_width: None,
             sidebar_drag: None,
+            workspace_drag: None,
             sidebar_split: None,
             sidebar_split_modified: false,
             sidebar_preferences: None,

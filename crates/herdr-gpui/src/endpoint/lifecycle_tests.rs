@@ -341,6 +341,7 @@ fn text_paste_survives_a_settled_navigation(cx: &mut gpui::TestAppContext) {
     let paste = gpui::KeyDownEvent {
         keystroke: gpui::Keystroke::parse("cmd-v").unwrap(),
         is_held: false,
+        prefer_character_input: false,
     };
     let settled = |view: &HerdrWindow| crate::state::SurfaceActivation {
         request: "activate-1".into(),
@@ -411,6 +412,7 @@ fn connected_image_paste_captures_pane_before_immediate_text_and_enter(
     let enter = gpui::KeyDownEvent {
         keystroke: gpui::Keystroke::parse("enter").unwrap(),
         is_held: false,
+        prefer_character_input: false,
     };
     cx.update(|window, cx| {
         view.update(cx, |view, cx| {
@@ -801,6 +803,7 @@ fn connected_image_paste_key_down_ctrl_v_and_cmd_v(cx: &mut gpui::TestAppContext
                 let event = gpui::KeyDownEvent {
                     keystroke: gpui::Keystroke::parse(key).unwrap(),
                     is_held: false,
+                    prefer_character_input: false,
                 };
                 cx.update(|window, cx| {
                     view.update(cx, |view, cx| {
@@ -2089,7 +2092,7 @@ fn toast_navigation_queues_typed_targets_and_fences_input(cx: &mut gpui::TestApp
                 view.selected_endpoint = 1;
                 view.options = ConnectOptions::default();
                 view.reset_selected();
-                window.focus(&view.focus);
+                window.focus(&view.focus, cx);
                 view.marked = "composition".into();
                 assert!(view.input_ready());
                 view.tick_toasts(false, Instant::now());
@@ -2214,15 +2217,15 @@ fn toast_click_uses_origin_and_close_never_navigates(cx: &mut gpui::TestAppConte
     remote.toasts.receive([notice.clone(), notice]);
     cx.simulate_resize(size(px(1000.), px(600.)));
     cx.update(|window, cx| {
-        view.update(cx, |view, _| {
+        view.update(cx, |view, cx| {
             // The same IDs on Local must not win over the notification's origin.
             view.endpoints[0].live.snapshot = remote.live.snapshot.clone();
             view.endpoints[0].detached = true;
             view.endpoints.push(remote);
-            window.focus(&view.focus);
+            window.focus(&view.focus, cx);
             view.marked = "composition".into();
         });
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     let dismiss = cx.debug_bounds("toast-dismiss-ssh:toast-0").unwrap();
     cx.simulate_click(dismiss.center(), Default::default());
@@ -2234,7 +2237,7 @@ fn toast_click_uses_origin_and_close_never_navigates(cx: &mut gpui::TestAppConte
         assert!(view.focus.is_focused(window));
         assert_eq!(view.endpoints[1].toasts.entries.len(), 1);
     });
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     let card = cx.debug_bounds("toast-ssh:toast-1").unwrap();
     cx.simulate_click(card.center(), Default::default());
     view.update(cx, |view, _| {
@@ -2277,7 +2280,7 @@ fn toast_rendered_clicks_reject_replaced_removed_and_disabled_origins(
                 view.endpoints.truncate(1);
                 view.endpoints.push(remote);
             });
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         assert!(cx.debug_bounds("toast-ssh:toast-0").is_some());
         let (generation, inbox) = view.read_with(cx, |view, _| {
@@ -2916,9 +2919,9 @@ fn qa_play_sound_dispatches_without_daemon_or_pane(cx: &mut gpui::TestAppContext
         }
     });
     cx.update(|window, cx| {
-        view.read(cx).focus.focus(window);
-        window.draw(cx).clear();
-        let menus = crate::menus();
+        view.read(cx).focus.clone().focus(window, cx);
+        window.draw(cx).clear(cx);
+        let menus = crate::menus(Default::default());
         let qa = menus
             .iter()
             .find(|menu| menu.name.as_ref() == "QA")
@@ -3164,6 +3167,7 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
                 let key = |key: &str| gpui::KeyDownEvent {
                     keystroke: gpui::Keystroke::parse(key).unwrap(),
                     is_held: false,
+                    prefer_character_input: false,
                 };
                 match command {
                     Command::ClosePane | Command::CloseTab if confirm_close_tab => {
@@ -3575,6 +3579,37 @@ fn split_request(server: &mut Server) -> serde_json::Value {
     let request: serde_json::Value = serde_json::from_str(&request).unwrap();
     assert_eq!(request["method"], "layout.set_split_ratio");
     request
+}
+
+/// Another host changing redraws the window but leaves the selected host's
+/// window state alone: a split request the window is still waiting on must
+/// not vanish because a different endpoint had news, and the selected host's
+/// own news still arrives.
+#[gpui::test]
+fn another_endpoint_changing_keeps_the_selected_window_state(cx: &mut gpui::TestAppContext) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
+    });
+    let view = fixture.update(cx, |fixture, _| fixture.0.clone());
+    let (selected, _server) = connected_endpoint("ssh:selected");
+    let (other, _other_server) = connected_endpoint("ssh:other");
+    cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            prepare_mouse(view, selected);
+            view.endpoints.push(other);
+            view.poll_endpoints(cx);
+            view.live.drag_request = Some("gpui-pending".into());
+
+            view.endpoints[2].connection.inbox.lock().unwrap().dirty = true;
+            view.poll_endpoints(cx);
+            assert_eq!(view.live.drag_request.as_deref(), Some("gpui-pending"));
+
+            view.endpoints[1].connection.inbox.lock().unwrap().error = Some("news".into());
+            view.endpoints[1].connection.inbox.lock().unwrap().dirty = true;
+            view.poll_endpoints(cx);
+            assert_eq!(view.live.error.as_deref(), Some("news"));
+        });
+    });
 }
 
 #[gpui::test]

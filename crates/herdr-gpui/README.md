@@ -1,7 +1,7 @@
 # Herdr Native Shell
 
-A GPUI 0.2.2 client for a Local daemon and saved SSH hosts, with macOS support,
-experimental Linux x86_64/ARM64 builds, and an experimental Windows build with
+A GPUI 0.3.6 (`gpui-pre`) client for a Local daemon and saved SSH hosts, with macOS
+support, experimental Linux x86_64/ARM64 builds, and an experimental Windows build with
 headless CI coverage. See [Windows](#windows) for what is unavailable there.
 It starts an installed local `herdr server` when absent; explicit socket and
 development targets remain attach-only. It does not link or install Herdr, stop
@@ -134,14 +134,49 @@ device still offers the session it was saved with. Choosing a session attaches
 this window to it on that device.
 
 **Add Device…** accepts an SSH target, label, and optional remote session (default:
-`default`). **Add device** runs the installed `herdr machine add` in macOS
-Terminal or an available Linux terminal. Herdr handles SSH prompts, approval to
+`default`). Herdr's `machine add` saves a new profile every time and takes no
+lock, so the dialog keeps a host from being saved twice itself. A host counts as
+already saved when a profile with the same session reaches the same user, host
+name, and port as `ssh -G` resolves them, so an SSH alias, `user@address`, and
+`ssh://` spellings of one machine all match. The host is claimed for this app
+before anything else, so a second add from any window is refused while the
+first runs. The catalog file is read again right before `machine add` runs and
+right after: if another client saved the same host in between, the profile added
+second is removed, so exactly one remains. A terminal setup keeps its claim for
+15 minutes, because the GUI cannot see when its `machine add` finishes; another
+client adding the host during that window can still create a duplicate.
+
+Right-click a saved SSH device's header in the Spaces list to **Rename** it or
+choose **Remove device…** to forget it. Renaming runs `herdr machine rename`;
+an empty name falls back to the SSH target, as when adding. Removal runs the installed `herdr machine remove`, which
+edits only the local catalog: the host's own Herdr keeps running. When the
+device has its own GitHub sign-in, the confirmation also offers to delete it,
+since its account panel goes away with the device. Local has no such menu.
+
+The label is optional: an empty one names the device after its SSH target as
+typed, such as `user@host` or an address. Once the device is saved, the dialog
+closes by itself.
+
+**Add device** first checks the host over non-interactive SSH, using
+the same executable search and compatibility rules as the connection bridge, and
+never installs or starts anything while checking:
+
+- Herdr running, or installed but stopped: the installed `herdr machine add`
+  runs without a terminal and saves the device. It starts a stopped server
+  itself. Any approval it would need fails instead of waiting for input.
+- Herdr missing: the dialog asks "Herdr was not detected on the host. Should we
+  install it?" An outdated Herdr asks to update it instead.
+- SSH needs a prompt (unknown host key, password, passphrase), the check failed,
+  or saving without a terminal failed: the dialog offers to continue in a
+  terminal.
+
+Accepting creates a new workspace on this device's Herdr and types
+`herdr machine add` into its shell. Herdr handles SSH prompts, approval to
 install/update remote software, server startup, and saving the machine only after
-successful setup. Continue any prompts in that terminal; opening it is not proof
-that setup succeeded. The saved device appears automatically on the next catalog
-refresh. Closing the GUI's dialog does not cancel setup in the external terminal.
-No credentials are collected by the GUI. Explicit-socket and development-catalog
-windows do not offer setup, and saved SSH devices remain unsupported on Windows.
+successful setup; complete any prompts in that workspace. The saved device
+appears automatically on the next catalog refresh. No credentials are collected
+by the GUI. Explicit-socket and development-catalog windows do not offer setup,
+and saved SSH devices remain unsupported on Windows.
 
 Switching revokes the old host's focus before releasing its surface, then resizes
 and activates the selected host. Input waits for the activation acknowledgement
@@ -223,14 +258,16 @@ already waiting in a connection inbox from the disabled period are discarded too
 Failed reloads preserve current settings. QA
 previews remain available regardless of delivery settings.
 
-Choose sidebar density with a top-level setting in `config-gpui.local.toml`
-(before any table headers):
+Choose the sidebar layout from **View > Layout**, which lists every layout,
+checks the one in use, switches at once, and saves the choice to
+`config-gpui.local.toml`. The same setting can be written by hand as a
+top-level line there (before any table headers):
 
 ```toml
 layout = "compact"
 ```
 
-Three densities are available:
+Three densities of Herdr's own rows are available:
 
 - `normal` (managed default): TUI-like spacing, with branch lines beneath root workspaces,
   single-line worktree children, and two-line agents. Modest horizontal and heading
@@ -245,15 +282,36 @@ and title-case section headings. Rounded rows are a little taller, and worktree
 children keep their indent without tree guides, which would break across the
 gaps between rows.
 
+Normal and Compact show PR numbers without change counts. Status indicators and
+agent-name lines remain visible in every density, and flat ones keep tree guides;
+font sizes and terminal spacing are unchanged. Saved edits apply automatically.
+
+Three more layouts draw rows with a design of their own, each with fixed
+spacing:
+
+- `superset`: one line per row. An icon slot carries the pull request's state
+  or the repository owner, with the activity status as a dot on its corner; the
+  PR's change counts sit on the right, and the focused row is filled with a
+  stripe down its leading edge. Agents show where they run after their name.
+- `orca`: inset cards with a status column, the name and a `primary` mark on a
+  repository's own checkout, then a meta line with the host, the branch when it
+  differs from the name, and the pull request. Agents are single compact lines.
+- `minimal`: one line per row with only the status dot and the name, for narrow
+  sidebars or long lists.
+
 New installs start with `comfortable-rounded`: the first launch writes it into
 the new `config-gpui.local.toml`. Existing override files and migrated personal
 configs are left alone, so current users keep the managed `normal` default.
 Remove that line to follow the managed default.
 
-Normal and Compact show PR numbers without change counts. Status indicators and
-agent-name lines remain visible in every mode, and flat modes keep tree guides;
-font sizes and terminal spacing are unchanged. Saved edits apply automatically;
-there is no UI toggle yet.
+In code, each layout maps to a `RowLayout` in `src/sidebar/layouts/` and the
+spacing around it. Render hands the layout typed row data and a shared
+per-frame `RowContext`, and marks each row with `Cell::selected`,
+`Cell::highlighted`, and `Cell::lift`, which says which row a workspace drag
+carries so each layout draws its own lifted card. Layouts are assembled from
+the shared pieces in `layouts/parts.rs`: a `Line` gives fixed pieces (icons,
+status, fold) their size, lets labels shrink to a share of the row, and hands
+the rest to the name, so the whole `minimal` layout is under a hundred lines.
 
 Agent names have small theme-tinted icons for OpenCode, Claude Code, Codex
 (OpenAI), Gemini, Cursor, and GitHub Copilot, selected from the daemon's agent identity. Other
@@ -423,10 +481,11 @@ Build identity and icon selection are described in the
 
 The reference is Zed's `crates/platform_title_bar/src/platform_title_bar.rs` and
 window options in `crates/zed/src/zed.rs`, not a build dependency. Double-click calls
-`Window::titlebar_double_click()` to honor the OS preference. Unlike newer Zed,
-registry GPUI 0.2.2 has no macOS `start_window_move` implementation and ignores
-`WindowControlArea::Drag`. We leave `is_movable` unchanged and rely on native AppKit
-dragging, rather than adding ineffective custom drag handlers or platform patches.
+`Window::titlebar_double_click()` to honor the OS preference. We leave `is_movable`
+unchanged and rely on native AppKit dragging, with no custom drag handlers or platform
+patches. That choice predates GPUI 0.3.6: 0.2.2 had no macOS `start_window_move`
+implementation and ignored `WindowControlArea::Drag`, while 0.3.6 implements
+`start_window_move`.
 
 Headless tests check the actual root header/center/account-slot bounds at wide,
 minimum, and narrow sizes, including mock fullscreen entry/exit, and that the
@@ -748,8 +807,8 @@ Windows setup) nothing is saved and the window says so.
   is the last selectable menu action: click it or use arrows and Enter to open the
    validated URL. Cache-only menu opening shows prefetched results immediately,
    or loading for an initial miss; no separate Open/Refresh controls or O/R shortcuts.
-   One background Git/native HTTPS GraphQL worker refreshes eligible Local workspace
-   metadata every 90 seconds, with a 128-entry LRU cache, 128 queued jobs, and
+   One background Git/native HTTPS GraphQL worker refreshes the selected device's
+   eligible workspace metadata every 90 seconds, with a 128-entry LRU cache, 128 queued jobs, and
    alternating open/focused priority and round-robin scheduling. Failed refreshes
    retain successful data. Ordinary failures back off five minutes; auth/rate-limit
    errors pause the account for an hour by default, honoring numeric retry/reset
@@ -760,9 +819,27 @@ Windows setup) nothing is saved and the window says so.
   On macOS, all socket modes (including explicit/inherited sockets) require a
   same-user kernel peer at the standard configured session socket, with owned,
   non-group/world-writable socket and parent. Executable upgrades/removal do not
-  invalidate this local endpoint trust. SSH and sockets elsewhere remain blocked;
-  a same-user proxy deliberately replacing the trusted socket is not detectable.
-  Reconnect rechecks the endpoint. See
+  invalidate this local endpoint trust. Sockets elsewhere remain blocked; a
+  same-user proxy deliberately replacing the trusted socket is not detectable.
+  Reconnect rechecks the endpoint.
+  On a saved SSH device, the checkout lives on that host, so local Git cannot
+  verify it. The worker instead reads the repository's `remote.origin.url` over
+  the same noninteractive SSH options as the bridge (`BatchMode=yes`, strict host
+  keys, no master connection), keeping stdout bounded and discarding stderr.
+  Each resolved repository is reused for ten minutes, so refreshes do not dial the
+  host each time. The daemon-reported branch is trusted as-is. Sidebar PR badges
+  show only on the selected device's rows, because the cache holds that device's
+  lookups and the same path and branch may exist on another host.
+- Each saved SSH device can have its own GitHub account, for hosts whose
+  repositories another account owns. Select the device, open the GitHub panel,
+  and choose **Use another account** to run the same device sign-in for that
+  device only. It is stored with the main account's mechanism (the app's Keychain
+  service under a per-device account name, or its own private
+  `github-credentials-<device-id>` file) and renewed the same way. Pull requests on
+  that device then use it; a device without one uses the main account. Signing
+  out in that panel removes only the device's credential. `GH_TOKEN` /
+  `GITHUB_TOKEN` apply only to the main account. Removing a device keeps its
+  saved credential until you sign out of it, so re-adding the device finds it. See
   [PR lookup scope and limits](../../README.md) for authentication and remote limits.
    The same worktree-registry path supports both current and older daemons without
     `workspace.get`. No Git or HTTP requests run from menu-open or render paths.
@@ -857,7 +934,9 @@ Windows setup) nothing is saved and the window says so.
   Both icons use the current theme's foreground tint.
 - Cmd-T creates and focuses a tab; Cmd-Shift-N creates and focuses
   a workspace. Cmd-N opens the New worktree dialog for the focused workspace
-  (for a linked worktree, its repository's main checkout). When there is none,
+  (for a linked worktree, its repository's main checkout). The dialog opens on
+  its Name field: left empty, the daemon picks the workspace name; anything
+  typed is sent as the new workspace's label. When there is none,
   because the workspace is not a Git repository, the main checkout is not open,
   nothing is focused, or the window is disconnected, a two-second flash in the
   clipboard toast's position says why.

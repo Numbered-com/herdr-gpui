@@ -46,7 +46,7 @@ pub enum Error {
     #[error("Audio playback cancelled")]
     SoundCancelled,
     #[error(
-        "PR lookup requires your owned local session socket. Select Local using its standard socket; SSH and other socket locations are unsupported."
+        "PR lookup requires your owned local session socket or a saved SSH device. Other socket locations are unsupported."
     )]
     PrUntrustedEndpoint,
     #[error("The selected pane is no longer on screen.")]
@@ -278,6 +278,51 @@ pub enum Error {
         "{0} must be 1..256 ASCII letters, digits, '.', '_' or '-' (public client ID, not a secret)"
     )]
     InvalidClientId(&'static str),
+    #[error("Could not {operation}.")]
+    UsageProcess {
+        operation: &'static str,
+        #[source]
+        source: io::Error,
+    },
+    #[error("Usage check timed out.")]
+    UsageTimeout,
+    #[error("Usage output exceeded the size limit.")]
+    UsageSize,
+    #[error("Usage request failed or timed out.")]
+    UsageNetwork(#[source] ureq::Error),
+    #[error("Could not reach the usage service from this host.")]
+    UsageConnect,
+    #[error(
+        "[usage] names unknown provider {0:?}. See the provider list in config-gpui.example.toml."
+    )]
+    UnknownUsageProvider(String),
+    #[error("[usage.providers.{provider}] has no setting named {setting:?}.")]
+    UnknownUsageSetting { provider: String, setting: String },
+    #[error("No sign-in found on this host. Set it up under [usage.providers] in the config.")]
+    UsageNotSignedIn,
+    #[error("This account has no plan with usage limits to show.")]
+    UsageNoPlan,
+    #[error("Usage request mixes this machine's settings with the remote host's sign-in.")]
+    UsageMixedSecrets,
+    #[error("Usage command failed: {0}.")]
+    UsageCommand(&'static str),
+    #[error("Saved sign-in cannot be sent as a header.")]
+    UsageHeader(#[source] ureq::http::header::InvalidHeaderValue),
+    #[error("Saved sign-in was rejected. Open the agent to sign in again.")]
+    UsageRejected,
+    #[error("Usage is rate limited. Retrying later.")]
+    UsageRateLimited,
+    #[error("Usage service returned HTTP {0}.")]
+    UsageStatus(u16),
+    /// The body may hold account details, so only the parser's category is kept.
+    #[error("Usage response was not the expected JSON.")]
+    UsageJson(serde_json::error::Category),
+    #[error("Could not reach this host over SSH to read usage.")]
+    UsageUnreachable,
+    #[error("curl is not installed on this host, so usage cannot be read.")]
+    UsageMissingCurl,
+    #[error("Remote usage needs SSH, which this platform's client does not support.")]
+    UsageUnsupported,
     #[error("{0}")]
     Update(#[from] UpdateError),
     #[error("{0}")]
@@ -294,10 +339,27 @@ pub enum Error {
     MissingStateRoot,
     #[error("{0}")]
     DeviceSetupInput(&'static str),
-    #[error("Could not open the setup terminal (exit status {0})")]
-    DeviceSetupTerminal(std::process::ExitStatus),
-    #[error("Opening the setup terminal timed out")]
+    #[error("Saving the device failed ({status}){}", if detail.is_empty() { String::new() } else { format!(": {detail}") })]
+    DeviceSetup {
+        status: std::process::ExitStatus,
+        detail: String,
+    },
+    #[error("Saving the device timed out")]
     DeviceSetupTimeout,
+    #[error("This host and session are already saved as \u{201c}{0}\u{201d}.")]
+    DeviceExists(String),
+    #[error("This host is already being added.")]
+    DeviceAdding,
+    #[error("Removing the device failed ({status}){}", if detail.is_empty() { String::new() } else { format!(": {detail}") })]
+    DeviceRemove {
+        status: std::process::ExitStatus,
+        detail: String,
+    },
+    #[error("Renaming the device failed ({status}){}", if detail.is_empty() { String::new() } else { format!(": {detail}") })]
+    DeviceRename {
+        status: std::process::ExitStatus,
+        detail: String,
+    },
     #[error("preferences must be an object")]
     PreferencesNotObject,
     #[error("sidebar_width_px must be finite and positive, or null")]
