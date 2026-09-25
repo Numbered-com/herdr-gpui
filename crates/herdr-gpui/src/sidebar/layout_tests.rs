@@ -3728,14 +3728,14 @@ fn holding_a_workspace_row_lifts_it_and_a_release_picks_the_gap(cx: &mut gpui::T
     view.read_with(cx, |view, _| {
         assert!(view.workspace_drag.as_ref().unwrap().lifted)
     });
-    // Over its own place it would move nothing, so no line shows.
+    // Over its own place it would move nothing, so nothing shifts.
     assert_eq!(target(&view, cx), None);
-    assert!(cx.debug_bounds("workspace-drop-line").is_none());
-
-    // Past the second row's middle, it lands before the third.
     let second = cx
         .debug_bounds("row-herdr-gpui-sidebar-rendering-regression-investigation")
         .unwrap();
+    assert_eq!(second.top(), first.bottom());
+
+    // Past the second row's middle, it lands before the third.
     let below = point(first.center().x, second.bottom() - px(2.));
     cx.simulate_mouse_move(below, MouseButton::Left, Modifiers::default());
     cx.update(|window, cx| full_draw(window, cx).clear());
@@ -3755,16 +3755,36 @@ fn holding_a_workspace_row_lifts_it_and_a_release_picks_the_gap(cx: &mut gpui::T
         cx.debug_bounds("column-herdr").unwrap().left(),
         first_column.left()
     );
-    let line = cx.debug_bounds("workspace-drop-line").unwrap();
-    assert_eq!(line.top(), second.bottom());
+    // The second row closes the lifted one's place, opening the gap it
+    // would land in, and the gaps are still measured where rows rest.
+    let passed = "row-herdr-gpui-sidebar-rendering-regression-investigation";
+    assert_eq!(cx.debug_bounds(passed).unwrap().top(), first.top());
+    cx.simulate_mouse_move(below, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| full_draw(window, cx).clear());
+    assert_eq!(
+        target(&view, cx),
+        Some(serde_json::json!({"workspace_ids": ["w0"], "before_workspace_id": "w2"}))
+    );
+    assert_eq!(cx.debug_bounds(passed).unwrap().top(), first.top());
+    // The card's bottom edge passing the second row's resting middle is
+    // enough, though that row now paints higher.
+    let past = point(below.x, first.center().y + second.size.height / 2. + px(2.));
+    cx.simulate_mouse_move(past, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| full_draw(window, cx).clear());
+    assert_eq!(
+        target(&view, cx),
+        Some(serde_json::json!({"workspace_ids": ["w0"], "before_workspace_id": "w2"}))
+    );
+    cx.simulate_mouse_move(below, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| full_draw(window, cx).clear());
 
     // The release is the drop, not a click on the row under it.
     cx.simulate_mouse_up(below, MouseButton::Left, Modifiers::default());
     cx.update(|window, cx| full_draw(window, cx).clear());
     view.read_with(cx, |view, _| assert!(view.workspace_drag.is_none()));
-    // Debug bounds outlive the frame that painted them, so the settled row is
-    // what shows the lift is over.
+    // Nothing was sent without a daemon, so every row is back in place.
     assert_eq!(cx.debug_bounds("row-herdr").unwrap(), first);
+    assert_eq!(cx.debug_bounds(passed).unwrap(), second);
 
     // A linked worktree moves among its siblings only, and a drag lifts it
     // without waiting. The gap resolves against the lifted frame's layout.

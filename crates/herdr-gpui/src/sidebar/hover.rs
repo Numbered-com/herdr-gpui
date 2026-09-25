@@ -62,7 +62,11 @@ impl HerdrWindow {
             return;
         }
         // A pointer carrying a row is not resting on the rows it passes.
-        if self.workspace_drag.as_ref().is_some_and(|drag| drag.lifted) {
+        if self
+            .workspace_drag
+            .as_ref()
+            .is_some_and(super::WorkspaceDrag::floating)
+        {
             return;
         }
         self.hover = Some(HoverRest {

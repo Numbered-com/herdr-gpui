@@ -8,7 +8,7 @@ use super::{
     agents_sort, label_text,
     layout::{self, SidebarLook},
     line_height,
-    reorder::{self, Edge, Plan},
+    reorder::{self, Plan},
     row::first_text,
     row::{RowIcon, RowKind, RowLift, RowTree, row},
     sidebar_width, sorted_agents, visible_workspace_entries,
@@ -72,6 +72,8 @@ impl HerdrWindow {
         let mut drop_rows = Vec::new();
         let mut drop_requests = Vec::new();
         let mut drop_dragged = 0;
+        let now = std::time::Instant::now();
+        let mut sliding = false;
         for (endpoint_index, endpoint) in self.endpoints.iter().enumerate() {
             if !self.device_visible(&endpoint.id) {
                 continue;
@@ -167,15 +169,30 @@ impl HerdrWindow {
             let drag = self
                 .workspace_drag
                 .as_ref()
-                .filter(|drag| selected && drag.lifted);
+                .filter(|drag| selected && drag.previewing(&snapshot.workspaces));
+            let floating = drag.is_some_and(|drag| drag.floating());
             let plan = drag.and_then(|drag| Plan::new(&snapshot.workspaces, &drag.workspace));
-            let drop_line = plan.as_ref().and_then(|plan| {
+            // Each unit's shift for the drop in preview, from the heights the
+            // last frame laid out: shifting moves rows, never resizes them.
+            let base = space_rows;
+            let shifts = plan.as_ref().map_or_else(Vec::new, |plan| {
                 drop_requests = (0..=plan.len())
                     .map(|slot| plan.request(&snapshot.workspaces, slot))
                     .collect();
                 drop_dragged = plan.dragged();
-                let units: Vec<_> = entries.iter().map(|e| plan.unit_of(e.0)).collect();
-                reorder::indicator(&units, drag?.target.as_ref()?.slot, plan.len())
+                let mut heights = vec![0.; plan.len()];
+                for (position, entry) in entries.iter().enumerate() {
+                    if let (Some(unit), Some(bounds)) = (
+                        plan.unit_of(entry.0),
+                        self.sidebar_scroll[0].bounds_for_item(base + position),
+                    ) {
+                        heights[unit] += f32::from(bounds.size.height);
+                    }
+                }
+                let slot = drag
+                    .and_then(|drag| drag.target.as_ref())
+                    .map_or(plan.dragged(), |target| target.slot);
+                reorder::preview(&heights, plan.dragged(), slot)
             });
             // A child closes the group when no child follows it.
             let closes: Vec<bool> = (0..entries.len())
@@ -192,17 +209,25 @@ impl HerdrWindow {
                     highlighted[0] = Some(space_rows);
                 }
                 let unit = plan.as_ref().and_then(|plan| plan.unit_of(index));
+                // The lifted row and the rows it carries, such as its group's
+                // children, follow the pointer together while it floats.
+                let carried = unit.is_some_and(|unit| unit == drop_dragged) && floating;
+                let shift = match (drag, unit) {
+                    (Some(drag), Some(_)) if carried => {
+                        drag.pin(&workspace.workspace_id, f32::from(drag.offset()), now);
+                        drag.offset()
+                    }
+                    (Some(drag), Some(unit)) => {
+                        let (at, moving) = drag.slide(&workspace.workspace_id, shifts[unit], now);
+                        sliding |= moving;
+                        px(at)
+                    }
+                    _ => px(0.),
+                };
                 if let Some(unit) = unit {
-                    drop_rows.push((unit, space_rows));
+                    drop_rows.push((unit, space_rows, shift));
                 }
                 space_rows += 1;
-                let lifted = drag.filter(|drag| drag.workspace == workspace.workspace_id);
-                // Rows that travel with the lifted one, such as its group's children.
-                let carried = lifted.is_none()
-                    && unit.is_some_and(|unit| plan.as_ref().is_some_and(|p| p.dragged() == unit));
-                let edge = drop_line
-                    .filter(|&(row, _)| row == position)
-                    .map(|(_, edge)| edge);
                 let id = workspace.workspace_id.clone();
                 let press_id = id.clone();
                 let context_id = id.clone();
@@ -266,10 +291,10 @@ impl HerdrWindow {
                             )
                         }),
                     selected && workspace.focused,
-                    match (lifted, drag) {
-                        (Some(_), _) => RowLift::Lifted,
-                        (None, Some(_)) => RowLift::Passed,
-                        (None, None) => RowLift::Resting,
+                    match (carried, floating) {
+                        (true, _) => RowLift::Lifted,
+                        (false, true) => RowLift::Passed,
+                        (false, false) => RowLift::Resting,
                     },
                     tree,
                     reserve_arrow,
@@ -385,15 +410,13 @@ impl HerdrWindow {
                         }),
                     )
                 })
-                .when_some(edge, |row, edge| row.child(drop_line_mark(edge, theme)))
-                .when(carried, |row| row.opacity(0.4));
-                spaces = match lifted {
+                .when(shift != px(0.), |row| row.top(shift));
+                spaces = if carried {
                     // Painted last so it floats over the rows it passes, while
-                    // its own slot keeps the list from closing up under it.
-                    Some(drag) => spaces.child(
-                        deferred(element.top(drag.offset()).cursor_grabbing()).with_priority(1),
-                    ),
-                    None => spaces.child(element),
+                    // its layout slot keeps the others' positions stable.
+                    spaces.child(deferred(element.cursor_grabbing()).with_priority(1))
+                } else {
+                    spaces.child(element)
                 };
             }
             if !self.config.show_agents {
@@ -440,6 +463,9 @@ impl HerdrWindow {
                     })),
                 );
             }
+        }
+        if sliding {
+            window.request_animation_frame();
         }
         // Follow the selection, but only once a frame has measured the viewport:
         // the handle resolves the request against the previous frame's bounds, so
@@ -637,13 +663,13 @@ impl HerdrWindow {
                                     if this.move_workspace_drag(
                                         event.position,
                                         event.pressed_button == Some(MouseButton::Left),
-                                        |position| {
+                                        |lift| {
                                             reorder::resolve(
                                                 &drop_rows,
                                                 &drop_requests,
                                                 drop_dragged,
                                                 &scroll,
-                                                position.y,
+                                                lift,
                                             )
                                         },
                                         cx,
@@ -723,19 +749,4 @@ pub(super) fn header(
                 .debug_selector(|| format!("header-label-{label}"))
                 .child(label_text(&look.header_label(label))),
         )
-}
-
-/// The line that marks where a lifted workspace would land.
-fn drop_line_mark(edge: Edge, theme: &Theme) -> Div {
-    div()
-        .debug_selector(|| "workspace-drop-line".into())
-        .absolute()
-        .left_0()
-        .right_0()
-        .h(px(2.))
-        .map(|line| match edge {
-            Edge::Top => line.top_0(),
-            Edge::Bottom => line.bottom_0(),
-        })
-        .bg(rgb(theme.muted))
 }

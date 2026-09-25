@@ -1,7 +1,9 @@
 //! Reordering workspaces by dragging their rows. Holding a press on a row, or
-//! moving it a few pixels, lifts the row; releasing it over a gap sends
-//! `workspace.move_block`. The daemon owns the order, so the list changes when
-//! the next snapshot arrives, the same for every attached client.
+//! moving it a few pixels, lifts the row; the rows around it shift as if it
+//! had already been dropped under the pointer, so the gap they open is where
+//! it lands. Releasing sends `workspace.move_block`. The daemon owns the order,
+//! so the preview holds until the next snapshot reorders the list, the same
+//! for every attached client.
 //!
 //! A top-level row carries its whole worktree group, collapsed children
 //! included, and lands between other top-level rows. A linked worktree only
@@ -11,7 +13,11 @@
 use crate::HerdrWindow;
 use gpui::{Context, Pixels, Point, Task};
 use herdr_client::{Method, protocol::ClientShellWorkspace};
-use std::time::Duration;
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use super::workspaces::workspace_entries;
 
@@ -19,6 +25,51 @@ use super::workspaces::workspace_entries;
 pub(crate) const LIFT_DELAY: Duration = Duration::from_millis(250);
 /// How far a press may travel before it lifts without waiting.
 const LIFT_DISTANCE: f32 = 4.;
+/// How long a dropped preview waits for the daemon's new order before the
+/// list falls back to the order it last received.
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a row takes to slide to its previewed place. Tests settle at
+/// once: they check where rows go, and a frame clock would only add waits.
+const SLIDE: Duration = if cfg!(test) {
+    Duration::ZERO
+} else {
+    Duration::from_millis(150)
+};
+
+/// A row gliding between two shifts, eased out so it arrives gently.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Slide {
+    from: f32,
+    to: f32,
+    start: Instant,
+}
+
+impl Slide {
+    fn progress(&self, now: Instant, duration: Duration) -> f32 {
+        if duration.is_zero() {
+            return 1.;
+        }
+        (now.saturating_duration_since(self.start).as_secs_f32() / duration.as_secs_f32()).min(1.)
+    }
+
+    fn at(&self, now: Instant, duration: Duration) -> f32 {
+        let eased = 1. - (1. - self.progress(now, duration)).powi(3);
+        self.from + (self.to - self.from) * eased
+    }
+
+    /// Heads for `to` from wherever the row is now, so a gap that moves
+    /// mid-slide turns the row around instead of making it jump.
+    fn toward(self, to: f32, now: Instant, duration: Duration) -> Self {
+        if (self.to - to).abs() <= f32::EPSILON {
+            return self;
+        }
+        Self {
+            from: self.at(now, duration),
+            to,
+            start: now,
+        }
+    }
+}
 
 /// A press on a workspace row that may become a reorder.
 pub(crate) struct WorkspaceDrag {
@@ -29,14 +80,63 @@ pub(crate) struct WorkspaceDrag {
     pub(super) lifted: bool,
     /// The gap under the pointer, `None` over the carried unit's own place.
     pub(super) target: Option<Target>,
-    /// Lifts the row once the press has rested; dropping the drag cancels it.
-    _lift: Task<()>,
+    /// The order the list had when the drag was dropped with a move sent,
+    /// kept so the preview lasts exactly until the daemon's answer.
+    dropped: Option<Vec<String>>,
+    /// Each shifted row's slide, by workspace. Render reads and advances them,
+    /// so they live behind a cell; they end with the drag.
+    slides: RefCell<HashMap<String, Slide>>,
+    /// Lifts the row once the press has rested, then ends a dropped preview
+    /// the daemon never answered. Dropping the drag cancels it.
+    _timer: Task<()>,
 }
 
 impl WorkspaceDrag {
     /// How far the lifted row has followed the pointer.
     pub(super) fn offset(&self) -> Pixels {
         self.pointer.y - self.origin.y
+    }
+
+    /// Where a row paints on its way to shift `to`, and whether it is still
+    /// moving. A row starts from its resting place.
+    pub(super) fn slide(&self, workspace: &str, to: f32, now: Instant) -> (f32, bool) {
+        let mut slides = self.slides.borrow_mut();
+        let slide = slides.entry(workspace.to_owned()).or_insert(Slide {
+            from: 0.,
+            to: 0.,
+            start: now,
+        });
+        *slide = slide.toward(to, now, SLIDE);
+        (slide.at(now, SLIDE), slide.progress(now, SLIDE) < 1.)
+    }
+
+    /// Records a carried row at the pointer, so it slides from there once
+    /// dropped rather than from where it was picked up.
+    pub(super) fn pin(&self, workspace: &str, at: f32, now: Instant) {
+        self.slides.borrow_mut().insert(
+            workspace.to_owned(),
+            Slide {
+                from: at,
+                to: at,
+                start: now,
+            },
+        );
+    }
+
+    /// Whether the lifted row still follows the pointer.
+    pub(super) fn floating(&self) -> bool {
+        self.lifted && self.dropped.is_none()
+    }
+
+    /// Whether the list should show the drop in place: while it floats, and
+    /// after it is dropped until the daemon's order replaces the old one.
+    pub(super) fn previewing(&self, workspaces: &[ClientShellWorkspace]) -> bool {
+        self.lifted
+            && self.dropped.as_ref().is_none_or(|order| {
+                order.iter().map(String::as_str).eq(workspaces
+                    .iter()
+                    .map(|workspace| workspace.workspace_id.as_str()))
+            })
     }
 }
 
@@ -166,39 +266,35 @@ impl Plan {
     }
 }
 
-/// The gap a pointer at `y` points to, given the vertical centers of every
-/// unit except the carried one: before the first unit centered below it.
-pub(super) fn slot_at(
-    centers: impl IntoIterator<Item = (usize, f32)>,
-    y: f32,
-    len: usize,
-) -> usize {
-    centers
-        .into_iter()
-        .find(|&(_, center)| y < center)
-        .map_or(len, |(unit, _)| unit)
-}
-
-/// Where the drop line goes: the top of the first row of unit `slot`, or the
-/// bottom of the last unit's last row. `units` holds each visible row's unit.
-pub(super) fn indicator(units: &[Option<usize>], slot: usize, len: usize) -> Option<(usize, Edge)> {
-    if slot < len {
-        units
-            .iter()
-            .position(|&unit| unit == Some(slot))
-            .map(|row| (row, Edge::Top))
-    } else {
-        units
-            .iter()
-            .rposition(|&unit| unit == Some(len - 1))
-            .map(|row| (row, Edge::Bottom))
+/// The gap the carried card points to, from every unit's resting span and
+/// the card's own. Moving up, the card passes a unit once its top edge is
+/// above that unit's middle; moving down, once its bottom edge is below it.
+/// Units without a span (hidden rows) never block the card.
+pub(super) fn slot_for(spans: &[Option<(f32, f32)>], dragged: usize, card: (f32, f32)) -> usize {
+    let center = |unit: usize| spans[unit].map(|(top, bottom)| (top + bottom) / 2.);
+    if let Some(unit) = (0..dragged).find(|&unit| center(unit).is_some_and(|c| card.0 < c)) {
+        return unit;
     }
+    (dragged + 1..spans.len())
+        .rev()
+        .find(|&unit| center(unit).is_some_and(|c| card.1 > c))
+        .map_or(dragged, |unit| unit + 1)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Edge {
-    Top,
-    Bottom,
+/// How far each unit moves to preview dropping `dragged` into `slot`, given
+/// every unit's height: the units it passes close its place, and it takes the
+/// room they left. A gap that moves nothing moves no row.
+pub(super) fn preview(heights: &[f32], dragged: usize, slot: usize) -> Vec<f32> {
+    let mut shifts = vec![0.; heights.len()];
+    let hole = heights[dragged];
+    if slot > dragged + 1 && slot <= heights.len() {
+        shifts[dragged + 1..slot].fill(-hole);
+        shifts[dragged] = heights[dragged + 1..slot].iter().sum();
+    } else if slot < dragged {
+        shifts[slot..dragged].fill(hole);
+        shifts[dragged] = -heights[slot..dragged].iter().sum::<f32>();
+    }
+    shifts
 }
 
 impl HerdrWindow {
@@ -229,7 +325,9 @@ impl HerdrWindow {
             pointer: position,
             lifted: false,
             target: None,
-            _lift: lift,
+            dropped: None,
+            slides: RefCell::default(),
+            _timer: lift,
         });
     }
 
@@ -244,17 +342,17 @@ impl HerdrWindow {
         }
     }
 
-    /// Follows the pointer. `target` resolves a lifted drag's gap from the
-    /// geometry the sidebar last laid out. Returns whether the move belongs to
+    /// Follows the pointer. `target` resolves a lifted drag's gap from how far
+    /// the card has moved, against the geometry the sidebar last laid out. Returns whether the move belongs to
     /// the drag, so the terminal and hover never see it.
     pub(super) fn move_workspace_drag(
         &mut self,
         position: Point<Pixels>,
         held: bool,
-        target: impl FnOnce(Point<Pixels>) -> Option<Target>,
+        target: impl FnOnce(Pixels) -> Option<Target>,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(drag) = &mut self.workspace_drag else {
+        let Some(drag) = self.workspace_drag.as_mut().filter(|d| d.dropped.is_none()) else {
             return false;
         };
         // A release outside the window never reaches the sidebar.
@@ -272,7 +370,7 @@ impl HerdrWindow {
         let Some(drag) = self.workspace_drag.as_mut().filter(|drag| drag.lifted) else {
             return false;
         };
-        drag.target = target(position);
+        drag.target = target(drag.offset());
         cx.notify();
         true
     }
@@ -280,14 +378,14 @@ impl HerdrWindow {
     /// Ends the drag on release, sending its move if it was lifted over a gap.
     /// Returns whether it had lifted, in which case the release is not a click.
     pub(super) fn release_workspace_drag(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(drag) = self.workspace_drag.take() else {
+        let Some(mut drag) = self.workspace_drag.take() else {
             return false;
         };
-        if !drag.lifted {
+        if !drag.floating() {
             return false;
         }
         cx.notify();
-        let Some(target) = drag.target else {
+        let Some(target) = &drag.target else {
             return true;
         };
         let connection = &self.endpoints[self.selected_endpoint].connection;
@@ -297,19 +395,40 @@ impl HerdrWindow {
         if snapshot.boot_id != drag.boot {
             return true;
         }
-        if let Err(error) = handle.request(
+        match handle.request(
             &drag.boot,
             Method::WorkspaceMoveBlock,
             target.request.params(),
         ) {
-            self.local_error = Some(format!("Workspace move not sent: {error}"));
+            Ok(_) => {
+                drag.dropped = Some(
+                    snapshot
+                        .workspaces
+                        .iter()
+                        .map(|workspace| workspace.workspace_id.clone())
+                        .collect(),
+                );
+                drag._timer = cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(SETTLE_TIMEOUT).await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.workspace_drag = None;
+                        cx.notify();
+                    });
+                });
+                self.workspace_drag = Some(drag);
+            }
+            Err(error) => self.local_error = Some(format!("Workspace move not sent: {error}")),
         }
         true
     }
 
     /// Drops a lifted row where it came from. Returns whether one was lifted.
     pub(crate) fn cancel_workspace_drag(&mut self, cx: &mut Context<Self>) -> bool {
-        if !self.workspace_drag.as_ref().is_some_and(|drag| drag.lifted) {
+        if !self
+            .workspace_drag
+            .as_ref()
+            .is_some_and(WorkspaceDrag::floating)
+        {
             return false;
         }
         self.workspace_drag = None;
@@ -321,28 +440,35 @@ impl HerdrWindow {
 /// Resolves the pointer to a gap, from each unit's rows and the move for every
 /// gap, all prepared by the render the pointer is over.
 pub(super) fn resolve(
-    rows: &[(usize, usize)],
+    rows: &[(usize, usize, Pixels)],
     requests: &[Option<MoveBlock>],
     dragged: usize,
     scroll: &gpui::ScrollHandle,
-    y: Pixels,
+    lift: Pixels,
 ) -> Option<Target> {
     let len = requests.len().checked_sub(1)?;
     let offset = scroll.offset().y;
     let mut spans: Vec<Option<(Pixels, Pixels)>> = vec![None; len];
-    for &(unit, row) in rows {
+    // Rows sit where the preview shifted them; the gaps are measured where
+    // they rest, or the list would chase its own preview.
+    for &(unit, row, shift) in rows {
         let Some(bounds) = scroll.bounds_for_item(row) else {
             continue;
         };
-        let (top, bottom) = (bounds.top() + offset, bounds.bottom() + offset);
+        let (top, bottom) = (
+            bounds.top() + offset - shift,
+            bounds.bottom() + offset - shift,
+        );
         let span = &mut spans[unit];
         *span = Some(span.map_or((top, bottom), |(t, b)| (t.min(top), b.max(bottom))));
     }
-    let centers = spans.iter().enumerate().filter_map(|(unit, span)| {
-        let (top, bottom) = (*span)?;
-        (unit != dragged).then(|| (unit, f32::from(top + bottom) / 2.))
-    });
-    let slot = slot_at(centers, f32::from(y), len);
+    let spans: Vec<_> = spans
+        .iter()
+        .map(|span| span.map(|(top, bottom)| (f32::from(top), f32::from(bottom))))
+        .collect();
+    let (top, bottom) = (*spans.get(dragged)?)?;
+    let lift = f32::from(lift);
+    let slot = slot_for(&spans, dragged, (top + lift, bottom + lift));
     let request = requests.get(slot)?.clone()?;
     Some(Target { slot, request })
 }
@@ -457,20 +583,60 @@ mod tests {
     }
 
     #[test]
-    fn the_pointer_picks_the_gap_before_the_next_center() {
-        let centers = [(0, 10.), (2, 50.), (3, 70.)];
-        assert_eq!(slot_at(centers, 0., 4), 0);
-        assert_eq!(slot_at(centers, 30., 4), 2);
-        assert_eq!(slot_at(centers, 60., 4), 3);
-        assert_eq!(slot_at(centers, 90., 4), 4);
+    fn the_card_passes_a_unit_once_its_edge_crosses_that_unit_s_middle() {
+        // Four 20px units; the card is unit 1, resting at 20..40.
+        let spans = [
+            Some((0., 20.)),
+            Some((20., 40.)),
+            Some((40., 60.)),
+            Some((60., 80.)),
+        ];
+        let at = |lift: f32| slot_for(&spans, 1, (20. + lift, 40. + lift));
+        assert_eq!(at(0.), 1);
+        // Up: the top edge must pass unit 0's middle at 10.
+        assert_eq!(at(-9.), 1);
+        assert_eq!(at(-11.), 0);
+        // Down: the bottom edge must pass unit 2's middle at 50, then 3's at 70.
+        assert_eq!(at(9.), 1);
+        assert_eq!(at(11.), 3);
+        assert_eq!(at(31.), 4);
+        // A hidden unit is skipped rather than blocking.
+        let hidden = [None, Some((20., 40.)), Some((40., 60.))];
+        assert_eq!(slot_for(&hidden, 1, (0., 20.)), 1);
     }
 
     #[test]
-    fn the_drop_line_marks_the_first_or_last_row_of_a_unit() {
-        let rows = [None, Some(0), Some(0), Some(1), Some(1)];
-        assert_eq!(indicator(&rows, 0, 2), Some((1, Edge::Top)));
-        assert_eq!(indicator(&rows, 1, 2), Some((3, Edge::Top)));
-        assert_eq!(indicator(&rows, 2, 2), Some((4, Edge::Bottom)));
-        assert_eq!(indicator(&[None], 0, 2), None);
+    fn a_slide_eases_to_its_target_and_turns_around_from_where_it_is() {
+        let start = Instant::now();
+        let duration = Duration::from_millis(100);
+        let at = |ms| start + Duration::from_millis(ms);
+        let slide = Slide {
+            from: 0.,
+            to: 40.,
+            start,
+        };
+        assert_eq!(slide.at(start, duration), 0.);
+        // Eased out: past half the distance at half the time.
+        assert_eq!(slide.at(at(50), duration), 35.);
+        assert_eq!(slide.at(at(100), duration), 40.);
+        assert_eq!(slide.at(at(500), duration), 40.);
+        // The same target keeps the slide going.
+        assert_eq!(slide.toward(40., at(50), duration), slide);
+        // A new target starts from where the row is.
+        let back = slide.toward(0., at(50), duration);
+        assert_eq!((back.from, back.to, back.start), (35., 0., at(50)));
+        assert_eq!(Slide { start, ..slide }.at(at(50), Duration::ZERO), 40.);
+    }
+
+    #[test]
+    fn the_preview_closes_the_carried_place_and_opens_the_gap() {
+        let heights = [10., 20., 30., 40.];
+        // Over its own place, nothing moves.
+        assert_eq!(preview(&heights, 1, 1), [0.; 4]);
+        assert_eq!(preview(&heights, 1, 2), [0.; 4]);
+        // Down past two units: they rise by its height, it drops by theirs.
+        assert_eq!(preview(&heights, 1, 4), [0., 70., -20., -20.]);
+        // Up past one: it rises by that unit's height, which moves down.
+        assert_eq!(preview(&heights, 1, 0), [20., -10., 0., 0.]);
     }
 }
