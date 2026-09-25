@@ -204,14 +204,14 @@ fn workspace_dialogs_and_prs_are_fenced_by_host_and_generation(cx: &mut gpui::Te
             assert!(view.menu.page.is_none());
             assert!(view.menu.input.is_none());
             view.open_workspace_menu("w3", Default::default(), window, cx);
-            assert!(
-                view.menu
-                    .pr
-                    .message
-                    .as_deref()
-                    .unwrap()
-                    .contains("requires your owned local session socket")
+            // A saved SSH host resolves its repository on that host, so its
+            // lookup is accepted and scoped to it rather than to local Git.
+            assert_eq!(
+                view.pr_origin(),
+                Some(crate::pull_request::Origin::Ssh("unused".into()))
             );
+            assert!(view.menu.pr.message.is_none());
+            assert!(view.menu.pr.loading);
             view.open_workspace_dialog(WorkspaceAction::DeleteWorktree, window, cx);
             assert!(view.select_endpoint(crate::endpoint::LOCAL, cx));
             assert!(view.menu.deletion.is_none());

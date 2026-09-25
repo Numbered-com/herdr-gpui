@@ -10,7 +10,7 @@
 use super::super::{
     cell::RowState,
     glyph_width, label_text,
-    row::{PrBadge, RowLift, removing_indicator},
+    row::{PrBadge, RowLift, removing_dot},
     status_indicator,
 };
 use crate::config::{FontConfig, Theme};
@@ -242,7 +242,7 @@ pub(super) fn icon(path: impl Into<SharedString>, size: f32, color: u32) -> Svg 
 /// Unlike the Herdr row's, it carries no offset: a line centers it.
 pub(super) fn status(status: AgentStatus, removing: bool, theme: &Theme, font: &FontConfig) -> Div {
     if removing {
-        removing_indicator(theme)
+        removing_dot("worktree-removing", theme)
     } else {
         status_indicator(status, font).mt_0()
     }

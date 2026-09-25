@@ -3,7 +3,7 @@
 //! caches only.
 
 use super::{
-    DEVICE_FOOTER_HEIGHT, HOST_ARROW_WIDTH, HOST_GAP, SidebarDrag, agent_name,
+    DEVICE_FOOTER_HEIGHT, HOST_ARROW_WIDTH, HOST_GAP, STATUS_WIDTH, SidebarDrag, agent_name,
     agents::agent_place,
     agents_sort,
     cell::{AgentRow, Cell, Fold, RowContext, RowData, RowState, WorkspaceRow, layout_for},
@@ -11,7 +11,7 @@ use super::{
     layout::{self, SidebarLook},
     line_height,
     reorder::{self, Plan},
-    row::{RowIcon, RowLift, RowTree},
+    row::{RowIcon, RowLift, RowTree, removing_dot},
     sidebar_width, sorted_agents, visible_workspace_entries,
     workspaces::{workspace_badge, workspace_label},
 };
@@ -87,6 +87,14 @@ impl HerdrWindow {
             if multi {
                 let collapse_id = endpoint_id.clone();
                 let select_id = endpoint_id.clone();
+                let menu_id = endpoint_id.clone();
+                let removing = self.menu.removing_devices.contains(&endpoint.id);
+                // The dot takes its room from the label, not from the status.
+                let label_width = if removing {
+                    (host_label_width - STATUS_WIDTH - HOST_GAP).max(0.)
+                } else {
+                    host_label_width
+                };
                 spaces = spaces.child(
                     div()
                         .id(SharedString::from(format!("host-{endpoint_id}")))
@@ -116,6 +124,15 @@ impl HerdrWindow {
                             theme.muted
                         }))
                         .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.open_host_menu(&menu_id, event.position, window, cx);
+                                this.menu.opening_right_click =
+                                    this.menu.page == Some(crate::menu::Page::Host);
+                            }),
+                        )
                         .child(
                             div()
                                 .id(SharedString::from(format!("collapse-host-{endpoint_id}")))
@@ -136,15 +153,18 @@ impl HerdrWindow {
                                     cx.notify();
                                 })),
                         )
+                        .when(removing, |row| {
+                            row.child(removing_dot("host-removing", theme))
+                        })
                         .child(
                             div()
                                 // As with workspace labels, avoid zero-basis text measurement.
-                                .w(px(host_label_width))
+                                .w(px(label_width))
                                 .flex_none()
                                 .overflow_hidden()
                                 .child(
                                     div()
-                                        .w(px(host_label_width))
+                                        .w(px(label_width))
                                         .truncate()
                                         .child(label_text(&endpoint.label)),
                                 ),
@@ -157,7 +177,11 @@ impl HerdrWindow {
                                     .text_right()
                                     .text_size(px(font.size * 0.75))
                                     .text_color(rgb(theme.muted))
-                                    .child(endpoint.status()),
+                                    .child(if removing {
+                                        "removing"
+                                    } else {
+                                        endpoint.status()
+                                    }),
                             )
                         })
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -300,7 +324,13 @@ impl HerdrWindow {
                         },
                         fold,
                         grouped,
-                        badge: workspace_badge(workspace, &self.menu.pr_cache, &self.git, theme),
+                        badge: workspace_badge(
+                            workspace,
+                            (endpoint_index == self.selected_endpoint)
+                                .then_some(&self.menu.pr_cache),
+                            &self.git,
+                            theme,
+                        ),
                         removing: selected
                             && self.live.status.is_connected()
                             && self.removal.as_ref().is_some_and(|removal| {

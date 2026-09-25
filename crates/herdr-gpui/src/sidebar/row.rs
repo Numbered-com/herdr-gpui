@@ -265,6 +265,26 @@ pub(super) fn name_line(
     line
 }
 
+/// The pulsing dot shown while something this row names is being removed,
+/// shared by worktree rows and device headers so both read the same way.
+pub(super) fn removing_dot(selector: &'static str, theme: &Theme) -> Div {
+    div()
+        .debug_selector(move || selector.into())
+        .size(px(STATUS_WIDTH))
+        .flex_none()
+        .child(
+            div()
+                .size_full()
+                .rounded_full()
+                .bg(rgb(theme.primary()))
+                .with_animation(
+                    SharedString::from(format!("{selector}-pulse")),
+                    Animation::new(std::time::Duration::from_secs(1)).repeat(),
+                    |dot, delta| dot.opacity(0.3 + 0.7 * (delta * std::f32::consts::PI).sin()),
+                ),
+        )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn row(
     // Rows are probed by key, not by label: an agent names its workspace, which
@@ -389,7 +409,7 @@ pub(super) fn row(
             )
         })
         .child(if removing {
-            removing_indicator(theme).mt(px((line_height(font) - STATUS_WIDTH) / 2.))
+            removing_dot("worktree-removing", theme).mt(px((line_height(font) - STATUS_WIDTH) / 2.))
         } else {
             status_indicator(status, font)
         })
@@ -539,25 +559,6 @@ pub(super) fn row(
                     }),
             )
         })
-}
-
-/// The pulsing dot that stands in for a status while a checkout is deleted.
-pub(super) fn removing_indicator(theme: &Theme) -> Div {
-    div()
-        .debug_selector(|| "worktree-removing".into())
-        .size(px(STATUS_WIDTH))
-        .flex_none()
-        .child(
-            div()
-                .size_full()
-                .rounded_full()
-                .bg(rgb(theme.primary()))
-                .with_animation(
-                    "worktree-removing-pulse",
-                    Animation::new(std::time::Duration::from_secs(1)).repeat(),
-                    |dot, delta| dot.opacity(0.3 + 0.7 * (delta * std::f32::consts::PI).sin()),
-                ),
-        )
 }
 
 fn agent_mark(

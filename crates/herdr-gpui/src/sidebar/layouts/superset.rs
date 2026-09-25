@@ -7,7 +7,7 @@ use super::{
         agents::status_style,
         cell::{AgentRow, RowContext, RowLayout, RowState, WorkspaceRow},
         line_height,
-        row::{RowIcon, RowLift, RowTree, removing_indicator},
+        row::{RowIcon, RowLift, RowTree, removing_dot},
     },
     parts::{self, Line, glyph_at, wash},
 };
@@ -161,7 +161,7 @@ impl RowLayout for Superset {
         let slot = if removing {
             slot(
                 label,
-                removing_indicator(theme),
+                removing_dot("worktree-removing", theme),
                 AgentStatus::Unknown,
                 &m,
                 theme,

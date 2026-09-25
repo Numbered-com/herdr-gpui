@@ -46,7 +46,7 @@ pub enum Error {
     #[error("Audio playback cancelled")]
     SoundCancelled,
     #[error(
-        "PR lookup requires your owned local session socket. Select Local using its standard socket; SSH and other socket locations are unsupported."
+        "PR lookup requires your owned local session socket or a saved SSH device. Other socket locations are unsupported."
     )]
     PrUntrustedEndpoint,
     #[error("The selected pane is no longer on screen.")]
@@ -294,10 +294,27 @@ pub enum Error {
     MissingStateRoot,
     #[error("{0}")]
     DeviceSetupInput(&'static str),
-    #[error("Could not open the setup terminal (exit status {0})")]
-    DeviceSetupTerminal(std::process::ExitStatus),
-    #[error("Opening the setup terminal timed out")]
+    #[error("Saving the device failed ({status}){}", if detail.is_empty() { String::new() } else { format!(": {detail}") })]
+    DeviceSetup {
+        status: std::process::ExitStatus,
+        detail: String,
+    },
+    #[error("Saving the device timed out")]
     DeviceSetupTimeout,
+    #[error("This host and session are already saved as \u{201c}{0}\u{201d}.")]
+    DeviceExists(String),
+    #[error("This host is already being added.")]
+    DeviceAdding,
+    #[error("Removing the device failed ({status}){}", if detail.is_empty() { String::new() } else { format!(": {detail}") })]
+    DeviceRemove {
+        status: std::process::ExitStatus,
+        detail: String,
+    },
+    #[error("Renaming the device failed ({status}){}", if detail.is_empty() { String::new() } else { format!(": {detail}") })]
+    DeviceRename {
+        status: std::process::ExitStatus,
+        detail: String,
+    },
     #[error("preferences must be an object")]
     PreferencesNotObject,
     #[error("sidebar_width_px must be finite and positive, or null")]

@@ -135,6 +135,12 @@ pub enum Error {
     SshClosed,
     #[error("SSH startup output exceeds limit")]
     SshOutputLimit,
+    #[error("remote Git directory must be an absolute path")]
+    InvalidGitDir,
+    #[error("remote command failed ({0})")]
+    RemoteCommand(std::process::ExitStatus),
+    #[error("remote command returned unexpected output")]
+    RemoteOutput,
     #[error("SSH file transfer requires a Linux or macOS client")]
     UploadUnsupported,
     #[error("SSH file transfer accepts at most 256 paths")]

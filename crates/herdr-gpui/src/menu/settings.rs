@@ -153,7 +153,14 @@ impl HerdrWindow {
                 // A config another build wrote, such as a setting this version
                 // does not know, must not sign GitHub out: restore the saved
                 // credential under the settings already in effect.
-                if this.avatars.is_some() && this.menu.github.initialize(&this.config) {
+                let mut reloaded = false;
+                if this.avatars.is_some() {
+                    reloaded = this.menu.github.initialize(&this.config);
+                    for auth in this.menu.github_hosts.values_mut() {
+                        reloaded |= auth.initialize(&this.config);
+                    }
+                }
+                if reloaded {
                     this.menu.pr_cache.clear();
                     this.menu.pr.clear();
                     this.menu.pr_connection = None;

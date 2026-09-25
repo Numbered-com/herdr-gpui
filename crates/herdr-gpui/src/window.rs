@@ -17,6 +17,8 @@ mod render;
 mod selection;
 mod toasts;
 mod transfers;
+#[cfg(test)]
+pub(crate) use transfers::tests::Peer as MockPeer;
 
 #[cfg(test)]
 mod font_size_tests;
@@ -214,6 +216,7 @@ impl HerdrWindow {
         self.cancel_stale_image();
         self.poll_file_transfer(cx);
         self.update_workspace_dialog(window, cx);
+        self.poll_device_setup(window, cx);
         self.poll_worktree_source(cx);
         self.poll_hover_menu(std::time::Instant::now(), window, cx);
         if self.tick_flash(std::time::Instant::now()) {
