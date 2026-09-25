@@ -146,6 +146,10 @@ edits only the local catalog: the host's own Herdr keeps running. When the
 device has its own GitHub sign-in, the confirmation also offers to delete it,
 since its account panel goes away with the device. Local has no such menu.
 
+The label is optional: an empty one names the device after its SSH target as
+typed, such as `user@host` or an address. Once the device is saved, the dialog
+closes by itself.
+
 **Add device** first checks the host over non-interactive SSH, using
 the same executable search and compatibility rules as the connection bridge, and
 never installs or starts anything while checking:

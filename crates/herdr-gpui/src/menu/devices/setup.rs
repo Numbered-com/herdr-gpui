@@ -173,6 +173,33 @@ fn ensure_unsaved(
     }
 }
 
+/// Herdr caps device labels at this many bytes.
+const LABEL_LIMIT: usize = 128;
+
+/// The label a device is saved or renamed with. An empty one names the device
+/// after its SSH target as typed, such as `user@host` or an address.
+pub(super) fn device_label(label: &str, target: &str) -> Result<String> {
+    let label = label.trim();
+    let label = if label.is_empty() {
+        let target = target.trim();
+        let target = target.strip_prefix("ssh://").unwrap_or(target);
+        // A long target is shortened on a character boundary to fit.
+        let mut end = target.len().min(LABEL_LIMIT);
+        while !target.is_char_boundary(end) {
+            end -= 1;
+        }
+        &target[..end]
+    } else {
+        label
+    };
+    if label.is_empty() || label.len() > LABEL_LIMIT || label.chars().any(char::is_control) {
+        return Err(Error::DeviceSetupInput(
+            "Device names are at most 128 bytes, without control characters.",
+        ));
+    }
+    Ok(label.to_owned())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Request {
     target: String,
@@ -199,11 +226,7 @@ impl Request {
                 "Enter an SSH target such as user@hostname or an SSH alias.",
             ));
         }
-        if label.is_empty() || label.len() > 128 || label.chars().any(char::is_control) {
-            return Err(Error::DeviceSetupInput(
-                "Enter a device label (at most 128 bytes).",
-            ));
-        }
+        let label = device_label(label, target)?;
         let session = if session.is_empty() {
             "default"
         } else {
@@ -221,7 +244,7 @@ impl Request {
         }
         Ok(Self {
             target: target.into(),
-            label: label.into(),
+            label,
             session: session.into(),
         })
     }
@@ -452,7 +475,8 @@ mod tests {
                 Err(Error::DeviceSetupInput(_))
             ));
         }
-        assert!(Request::new("host", "", "").is_err());
+        // An empty label is not an error: the target names the device.
+        assert_eq!(Request::new("host", "", "")?.label(), "host");
         assert!(Request::new("host", "Label", "../session").is_err());
         assert!(Request::new("host", "Label", ".").is_err());
         assert!(Request::new("host", "Label", "dev.session").is_ok());
@@ -649,6 +673,23 @@ mod tests {
         assert!(matches!(before, Err(Error::DeviceExists(_))));
         assert!(!log.exists());
         std::fs::remove_dir_all(binary.parent().unwrap_or(&binary))?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_label_names_the_device_after_its_target() -> Result<()> {
+        assert_eq!(
+            Request::new("penso@10.0.0.9", "  ", "")?.label(),
+            "penso@10.0.0.9"
+        );
+        assert_eq!(device_label("", "ssh://penso@box:22")?, "penso@box:22");
+        assert_eq!(device_label(" Work box ", "box")?, "Work box");
+        // A long target is cut to Herdr's limit on a character boundary.
+        let long = format!("u@{}", "é".repeat(100));
+        let label = device_label("", &long)?;
+        assert!(label.len() <= LABEL_LIMIT && long.starts_with(&label));
+        assert!(device_label("bad\u{7}", "box").is_err());
+        assert!(device_label(&"x".repeat(129), "box").is_err());
         Ok(())
     }
 

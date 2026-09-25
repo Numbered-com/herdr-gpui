@@ -32,7 +32,8 @@ enum Step {
     /// Herdr is present, so the CLI saves the device without a terminal. A
     /// stopped server is started by that same command.
     Saving(setup::Request, HostProbe),
-    Saved(setup::Request),
+    /// Saved; the next frame closes the dialog (see `poll_device_setup`).
+    Saved,
     /// Setup needs prompts, so the user decides whether to run it locally.
     Confirm(setup::Request, Offer),
     /// Checking the catalog on disk again before opening the setup workspace.
@@ -424,7 +425,7 @@ impl HerdrWindow {
                 input.update(cx, |input, cx| {
                     input.set_appearance(self.config.ui.clone(), self.theme.clone(), cx);
                     input.set_placeholder(
-                        ["user@hostname or SSH alias", "Device name", "default"][index],
+                        ["user@hostname or SSH alias", "The SSH target", "default"][index],
                         cx,
                     );
                 });
@@ -510,9 +511,13 @@ impl HerdrWindow {
             .min_h_0().overflow_y_scroll().p(px(16.)).flex().flex_col().gap(px(12.))
             .child(div().flex_none().text_color(rgb(theme.muted))
                 .child("Herdr checks the host over SSH and saves the device. If Herdr is missing or SSH needs your input, setup continues in a local workspace."));
-        for (label, field) in ["SSH target", "Label", "Remote session (optional)"]
-            .into_iter()
-            .zip(&setup.fields)
+        for (label, field) in [
+            "SSH target",
+            "Label (optional)",
+            "Remote session (optional)",
+        ]
+        .into_iter()
+        .zip(&setup.fields)
         {
             body = body.child(
                 div()
@@ -543,10 +548,7 @@ impl HerdrWindow {
                 "Herdr is running on {}. Saving the device…",
                 request.target()
             )),
-            Step::Saved(request) => Some(format!(
-                "Saved {}. It appears in the device picker.",
-                request.label()
-            )),
+            Step::Saved => None,
             Step::Confirm(request, offer) => Some(offer.question(request.target())),
             Step::Verifying(request) => {
                 Some(format!("Checking {} is not saved yet…", request.target()))
@@ -603,10 +605,6 @@ impl HerdrWindow {
                     button("device-setup-submit", offer.action().into(), true)
                         .on_click(cx.listener(|this, _, _, cx| this.open_setup_space(cx))),
                 ),
-            Step::Saved(_) => footer.child(
-                button("device-setup-submit", "Done".into(), true)
-                    .on_click(cx.listener(|this, _, window, cx| this.dismiss_menu(window, cx))),
-            ),
             step => {
                 let ready = matches!(step, Step::Form);
                 footer.child(
@@ -771,7 +769,7 @@ impl HerdrWindow {
                     Ok(()) => {
                         // Saved: the catalog now refuses this host by itself.
                         if let Some(form) = &mut this.menu.device_setup {
-                            form.step = Step::Saved(request);
+                            form.step = Step::Saved;
                         }
                         cx.notify();
                         return;
@@ -884,6 +882,17 @@ impl HerdrWindow {
     /// shows it. The command is typed into the pane's shell: the endpoint API
     /// has no method that starts a command in a pane.
     pub(crate) fn poll_device_setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A saved device appears in the sidebar and picker by itself, so the
+        // dialog has nothing left to say. Closing here, where the window is
+        // at hand, returns focus to the terminal.
+        if self
+            .menu
+            .device_setup
+            .as_ref()
+            .is_some_and(|form| matches!(form.step, Step::Saved))
+        {
+            return self.dismiss_menu(window, cx);
+        }
         let Some(Setup {
             step: Step::Opening(_, space),
             ..
@@ -1086,6 +1095,20 @@ mod tests {
 
     fn step(view: &HerdrWindow) -> &Step {
         &view.menu.device_setup.as_ref().unwrap().step
+    }
+
+    #[gpui::test]
+    fn a_saved_device_closes_the_dialog_by_itself(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(fixture_window);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                open_form(view, Step::Saved, cx);
+                view.poll_device_setup(window, cx);
+                assert!(view.menu.page.is_none());
+                assert!(view.menu.device_setup.is_none());
+                assert!(view.focus.is_focused(window));
+            });
+        });
     }
 
     #[gpui::test]
