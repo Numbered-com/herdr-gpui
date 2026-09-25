@@ -35,7 +35,13 @@ impl HerdrWindow {
         let providers: Vec<_> = self
             .usage
             .current()
-            .map(|entry| entry.readings.iter().map(|r| r.provider).collect())
+            .map(|entry| {
+                entry
+                    .tabs(&self.config.usage)
+                    .iter()
+                    .map(|r| r.provider)
+                    .collect()
+            })
             .unwrap_or_default();
         let Some(index) = providers.iter().position(|p| *p == provider) else {
             return false;
@@ -61,8 +67,10 @@ impl HerdrWindow {
         let small = px(font.size * 0.9);
         let now = SystemTime::now();
         let entry = self.usage.current();
-        let readings = entry.map_or(&[][..], |entry| &entry.readings[..]);
-        let reading = readings.iter().find(|r| r.provider == provider);
+        let readings = entry
+            .map(|entry| entry.tabs(&self.config.usage))
+            .unwrap_or_default();
+        let reading = readings.iter().copied().find(|r| r.provider == provider);
         let rule = || div().h(px(1.)).my(px(6.)).bg(rgb(theme.active));
         let mut view = div()
             .id("usage-panel")
@@ -208,14 +216,14 @@ impl HerdrWindow {
                         .px(px(6.))
                         .pb(px(6.))
                         .child(div().h(px(1.)).mb(px(6.)).bg(rgb(theme.active)))
-                        .child(self.usage_tabs(readings, provider, cx)),
+                        .child(self.usage_tabs(&readings, provider, cx)),
                 )
             })
     }
 
     fn usage_tabs(
         &self,
-        readings: &[Reading],
+        readings: &[&Reading],
         selected: Provider,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {

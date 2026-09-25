@@ -86,20 +86,36 @@ impl Entry {
     /// ones closest to a limit first, at most `limit` of them. A provider
     /// that has no report yet, or no windows or balances, waits in the panel.
     pub fn headline(&self, limit: usize) -> Vec<&Reading> {
-        let mut shown: Vec<&Reading> =
-            self.readings
-                .iter()
-                .filter(|reading| {
-                    reading.report.as_ref().is_some_and(|report| {
-                        !report.windows.is_empty() || !report.balances.is_empty()
-                    })
-                })
-                .collect();
+        let mut shown: Vec<&Reading> = self
+            .readings
+            .iter()
+            .filter(|reading| has_numbers(reading))
+            .collect();
         // Stable: equally used providers keep the registry's order.
         shown.sort_by(|a, b| urgency(b).total_cmp(&urgency(a)));
         shown.truncate(limit);
         shown
     }
+}
+
+impl Entry {
+    /// The providers the panel offers as tabs: those with numbers to show,
+    /// and those the config asked for, whose panel then says what to set up.
+    /// A detected sign-in that yields nothing, such as an account without a
+    /// plan, is left out.
+    pub fn tabs(&self, config: &UsageConfig) -> Vec<&Reading> {
+        self.readings
+            .iter()
+            .filter(|reading| has_numbers(reading) || config.shown(reading.provider))
+            .collect()
+    }
+}
+
+fn has_numbers(reading: &Reading) -> bool {
+    reading
+        .report
+        .as_ref()
+        .is_some_and(|report| !report.windows.is_empty() || !report.balances.is_empty())
 }
 
 fn urgency(reading: &Reading) -> f32 {

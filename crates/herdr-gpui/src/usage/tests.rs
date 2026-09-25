@@ -791,3 +791,32 @@ fn the_status_bar_shows_the_two_closest_to_a_limit() {
     // Ties keep the registry order.
     assert_eq!(ids(10), ["claude", "codex", "zed", "copilot"]);
 }
+
+#[test]
+fn panel_tabs_leave_out_sign_ins_with_nothing_to_show() {
+    let with = |id: &str| Reading {
+        provider: provider(id),
+        report: Some(report(provider(id), 5.)),
+        error: None,
+    };
+    let without = |id: &str| Reading {
+        provider: provider(id),
+        report: None,
+        error: Some(Error::UsageNoPlan.to_string()),
+    };
+    let entry = super::Entry {
+        readings: vec![with("codex"), without("gemini"), without("cursor")],
+        ..Default::default()
+    };
+    let tabs = |config: &UsageConfig| {
+        entry
+            .tabs(config)
+            .iter()
+            .map(|reading| reading.provider.id())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(tabs(&UsageConfig::default()), ["codex"]);
+    // Asked for by the config: shown, so its panel can say what to set up.
+    let asked: UsageConfig = toml::from_str("show_providers = [\"cursor\"]").unwrap();
+    assert_eq!(tabs(&asked), ["codex", "cursor"]);
+}
