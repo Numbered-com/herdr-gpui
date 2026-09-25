@@ -701,7 +701,8 @@ fn manual_refresh_is_spaced() {
 #[test]
 fn example_config_documents_every_provider_setting() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/config-gpui.example.toml");
-    let text = std::fs::read_to_string(path).unwrap();
+    // A Windows checkout may carry CRLF line endings.
+    let text = std::fs::read_to_string(path).unwrap().replace("\r\n", "\n");
     let expected = super::settings::example_docs();
     if std::env::var_os("HERDR_BLESS_EXAMPLE").is_some() {
         let updated = match super::settings::docs_in(&text) {
