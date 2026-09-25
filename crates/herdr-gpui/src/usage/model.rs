@@ -1,6 +1,8 @@
-//! Plan usage in the terms the status bar shows: which agent, which limit
-//! window, how much of it is used, and when it resets.
+//! Plan usage in the terms the status bar and its panel show: which agent,
+//! which account, which limit windows, how much of each is used, when each
+//! resets, and whatever else the agent's service reports.
 
+use super::service::Service;
 use crate::icons::AgentIcon;
 use herdr_client::ConnectTarget;
 use std::time::{Duration, SystemTime};
@@ -24,6 +26,8 @@ impl From<&ConnectTarget> for Host {
     }
 }
 
+/// The agents whose usage can be shown. Each has a [`Service`] that knows how
+/// to find its sign-in, ask its service, and read the answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Provider {
     Claude,
@@ -33,26 +37,24 @@ pub(crate) enum Provider {
 impl Provider {
     pub const ALL: [Self; 2] = [Self::Claude, Self::Codex];
 
-    pub fn name(self) -> &'static str {
+    pub fn service(self) -> &'static dyn Service {
         match self {
-            Self::Claude => "Claude",
-            Self::Codex => "Codex",
+            Self::Claude => &super::claude::Claude,
+            Self::Codex => &super::codex::Codex,
         }
+    }
+
+    pub fn name(self) -> &'static str {
+        self.service().name()
     }
 
     /// The marker the remote script prints before this provider's response.
     pub fn key(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-        }
+        self.service().key()
     }
 
     pub fn icon(self) -> AgentIcon {
-        match self {
-            Self::Claude => AgentIcon::Claude,
-            Self::Codex => AgentIcon::Codex,
-        }
+        self.service().icon()
     }
 
     #[cfg(unix)]
@@ -80,20 +82,40 @@ impl Kind {
     }
 }
 
+pub(crate) const SESSION: Duration = Duration::from_secs(5 * 3600);
+pub(crate) const WEEK: Duration = Duration::from_secs(7 * 86_400);
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Window {
     pub kind: Kind,
     /// Percent of the window used, clamped to 0..=100.
     pub used: f32,
     pub resets_at: Option<SystemTime>,
+    /// How long the window lasts, when known, so its pace can be judged.
+    pub length: Option<Duration>,
+}
+
+/// How a window's use compares with an even spend across it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Pace {
+    /// Percent an even spend would have used by now.
+    pub expected: f32,
+    /// When the window runs out at the rate used so far, if before it resets.
+    pub runs_out: Option<Duration>,
 }
 
 impl Window {
-    pub fn new(kind: Kind, used: f64, resets_at: Option<SystemTime>) -> Self {
+    pub fn new(
+        kind: Kind,
+        used: f64,
+        resets_at: Option<SystemTime>,
+        length: Option<Duration>,
+    ) -> Self {
         Self {
             kind,
             used: used.clamp(0., 100.) as f32,
             resets_at,
+            length,
         }
     }
 
@@ -101,30 +123,63 @@ impl Window {
         self.used.round() as u32
     }
 
+    pub fn left(&self) -> u32 {
+        100 - self.percent().min(100)
+    }
+
+    pub fn resets_in(&self, now: SystemTime) -> Option<Duration> {
+        self.resets_at
+            .map(|at| at.duration_since(now).unwrap_or_default())
+    }
+
     /// `3% used 2h 53m`: the time left names a session or weekly window, and
     /// a model window is named instead, as the service does.
     pub fn label(&self, now: SystemTime) -> String {
-        let suffix = match (&self.kind, self.resets_at) {
+        let suffix = match (&self.kind, self.resets_in(now)) {
             (Kind::Model(name), _) => name.clone(),
-            (_, Some(resets_at)) => countdown(resets_at.duration_since(now).unwrap_or_default()),
+            (_, Some(left)) => countdown(left),
             (Kind::Session, None) => "5h".into(),
             (Kind::Weekly, None) => "wk".into(),
         };
         format!("{}% used {suffix}", self.percent())
     }
 
-    /// `Weekly 15% used · resets in 4d 11h`, for the detail tooltip.
-    pub fn detail(&self, now: SystemTime) -> String {
-        let reset = self
-            .resets_at
-            .map(|at| {
-                format!(
-                    " · resets in {}",
-                    countdown(at.duration_since(now).unwrap_or_default())
-                )
+    /// Nothing until a hundredth of the window has passed: an early estimate
+    /// swings too far to be useful.
+    pub fn pace(&self, now: SystemTime) -> Option<Pace> {
+        let length = self.length?;
+        let left = self.resets_at?.duration_since(now).ok()?;
+        let elapsed = length.checked_sub(left)?;
+        if elapsed < length / 100 {
+            return None;
+        }
+        let expected = (elapsed.as_secs_f64() / length.as_secs_f64() * 100.) as f32;
+        let runs_out = (self.used > 0.)
+            .then(|| {
+                let rate = f64::from(self.used) / elapsed.as_secs_f64();
+                Duration::from_secs_f64(f64::from(100. - self.used) / rate)
             })
-            .unwrap_or_default();
-        format!("{} {}% used{reset}", self.kind.title(), self.percent())
+            .filter(|full| *full < left);
+        Some(Pace { expected, runs_out })
+    }
+}
+
+impl Pace {
+    /// `11% in reserve · Lasts until reset`, as CodexBar puts it.
+    pub fn describe(&self, used: f32) -> String {
+        let margin = self.expected - used;
+        let standing = if margin >= 0.5 {
+            format!("{}% in reserve", margin.round())
+        } else if margin <= -0.5 {
+            format!("{}% in deficit", (-margin).round())
+        } else {
+            "On pace".into()
+        };
+        let outlook = self.runs_out.map_or_else(
+            || "Lasts until reset".into(),
+            |left| format!("Runs out in {}", countdown(left)),
+        );
+        format!("{standing} · {outlook}")
     }
 }
 
@@ -148,22 +203,54 @@ impl From<f32> for Severity {
     }
 }
 
+/// Who is signed in, as far as the sign-in and the service say.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Account {
+    pub email: Option<String>,
+    pub plan: Option<String>,
+}
+
+/// Anything else a service reports, in shapes the panel knows how to draw, so
+/// a new provider adds detail without touching the panel.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Section {
+    /// A further limit that is not part of the headline windows.
+    Limit(Window),
+    /// Label and value pairs under a heading.
+    Facts {
+        title: String,
+        facts: Vec<(String, String)>,
+    },
+    /// Shares of one whole, such as which surfaces spent a weekly limit.
+    Shares {
+        title: String,
+        shares: Vec<(String, f32)>,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Report {
     pub provider: Provider,
-    pub plan: Option<String>,
+    pub account: Account,
     /// Session, then weekly, then model windows.
     pub windows: Vec<Window>,
+    pub sections: Vec<Section>,
 }
 
 impl Report {
-    pub fn new(provider: Provider, plan: Option<String>, mut windows: Vec<Window>) -> Self {
+    pub fn new(provider: Provider, account: Account, mut windows: Vec<Window>) -> Self {
         windows.sort_by(|a, b| a.kind.cmp(&b.kind));
         Self {
             provider,
-            plan,
+            account,
             windows,
+            sections: Vec::new(),
         }
+    }
+
+    pub fn with_sections(mut self, sections: impl IntoIterator<Item = Section>) -> Self {
+        self.sections.extend(sections);
+        self
     }
 
     /// The window closest to its limit, which the meter shows.
@@ -181,4 +268,13 @@ pub(crate) fn countdown(left: Duration) -> String {
         (0, _) => format!("{hours}h {minutes}m"),
         _ => format!("{days}d {hours}h"),
     }
+}
+
+/// `pro` to `Pro`, `max` to `Max`: plan identifiers read as names.
+pub(crate) fn title_case(word: &str) -> String {
+    let mut chars = word.trim().chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }

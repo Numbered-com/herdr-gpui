@@ -4,18 +4,23 @@
 //! answer, so switching back shows it at once and a failed refresh keeps the
 //! numbers it had, marked stale, rather than blanking them.
 
+mod claude;
+mod codex;
 mod fetch;
 mod model;
+mod panel;
 mod parse;
 #[cfg(unix)]
 mod remote;
 mod render;
+mod service;
 
 #[cfg(test)]
 mod tests;
 
-pub(crate) use model::Host;
-use model::{Provider, Report};
+use model::Report;
+pub(crate) use model::{Host, Provider};
+pub(crate) use panel::PANEL_WIDTH;
 
 use std::{
     collections::HashMap,

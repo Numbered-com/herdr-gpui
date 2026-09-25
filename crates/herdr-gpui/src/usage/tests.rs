@@ -3,13 +3,12 @@
 #[cfg(unix)]
 use super::remote;
 use super::{
-    Host, Reading, Usage,
-    fetch::{claude_credential, codex_credential},
-    model::{Kind, Provider, Report, Severity, Window, countdown},
+    Host, Reading, Usage, claude, codex,
+    model::{Account, Kind, Provider, Report, Section, Severity, Window, countdown},
     parse::{Raw, report},
+    service::Meta,
 };
 use crate::Error;
-use secrecy::ExposeSecret;
 use std::time::{Duration, Instant, SystemTime};
 
 fn at(seconds: u64) -> SystemTime {
@@ -21,6 +20,7 @@ fn raw(provider: Provider, status: u16, body: &str) -> Raw {
         provider,
         status,
         body: body.into(),
+        meta: Meta::default(),
     }
 }
 
@@ -34,63 +34,154 @@ const CLAUDE: &str = r#"{"five_hour":{"utilization":3.0,"resets_at":"2026-09-25T
  {"kind":"weekly_scoped","group":"weekly","percent":0,"resets_at":"2026-09-29T17:00:00+00:00",
   "scope":{"model":{"id":null,"display_name":"Fable"},"surface":null}},
  {"kind":"monthly_spend","percent":50,"resets_at":null}
-]}"#;
+],
+"spend":{"used":{"amount_minor":1234,"currency":"EUR","exponent":2},
+ "limit":{"amount_minor":5000,"currency":"EUR","exponent":2},"enabled":true},
+"seven_day_breakdown":{"rows":[{"key":"claude_code","display_name":"Claude Code","percent":90},
+ {"key":"chat","display_name":"Chats","percent":10},{"key":"other","display_name":"Other","percent":0}]}}"#;
+
+fn claude_meta(tier: &str) -> Meta {
+    Meta::default()
+        .with("plan", Some("max"))
+        .with("tier", Some(tier))
+        .with("email", Some("me@example.com"))
+}
 
 #[test]
-fn claude_limits_name_every_window_in_display_order() {
-    let report = report(&raw(Provider::Claude, 200, CLAUDE)).unwrap();
+fn claude_reads_every_window_account_and_detail() {
+    let mut answer = raw(Provider::Claude, 200, CLAUDE);
+    answer.meta = claude_meta("default_claude_max_20x");
+    let report = report(&answer).unwrap();
     let windows: Vec<_> = report
         .windows
         .iter()
-        .map(|w| (w.kind.clone(), w.percent()))
+        .map(|w| (w.kind.clone(), w.percent(), w.length))
         .collect();
     assert_eq!(
         windows,
         [
-            (Kind::Session, 3),
-            (Kind::Weekly, 15),
-            (Kind::Model("Fable".into()), 0)
+            (Kind::Session, 3, Some(super::model::SESSION)),
+            (Kind::Weekly, 15, Some(super::model::WEEK)),
+            (Kind::Model("Fable".into()), 0, Some(super::model::WEEK)),
         ]
     );
     assert_eq!(report.windows[0].resets_at, Some(at(1_790_324_400)));
     assert_eq!(report.tightest().map(|w| w.percent()), Some(15));
+    assert_eq!(
+        report.account,
+        Account {
+            email: Some("me@example.com".into()),
+            plan: Some("Max 20x".into()),
+        }
+    );
+    assert_eq!(
+        report.sections,
+        [
+            Section::Shares {
+                title: "This week by surface".into(),
+                shares: vec![("Claude Code".into(), 90.), ("Chats".into(), 10.)],
+            },
+            Section::Facts {
+                title: "Extra usage".into(),
+                facts: vec![("This month".into(), "12.34 EUR of 50.00 EUR".into())],
+            },
+        ]
+    );
 }
 
 #[test]
 fn claude_falls_back_to_the_fixed_windows() {
     let body = r#"{"five_hour":{"utilization":42.4,"resets_at":1790324400},
-        "seven_day":{"utilization":150,"resets_at":null},"limits":null}"#;
+        "seven_day":{"utilization":150,"resets_at":null},"limits":null,
+        "spend":{"enabled":false}}"#;
     let report = report(&raw(Provider::Claude, 200, body)).unwrap();
     assert_eq!(report.windows[0].kind, Kind::Session);
     assert_eq!(report.windows[0].percent(), 42);
     assert_eq!(report.windows[0].resets_at, Some(at(1_790_324_400)));
     // Clamped: a service rounding past its own limit still reads as full.
     assert_eq!(report.windows[1].percent(), 100);
+    assert_eq!(report.windows[1].left(), 0);
     assert_eq!(report.windows[1].resets_at, None);
+    assert_eq!(report.account, Account::default());
+    assert_eq!(
+        report.sections,
+        [Section::Facts {
+            title: "Extra usage".into(),
+            facts: vec![("Status".into(), "Off".into())],
+        }]
+    );
 }
+
+#[test]
+fn claude_plans_name_their_tier_multiple() {
+    assert_eq!(
+        claude::plan(Some("max"), Some("default_claude_max_20x")).as_deref(),
+        Some("Max 20x")
+    );
+    assert_eq!(
+        claude::plan(Some("pro"), Some("default_claude_ai")).as_deref(),
+        Some("Pro")
+    );
+    assert_eq!(claude::plan(Some("team"), None).as_deref(), Some("Team"));
+    assert_eq!(claude::plan(None, Some("default_claude_max_5x")), None);
+    assert_eq!(claude::plan(Some(" "), None), None);
+}
+
+/// Live shape: a Pro plan with only a weekly limit, in the primary slot.
+const CODEX: &str = r#"{"email":"me@example.com","plan_type":"pro","rate_limit":{"allowed":true,
+    "primary_window":{"used_percent":11,"limit_window_seconds":604800,"reset_after_seconds":472393,
+    "reset_at":1790786634},"secondary_window":null},
+    "code_review_rate_limit":{"primary_window":{"used_percent":4,"limit_window_seconds":604800,
+    "reset_at":1790786634},"secondary_window":null},
+    "credits":{"has_credits":false,"unlimited":false,"balance":"0"},
+    "rate_limit_reset_credits":{"available_count":2,"applicable_available_count":0}}"#;
 
 #[test]
 fn codex_windows_are_known_by_length_not_slot() {
     let parse = |body| report(&raw(Provider::Codex, 200, body)).unwrap();
-    // Live shape: a Pro plan with only a weekly limit, in the primary slot.
-    let body = r#"{"plan_type":"pro","rate_limit":{"primary_window":{"used_percent":11,
-        "limit_window_seconds":604800,"reset_after_seconds":472393,"reset_at":1790786634},
-        "secondary_window":null},"credits":{"balance":"0"}}"#;
-    let report = parse(body);
-    assert_eq!(report.plan.as_deref(), Some("Pro"));
+    let report = parse(CODEX);
+    assert_eq!(
+        report.account,
+        Account {
+            email: Some("me@example.com".into()),
+            plan: Some("Pro".into()),
+        }
+    );
     assert_eq!(report.windows.len(), 1);
     assert_eq!(report.windows[0].kind, Kind::Weekly);
     assert_eq!(report.windows[0].resets_at, Some(at(1_790_786_634)));
+    assert_eq!(report.windows[0].length, Some(super::model::WEEK));
+    assert_eq!(
+        report.sections,
+        [
+            Section::Limit(Window::new(
+                Kind::Model("Code review".into()),
+                4.,
+                Some(at(1_790_786_634)),
+                Some(super::model::WEEK),
+            )),
+            Section::Facts {
+                title: "Limit reset credits".into(),
+                facts: vec![("Available".into(), "2".into())],
+            },
+            Section::Facts {
+                title: "Credits".into(),
+                facts: vec![("Balance".into(), "0".into())],
+            },
+        ]
+    );
 
-    let body = r#"{"plan_type":"plus","rate_limit":{
+    let report = parse(
+        r#"{"plan_type":"plus","rate_limit":{
         "primary_window":{"used_percent":70,"limit_window_seconds":1,"reset_at":1790000000000},
-        "secondary_window":{"used_percent":90,"reset_at":null}}}"#;
-    let report = parse(body);
+        "secondary_window":{"used_percent":90,"reset_at":null}}}"#,
+    );
     assert_eq!(report.windows[0].kind, Kind::Session);
     // Milliseconds are recognised as such.
     assert_eq!(report.windows[0].resets_at, Some(at(1_790_000_000)));
     assert_eq!(report.windows[1].kind, Kind::Weekly);
     assert_eq!(report.tightest().map(|w| w.percent()), Some(90));
+    assert!(report.sections.is_empty());
 }
 
 #[test]
@@ -142,21 +233,61 @@ fn labels_count_down_in_the_two_coarsest_units() {
         "4d 11h"
     );
     let now = at(1_000_000);
-    let session = Window::new(Kind::Session, 2.4, Some(now + Duration::from_secs(10_380)));
+    let session = Window::new(
+        Kind::Session,
+        2.4,
+        Some(now + Duration::from_secs(10_380)),
+        None,
+    );
     assert_eq!(session.label(now), "2% used 2h 53m");
-    assert_eq!(session.detail(now), "Session 2% used · resets in 2h 53m");
+    assert_eq!(session.left(), 98);
     // A reset already past reads as imminent rather than negative.
     assert_eq!(
         session.label(now + Duration::from_secs(20_000)),
         "2% used 0m"
     );
-    let model = Window::new(Kind::Model("Fable".into()), 0., Some(now));
+    let model = Window::new(Kind::Model("Fable".into()), 0., Some(now), None);
     assert_eq!(model.label(now), "0% used Fable");
     assert_eq!(
-        Window::new(Kind::Session, 1., None).label(now),
+        Window::new(Kind::Session, 1., None, None).label(now),
         "1% used 5h"
     );
-    assert_eq!(Window::new(Kind::Weekly, 1., None).label(now), "1% used wk");
+    assert_eq!(
+        Window::new(Kind::Weekly, 1., None, None).label(now),
+        "1% used wk"
+    );
+}
+
+#[test]
+fn pace_compares_use_with_an_even_spend() {
+    let week = super::model::WEEK;
+    let now = at(1_000_000);
+    let window =
+        |used, left: Duration| Window::new(Kind::Weekly, used, Some(now + left), Some(week));
+    // Half the week gone, a fifth used: plenty left and it lasts.
+    let pace = window(20., week / 2).pace(now).unwrap();
+    assert_eq!(pace.expected.round(), 50.);
+    assert_eq!(pace.runs_out, None);
+    assert_eq!(pace.describe(20.), "30% in reserve · Lasts until reset");
+    // A quarter gone, half used: out after another quarter of the week.
+    let pace = window(50., week * 3 / 4).pace(now).unwrap();
+    assert_eq!(pace.runs_out, Some(week / 4));
+    assert_eq!(pace.describe(50.), "25% in deficit · Runs out in 1d 18h");
+    assert_eq!(
+        window(0., week / 2).pace(now).unwrap().describe(0.),
+        "50% in reserve · Lasts until reset"
+    );
+    assert_eq!(
+        window(49.8, week / 2).pace(now).unwrap().describe(49.8),
+        "On pace · Lasts until reset"
+    );
+    // Too early, unknown length, or already reset: no estimate.
+    assert_eq!(window(1., week).pace(now), None);
+    assert_eq!(
+        Window::new(Kind::Weekly, 1., Some(now + week / 2), None).pace(now),
+        None
+    );
+    assert_eq!(window(1., week / 2).pace(now + week), None);
 }
 
 #[test]
@@ -184,35 +315,81 @@ fn hosts_follow_the_connection_target() {
 }
 
 #[test]
+fn every_provider_has_its_own_marker_and_fragment() {
+    let mut keys: Vec<_> = Provider::ALL.iter().map(|p| p.key()).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    assert_eq!(keys.len(), Provider::ALL.len());
+    for provider in Provider::ALL {
+        let service = provider.service();
+        assert!(
+            service
+                .key()
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        );
+        #[cfg(unix)]
+        assert!(
+            service
+                .remote()
+                .contains(&format!("request {} ", service.key())),
+            "{}",
+            service.name()
+        );
+        assert!(service.dashboard().starts_with("https://"));
+        assert!(service.status_page().starts_with("https://"));
+    }
+}
+
+#[test]
+fn meta_keeps_single_bounded_words() {
+    let meta = Meta::default()
+        .with("plan", Some(" max "))
+        .with("email", Some("two words"))
+        .with("tier", Some("x".repeat(129)))
+        .with("plan", Some("pro"))
+        .with("email", None::<&str>);
+    assert_eq!(meta.get("plan"), Some("pro"));
+    assert_eq!(meta.get("email"), None);
+    assert_eq!(meta.get("tier"), None);
+}
+
+#[test]
 fn credentials_are_read_only_when_they_hold_a_token() {
-    let claude = claude_credential(
-        br#"{"claudeAiOauth":{"accessToken":"fixture-token","refreshToken":"r","expiresAt":1}}"#,
+    let oauth = claude::credential(
+        br#"{"claudeAiOauth":{"accessToken":"fixture-token","refreshToken":"r","expiresAt":1,
+        "subscriptionType":"max","rateLimitTier":"default_claude_max_20x"}}"#,
     )
     .unwrap();
-    assert_eq!(claude.expose_secret(), "fixture-token");
-    assert!(claude_credential(br#"{"claudeAiOauth":{"accessToken":" "}}"#).is_none());
-    assert!(claude_credential(br#"{"other":{}}"#).is_none());
-    assert!(claude_credential(b"not json").is_none());
+    assert_eq!(oauth.token(), Some("fixture-token"));
+    assert!(claude::credential(br#"{"claudeAiOauth":{"accessToken":" "}}"#).is_none());
+    assert!(claude::credential(br#"{"claudeAiOauth":{"refreshToken":"r"}}"#).is_none());
+    assert!(claude::credential(br#"{"other":{}}"#).is_none());
+    assert!(claude::credential(b"not json").is_none());
 
-    assert!(codex_credential(
-        br#"{"auth_mode":"chatgpt","tokens":{"access_token":"a","account_id":"acct","id_token":"i"}}"#
-    )
-    .is_some());
+    assert!(
+        codex::credential(
+            br#"{"auth_mode":"chatgpt","tokens":{"access_token":"a","account_id":"acct","id_token":"i"}}"#
+        )
+        .is_some()
+    );
     // An API-key install has no plan usage.
-    assert!(codex_credential(br#"{"OPENAI_API_KEY":"sk-fixture","tokens":null}"#).is_none());
+    assert!(codex::credential(br#"{"OPENAI_API_KEY":"sk-fixture","tokens":null}"#).is_none());
 }
 
 #[cfg(unix)]
 #[test]
 fn script_output_splits_per_provider() {
     let output = "motd from a noisy rc file\n\
-        \n@@herdr-usage claude\n{\"a\":1}\n@@herdr-status 200\n\
-        \n@@herdr-usage mystery\n{}\n@@herdr-status 200\n\
-        \n@@herdr-usage codex\n{\"b\":\"\n@@herdr-status 1\"}\n@@herdr-status 401\n";
+        \n@@herdr-usage claude plan=max tier=default_claude_max_5x email=me@example.com bogus=1 \n{\"a\":1}\n@@herdr-status 200\n\
+        \n@@herdr-usage mystery \n{}\n@@herdr-status 200\n\
+        \n@@herdr-usage codex \n{\"b\":\"\n@@herdr-status 1\"}\n@@herdr-status 401\n";
+    let mut claude = raw(Provider::Claude, 200, "{\"a\":1}");
+    claude.meta = claude_meta("default_claude_max_5x");
     assert_eq!(
         remote::sections(output).unwrap(),
         [
-            raw(Provider::Claude, 200, "{\"a\":1}"),
+            claude,
             raw(Provider::Codex, 401, "{\"b\":\"\n@@herdr-status 1\"}"),
         ]
     );
@@ -231,13 +408,14 @@ fn script_output_splits_per_provider() {
 #[cfg(unix)]
 #[test]
 fn script_repeats_the_shared_endpoints() {
+    let script = remote::script();
     for value in remote::SHARED_WITH_SCRIPT {
-        assert!(remote::SCRIPT_FOR_TESTS.contains(value), "{value}");
+        assert!(script.contains(value), "{value}");
     }
 }
 
 /// Runs the remote script against a fake home and a fake `curl`, checking that
-/// tokens reach curl on stdin and never in its arguments.
+/// tokens reach curl on stdin and never in its arguments or the output.
 #[cfg(unix)]
 #[test]
 fn script_sends_tokens_on_stdin_only() {
@@ -251,7 +429,12 @@ fn script_sends_tokens_on_stdin_only() {
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(
         home.join(".claude/.credentials.json"),
-        r#"{"claudeAiOauth":{"accessToken":"claude-fixture-token","refreshToken":"refresh-fixture"}}"#,
+        r#"{"claudeAiOauth":{"accessToken":"claude-fixture-token","refreshToken":"refresh-fixture","subscriptionType":"max","rateLimitTier":"default_claude_max_20x"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        home.join(".claude.json"),
+        "{\n  \"oauthAccount\": {\n    \"emailAddress\": \"me@example.com\"\n  }\n}\n",
     )
     .unwrap();
     std::fs::write(
@@ -270,20 +453,20 @@ fn script_sends_tokens_on_stdin_only() {
     .unwrap();
     std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
     let output = Command::new("/bin/sh")
-        .args(["-c", remote::SCRIPT_FOR_TESTS])
+        .args(["-c", &remote::script()])
         .env_clear()
         .env("HOME", &home)
         .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
         .output()
         .unwrap();
     assert!(output.status.success());
-    let raws = remote::sections(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(!stdout.contains("fixture-token"), "token in output");
+    let mut claude = raw(Provider::Claude, 200, "{\"ok\":true}");
+    claude.meta = claude_meta("default_claude_max_20x");
     assert_eq!(
-        raws,
-        [
-            raw(Provider::Claude, 200, "{\"ok\":true}"),
-            raw(Provider::Codex, 200, "{\"ok\":true}"),
-        ]
+        remote::sections(&stdout).unwrap(),
+        [claude, raw(Provider::Codex, 200, "{\"ok\":true}")]
     );
     let log = std::fs::read_to_string(log).unwrap();
     for line in log.lines().filter(|line| line.starts_with("args: ")) {
@@ -299,7 +482,7 @@ fn script_sends_tokens_on_stdin_only() {
 #[test]
 fn script_reports_a_host_without_curl() {
     let output = std::process::Command::new("/bin/sh")
-        .args(["-c", remote::SCRIPT_FOR_TESTS])
+        .args(["-c", &remote::script()])
         .env_clear()
         .env("PATH", "/nonexistent")
         .output()
@@ -313,8 +496,8 @@ fn script_reports_a_host_without_curl() {
 fn claude_report(used: f64) -> Report {
     Report::new(
         Provider::Claude,
-        None,
-        vec![Window::new(Kind::Session, used, None)],
+        Account::default(),
+        vec![Window::new(Kind::Session, used, None, None)],
     )
 }
 

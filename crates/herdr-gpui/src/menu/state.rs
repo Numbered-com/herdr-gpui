@@ -13,6 +13,7 @@ pub(crate) struct MenuState {
     pub page: Option<Page>,
     pub(super) device_setup: Option<super::devices::Setup>,
     pub(super) devices_scroll: ScrollHandle,
+    pub(crate) usage_scroll: ScrollHandle,
     // Selection epoch and connection generation fence captured modal actions.
     pub(super) endpoint_target: (u64, u64),
     pub anchor: Point<Pixels>,
@@ -170,6 +171,7 @@ impl MenuState {
             page: None,
             device_setup: None,
             devices_scroll: ScrollHandle::new(),
+            usage_scroll: ScrollHandle::new(),
             endpoint_target: (0, 0),
             anchor: Point::default(),
             opening_right_click: false,
@@ -208,6 +210,7 @@ impl MenuState {
     pub fn reset(&mut self) {
         self.device_setup = None;
         self.devices_scroll.set_offset(Point::default());
+        self.usage_scroll.set_offset(Point::default());
         self.opening_right_click = false;
         self.tab = None;
         self.pane = None;

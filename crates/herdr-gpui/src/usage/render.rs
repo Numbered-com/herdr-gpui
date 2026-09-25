@@ -1,14 +1,19 @@
 //! The status bar's usage segments: per agent, a meter for the window closest
-//! to its limit and each window's share used with its time to reset. Details
-//! live in a tooltip, so the bar stays one quiet line.
+//! to its limit and each window's share used with its time to reset. A click
+//! opens that agent's panel, so the bar stays one quiet line.
 
 use super::{
     Reading,
     model::{Severity, Window as Limit},
+    panel::PANEL_GAP,
 };
 use crate::window::HerdrWindow;
 use gpui::{prelude::*, *};
-use std::time::{Duration, SystemTime};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    time::{Duration, SystemTime},
+};
 
 const METER_WIDTH: f32 = 40.;
 
@@ -23,17 +28,6 @@ impl HerdrWindow {
             return None;
         }
         let now = SystemTime::now();
-        let host = self
-            .endpoints
-            .get(self.selected_endpoint)
-            .map(|endpoint| endpoint.label.clone())
-            .unwrap_or_default();
-        let updated = entry.and_then(|entry| entry.updated).map(|at| {
-            format!(
-                "Updated {} ago",
-                ago(now.duration_since(at).unwrap_or_default())
-            )
-        });
         let theme = &self.theme;
         let mut row = div()
             .id("usage")
@@ -43,39 +37,30 @@ impl HerdrWindow {
             .min_w_0()
             .overflow_hidden()
             .items_center()
-            .gap(px(12.));
+            .gap(px(4.));
         for reading in readings {
-            let mut lines = vec![SharedString::from(
-                match reading
-                    .report
-                    .as_ref()
-                    .and_then(|report| report.plan.as_deref())
-                {
-                    Some(plan) => format!("{} · {plan} on {host}", reading.provider.name()),
-                    None => format!("{} on {host}", reading.provider.name()),
-                },
-            )];
-            if let Some(report) = &reading.report {
-                lines.extend(
-                    report
-                        .windows
-                        .iter()
-                        .map(|window| window.detail(now).into()),
-                );
-            }
-            lines.extend(reading.error.iter().map(|error| error.clone().into()));
-            lines.extend(updated.iter().map(|updated| updated.clone().into()));
-            row = row.child(self.usage_segment(reading, now, lines));
+            row = row.child(self.usage_segment(reading, now, cx));
         }
         if let Some(error) = host_error.filter(|_| readings.is_empty()) {
+            let (foreground, surface) = (theme.foreground, theme.surface);
+            let error = SharedString::from(error);
             row = row.child(
                 div()
                     .id("usage-host-error")
+                    .debug_selector(|| "usage-host-error".into())
                     .min_w_0()
                     .truncate()
                     .text_color(rgb(theme.muted))
                     .child("Usage unavailable")
-                    .tooltip(hint(vec![error.into()], theme)),
+                    .tooltip(move |_, cx| {
+                        let text = error.clone();
+                        cx.new(|_| Hint {
+                            text,
+                            foreground,
+                            surface,
+                        })
+                        .into()
+                    }),
             );
         }
         let refresh = svg()
@@ -122,27 +107,53 @@ impl HerdrWindow {
         &self,
         reading: &Reading,
         now: SystemTime,
-        lines: Vec<SharedString>,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = &self.theme;
-        let key = reading.provider.key();
+        let provider = reading.provider;
+        let key = provider.key();
+        let bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
+        let painted = bounds.clone();
+        let open = self.menu.page == Some(crate::menu::Page::Usage(provider));
         let mut segment = div()
             .id(SharedString::from(format!("usage-{key}")))
             .debug_selector(move || format!("usage-{key}"))
+            .relative()
             .flex()
             .flex_shrink()
             .min_w_0()
             .overflow_hidden()
             .items_center()
             .gap(px(6.))
-            .tooltip(hint(lines, theme))
+            .px(px(6.))
+            .rounded(px(crate::config::corners::CONTROL))
+            .cursor_pointer()
+            .hover(|s| s.bg(rgb(theme.active)))
+            .when(open, |segment| segment.bg(rgb(theme.active)))
             .child(
                 svg()
-                    .path(reading.provider.icon().path())
+                    .path(provider.icon().path())
                     .size(px(12.))
                     .flex_none()
                     .text_color(rgb(theme.foreground)),
-            );
+            )
+            .child(
+                canvas(|_, _, _| (), move |area, _, _, _| painted.set(area))
+                    .absolute()
+                    .inset_0()
+                    .size_full(),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                // Anchored to the segment, not the pointer, so the panel keeps
+                // the same gap above the bar wherever the click landed.
+                let origin = bounds.get().origin;
+                this.open_usage(
+                    provider,
+                    point(origin.x, origin.y - px(PANEL_GAP)),
+                    window,
+                    cx,
+                );
+            }));
         let Some(report) = &reading.report else {
             // Signed in, but never read successfully.
             return segment.child(
@@ -173,7 +184,7 @@ impl HerdrWindow {
         }
         segment
             .child(labels)
-            // The numbers are the last good ones; the tooltip says why.
+            // The numbers are the last good ones; the panel says why.
             .when(reading.error.is_some(), |segment| {
                 segment.child(
                     div()
@@ -210,57 +221,29 @@ fn meter(window: &Limit, theme: &crate::config::Theme) -> impl IntoElement {
         )
 }
 
-fn ago(elapsed: Duration) -> String {
+pub(super) fn ago(elapsed: Duration) -> String {
     match elapsed.as_secs() {
         0..60 => "less than a minute".into(),
         seconds => super::model::countdown(Duration::from_secs(seconds - seconds % 60)),
     }
 }
 
-fn hint(
-    lines: Vec<SharedString>,
-    theme: &crate::config::Theme,
-) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
-    let (foreground, muted, surface) = (theme.foreground, theme.muted, theme.surface);
-    move |_, cx| {
-        let lines = lines.clone();
-        cx.new(|_| UsageHint {
-            lines,
-            foreground,
-            muted,
-            surface,
-        })
-        .into()
-    }
-}
-
-struct UsageHint {
-    lines: Vec<SharedString>,
+struct Hint {
+    text: SharedString,
     foreground: u32,
-    muted: u32,
     surface: u32,
 }
 
-impl Render for UsageHint {
+impl Render for Hint {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
-            .flex()
-            .flex_col()
-            .gap(px(2.))
             .px(px(8.))
-            .py(px(6.))
+            .py(px(4.))
             .rounded(px(crate::config::corners::CONTROL))
             .shadow_md()
             .text_size(px(12.))
+            .text_color(rgb(self.foreground))
             .bg(rgb(self.surface))
-            .text_color(rgb(self.muted))
-            .children(self.lines.iter().enumerate().map(|(index, line)| {
-                div()
-                    .when(index == 0, |line| {
-                        line.font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(self.foreground))
-                    })
-                    .child(line.clone())
-            }))
+            .child(self.text.clone())
     }
 }
