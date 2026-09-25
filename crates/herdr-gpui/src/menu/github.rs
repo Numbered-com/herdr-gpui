@@ -57,7 +57,7 @@ mod tests {
         });
     }
 
-    const HOST: &str = "0123456789abcdef0123456789abcdef";
+    const HOST: &str = "ssh:0123456789abcdef0123456789abcdef";
 
     /// Adds a saved SSH device, selects it, and gives it its own account slot.
     fn select_host(view: &mut crate::HerdrWindow, host: crate::github::Auth) {
@@ -329,7 +329,9 @@ impl HerdrWindow {
             {
                 continue;
             }
-            let Some(account) = Account::host(&endpoint.id) else {
+            let Some(account) =
+                crate::endpoint::saved_profile_id(&endpoint.id).and_then(Account::host)
+            else {
                 continue;
             };
             let mut auth = Auth::for_account(account);

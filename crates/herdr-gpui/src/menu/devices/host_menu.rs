@@ -13,7 +13,10 @@ enum Action {
 const ACTIONS: [(Action, &str); 1] = [(Action::Remove, "Remove device…")];
 
 pub(crate) struct HostMenu {
+    /// The endpoint, as the window and its account slots key it.
     id: String,
+    /// The catalog profile the `herdr machine` commands name.
+    profile: String,
     label: String,
     target: String,
     session: String,
@@ -44,8 +47,12 @@ impl HerdrWindow {
         let ConnectTarget::Ssh { target, session } = &endpoint.connection.target else {
             return;
         };
+        let Some(profile) = crate::endpoint::saved_profile_id(&endpoint.id) else {
+            return;
+        };
         let menu = HostMenu {
             id: endpoint.id.clone(),
+            profile: profile.to_owned(),
             label: endpoint.label.clone(),
             target: target.clone(),
             session: session.clone(),
@@ -95,13 +102,17 @@ impl HerdrWindow {
             || crate::github::Store::select(&self.config),
             |auth| auth.store(),
         );
-        let (id, target, session) = (host.id.clone(), host.target.clone(), host.session.clone());
+        let (profile, target, session) = (
+            host.profile.clone(),
+            host.target.clone(),
+            host.session.clone(),
+        );
         // The outer result is the removal itself; the inner one, the GitHub
         // credential that only matters once the device is gone.
         let background = cx.background_executor().spawn(async move {
             let _claim = setup::claim_saved(&target, &session)?;
-            setup::remove(&id)?;
-            Ok::<_, crate::Error>(match Account::host(&id).filter(|_| forget) {
+            setup::remove(&profile)?;
+            Ok::<_, crate::Error>(match Account::host(&profile).filter(|_| forget) {
                 Some(account) => crate::github::forget(store, &account),
                 None => Ok(()),
             })
@@ -196,6 +207,31 @@ impl HerdrWindow {
         let theme = &self.theme;
         let mut body = div().flex().flex_col();
         if self.menu.page == Some(Page::Host) {
+            // Name the device first, so the destructive row below cannot be
+            // mistaken for acting on another host.
+            body = body.child(
+                div()
+                    .debug_selector(|| "host-menu-header".into())
+                    .px(px(8.))
+                    .pt(px(4.))
+                    .pb(px(8.))
+                    .mb(px(4.))
+                    .border_b_1()
+                    .border_color(rgb(theme.active))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .truncate()
+                            .child(host.label.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(self.config.ui.size * 0.85))
+                            .text_color(rgb(theme.muted))
+                            .truncate()
+                            .child(format!("{} · {}", host.target, host.session)),
+                    ),
+            );
             for (index, (action, label)) in ACTIONS.into_iter().enumerate() {
                 body = body.child(
                     div()
@@ -308,8 +344,9 @@ mod tests {
     use crate::{menu::Page, sidebar::layout_tests::fixture_window};
     use gpui::{Modifiers, MouseButton, TestAppContext, point, px, size};
 
-    const HOST: &str = "0123456789abcdef0123456789abcdef";
-    const HOST_HEADER: &str = "host-0123456789abcdef0123456789abcdef";
+    // Endpoint IDs carry the `ssh:` prefix; the profile ID is the rest.
+    const HOST: &str = "ssh:0123456789abcdef0123456789abcdef";
+    const HOST_HEADER: &str = "host-ssh:0123456789abcdef0123456789abcdef";
     const LOCAL_HEADER: &str = "host-local";
 
     fn add_host(view: &mut crate::HerdrWindow) {
@@ -352,7 +389,12 @@ mod tests {
         view.read_with(cx, |view, _| {
             assert_eq!(view.menu.page, Some(Page::Host));
             assert_eq!(host(view).target, "penso@box");
+            // `herdr machine remove` takes the bare catalog ID.
+            assert_eq!(host(view).profile, "0123456789abcdef0123456789abcdef");
         });
+        cx.update(|window, cx| crate::sidebar::layout_tests::full_draw(window, cx).clear(cx));
+        let header = cx.debug_bounds("host-menu-header").unwrap();
+        assert!(header.bottom() <= cx.debug_bounds("host-menu-0").unwrap().top());
         cx.simulate_keystrokes("down enter");
         assert!(view.read_with(cx, |view, _| view.menu.page == Some(Page::RemoveDevice)));
         cx.update(|window, cx| crate::sidebar::layout_tests::full_draw(window, cx).clear(cx));
