@@ -103,6 +103,15 @@ pub(super) fn command(target: &str, remote_command: &str) -> Command {
     command
 }
 
+/// A one-shot, noninteractive `ssh` child that runs `script` under the remote
+/// `/bin/sh`, whatever the login shell, with the bridge's connection policy.
+/// The caller owns the child: its streams, deadline, and reaping.
+#[cfg(unix)]
+pub fn script_command(target: &str, script: &str) -> Result<Command> {
+    validate_target(target)?;
+    Ok(command(target, &format!("/bin/sh -c {}", quote(script))))
+}
+
 #[cfg(unix)]
 pub(crate) fn connect(
     target: &str,
@@ -308,6 +317,18 @@ printf '%s\n' "$hello"
         ] {
             assert!(validate_target(bad).is_err());
         }
+    }
+    #[test]
+    fn script_runs_under_remote_sh_and_rejects_option_targets() {
+        let command = script_command("user@host", "echo 'hi'").unwrap();
+        let args: Vec<_> = command.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(args[args.len() - 3], "--");
+        assert_eq!(args[args.len() - 2], "user@host");
+        assert_eq!(args[args.len() - 1], "/bin/sh -c 'echo '\\''hi'\\'''");
+        assert!(matches!(
+            script_command("-oProxyCommand=bad", "true"),
+            Err(Error::InvalidSshTarget)
+        ));
     }
     #[test]
     fn marker_consumes_banners_not_protocol_bytes() {

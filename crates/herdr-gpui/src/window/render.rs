@@ -570,6 +570,7 @@ impl Render for HerdrWindow {
                     .px_3()
                     .bg(rgb(self.theme.surface))
                     .text_color(rgb(self.theme.foreground))
+                    .children(self.render_usage(cx))
                     .when(!self.live.status.is_connected(), |bar| bar.child(
                         if matches!(self.live.status, ConnectionStatus::StartingDaemon) {
                             div()

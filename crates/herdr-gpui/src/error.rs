@@ -278,6 +278,37 @@ pub enum Error {
         "{0} must be 1..256 ASCII letters, digits, '.', '_' or '-' (public client ID, not a secret)"
     )]
     InvalidClientId(&'static str),
+    #[error("Could not {operation}.")]
+    UsageProcess {
+        operation: &'static str,
+        #[source]
+        source: io::Error,
+    },
+    #[error("Usage check timed out.")]
+    UsageTimeout,
+    #[error("Usage output exceeded the size limit.")]
+    UsageSize,
+    #[error("Usage request failed or timed out.")]
+    UsageNetwork(#[source] ureq::Error),
+    #[error("Could not reach the usage service from this host.")]
+    UsageConnect,
+    #[error("Saved sign-in cannot be sent as a header.")]
+    UsageHeader(#[source] ureq::http::header::InvalidHeaderValue),
+    #[error("Saved sign-in was rejected. Open the agent to sign in again.")]
+    UsageRejected,
+    #[error("Usage is rate limited. Retrying later.")]
+    UsageRateLimited,
+    #[error("Usage service returned HTTP {0}.")]
+    UsageStatus(u16),
+    /// The body may hold account details, so only the parser's category is kept.
+    #[error("Usage response was not the expected JSON.")]
+    UsageJson(serde_json::error::Category),
+    #[error("Could not reach this host over SSH to read usage.")]
+    UsageUnreachable,
+    #[error("curl is not installed on this host, so usage cannot be read.")]
+    UsageMissingCurl,
+    #[error("Remote usage needs SSH, which this platform's client does not support.")]
+    UsageUnsupported,
     #[error("{0}")]
     Update(#[from] UpdateError),
     #[error("{0}")]

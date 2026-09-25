@@ -22,6 +22,9 @@ theme = "Default"
 confirm_close_tab = true
 # Show the Agents section below Spaces in the sidebar.
 show_agents = true
+# Show the selected host's Claude and Codex plan usage in the status bar. It is
+# read with each agent's own saved sign-in, over SSH for a remote host.
+show_usage = true
 # macOS only: whether Option-letter reaches a pane as an Alt shortcut (Alt-P
 # for Option-P) or types the character the keyboard layout puts there. "auto"
 # sends Alt on the U.S. and ABC layouts and types elsewhere, so layouts that

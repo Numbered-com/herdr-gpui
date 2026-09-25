@@ -104,6 +104,7 @@ pub(crate) struct HerdrWindow {
     /// A `worktree.remove` queued after its dialog closed.
     pub(crate) removal: Option<menu::Removal>,
     pub(crate) git: git::Git,
+    pub(crate) usage: crate::usage::Usage,
     pub(crate) install_warning_shown: bool,
     pub(crate) collapsed_repos: std::collections::HashSet<String>,
     pub(crate) sidebar_visible: bool,
@@ -235,6 +236,9 @@ impl HerdrWindow {
         if self.update_git() {
             cx.notify();
         }
+        if self.update_usage() {
+            cx.notify();
+        }
         if self.live.missing_installation && !self.install_warning_shown {
             self.install_warning_shown = true;
             self.show_install_modal(window, cx);
@@ -242,6 +246,19 @@ impl HerdrWindow {
         self.resize();
         self.report_focus();
         self.sync_window_title(window);
+    }
+
+    /// Plan usage follows the selected host: a remote host reports its own
+    /// agents' sign-ins, never this machine's.
+    fn update_usage(&mut self) -> bool {
+        let host = self
+            .config
+            .show_usage
+            .then(|| self.endpoints.get(self.selected_endpoint))
+            .flatten()
+            .map(|endpoint| crate::usage::Host::from(&endpoint.connection.target));
+        self.usage
+            .poll(host, self.active, std::time::Instant::now())
     }
 
     pub(crate) fn new(
@@ -335,6 +352,7 @@ impl HerdrWindow {
             menu: menu::MenuState::new(cx),
             removal: None,
             git: git::Git::default(),
+            usage: Default::default(),
             install_warning_shown: false,
             collapsed_repos: Default::default(),
             sidebar_visible: true,

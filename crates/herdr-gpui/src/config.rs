@@ -45,6 +45,8 @@ pub struct Config {
     pub theme: String,
     pub confirm_close_tab: bool,
     pub show_agents: bool,
+    /// Plan usage of the selected host's coding agents in the status bar.
+    pub show_usage: bool,
     pub option_as_alt: OptionAsAlt,
     pub sidebar: FontConfig,
     pub tabs: FontConfig,
@@ -460,6 +462,7 @@ impl Default for Config {
             github: GitHubConfig::default(),
             confirm_close_tab: true,
             show_agents: true,
+            show_usage: true,
             option_as_alt: OptionAsAlt::default(),
             features: Features::default(),
             notifications: NotificationConfig::default(),
@@ -482,6 +485,7 @@ struct Settings {
     theme: Option<String>,
     confirm_close_tab: Option<bool>,
     show_agents: Option<bool>,
+    show_usage: Option<bool>,
     option_as_alt: OptionAsAlt,
     sidebar: FontSettings,
     tabs: FontSettings,
@@ -522,7 +526,7 @@ struct FontSettings {
 }
 
 /// Windows sets `USERPROFILE` rather than `HOME`, and upstream Herdr reads both.
-fn home() -> Result<PathBuf> {
+pub(crate) fn home() -> Result<PathBuf> {
     let variable = |name| env::var_os(name).filter(|value: &std::ffi::OsString| !value.is_empty());
     variable("HOME")
         .or_else(|| {
@@ -835,6 +839,7 @@ impl Config {
         }
         config.confirm_close_tab = settings.confirm_close_tab.unwrap_or(true);
         config.show_agents = settings.show_agents.unwrap_or(true);
+        config.show_usage = settings.show_usage.unwrap_or(true);
         config.option_as_alt = settings.option_as_alt;
         for (name, font, settings) in [
             ("sidebar", &mut config.sidebar, settings.sidebar),

@@ -47,6 +47,7 @@ mod theme_picker;
 mod titlebar;
 mod update_panel;
 mod updater;
+mod usage;
 mod window;
 mod window_state;
 mod worktree;

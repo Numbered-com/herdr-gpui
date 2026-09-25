@@ -95,6 +95,11 @@ impl HerdrWindow {
                 self.config.show_agents.to_string(),
             ))
             .child(row(
+                "preferences-show-usage",
+                "Show usage",
+                self.config.show_usage.to_string(),
+            ))
+            .child(row(
                 "preferences-confirm-close-tab",
                 "Confirm tab close",
                 self.config.confirm_close_tab.to_string(),
