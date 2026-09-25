@@ -47,10 +47,10 @@ impl Origins {
         &mut self,
         target: &str,
         input: &Input,
+        now: Instant,
         deadline: Instant,
         cancelled: &impl Fn() -> bool,
     ) -> crate::Result<(String, String)> {
-        let now = Instant::now();
         self.0
             .retain(|(_, _, resolved, _)| now.duration_since(*resolved) < ORIGIN_TTL);
         if let Some((.., repository)) = self
@@ -108,7 +108,9 @@ pub(super) fn fetch_with_backoff(
     let deadline = Instant::now() + TIMEOUT;
     let (owner, repo) = match origin {
         Origin::Local => local_repository(input, deadline, &cancelled)?,
-        Origin::Ssh(target) => origins.resolve(target, input, deadline, &cancelled)?,
+        Origin::Ssh(target) => {
+            origins.resolve(target, input, Instant::now(), deadline, &cancelled)?
+        }
     };
     let timeout = deadline
         .checked_duration_since(Instant::now())
@@ -468,8 +470,9 @@ mod origin_tests {
 
     #[test]
     fn remote_origins_are_reused_until_they_expire() {
-        let deadline = Instant::now() + TIMEOUT;
+        // Time only moves forward here: an `Instant` cannot go before boot.
         let now = Instant::now();
+        let deadline = now + TIMEOUT;
         // An invalid target fails before SSH, so reaching it proves a miss.
         let target = "-not-dialled";
         let mut origins = Origins(vec![(
@@ -478,23 +481,21 @@ mod origin_tests {
             now,
             ("owner".into(), "repo".into()),
         )]);
+        let mut resolve = |key: &str, at: Instant| {
+            origins.resolve(target, &input(key), at, deadline.max(at + TIMEOUT), &|| {
+                false
+            })
+        };
         assert_eq!(
-            origins
-                .resolve(target, &input("/repo/.git"), deadline, &|| false)
-                .unwrap(),
+            resolve("/repo/.git", now).unwrap(),
             ("owner".into(), "repo".into())
         );
-        // The same path on another host, or another repository, is not a hit.
+        // Another repository on the same host is not a hit.
         assert!(matches!(
-            origins.resolve(target, &input("/other/.git"), deadline, &|| false),
+            resolve("/other/.git", now),
             Err(Error::Client(herdr_client::Error::InvalidSshTarget))
         ));
-        origins.0[0].2 = now - ORIGIN_TTL;
-        assert!(
-            origins
-                .resolve(target, &input("/repo/.git"), deadline, &|| false)
-                .is_err()
-        );
+        assert!(resolve("/repo/.git", now + ORIGIN_TTL).is_err());
         assert!(origins.0.is_empty());
     }
 }
