@@ -249,6 +249,29 @@ agent-name lines remain visible in every mode, and flat modes keep tree guides;
 font sizes and terminal spacing are unchanged. Saved edits apply automatically;
 there is no UI toggle yet.
 
+Separately from density, `rows` in a `[layout]` table picks what each row
+shows and how it is arranged:
+
+```toml
+[layout]
+mode = "comfortable-rounded"
+rows = "superset"
+```
+
+- `herdr` (default): the rows described above.
+- `superset`: one line per row. An icon slot carries the pull request's state
+  or the repository owner, with the activity status as a dot on its corner; the
+  PR's change counts sit on the right, and the focused row is filled with a
+  stripe down its leading edge. Agents show where they run after their name.
+- `orca`: inset cards with a status column, the name and a `primary` mark on a
+  repository's own checkout, then a meta line with the host, the branch when it
+  differs from the name, and the pull request. Agents are single compact lines.
+
+Density still sets the list's spacing and headings in every row layout. In
+code, a row layout implements `RowLayout` in `src/sidebar/layouts/`; render
+hands it typed row data and a shared per-frame `RowContext`, and marks each
+row with `Cell::selected` and `Cell::highlighted`.
+
 Agent names have small theme-tinted icons for OpenCode, Claude Code, Codex
 (OpenAI), Gemini, Cursor, and GitHub Copilot, selected from the daemon's agent identity. Other
 or missing identities use a generic terminal icon, regardless of custom names.

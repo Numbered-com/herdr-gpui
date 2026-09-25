@@ -3,13 +3,14 @@
 //! caches only.
 
 use super::{
-    ARROW_RESERVE, DEVICE_FOOTER_HEIGHT, HOST_ARROW_WIDTH, HOST_GAP, SidebarDrag,
-    agents::agent_labels,
-    agents_sort, label_text,
+    DEVICE_FOOTER_HEIGHT, HOST_ARROW_WIDTH, HOST_GAP, SidebarDrag, agent_name,
+    agents::agent_place,
+    agents_sort,
+    cell::{AgentRow, Cell, Fold, RowContext, RowData, RowState, WorkspaceRow, layout_for},
+    label_text,
     layout::{self, SidebarLook},
     line_height,
-    row::first_text,
-    row::{RowIcon, RowKind, RowTree, row},
+    row::{RowIcon, RowTree},
     sidebar_width, sorted_agents, visible_workspace_entries,
     workspaces::{workspace_badge, workspace_label},
 };
@@ -29,9 +30,12 @@ impl HerdrWindow {
         let width = sidebar_width(self.sidebar_width, f32::from(window.viewport_size().width));
         let split = self.sidebar_split.unwrap_or(0.5).clamp(0.1, 0.9);
         let look = layout::for_mode(self.config.layout.mode);
+        let rows = layout_for(self.config.layout.rows);
+        // The row a workspace menu was opened for keeps looking hovered while
+        // the pointer is over the menu.
+        let menu_target = self.workspace_menu_target();
         let layout = look.density;
         let content_x = look.content_x();
-        let gap = layout.gap();
         // Hide secondary status in narrow windows, retaining useful host label space.
         let show_host_status = width >= 200.;
         let host_label_width = (look.content_width(width)
@@ -90,7 +94,14 @@ impl HerdrWindow {
                         .px(px(content_x))
                         // Hosts mark selection only; they do not join the rows'
                         // hover group.
-                        .child(look.highlight(&format!("host-{endpoint_id}"), selected, theme))
+                        .child(look.highlight(
+                            &format!("host-{endpoint_id}"),
+                            RowState {
+                                selected,
+                                highlighted: false,
+                            },
+                            theme,
+                        ))
                         .text_color(rgb(if endpoint.enabled {
                             theme.foreground
                         } else {
@@ -148,6 +159,14 @@ impl HerdrWindow {
                 );
                 space_rows += 1;
             }
+            let row_cx = RowContext {
+                font,
+                theme,
+                look,
+                width,
+                host: (multi && endpoint_id != crate::endpoint::LOCAL)
+                    .then_some(endpoint.label.as_str()),
+            };
             let live = if selected { &self.live } else { &endpoint.live };
             let Some(snapshot) = &live.snapshot else {
                 continue;
@@ -179,80 +198,74 @@ impl HerdrWindow {
                 let context_endpoint = endpoint_id.clone();
                 let navigate_endpoint = endpoint_id.clone();
                 let collapse_endpoint = endpoint_id.clone();
-                let reserve_arrow = group.is_some() || indented;
+                let grouped = group.is_some() || indented;
                 let tree = match (indented, closes[position]) {
                     (false, _) => RowTree::None,
                     (true, false) => RowTree::Child,
                     (true, true) => RowTree::LastChild,
                 };
-                let arrow = group.map(|key| {
-                    let collapsed = collapsed_repos.contains(&key);
-                    div()
-                        .id(SharedString::from(format!("collapse-{endpoint_id}-{id}")))
-                        .debug_selector(move || format!("collapse-{index}"))
-                        .w(px(ARROW_RESERVE - gap))
-                        .h(px(
-                            line_height(font) * if layout.workspace_details() { 2. } else { 1. }
-                        ))
-                        .flex_none()
-                        .text_size(px(16.))
-                        .text_color(rgb(theme.muted))
-                        .hover(|s| s.text_color(rgb(theme.foreground)))
-                        .child(label_text(if collapsed { "\u{25b8}" } else { "\u{25be}" }))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            let collapsed = if collapse_endpoint == crate::endpoint::LOCAL {
-                                &mut this.collapsed_repos
-                            } else if let Some(endpoint) = this
-                                .endpoints
-                                .iter_mut()
-                                .find(|e| e.id == collapse_endpoint)
-                            {
-                                &mut endpoint.collapsed_repos
-                            } else {
-                                return;
-                            };
-                            if !collapsed.remove(&key) {
-                                collapsed.insert(key.clone());
-                            }
-                            cx.notify();
-                        }))
+                let fold = group.map(|key| Fold {
+                    id: SharedString::from(format!("collapse-{endpoint_id}-{id}")).into(),
+                    index,
+                    collapsed: collapsed_repos.contains(&key),
+                    toggle: Box::new(cx.listener(move |this, _, _, cx| {
+                        let collapsed = if collapse_endpoint == crate::endpoint::LOCAL {
+                            &mut this.collapsed_repos
+                        } else if let Some(endpoint) = this
+                            .endpoints
+                            .iter_mut()
+                            .find(|e| e.id == collapse_endpoint)
+                        {
+                            &mut endpoint.collapsed_repos
+                        } else {
+                            return;
+                        };
+                        if !collapsed.remove(&key) {
+                            collapsed.insert(key.clone());
+                        }
+                        cx.notify();
+                    })),
                 });
                 let label = workspace_label(workspace, indented);
                 spaces = spaces.child(
-                    row(
-                        label,
-                        &[(label, true)],
-                        first_text([workspace.branch.as_deref()], ""),
-                        RowKind::Workspace,
-                        workspace.agent_status,
-                        selected
-                            && self.live.status.is_connected()
-                            && self.removal.as_ref().is_some_and(|removal| {
-                                removal.pending_for(
-                                    (self.selection_epoch, endpoint.generation),
-                                    &snapshot.boot_id,
-                                    &workspace.workspace_id,
-                                )
-                            }),
-                        selected && workspace.focused,
-                        tree,
-                        reserve_arrow,
-                        width,
-                        if indented {
-                            RowIcon::None
-                        } else {
-                            self.avatars
-                                .as_ref()
-                                .filter(|_| endpoint_index == 0)
-                                .and_then(|avatars| avatars.image(&workspace.new_workspace_cwd))
-                                .map_or(RowIcon::Mark, RowIcon::Avatar)
-                        },
-                        arrow,
-                        workspace_badge(workspace, &self.menu.pr_cache, &self.git, theme),
-                        look,
-                        (font, theme),
+                    Cell::new(
+                        rows,
+                        RowData::Workspace(WorkspaceRow {
+                            workspace,
+                            label,
+                            tree,
+                            icon: if indented {
+                                RowIcon::None
+                            } else {
+                                self.avatars
+                                    .as_ref()
+                                    .filter(|_| endpoint_index == 0)
+                                    .and_then(|avatars| avatars.image(&workspace.new_workspace_cwd))
+                                    .map_or(RowIcon::Mark, RowIcon::Avatar)
+                            },
+                            fold,
+                            grouped,
+                            badge: workspace_badge(
+                                workspace,
+                                &self.menu.pr_cache,
+                                &self.git,
+                                theme,
+                            ),
+                            removing: selected
+                                && self.live.status.is_connected()
+                                && self.removal.as_ref().is_some_and(|removal| {
+                                    removal.pending_for(
+                                        (self.selection_epoch, endpoint.generation),
+                                        &snapshot.boot_id,
+                                        &workspace.workspace_id,
+                                    )
+                                }),
+                        }),
+                        &row_cx,
                     )
+                    .selected(selected && workspace.focused)
+                    .highlighted(selected && menu_target == Some(id.as_str()))
+                    .row()
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -356,29 +369,20 @@ impl HerdrWindow {
                 agent_count += 1;
                 let id = agent.pane_id.clone();
                 let navigate_endpoint = endpoint_id.clone();
-                let host = (multi && endpoint_id != crate::endpoint::LOCAL)
-                    .then_some(endpoint.label.as_str());
-                let (name, detail) = agent_labels(agent, snapshot, host);
                 agents = agents.child(
-                    row(
-                        &format!("agent-{id}"),
-                        &name,
-                        detail,
-                        RowKind::Agent(crate::icons::AgentIcon::from_identity(
-                            agent.agent.as_deref(),
-                        )),
-                        agent.agent_status,
-                        false,
-                        selected && agent.focused,
-                        RowTree::None,
-                        false,
-                        width,
-                        RowIcon::None,
-                        None,
-                        None,
-                        look,
-                        (font, theme),
+                    Cell::new(
+                        rows,
+                        RowData::Agent(AgentRow {
+                            key: format!("agent-{id}"),
+                            name: agent_name(agent),
+                            icon: crate::icons::AgentIcon::from_identity(agent.agent.as_deref()),
+                            status: agent.agent_status,
+                            place: agent_place(agent, snapshot),
+                        }),
+                        &row_cx,
                     )
+                    .selected(selected && agent.focused)
+                    .row()
                     .id(SharedString::from(format!("agent-{endpoint_id}-{id}")))
                     .when(multi, |row| {
                         row.debug_selector(|| format!("agent-{endpoint_id}-{id}"))

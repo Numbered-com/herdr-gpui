@@ -563,6 +563,124 @@ fn agent_icons_follow_names_and_reserve_narrow_label_width(cx: &mut gpui::TestAp
     }
 }
 
+#[cfg(test)]
+/// Every row layout, at every density and style, keeps its text inside the
+/// box it was measured for and its rows inside the sidebar, and marks the
+/// focused row.
+fn check_row_style(style: crate::config::RowStyle, cx: &mut gpui::TestAppContext) {
+    use crate::config::{Density, LayoutMode, Style};
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut view = fixture_window(window, cx);
+        view.config.layout.rows = style;
+        view.live.snapshot = Some(Arc::new(snapshot(6)));
+        let input = crate::pull_request::Input {
+            checkout: None,
+            repo_key: REPO_KEY.into(),
+            branch: "worktree/sidebar-child".into(),
+        };
+        let now = std::time::Instant::now();
+        let mut pr = crate::pull_request::fixture().unwrap();
+        pr.number = 7;
+        pr.additions = 234;
+        pr.deletions = 567;
+        view.menu.pr_cache.seed(input.clone(), pr, now);
+        view.git.seed_probe(input, true, now);
+        view
+    });
+    cx.simulate_resize(size(px(800.), px(900.)));
+    cx.run_until_parked();
+    for font_size in [12., 18.] {
+        for width in [160., 232., 480.] {
+            for mode in [Density::Compact, Density::Normal, Density::Comfortable]
+                .into_iter()
+                .flat_map(|density| {
+                    [Style::Flat, Style::Rounded].map(|style| LayoutMode::new(density, style))
+                })
+            {
+                view.update(cx, |view, cx| {
+                    view.config.layout.mode = mode;
+                    view.config.sidebar.size = font_size;
+                    view.sidebar_width = Some(width);
+                    cx.notify();
+                });
+                let context = format!("{style:?} {mode} at {width}px, {font_size}pt");
+                cx.update(|window, cx| {
+                    cx.default_global::<TextProbes>().0.clear();
+                    full_draw(window, cx).clear();
+                    let probes = &cx.global::<TextProbes>().0;
+                    for text in ["herdr", "agent-launcher", "Claude Code"] {
+                        assert!(probes.contains_key(text), "{context}: {text} missing");
+                    }
+                    for (text, (bounds, _, glyphs)) in probes {
+                        // Headers and the device footer are not rows; the
+                        // rows' own text must fit where it was placed.
+                        // A box too narrow for an ellipsis clips instead;
+                        // subpixel shaping may overhang a whole-pixel box.
+                        assert!(
+                            *glyphs <= bounds.size.width + px(1.)
+                                || bounds.size.width < px(2. * font_size),
+                            "{context}: {text:?} overflows {bounds:?} with {glyphs:?}"
+                        );
+                    }
+                });
+                let sidebar = cx.debug_bounds("sidebar").unwrap();
+                for (row, name) in [
+                    ("row-herdr", "name-herdr"),
+                    ("row-agent-launcher", "name-agent-launcher"),
+                    ("row-sidebar-child", "name-sidebar-child"),
+                    ("row-agent-p0", "name-agent-p0"),
+                ] {
+                    let row_bounds = cx
+                        .debug_bounds(row)
+                        .unwrap_or_else(|| panic!("{context}: {row} missing"));
+                    assert!(row_bounds.right() <= sidebar.right(), "{context}: {row}");
+                    let name_bounds = cx.debug_bounds(name).unwrap();
+                    assert!(
+                        name_bounds.right() <= row_bounds.right(),
+                        "{context}: {name}"
+                    );
+                    assert!(
+                        name_bounds.bottom() <= row_bounds.bottom(),
+                        "{context}: {name}"
+                    );
+                }
+                let row = cx.debug_bounds("row-sidebar-child").unwrap();
+                let badge = cx.debug_bounds("pr-sidebar-child").unwrap();
+                assert!(
+                    badge.right() <= row.right(),
+                    "{context}: badge {badge:?} {row:?}"
+                );
+                assert!(
+                    badge.bottom() <= row.bottom(),
+                    "{context}: badge {badge:?} {row:?}"
+                );
+                assert!(cx.debug_bounds("dirty-sidebar-child").is_some());
+                // Only the focused workspace draws a selection mark in the
+                // layouts whose highlight exists only while selected.
+                assert!(
+                    cx.debug_bounds("highlight-herdr").is_some()
+                        || style == crate::config::RowStyle::Orca
+                );
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn herdr_rows_fit_every_layout_mode(cx: &mut gpui::TestAppContext) {
+    check_row_style(crate::config::RowStyle::Herdr, cx);
+}
+
+#[gpui::test]
+fn superset_rows_fit_every_layout_mode(cx: &mut gpui::TestAppContext) {
+    check_row_style(crate::config::RowStyle::Superset, cx);
+}
+
+#[gpui::test]
+fn orca_rows_fit_every_layout_mode(cx: &mut gpui::TestAppContext) {
+    check_row_style(crate::config::RowStyle::Orca, cx);
+}
+
 #[gpui::test]
 fn sidebar_densities_keep_details_and_badges_within_their_rows(cx: &mut gpui::TestAppContext) {
     use crate::config::{Density, LayoutMode, Style};

@@ -179,6 +179,8 @@ pub struct Layout {
     /// only while the sidebar is on screen, and narrows the terminal, so the
     /// daemon is told about the columns it actually has.
     pub sidebar_gap: f32,
+    /// How each sidebar row arranges what it shows.
+    pub rows: RowStyle,
 }
 
 impl Default for Layout {
@@ -186,8 +188,25 @@ impl Default for Layout {
         Self {
             mode: LayoutMode::new(Density::Normal, Style::Flat),
             sidebar_gap: DEFAULT_SIDEBAR_GAP,
+            rows: RowStyle::default(),
         }
     }
+}
+
+/// Which row layout the sidebar draws with. Density and style still apply to
+/// the list around the rows; this picks what a row shows and where.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RowStyle {
+    /// Two-line rows after Herdr's terminal client: status, name, branch,
+    /// avatar, and pull request.
+    #[default]
+    Herdr,
+    /// One line per row: an icon carrying status or pull request, the name,
+    /// and the pull request's change counts.
+    Superset,
+    /// Orca-style cards: the name with its status, then branch and host.
+    Orca,
 }
 
 /// How much the sidebar fits: spacing, indents, and which details show.
@@ -293,6 +312,8 @@ impl<'de> Deserialize<'de> for Layout {
                 #[serde(default)]
                 mode: LayoutMode,
                 sidebar_gap: Option<f32>,
+                #[serde(default)]
+                rows: RowStyle,
             },
         }
         Ok(match Setting::deserialize(deserializer)? {
@@ -300,9 +321,14 @@ impl<'de> Deserialize<'de> for Layout {
                 mode,
                 ..Self::default()
             },
-            Setting::Options { mode, sidebar_gap } => Self {
+            Setting::Options {
+                mode,
+                sidebar_gap,
+                rows,
+            } => Self {
                 mode,
                 sidebar_gap: sidebar_gap.unwrap_or(DEFAULT_SIDEBAR_GAP),
+                rows,
             },
         })
     }
@@ -1791,6 +1817,41 @@ mod tests {
         }
         for value in ["'left'", "'true'", "1"] {
             assert!(Config::parse(&format!("option_as_alt = {value}")).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn row_layouts_are_named_under_layout_and_default_to_herdr() -> anyhow::Result<()> {
+        for config in [
+            Config::default(),
+            Config::parse(DEFAULT_CONFIG)?,
+            Config::parse("[layout]")?,
+            Config::parse("layout = 'comfortable-rounded'")?,
+        ] {
+            assert_eq!(config.layout.rows, RowStyle::Herdr);
+        }
+        for (name, rows) in [
+            ("herdr", RowStyle::Herdr),
+            ("superset", RowStyle::Superset),
+            ("orca", RowStyle::Orca),
+        ] {
+            let config = Config::parse(&format!(
+                "[layout]\nmode = 'compact-rounded'\nsidebar_gap = 4\nrows = '{name}'"
+            ))?;
+            assert_eq!(config.layout.rows, rows);
+            // Picking rows leaves the density, style, and gap alone.
+            assert_eq!(
+                config.layout.mode,
+                LayoutMode::new(Density::Compact, Style::Rounded)
+            );
+            assert_eq!(config.layout.sidebar_gap, 4.);
+        }
+        for value in ["'Superset'", "'arc'", "1"] {
+            assert!(
+                Config::parse(&format!("[layout]\nrows = {value}")).is_err(),
+                "{value}"
+            );
         }
         Ok(())
     }

@@ -2,7 +2,7 @@
 //! budgets. A layout name pairs one of each, so every density has a rounded
 //! variant without a type per combination.
 
-use super::{CHILD_INDENT, LABEL_GAP, ROW_PADDING, STATUS_WIDTH};
+use super::{CHILD_INDENT, LABEL_GAP, ROW_PADDING, STATUS_WIDTH, cell::RowState};
 use crate::config::{Density, LayoutMode, Style, Theme};
 use gpui::{Div, InteractiveElement, Styled, div, prelude::FluentBuilder, px, rgb, rgba};
 
@@ -226,7 +226,7 @@ pub(super) struct SidebarLook {
 
 /// Group every row joins, so its highlight layer can follow the row's hover.
 /// GPUI resolves a group name to the innermost member, so rows can share it.
-const ROW_GROUP: &str = "sidebar-row";
+pub(super) const ROW_GROUP: &str = "sidebar-row";
 
 impl SidebarLook {
     pub(super) fn inset(&self) -> f32 {
@@ -290,7 +290,11 @@ impl SidebarLook {
     /// absolutely positioned, so a border or radius never changes the row's
     /// measured geometry, and it must be the row's first child so content
     /// paints above it.
-    pub(super) fn highlight(&self, key: &str, focused: bool, theme: &Theme) -> Div {
+    pub(super) fn highlight(&self, key: &str, state: RowState, theme: &Theme) -> Div {
+        let RowState {
+            selected: focused,
+            highlighted,
+        } = state;
         let inset = px(self.inset());
         let edge = px(self.spacing() / 2.);
         let layer = div()
@@ -305,7 +309,7 @@ impl SidebarLook {
             Highlight::Fill => {
                 let active = theme.active;
                 layer
-                    .when(focused, |layer| layer.bg(rgb(active)))
+                    .when(focused || highlighted, |layer| layer.bg(rgb(active)))
                     .group_hover(ROW_GROUP, move |s| s.bg(rgb(active)))
             }
             Highlight::Outline => {
@@ -315,6 +319,7 @@ impl SidebarLook {
                     .border_1()
                     .border_color(rgba(0))
                     .when(focused, |layer| layer.bg(selected).border_color(border))
+                    .when(!focused && highlighted, |layer| layer.bg(hover))
                     .when(!focused, |layer| {
                         layer.group_hover(ROW_GROUP, move |s| s.bg(hover))
                     })

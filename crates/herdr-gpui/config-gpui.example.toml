@@ -33,6 +33,10 @@ option_as_alt = "auto"
 # counts, and tightens Spaces and Agents spacing without changing font sizes.
 # Add "-rounded" to any of them ("normal-rounded", "compact-rounded",
 # "comfortable-rounded") for inset rows with rounded, bordered highlights.
+# To also pick how rows are arranged, use a [layout] table instead:
+#   [layout]
+#   mode = "normal"
+#   rows = "herdr"   # "herdr", "superset" (single-line), or "orca" (cards)
 layout = "normal"
 
 [notifications]

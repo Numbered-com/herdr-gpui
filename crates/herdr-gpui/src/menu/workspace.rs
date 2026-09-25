@@ -210,6 +210,16 @@ fn close_members(snapshot: &ClientShellSnapshot, workspace: &ClientShellWorkspac
 }
 
 impl HerdrWindow {
+    /// The selected endpoint's workspace a workspace menu is open for. A
+    /// hover menu can target a row that is not focused, so the row marks
+    /// itself while the pointer is over the menu instead.
+    pub(crate) fn workspace_menu_target(&self) -> Option<&str> {
+        if self.menu.page != Some(Page::Workspace) {
+            return None;
+        }
+        self.menu.target.as_ref().map(|target| target.id.as_str())
+    }
+
     pub(crate) fn open_workspace_menu(
         &mut self,
         id: &str,
