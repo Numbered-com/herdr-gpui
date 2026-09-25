@@ -254,7 +254,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
         // were given, and none is cropped or wider than its box.
         {
             use crate::config::{Density, LayoutMode, RowStyle, Style};
-            let _ = cx.update(|cx| cx.set_global(sidebar::layout_tests::VerifyChildGeometry(false)));
+            cx.update(|cx| cx.set_global(sidebar::layout_tests::VerifyChildGeometry(false)));
             for rows in [RowStyle::Superset, RowStyle::Orca, RowStyle::Minimal] {
                 for density in [Density::Comfortable, Density::Normal, Density::Compact] {
                     for style in [Style::Flat, Style::Rounded] {
@@ -273,7 +273,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                                         cx.notify();
                                     });
                                 window.refresh();
-                                window.draw(cx).clear();
+                                window.draw(cx).clear(cx);
                                 cx.default_global::<PaintedProbes>().check()?;
                                 let probes = &cx.global::<PaintedProbes>().0;
                                 for input in ["herdr", "Claude Code"] {

@@ -606,7 +606,7 @@ fn check_row_style(style: crate::config::RowStyle, cx: &mut gpui::TestAppContext
                 let context = format!("{style:?} {mode} at {width}px, {font_size}pt");
                 cx.update(|window, cx| {
                     cx.default_global::<TextProbes>().0.clear();
-                    full_draw(window, cx).clear();
+                    full_draw(window, cx).clear(cx);
                     let probes = &cx.global::<TextProbes>().0;
                     for text in ["herdr", "agent-launcher", "Claude Code"] {
                         assert!(probes.contains_key(text), "{context}: {text} missing");
