@@ -3,9 +3,12 @@
 //! resets, and whatever else the agent's service reports.
 
 use super::service::Service;
-use crate::icons::AgentIcon;
 use herdr_client::ConnectTarget;
-use std::time::{Duration, SystemTime};
+use std::{
+    any::Any,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 /// The machine whose agent sign-ins are read. A remote host is asked over SSH,
 /// so its own credentials are used and never leave it.
@@ -26,62 +29,86 @@ impl From<&ConnectTarget> for Host {
     }
 }
 
-/// The agents whose usage can be shown. Each has a [`Service`] that knows how
-/// to find its sign-in, ask its service, and read the answer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Provider {
-    Claude,
-    Codex,
-}
+/// A registered provider. Only [`super::registry`] makes one, so each value
+/// is a real [`Service`]; two are equal when their ids are.
+#[derive(Clone, Copy)]
+pub(crate) struct Provider(pub(super) &'static dyn Service);
 
 impl Provider {
-    pub const ALL: [Self; 2] = [Self::Claude, Self::Codex];
-
     pub fn service(self) -> &'static dyn Service {
-        match self {
-            Self::Claude => &super::claude::Claude,
-            Self::Codex => &super::codex::Codex,
-        }
+        self.0
+    }
+
+    pub fn id(self) -> &'static str {
+        self.0.id()
     }
 
     pub fn name(self) -> &'static str {
-        self.service().name()
+        self.0.name()
     }
 
-    /// The marker the remote script prints before this provider's response.
-    pub fn key(self) -> &'static str {
-        self.service().key()
-    }
-
-    pub fn icon(self) -> AgentIcon {
-        self.service().icon()
-    }
-
-    #[cfg(unix)]
-    pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|provider| provider.key() == key)
+    pub fn icon(self) -> &'static str {
+        self.0.icon()
     }
 }
 
-/// Which limit a window measures. Model windows are weekly limits scoped to
-/// one model, named as the service names it.
+impl PartialEq for Provider {
+    fn eq(&self, other: &Self) -> bool {
+        self.id() == other.id()
+    }
+}
+
+impl Eq for Provider {}
+
+impl std::hash::Hash for Provider {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id().hash(state);
+    }
+}
+
+impl std::fmt::Debug for Provider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Provider({})", self.id())
+    }
+}
+
+/// Which limit a window measures. A named window is one the service names
+/// itself, such as a weekly limit scoped to one model.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Kind {
     Session,
+    Daily,
     Weekly,
-    Model(String),
+    Monthly,
+    Named(String),
 }
 
 impl Kind {
     pub fn title(&self) -> &str {
         match self {
             Self::Session => "Session",
+            Self::Daily => "Daily",
             Self::Weekly => "Weekly",
-            Self::Model(name) => name,
+            Self::Monthly => "Monthly",
+            Self::Named(name) => name,
+        }
+    }
+
+    /// How long the window usually runs, for judging its pace.
+    pub fn length(&self) -> Option<Duration> {
+        match self {
+            Self::Session => Some(SESSION),
+            Self::Daily => Some(DAY),
+            Self::Weekly => Some(WEEK),
+            Self::Monthly => Some(MONTH),
+            Self::Named(_) => None,
         }
     }
 }
 
+pub(crate) const DAY: Duration = Duration::from_secs(86_400);
+/// A calendar month varies; thirty days is close enough for a pace.
+pub(crate) const MONTH: Duration = Duration::from_secs(30 * 86_400);
 pub(crate) const SESSION: Duration = Duration::from_secs(5 * 3600);
 pub(crate) const WEEK: Duration = Duration::from_secs(7 * 86_400);
 
@@ -136,10 +163,12 @@ impl Window {
     /// a model window is named instead, as the service does.
     pub fn label(&self, now: SystemTime) -> String {
         let suffix = match (&self.kind, self.resets_in(now)) {
-            (Kind::Model(name), _) => name.clone(),
+            (Kind::Named(name), _) => name.clone(),
             (_, Some(left)) => countdown(left),
             (Kind::Session, None) => "5h".into(),
+            (Kind::Daily, None) => "day".into(),
             (Kind::Weekly, None) => "wk".into(),
+            (Kind::Monthly, None) => "mo".into(),
         };
         format!("{}% used {suffix}", self.percent())
     }
@@ -228,13 +257,126 @@ pub(crate) enum Section {
     },
 }
 
+/// Money or credits left, or spent, in the unit the service counts in.
 #[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Balance {
+    pub label: String,
+    pub amount: f64,
+    pub unit: Unit,
+    /// What the amount is out of, when the service says, e.g. a monthly budget.
+    pub total: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Unit {
+    /// An ISO 4217 code such as `USD`.
+    Currency(String),
+    /// A count of the service's own units, named as it names them.
+    Count(String),
+}
+
+impl Balance {
+    pub fn new(label: impl Into<String>, amount: f64, unit: Unit) -> Self {
+        Self {
+            label: label.into(),
+            amount,
+            unit,
+            total: None,
+        }
+    }
+
+    pub fn out_of(mut self, total: f64) -> Self {
+        self.total = Some(total);
+        self
+    }
+
+    /// `$12.30`, `12.30 EUR`, or `1,250 credits`.
+    pub fn amount_text(&self) -> String {
+        amount_text(self.amount, &self.unit)
+    }
+
+    pub fn text(&self) -> String {
+        match self.total {
+            Some(total) => format!(
+                "{} of {}",
+                self.amount_text(),
+                amount_text(total, &self.unit)
+            ),
+            None => self.amount_text(),
+        }
+    }
+}
+
+fn amount_text(amount: f64, unit: &Unit) -> String {
+    match unit {
+        Unit::Currency(code) if code == "USD" => format!("${amount:.2}"),
+        Unit::Currency(code) => format!("{amount:.2} {code}"),
+        Unit::Count(name) => {
+            let whole = amount.round();
+            let text = if (amount - whole).abs() < 0.005 {
+                group(whole as i64)
+            } else {
+                format!("{amount:.2}")
+            };
+            format!("{text} {name}")
+        }
+    }
+}
+
+/// `1250000` as `1,250,000`.
+pub(crate) fn group(value: i64) -> String {
+    let digits = value.unsigned_abs().to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3 + 1);
+    if value < 0 {
+        out.push('-');
+    }
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// A provider's own data for its own [`Service::render`], beyond what the
+/// shared fields carry. It crosses from the worker thread, so it is shared.
+pub(crate) type Detail = Arc<dyn Any + Send + Sync>;
+
+#[derive(Clone)]
 pub(crate) struct Report {
     pub provider: Provider,
     pub account: Account,
     /// Session, then weekly, then model windows.
     pub windows: Vec<Window>,
+    pub balances: Vec<Balance>,
     pub sections: Vec<Section>,
+    pub detail: Option<Detail>,
+}
+
+impl std::fmt::Debug for Report {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Report")
+            .field("provider", &self.provider)
+            .field("account", &self.account)
+            .field("windows", &self.windows)
+            .field("balances", &self.balances)
+            .field("sections", &self.sections)
+            .field("detail", &self.detail.is_some())
+            .finish()
+    }
+}
+
+/// Provider detail is opaque, so two reports match when everything shown
+/// through the shared fields does.
+impl PartialEq for Report {
+    fn eq(&self, other: &Self) -> bool {
+        self.provider == other.provider
+            && self.account == other.account
+            && self.windows == other.windows
+            && self.balances == other.balances
+            && self.sections == other.sections
+    }
 }
 
 impl Report {
@@ -244,13 +386,30 @@ impl Report {
             provider,
             account,
             windows,
+            balances: Vec::new(),
             sections: Vec::new(),
+            detail: None,
         }
     }
 
     pub fn with_sections(mut self, sections: impl IntoIterator<Item = Section>) -> Self {
         self.sections.extend(sections);
         self
+    }
+
+    pub fn with_balances(mut self, balances: impl IntoIterator<Item = Balance>) -> Self {
+        self.balances.extend(balances);
+        self
+    }
+
+    pub fn with_detail(mut self, detail: impl Any + Send + Sync) -> Self {
+        self.detail = Some(Arc::new(detail));
+        self
+    }
+
+    /// The provider's own data, if it stored this type.
+    pub fn detail<T: Any>(&self) -> Option<&T> {
+        self.detail.as_deref()?.downcast_ref()
     }
 
     /// The window closest to its limit, which the meter shows.

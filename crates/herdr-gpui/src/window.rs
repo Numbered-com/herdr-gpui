@@ -253,12 +253,18 @@ impl HerdrWindow {
     fn update_usage(&mut self) -> bool {
         let host = self
             .config
-            .show_usage
+            .usage
+            .show
             .then(|| self.endpoints.get(self.selected_endpoint))
             .flatten()
             .map(|endpoint| crate::usage::Host::from(&endpoint.connection.target));
-        self.usage
-            .poll(host, self.active, std::time::Instant::now())
+        self.usage.poll(
+            host,
+            &self.config.usage,
+            self.config_load_revision,
+            self.active,
+            std::time::Instant::now(),
+        )
     }
 
     pub(crate) fn new(

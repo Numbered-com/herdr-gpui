@@ -18,15 +18,22 @@ use std::{
 const METER_WIDTH: f32 = 40.;
 
 impl HerdrWindow {
-    /// Nothing when usage is hidden or no agent on the host is signed in.
+    /// The providers closest to a limit, at most [`super::HEADLINE`]; nothing
+    /// when usage is hidden or no provider on the host has numbers yet.
     pub(crate) fn render_usage(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let entry = self.usage.current();
-        let readings = entry.map_or(&[][..], |entry| &entry.readings[..]);
-        let host_error = entry.and_then(|entry| entry.error.clone());
-        let busy = self.usage.busy();
-        if !self.config.show_usage || (readings.is_empty() && host_error.is_none() && !busy) {
+        let shown = entry
+            .map(|entry| entry.headline(super::HEADLINE))
+            .unwrap_or_default();
+        // A host that could not be read at all says so, but only while
+        // there is nothing older to show.
+        let host_error = entry
+            .and_then(|entry| entry.error.clone())
+            .filter(|_| shown.is_empty());
+        if !self.config.usage.show || (shown.is_empty() && host_error.is_none()) {
             return None;
         }
+        let busy = self.usage.busy();
         let now = SystemTime::now();
         let theme = &self.theme;
         let mut row = div()
@@ -38,10 +45,10 @@ impl HerdrWindow {
             .overflow_hidden()
             .items_center()
             .gap(px(4.));
-        for reading in readings {
+        for reading in &shown {
             row = row.child(self.usage_segment(reading, now, cx));
         }
-        if let Some(error) = host_error.filter(|_| readings.is_empty()) {
+        if let Some(error) = host_error {
             let (foreground, surface) = (theme.foreground, theme.surface);
             let error = SharedString::from(error);
             row = row.child(
@@ -67,39 +74,47 @@ impl HerdrWindow {
             .path("icons/refresh.svg")
             .size(px(11.))
             .text_color(rgb(theme.muted));
+        // The segments clip when crowded; refresh stays in reach beside them.
         Some(
-            row.child(
-                div()
-                    .id("usage-refresh")
-                    .debug_selector(|| "usage-refresh".into())
-                    .size(px(18.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(crate::config::corners::CONTROL))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgb(theme.active)))
-                    .child(if busy {
-                        refresh
-                            .with_animation(
-                                "usage-refreshing",
-                                Animation::new(Duration::from_secs(1)).repeat(),
-                                |icon, delta| {
-                                    icon.with_transformation(Transformation::rotate(percentage(
-                                        delta,
-                                    )))
-                                },
-                            )
-                            .into_any_element()
-                    } else {
-                        refresh.into_any_element()
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.usage.refresh(std::time::Instant::now());
-                        cx.notify();
-                    })),
-            ),
+            div()
+                .flex()
+                .flex_shrink()
+                .min_w_0()
+                .items_center()
+                .gap(px(4.))
+                .child(row)
+                .child(
+                    div()
+                        .id("usage-refresh")
+                        .debug_selector(|| "usage-refresh".into())
+                        .size(px(18.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(crate::config::corners::CONTROL))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgb(theme.active)))
+                        .child(if busy {
+                            refresh
+                                .with_animation(
+                                    "usage-refreshing",
+                                    Animation::new(Duration::from_secs(1)).repeat(),
+                                    |icon, delta| {
+                                        icon.with_transformation(Transformation::rotate(
+                                            percentage(delta),
+                                        ))
+                                    },
+                                )
+                                .into_any_element()
+                        } else {
+                            refresh.into_any_element()
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.usage.refresh(std::time::Instant::now());
+                            cx.notify();
+                        })),
+                ),
         )
     }
 
@@ -111,7 +126,7 @@ impl HerdrWindow {
     ) -> impl IntoElement {
         let theme = &self.theme;
         let provider = reading.provider;
-        let key = provider.key();
+        let key = provider.id();
         let bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
         let painted = bounds.clone();
         let open = self.menu.page == Some(crate::menu::Page::Usage(provider));
@@ -120,9 +135,9 @@ impl HerdrWindow {
             .debug_selector(move || format!("usage-{key}"))
             .relative()
             .flex()
-            .flex_shrink()
-            .min_w_0()
-            .overflow_hidden()
+            // Whole segments: a crowded bar clips the last ones rather than
+            // truncating every label mid-word.
+            .flex_none()
             .items_center()
             .gap(px(6.))
             .px(px(6.))
@@ -132,7 +147,7 @@ impl HerdrWindow {
             .when(open, |segment| segment.bg(rgb(theme.active)))
             .child(
                 svg()
-                    .path(provider.icon().path())
+                    .path(provider.icon())
                     .size(px(12.))
                     .flex_none()
                     .text_color(rgb(theme.foreground)),
@@ -155,13 +170,7 @@ impl HerdrWindow {
                 );
             }));
         let Some(report) = &reading.report else {
-            // Signed in, but never read successfully.
-            return segment.child(
-                div()
-                    .whitespace_nowrap()
-                    .text_color(rgb(theme.muted))
-                    .child("--"),
-            );
+            return segment;
         };
         if let Some(tightest) = report.tightest() {
             segment = segment.child(meter(tightest, theme));
@@ -181,6 +190,13 @@ impl HerdrWindow {
                     .text_color(rgb(color(window.used.into(), theme, theme.foreground)))
                     .child(window.label(now)),
             );
+        }
+        // A service that meters money or credits rather than a window shows
+        // what is left or spent.
+        if report.windows.is_empty()
+            && let Some(balance) = report.balances.first()
+        {
+            labels = labels.child(balance.amount_text());
         }
         segment
             .child(labels)

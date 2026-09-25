@@ -2,11 +2,7 @@
 //! the selected host, its account, every limit with its pace, whatever else
 //! its service reports, and links to the service's own pages.
 
-use super::{
-    Reading,
-    model::{Pace, Provider, Section, Severity, Window as Limit, countdown},
-    render::ago,
-};
+use super::{Reading, model::Provider, render::ago, service::Service, ui::Ui};
 use crate::{menu::Page, window::HerdrWindow};
 use gpui::{prelude::*, *};
 use std::time::{Instant, SystemTime};
@@ -159,22 +155,16 @@ impl HerdrWindow {
                     .child(error),
             );
         }
+        let ui = Ui {
+            theme: self.theme.clone(),
+            font_size: font.size,
+            now,
+        };
         if let Some(report) = reading.and_then(|r| r.report.as_ref()) {
-            view = view.child(rule());
-            for limit in &report.windows {
-                view = view.child(self.usage_limit(limit, now));
-            }
-            for section in &report.sections {
-                view = view.child(rule()).child(self.usage_section(section, now));
-            }
-        } else if reading.is_none() {
-            view = view.child(
-                div()
-                    .px(px(8.))
-                    .py(px(6.))
-                    .text_color(rgb(theme.muted))
-                    .child(format!("{} is not signed in on {host}.", service.name())),
-            );
+            view = view.child(rule()).child(service.render(report, &ui, cx));
+        } else if !service.settings().is_empty() {
+            // Nothing to show yet: say what would sign it in.
+            view = view.child(rule()).child(setup(service, &ui));
         }
         let body = view
             .child(rule())
@@ -187,18 +177,22 @@ impl HerdrWindow {
                     cx.notify();
                 }),
             ))
-            .child(self.usage_action(
-                "usage-dashboard",
-                "icons/chart.svg",
-                "Usage Dashboard",
-                move |_, _, cx| cx.open_url(service.dashboard()),
-            ))
-            .child(self.usage_action(
-                "usage-status",
-                "icons/pulse.svg",
-                "Status Page",
-                move |_, _, cx| cx.open_url(service.status_page()),
-            ));
+            .children(service.dashboard().map(|url| {
+                self.usage_action(
+                    "usage-dashboard",
+                    "icons/chart.svg",
+                    "Usage Dashboard",
+                    move |_, _, cx| cx.open_url(url),
+                )
+            }))
+            .children(service.status_page().map(|url| {
+                self.usage_action(
+                    "usage-status",
+                    "icons/pulse.svg",
+                    "Status Page",
+                    move |_, _, cx| cx.open_url(url),
+                )
+            }));
         // The tabs sit on the panel's bottom edge, beside the status bar it
         // rises from: switching agents changes the panel's height above them,
         // so they never move under the pointer.
@@ -228,7 +222,7 @@ impl HerdrWindow {
         let theme = &self.theme;
         div()
             .flex()
-            .gap(px(4.))
+            .flex_wrap()
             .children(readings.iter().map(|reading| {
                 let provider = reading.provider;
                 let chosen = provider == selected;
@@ -238,11 +232,14 @@ impl HerdrWindow {
                 } else {
                     (None, theme.muted)
                 };
-                let key = provider.key();
+                let key = provider.id();
+                // Two tabs share the row; more wrap four to a row, as CodexBar's do.
+                let width = if readings.len() <= 2 { 0.5 } else { 0.25 };
                 div()
                     .id(SharedString::from(format!("usage-tab-{key}")))
                     .debug_selector(move || format!("usage-tab-{key}"))
-                    .flex_1()
+                    .w(relative(width))
+                    .min_w_0()
                     .flex()
                     .flex_col()
                     .items_center()
@@ -255,118 +252,17 @@ impl HerdrWindow {
                     .when(!chosen, |tab| tab.hover(|s| s.bg(rgb(theme.active))))
                     .child(
                         svg()
-                            .path(provider.icon().path())
+                            .path(provider.icon())
                             .size(px(16.))
                             .text_color(rgb(text)),
                     )
-                    .child(provider.name())
+                    .child(div().max_w_full().truncate().child(provider.name()))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.menu.page = Some(Page::Usage(provider));
                         cx.notify();
                     }))
             }))
-    }
-
-    /// `Weekly 89% left`, its reset, a bar of what is left with a tick where
-    /// an even spend would be, and whether the rest lasts.
-    fn usage_limit(&self, limit: &Limit, now: SystemTime) -> impl IntoElement {
-        let theme = &self.theme;
-        let small = px(self.config.ui.size * 0.9);
-        let pace = limit.pace(now);
-        div()
-            .px(px(8.))
-            .py(px(6.))
-            .flex()
-            .flex_col()
-            .gap(px(4.))
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .gap(px(8.))
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child(format!(
-                        "{} {}% left",
-                        limit.kind.title(),
-                        limit.left()
-                    )))
-                    .children(limit.resets_in(now).map(|left| {
-                        div()
-                            .flex_none()
-                            .text_size(small)
-                            .text_color(rgb(theme.muted))
-                            .child(format!("Resets in {}", countdown(left)))
-                    })),
-            )
-            .child(bar(100. - limit.used, limit.used, pace, theme))
-            .children(pace.map(|pace| {
-                div()
-                    .text_size(small)
-                    .text_color(rgb(theme.muted))
-                    .child(pace.describe(limit.used))
-            }))
-    }
-
-    fn usage_section(&self, section: &Section, now: SystemTime) -> AnyElement {
-        let theme = &self.theme;
-        let small = px(self.config.ui.size * 0.9);
-        let heading = |title: &str| {
-            div()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(title.to_owned())
-        };
-        match section {
-            Section::Limit(limit) => self.usage_limit(limit, now).into_any_element(),
-            Section::Facts { title, facts } => div()
-                .px(px(8.))
-                .py(px(6.))
-                .flex()
-                .flex_col()
-                .gap(px(4.))
-                .child(heading(title))
-                .children(facts.iter().map(|(label, value)| {
-                    div()
-                        .flex()
-                        .justify_between()
-                        .gap(px(8.))
-                        .text_size(small)
-                        .child(div().text_color(rgb(theme.muted)).child(label.clone()))
-                        .child(div().child(value.clone()))
-                }))
-                .into_any_element(),
-            Section::Shares { title, shares } => div()
-                .px(px(8.))
-                .py(px(6.))
-                .flex()
-                .flex_col()
-                .gap(px(4.))
-                .child(heading(title))
-                .children(shares.iter().map(|(label, share)| {
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .text_size(small)
-                        .child(
-                            div()
-                                .w(px(96.))
-                                .flex_none()
-                                .truncate()
-                                .text_color(rgb(theme.muted))
-                                .child(label.clone()),
-                        )
-                        .child(div().flex_1().child(bar(*share, 0., None, theme)))
-                        .child(
-                            div()
-                                .w(px(36.))
-                                .flex_none()
-                                .flex()
-                                .justify_end()
-                                .child(format!("{}%", share.round())),
-                        )
-                }))
-                .into_any_element(),
-        }
     }
 
     fn usage_action(
@@ -403,34 +299,27 @@ impl HerdrWindow {
     }
 }
 
-/// A full-width bar filled to `fill` percent, colored by how much of the
-/// limit is `used`, with a tick where an even spend would have left it.
-fn bar(fill: f32, used: f32, pace: Option<Pace>, theme: &crate::config::Theme) -> impl IntoElement {
-    let color = match Severity::from(used) {
-        Severity::Normal => crate::menu::accent(theme),
-        Severity::Warning => rgb(theme.palette[3]),
-        Severity::Critical => rgb(theme.palette[1]),
-    };
-    div()
-        .relative()
-        .h(px(6.))
-        .w_full()
-        .rounded_full()
-        .bg(rgb(theme.active))
-        .child(
+/// Where each of the provider's settings goes and how to find its value.
+fn setup(service: &dyn Service, ui: &Ui) -> AnyElement {
+    ui.block()
+        .child(ui.heading("Set up"))
+        .children(service.settings().iter().map(|setting| {
+            let variables = if setting.env.is_empty() {
+                String::new()
+            } else {
+                format!(" or {}", setting.env.join(", "))
+            };
             div()
-                .h_full()
-                .w(relative(fill.clamp(0., 100.) / 100.))
-                .rounded_full()
-                .bg(color),
-        )
-        .children(pace.map(|pace| {
-            div()
-                .absolute()
-                .top(px(-2.))
-                .h(px(10.))
-                .w(px(2.))
-                .left(relative((100. - pace.expected).clamp(0., 100.) / 100.))
-                .bg(rgb(theme.foreground))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .text_size(ui.small())
+                .child(format!(
+                    "[usage.providers.{}] {}{variables}",
+                    service.id(),
+                    setting.name
+                ))
+                .child(div().text_color(ui.muted()).child(setting.help))
         }))
+        .into_any_element()
 }

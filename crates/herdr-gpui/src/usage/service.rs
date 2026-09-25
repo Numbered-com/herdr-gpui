@@ -1,140 +1,70 @@
-//! What an agent must provide for its usage to be shown. Adding one takes a
-//! [`Provider`](super::model::Provider) variant, an implementation of
-//! [`Service`] in its own module, and the arm that maps one to the other.
-//! Everything else, local and remote fetching, caching, the status bar, and
-//! the panel, works from the trait.
+//! What a provider implements for its usage to be shown. A provider is one
+//! module under `providers/` with a unit struct implementing [`Service`], and
+//! one line in [`super::registry`]. Everything else, detection, local and
+//! remote fetching, caching, the status bar, and the panel, works from the
+//! trait: a provider reads through a [`Probe`] and draws through a [`Ui`].
 
-use super::model::Report;
-use crate::{Error, Result, icons::AgentIcon};
-use secrecy::{ExposeSecret, SecretString};
+use super::{model::Report, probe::Probe, ui::Ui};
+use crate::{Error, Result};
+use gpui::{AnyElement, App};
 use serde::Deserialize;
-use std::{
-    path::{Path, PathBuf},
-    time::{Duration, SystemTime},
-};
-use ureq::http::HeaderValue;
-use zeroize::Zeroizing;
+use std::time::{Duration, SystemTime};
+
+/// A config value a provider reads, documented where users set it:
+/// `[usage.providers.<id>] <name> = "…"`, or one of `env` for this app.
+#[derive(Debug)]
+pub(crate) struct Setting {
+    pub name: &'static str,
+    pub env: &'static [&'static str],
+    /// What the value is and where to find it, e.g. which cookie to copy
+    /// from which site's developer tools.
+    pub help: &'static str,
+}
+
+impl Setting {
+    pub const fn new(name: &'static str, env: &'static [&'static str], help: &'static str) -> Self {
+        Self { name, env, help }
+    }
+}
 
 pub(crate) trait Service: Sync {
+    /// Lowercase ASCII, stable: config tables and saved choices use it.
+    fn id(&self) -> &'static str;
     fn name(&self) -> &'static str;
-    /// Lowercase ASCII identifier, used as the remote script's section marker.
-    fn key(&self) -> &'static str;
-    fn icon(&self) -> AgentIcon;
-    /// Where the account's own usage page lives.
-    fn dashboard(&self) -> &'static str;
-    fn status_page(&self) -> &'static str;
-    /// The [`Meta`] names the remote fragment may print; others are dropped.
-    #[cfg(unix)]
-    fn meta(&self) -> &'static [&'static str] {
+    /// An embedded SVG asset path.
+    fn icon(&self) -> &'static str {
+        "icons/agent-generic.svg"
+    }
+    /// The account's own usage page.
+    fn dashboard(&self) -> Option<&'static str> {
+        None
+    }
+    fn status_page(&self) -> Option<&'static str> {
+        None
+    }
+    /// Values this provider reads from config or the environment.
+    fn settings(&self) -> &'static [Setting] {
         &[]
     }
-    /// The request this machine's saved sign-in makes, or None when the agent
-    /// is not signed in here. Credentials are only read, never refreshed.
-    fn local(&self) -> Option<Result<Request>>;
-    /// A POSIX `sh` fragment that does what [`Service::local`] does on a
-    /// remote host. It may use `field NAME` (the first JSON string value named
-    /// NAME on stdin) and must answer, when signed in, by piping its secret
-    /// headers into `request KEY "META" CURL_ARGS…`, where META is
-    /// space-separated `name=value` pairs for [`Meta`]. Secrets must never
-    /// appear in curl's arguments, where other users could read them. Remote
-    /// hosts are reached over SSH, which only Unix clients support.
-    #[cfg(unix)]
-    fn remote(&self) -> &'static str;
-    /// A successful response body, with what the sign-in said about itself.
-    fn parse(&self, body: &str, meta: &Meta) -> Result<Report>;
-}
-
-pub(crate) struct Request {
-    pub url: &'static str,
-    pub headers: Vec<(&'static str, HeaderValue)>,
-    pub meta: Meta,
-}
-
-/// Facts about a sign-in that its service's response does not repeat, such as
-/// the plan tier, gathered alike on this machine and by the remote script.
-/// Values are single bounded words, so the script can print them on one line.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Meta(Vec<(&'static str, String)>);
-
-const META_VALUE_LIMIT: usize = 128;
-
-impl Meta {
-    pub fn with(mut self, name: &'static str, value: Option<impl AsRef<str>>) -> Self {
-        if let Some(value) = value
-            .as_ref()
-            .map(|value| value.as_ref().trim())
-            .filter(|value| {
-                !value.is_empty()
-                    && value.len() <= META_VALUE_LIMIT
-                    && !value.chars().any(|c| c.is_whitespace() || c.is_control())
-            })
-        {
-            self.0.retain(|(existing, _)| *existing != name);
-            self.0.push((name, value.to_owned()));
-        }
-        self
+    /// Finds the sign-in through `probe` and asks the service. None means
+    /// the probed host has no sign-in and the config names none, so the
+    /// provider is left out unless the config asks for it.
+    fn fetch(&self, probe: &mut Probe) -> Option<Result<Report>>;
+    /// The panel body. The default draws the shared fields; a provider with
+    /// its own detail draws that too, from [`Report::detail`].
+    fn render(&self, report: &Report, ui: &Ui, _cx: &App) -> AnyElement {
+        ui.standard(report)
     }
-
-    pub fn get(&self, name: &str) -> Option<&str> {
-        self.0
-            .iter()
-            .find(|(existing, _)| *existing == name)
-            .map(|(_, value)| value.as_str())
-    }
-
-    /// Only names in `known` are kept, so a remote host cannot grow the map.
-    #[cfg(unix)]
-    pub fn parse(line: &str, known: &[&'static str]) -> Self {
-        line.split_whitespace()
-            .filter_map(|pair| pair.split_once('='))
-            .fold(Self::default(), |meta, (name, value)| {
-                match known.iter().find(|known| **known == name) {
-                    Some(name) => meta.with(name, Some(value)),
-                    None => meta,
-                }
-            })
-    }
-}
-
-pub(super) fn bearer(token: &SecretString) -> Result<HeaderValue> {
-    let text = Zeroizing::new(format!("Bearer {}", token.expose_secret()));
-    let mut header = HeaderValue::from_str(&text).map_err(Error::UsageHeader)?;
-    header.set_sensitive(true);
-    Ok(header)
-}
-
-/// `$VARIABLE` when set, else `default` under the home directory.
-pub(super) fn agent_home(variable: &str, default: &str) -> Option<PathBuf> {
-    std::env::var_os(variable)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| crate::config::home().ok().map(|home| home.join(default)))
-}
-
-/// Agent configuration can be large, but not this large.
-const FILE_LIMIT: u64 = 16 * 1024 * 1024;
-
-/// A file that may hold secrets, wiped from memory when dropped. Missing,
-/// unreadable, and oversized files all read as absent.
-pub(super) fn read_private(path: &Path) -> Option<Zeroizing<Vec<u8>>> {
-    use std::io::Read;
-    let mut bytes = Zeroizing::new(Vec::new());
-    std::fs::File::open(path)
-        .ok()?
-        .take(FILE_LIMIT + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    (bytes.len() as u64 <= FILE_LIMIT).then_some(bytes)
 }
 
 pub(super) fn json<'a, T: Deserialize<'a>>(body: &'a str) -> Result<T> {
     serde_json::from_str(body).map_err(|error| Error::UsageJson(error.classify()))
 }
 
-/// Seconds, milliseconds, or RFC 3339, as the services have each used.
-#[derive(Deserialize)]
+/// Seconds, milliseconds, or RFC 3339, as services variously send times.
+#[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
-pub(super) enum Timestamp {
+pub(crate) enum Timestamp {
     Number(f64),
     Text(String),
 }
@@ -143,16 +73,50 @@ impl Timestamp {
     pub fn time(&self) -> Option<SystemTime> {
         match self {
             Self::Number(value) if value.is_finite() && *value > 0. => {
-                let seconds = if *value > 1e10 { value / 1000. } else { *value };
+                let seconds = if *value > 1e11 { value / 1000. } else { *value };
                 SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs_f64(seconds))
             }
             Self::Number(_) => None,
             Self::Text(text) => {
-                let at = chrono::DateTime::parse_from_rfc3339(text).ok()?;
+                if let Ok(number) = text.trim().parse::<f64>() {
+                    return Self::Number(number).time();
+                }
+                let at = chrono::DateTime::parse_from_rfc3339(text.trim())
+                    .ok()
+                    .map(|at| at.to_utc())
+                    .or_else(|| {
+                        chrono::NaiveDateTime::parse_from_str(text.trim(), "%Y-%m-%dT%H:%M:%S%.f")
+                            .or_else(|_| {
+                                chrono::NaiveDateTime::parse_from_str(
+                                    text.trim(),
+                                    "%Y-%m-%d %H:%M:%S",
+                                )
+                            })
+                            .ok()
+                            .map(|at| at.and_utc())
+                    })?;
                 let seconds = u64::try_from(at.timestamp()).ok()?;
                 SystemTime::UNIX_EPOCH
                     .checked_add(Duration::new(seconds, at.timestamp_subsec_nanos()))
             }
         }
     }
+}
+
+/// Deserializes a number that a service may send as a string.
+pub(crate) fn number<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<f64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Loose {
+        Number(f64),
+        Text(String),
+        Null,
+    }
+    Ok(match Option::<Loose>::deserialize(deserializer)? {
+        Some(Loose::Number(value)) => Some(value),
+        Some(Loose::Text(text)) => text.trim().parse().ok(),
+        Some(Loose::Null) | None => None,
+    })
 }
