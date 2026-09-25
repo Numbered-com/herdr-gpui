@@ -272,7 +272,8 @@ rows = "superset"
 Density still sets the list's spacing and headings in every row layout. In
 code, a row layout implements `RowLayout` in `src/sidebar/layouts/`; render
 hands it typed row data and a shared per-frame `RowContext`, and marks each
-row with `Cell::selected` and `Cell::highlighted`. Layouts are assembled from
+row with `Cell::selected`, `Cell::highlighted`, and `Cell::lift`, which says
+which row a workspace drag carries so each layout draws its own lifted card. Layouts are assembled from
 the shared pieces in `layouts/parts.rs`: a `Line` gives fixed pieces (icons,
 status, fold) their size, lets labels shrink to a share of the row, and hands
 the rest to the name, so the whole `minimal` layout is under a hundred lines.

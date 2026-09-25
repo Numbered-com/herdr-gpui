@@ -29,8 +29,7 @@ fn shell(key: &str, state: RowState, indent: f32, line: Line<'_>, cx: &RowContex
         .flex()
         .items_center()
         .cursor_pointer()
-        .map(|row| look.hover_group(row))
-        .child(look.highlight(key, state, cx.theme))
+        .map(|row| look.mark(row, key, state, cx.theme))
         .child(line.into_div())
 }
 

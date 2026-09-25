@@ -373,6 +373,7 @@ fn cells_hand_their_state_and_data_to_the_layout() {
     let state = |selected, highlighted| RowState {
         selected,
         highlighted,
+        ..RowState::default()
     };
     assert_eq!(
         recorder.0.into_inner(),

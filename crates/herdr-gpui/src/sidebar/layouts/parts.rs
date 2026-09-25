@@ -8,8 +8,9 @@
 //! with an explicit width, so nothing can push past the row's edge.
 
 use super::super::{
+    cell::RowState,
     glyph_width, label_text,
-    row::{PrBadge, removing_indicator},
+    row::{PrBadge, RowLift, removing_indicator},
     status_indicator,
 };
 use crate::config::{FontConfig, Theme};
@@ -203,13 +204,30 @@ pub(super) fn wash(color: u32, alpha: u8) -> Rgba {
     rgba((color << 8) | u32::from(alpha))
 }
 
-/// Marks a row: `selected` while focused, `hover` under the pointer or while
-/// highlighted.
-pub(super) fn mark(row: Div, selected: bool, highlighted: bool, colors: (Rgba, Rgba)) -> Div {
+/// Marks a row by its state: `fill` while focused, `hover` under the pointer
+/// or while highlighted. A carried row becomes an opaque card lifted by a
+/// shadow, so the rows it floats over stay hidden in every theme; the rows it
+/// passes stop answering hover, leaving the gap to mark where it lands.
+pub(super) fn mark(row: Div, state: RowState, colors: (Rgba, Rgba), theme: &Theme) -> Div {
     let (fill, hover) = colors;
-    row.when(selected, |row| row.bg(fill))
-        .when(!selected && highlighted, |row| row.bg(hover))
-        .when(!selected, |row| row.hover(move |style| style.bg(hover)))
+    let selected = state.selected;
+    match state.lift {
+        // Only a border the layout already draws is colored: adding one
+        // would resize the row the list measured.
+        RowLift::Lifted => row
+            .bg(rgb(if selected {
+                theme.active
+            } else {
+                theme.surface
+            }))
+            .border_color(wash(theme.foreground, if selected { 0x40 } else { 0x20 }))
+            .shadow_lg(),
+        RowLift::Passed => row.when(selected, |row| row.bg(fill)),
+        RowLift::Resting => row
+            .when(selected, |row| row.bg(fill))
+            .when(!selected && state.highlighted, |row| row.bg(hover))
+            .when(!selected, |row| row.hover(move |style| style.bg(hover))),
+    }
 }
 
 pub(super) fn icon(path: impl Into<SharedString>, size: f32, color: u32) -> Svg {

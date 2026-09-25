@@ -111,6 +111,8 @@ pub(crate) struct HerdrWindow {
     pub(crate) wheel: WheelAccumulator,
     pub(crate) sidebar_width: Option<f32>,
     pub(crate) sidebar_drag: Option<sidebar::SidebarDrag>,
+    /// A press on a workspace row that may lift it for reordering.
+    pub(crate) workspace_drag: Option<sidebar::WorkspaceDrag>,
     pub(crate) sidebar_split: Option<f32>,
     pub(crate) sidebar_split_modified: bool,
     pub(crate) sidebar_preferences: Option<preferences::Preferences>,
@@ -342,6 +344,7 @@ impl HerdrWindow {
             wheel: WheelAccumulator::default(),
             sidebar_width: None,
             sidebar_drag: None,
+            workspace_drag: None,
             sidebar_split: None,
             sidebar_split_modified: false,
             sidebar_preferences: None,

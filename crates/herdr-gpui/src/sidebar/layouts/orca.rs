@@ -24,7 +24,8 @@ const GAP: f32 = 6.;
 
 /// The card or agent strip: inset, rounded, and marked by state. The border
 /// is always present, transparent unless selected, so selecting a row never
-/// shifts its content.
+/// shifts its content, and it keeps neighbouring cards apart without vertical
+/// margins, which a dragged row's shifts could not see.
 fn card(key: &str, state: RowState, indent: f32, radius: f32, theme: &Theme) -> Div {
     let card = div()
         .debug_selector(|| format!("row-{key}"))
@@ -32,7 +33,6 @@ fn card(key: &str, state: RowState, indent: f32, radius: f32, theme: &Theme) -> 
         .flex_none()
         .ml(px(MARGIN + indent))
         .mr(px(MARGIN))
-        .my(px(1.))
         .rounded(px(radius))
         .border_1()
         .border_color(rgba(0))
@@ -45,9 +45,9 @@ fn card(key: &str, state: RowState, indent: f32, radius: f32, theme: &Theme) -> 
         .cursor_pointer();
     parts::mark(
         card,
-        state.selected,
-        state.highlighted,
+        state,
         (wash(theme.foreground, 0x1a), wash(theme.foreground, 0x0a)),
+        theme,
     )
 }
 

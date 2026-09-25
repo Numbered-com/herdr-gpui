@@ -79,6 +79,16 @@ pub(super) fn row_text(kind: RowKind, focused: bool, theme: &Theme) -> (u32, Fon
     (name, weight, detail)
 }
 
+/// Where a row stands while a workspace is dragged: rows the lifted card
+/// passes over stop answering hover, so only the drop line marks a place.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum RowLift {
+    #[default]
+    Resting,
+    Passed,
+    Lifted,
+}
+
 /// Where a row sits in its worktree group, which decides whether the gutter
 /// carries a trunk through the row or ends in an elbow.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -344,8 +354,7 @@ pub(super) fn row(
         .gap(px(gap))
         .py(px(content_top))
         .cursor_pointer()
-        .map(|row| look.hover_group(row))
-        .child(look.highlight(key, state, theme))
+        .map(|row| look.mark(row, key, state, theme))
         // Tree lines run in the indent the row already reserves, so a child is
         // tied to its parent without box-drawing glyphs in the label.
         .when(tree != RowTree::None && look.style.tree_lines(), |row| {

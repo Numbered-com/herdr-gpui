@@ -7,7 +7,7 @@ use super::{
         agents::status_style,
         cell::{AgentRow, RowContext, RowLayout, RowState, WorkspaceRow},
         line_height,
-        row::{RowIcon, RowTree, removing_indicator},
+        row::{RowIcon, RowLift, RowTree, removing_indicator},
     },
     parts::{self, Line, glyph_at, wash},
 };
@@ -57,10 +57,12 @@ fn shell(key: &str, state: RowState, indent: f32, line: Line<'_>, cx: &RowContex
         .cursor_pointer();
     parts::mark(
         row,
-        state.selected,
-        state.highlighted,
+        state,
         (rgb(theme.active), wash(theme.foreground, 0x0d)),
+        theme,
     )
+    // Flat rows round off while carried, so the card reads as picked up.
+    .when(state.lift == RowLift::Lifted, |row| row.rounded(px(4.)))
     .when(state.selected, |row| {
         row.child(
             div()

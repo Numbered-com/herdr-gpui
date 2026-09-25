@@ -13,7 +13,7 @@
 
 use super::{
     layout::SidebarLook,
-    row::{RowBadge, RowIcon, RowTree},
+    row::{RowBadge, RowIcon, RowLift, RowTree},
 };
 use crate::{
     config::{FontConfig, RowStyle, Theme},
@@ -104,11 +104,16 @@ pub(super) struct RowState {
     /// Marked as if hovered while the pointer is elsewhere, such as the row a
     /// menu was opened for.
     pub(super) highlighted: bool,
+    /// Whether a workspace is being dragged, and whether this is the row it
+    /// carries. Rows the carried one passes stop answering hover; the carried
+    /// row floats over them, so it must paint an opaque, lifted surface.
+    pub(super) lift: RowLift,
 }
 
-/// Arranges a row's content. Implementations are stateless and read only
-/// what they are given, so render stays free of I/O and allocation beyond
-/// the elements themselves.
+/// Arranges a row's content and marks its state. Implementations are
+/// stateless and read only what they are given, so render stays free of I/O
+/// and allocation beyond the elements themselves. How a dragged row looks is
+/// part of the layout too: `state.lift` says which row is carried.
 pub(super) trait RowLayout {
     fn workspace(&self, row: WorkspaceRow<'_>, state: RowState, cx: &RowContext<'_>) -> Div;
     fn agent(&self, row: AgentRow<'_>, state: RowState, cx: &RowContext<'_>) -> Div;
@@ -144,6 +149,11 @@ impl<'a> Cell<'a> {
 
     pub(super) fn highlighted(mut self, highlighted: bool) -> Self {
         self.state.highlighted = highlighted;
+        self
+    }
+
+    pub(super) fn lift(mut self, lift: RowLift) -> Self {
+        self.state.lift = lift;
         self
     }
 

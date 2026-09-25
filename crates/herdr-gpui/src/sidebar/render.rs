@@ -10,7 +10,8 @@ use super::{
     label_text,
     layout::{self, SidebarLook},
     line_height,
-    row::{RowIcon, RowTree},
+    reorder::{self, Plan},
+    row::{RowIcon, RowLift, RowTree},
     sidebar_width, sorted_agents, visible_workspace_entries,
     workspaces::{workspace_badge, workspace_label},
 };
@@ -70,6 +71,13 @@ impl HerdrWindow {
         // Agent rows are counted by `agent_count`, which indexes that list.
         let mut space_rows = 0usize;
         let mut highlighted = [None; 2];
+        // A lifted workspace row: each drop unit's rows in the spaces list, and
+        // the move every gap makes, for the pointer handler below.
+        let mut drop_rows = Vec::new();
+        let mut drop_requests = Vec::new();
+        let mut drop_dragged = 0;
+        let now = std::time::Instant::now();
+        let mut sliding = false;
         for (endpoint_index, endpoint) in self.endpoints.iter().enumerate() {
             if !self.device_visible(&endpoint.id) {
                 continue;
@@ -98,7 +106,7 @@ impl HerdrWindow {
                             &format!("host-{endpoint_id}"),
                             RowState {
                                 selected,
-                                highlighted: false,
+                                ..RowState::default()
                             },
                             theme,
                         ))
@@ -177,6 +185,34 @@ impl HerdrWindow {
                 &endpoint.collapsed_repos
             };
             let entries = visible_workspace_entries(&snapshot.workspaces, collapsed_repos);
+            let drag = self
+                .workspace_drag
+                .as_ref()
+                .filter(|drag| selected && drag.previewing(&snapshot.workspaces));
+            let floating = drag.is_some_and(|drag| drag.floating());
+            let plan = drag.and_then(|drag| Plan::new(&snapshot.workspaces, &drag.workspace));
+            // Each unit's shift for the drop in preview, from the heights the
+            // last frame laid out: shifting moves rows, never resizes them.
+            let base = space_rows;
+            let shifts = plan.as_ref().map_or_else(Vec::new, |plan| {
+                drop_requests = (0..=plan.len())
+                    .map(|slot| plan.request(&snapshot.workspaces, slot))
+                    .collect();
+                drop_dragged = plan.dragged();
+                let mut heights = vec![0.; plan.len()];
+                for (position, entry) in entries.iter().enumerate() {
+                    if let (Some(unit), Some(bounds)) = (
+                        plan.unit_of(entry.0),
+                        self.sidebar_scroll[0].bounds_for_item(base + position),
+                    ) {
+                        heights[unit] += f32::from(bounds.size.height);
+                    }
+                }
+                let slot = drag
+                    .and_then(|drag| drag.target.as_ref())
+                    .map_or(plan.dragged(), |target| target.slot);
+                reorder::preview(&heights, plan.dragged(), slot)
+            });
             // A child closes the group when no child follows it.
             let closes: Vec<bool> = (0..entries.len())
                 .map(|position| {
@@ -191,8 +227,28 @@ impl HerdrWindow {
                 if selected && workspace.focused {
                     highlighted[0] = Some(space_rows);
                 }
+                let unit = plan.as_ref().and_then(|plan| plan.unit_of(index));
+                // The lifted row and the rows it carries, such as its group's
+                // children, follow the pointer together while it floats.
+                let carried = unit.is_some_and(|unit| unit == drop_dragged) && floating;
+                let shift = match (drag, unit) {
+                    (Some(drag), Some(_)) if carried => {
+                        drag.pin(&workspace.workspace_id, f32::from(drag.offset()), now);
+                        drag.offset()
+                    }
+                    (Some(drag), Some(unit)) => {
+                        let (at, moving) = drag.slide(&workspace.workspace_id, shifts[unit], now);
+                        sliding |= moving;
+                        px(at)
+                    }
+                    _ => px(0.),
+                };
+                if let Some(unit) = unit {
+                    drop_rows.push((unit, space_rows, shift));
+                }
                 space_rows += 1;
                 let id = workspace.workspace_id.clone();
+                let press_id = id.clone();
                 let context_id = id.clone();
                 let hover_id = id.clone();
                 let context_endpoint = endpoint_id.clone();
@@ -227,137 +283,149 @@ impl HerdrWindow {
                     })),
                 });
                 let label = workspace_label(workspace, indented);
-                spaces = spaces.child(
-                    Cell::new(
-                        rows,
-                        RowData::Workspace(WorkspaceRow {
-                            workspace,
-                            label,
-                            tree,
-                            icon: if indented {
-                                RowIcon::None
-                            } else {
-                                self.avatars
-                                    .as_ref()
-                                    .filter(|_| endpoint_index == 0)
-                                    .and_then(|avatars| avatars.image(&workspace.new_workspace_cwd))
-                                    .map_or(RowIcon::Mark, RowIcon::Avatar)
-                            },
-                            fold,
-                            grouped,
-                            badge: workspace_badge(
-                                workspace,
-                                &self.menu.pr_cache,
-                                &self.git,
-                                theme,
-                            ),
-                            removing: selected
-                                && self.live.status.is_connected()
-                                && self.removal.as_ref().is_some_and(|removal| {
-                                    removal.pending_for(
-                                        (self.selection_epoch, endpoint.generation),
-                                        &snapshot.boot_id,
-                                        &workspace.workspace_id,
-                                    )
-                                }),
-                        }),
-                        &row_cx,
-                    )
-                    .selected(selected && workspace.focused)
-                    .highlighted(selected && menu_target == Some(id.as_str()))
-                    .row()
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                            cx.stop_propagation();
-                            if this.navigate_endpoint(
-                                &context_endpoint,
-                                NavigationTarget::Workspace(&context_id),
-                                cx,
-                            ) {
-                                this.open_workspace_menu(&context_id, event.position, window, cx);
-                                this.menu.opening_right_click =
-                                    this.menu.page == Some(crate::menu::Page::Workspace);
+                let element = Cell::new(
+                    rows,
+                    RowData::Workspace(WorkspaceRow {
+                        workspace,
+                        label,
+                        tree,
+                        icon: if indented {
+                            RowIcon::None
+                        } else {
+                            self.avatars
+                                .as_ref()
+                                .filter(|_| endpoint_index == 0)
+                                .and_then(|avatars| avatars.image(&workspace.new_workspace_cwd))
+                                .map_or(RowIcon::Mark, RowIcon::Avatar)
+                        },
+                        fold,
+                        grouped,
+                        badge: workspace_badge(workspace, &self.menu.pr_cache, &self.git, theme),
+                        removing: selected
+                            && self.live.status.is_connected()
+                            && self.removal.as_ref().is_some_and(|removal| {
+                                removal.pending_for(
+                                    (self.selection_epoch, endpoint.generation),
+                                    &snapshot.boot_id,
+                                    &workspace.workspace_id,
+                                )
+                            }),
+                    }),
+                    &row_cx,
+                )
+                .selected(selected && workspace.focused)
+                .highlighted(selected && menu_target == Some(id.as_str()))
+                .lift(match (carried, floating) {
+                    (true, _) => RowLift::Lifted,
+                    (false, true) => RowLift::Passed,
+                    (false, false) => RowLift::Resting,
+                })
+                .row()
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        if this.navigate_endpoint(
+                            &context_endpoint,
+                            NavigationTarget::Workspace(&context_id),
+                            cx,
+                        ) {
+                            this.open_workspace_menu(&context_id, event.position, window, cx);
+                            this.menu.opening_right_click =
+                                this.menu.page == Some(crate::menu::Page::Workspace);
+                        }
+                    }),
+                )
+                .when(
+                    self.menu.page == Some(crate::menu::Page::Workspace),
+                    |row| {
+                        let view = cx.entity().downgrade();
+                        let endpoint = endpoint_id.clone();
+                        let workspace = id.clone();
+                        row.child(
+                            canvas(
+                                |_, _, _| (),
+                                move |bounds, _, window, _| {
+                                    let bounds = bounds.intersect(&window.content_mask().bounds);
+                                    window.on_mouse_event(
+                                        move |event: &MouseDownEvent, phase, window, cx| {
+                                            // The overlay dismisses first in bubble order. Use
+                                            // clipped row geometry because it occludes our hitbox.
+                                            if phase == DispatchPhase::Bubble
+                                                && event.button == MouseButton::Right
+                                                && bounds.contains(&event.position)
+                                            {
+                                                let _ = view.update(cx, |this, cx| {
+                                                    cx.stop_propagation();
+                                                    if this.navigate_endpoint(
+                                                        &endpoint,
+                                                        NavigationTarget::Workspace(&workspace),
+                                                        cx,
+                                                    ) {
+                                                        this.open_workspace_menu(
+                                                            &workspace,
+                                                            event.position,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                        this.menu.opening_right_click = this
+                                                            .menu
+                                                            .page
+                                                            == Some(crate::menu::Page::Workspace);
+                                                    }
+                                                });
+                                            }
+                                        },
+                                    );
+                                },
+                            )
+                            .absolute()
+                            .inset_0()
+                            .size_full(),
+                        )
+                    },
+                )
+                .id(SharedString::from(format!("workspace-{endpoint_id}-{id}")))
+                .when(multi, |row| {
+                    row.debug_selector(|| format!("workspace-{endpoint_id}-{id}"))
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.navigate_endpoint(
+                        &navigate_endpoint,
+                        NavigationTarget::Workspace(&id),
+                        cx,
+                    );
+                    window.focus(&this.focus, cx);
+                }))
+                // Only the selected endpoint's rows arm the hover menu:
+                // another endpoint's menu would have to select it first, and
+                // resting the pointer must not switch which daemon is shown.
+                // The feature is opt-in, so rows stay unarmed without it.
+                .when(selected && self.config.features.sidebar_hover_menu, |row| {
+                    row.on_hover(cx.listener(move |this, hovered: &bool, window, _| {
+                        this.hover_workspace(&hover_id, *hovered, window);
+                    }))
+                })
+                // Holding a press lifts the row for reordering. Another
+                // endpoint's rows would have to select it first.
+                .when(selected, |row| {
+                    row.on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            if event.click_count == 1 {
+                                this.press_workspace(&press_id, event.position, cx);
                             }
                         }),
                     )
-                    .when(
-                        self.menu.page == Some(crate::menu::Page::Workspace),
-                        |row| {
-                            let view = cx.entity().downgrade();
-                            let endpoint = endpoint_id.clone();
-                            let workspace = id.clone();
-                            row.child(
-                                canvas(
-                                    |_, _, _| (),
-                                    move |bounds, _, window, _| {
-                                        let bounds =
-                                            bounds.intersect(&window.content_mask().bounds);
-                                        window.on_mouse_event(
-                                            move |event: &MouseDownEvent, phase, window, cx| {
-                                                // The overlay dismisses first in bubble order. Use
-                                                // clipped row geometry because it occludes our hitbox.
-                                                if phase == DispatchPhase::Bubble
-                                                    && event.button == MouseButton::Right
-                                                    && bounds.contains(&event.position)
-                                                {
-                                                    let _ = view.update(cx, |this, cx| {
-                                                        cx.stop_propagation();
-                                                        if this.navigate_endpoint(
-                                                            &endpoint,
-                                                            NavigationTarget::Workspace(&workspace),
-                                                            cx,
-                                                        ) {
-                                                            this.open_workspace_menu(
-                                                                &workspace,
-                                                                event.position,
-                                                                window,
-                                                                cx,
-                                                            );
-                                                            this.menu.opening_right_click = this
-                                                                .menu
-                                                                .page
-                                                                == Some(
-                                                                    crate::menu::Page::Workspace,
-                                                                );
-                                                        }
-                                                    });
-                                                }
-                                            },
-                                        );
-                                    },
-                                )
-                                .absolute()
-                                .inset_0()
-                                .size_full(),
-                            )
-                        },
-                    )
-                    .id(SharedString::from(format!("workspace-{endpoint_id}-{id}")))
-                    .when(multi, |row| {
-                        row.debug_selector(|| format!("workspace-{endpoint_id}-{id}"))
-                    })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.navigate_endpoint(
-                            &navigate_endpoint,
-                            NavigationTarget::Workspace(&id),
-                            cx,
-                        );
-                        window.focus(&this.focus, cx);
-                    }))
-                    // Only the selected endpoint's rows arm the hover menu:
-                    // another endpoint's menu would have to select it first, and
-                    // resting the pointer must not switch which daemon is shown.
-                    // The feature is opt-in, so rows stay unarmed without it.
-                    .when(
-                        selected && self.config.features.sidebar_hover_menu,
-                        |row| {
-                            row.on_hover(cx.listener(move |this, hovered: &bool, window, _| {
-                                this.hover_workspace(&hover_id, *hovered, window);
-                            }))
-                        },
-                    ),
-                );
+                })
+                .when(shift != px(0.), |row| row.top(shift));
+                spaces = if carried {
+                    // Painted last so it floats over the rows it passes, while
+                    // its layout slot keeps the others' positions stable.
+                    spaces.child(deferred(element.cursor_grabbing()).with_priority(1))
+                } else {
+                    spaces.child(element)
+                };
             }
             if !self.config.show_agents {
                 continue;
@@ -393,6 +461,9 @@ impl HerdrWindow {
                     })),
                 );
             }
+        }
+        if sliding {
+            window.request_animation_frame();
         }
         // Follow the selection, but only once a frame has measured the viewport:
         // the handle resolves the request against the previous frame's bounds, so
@@ -586,7 +657,23 @@ impl HerdrWindow {
                         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                             if phase == DispatchPhase::Capture {
                                 let _ = moving.update(cx, |this, cx| {
-                                    if let Some(drag) = this.sidebar_drag {
+                                    let scroll = this.sidebar_scroll[0].clone();
+                                    if this.move_workspace_drag(
+                                        event.position,
+                                        event.pressed_button == Some(MouseButton::Left),
+                                        |lift| {
+                                            reorder::resolve(
+                                                &drop_rows,
+                                                &drop_requests,
+                                                drop_dragged,
+                                                &scroll,
+                                                lift,
+                                            )
+                                        },
+                                        cx,
+                                    ) {
+                                        cx.stop_propagation();
+                                    } else if let Some(drag) = this.sidebar_drag {
                                         match drag {
                                             SidebarDrag::Width { start, width } => {
                                                 this.sidebar_width = Some(sidebar_width(
@@ -621,7 +708,10 @@ impl HerdrWindow {
                             if phase == DispatchPhase::Capture && event.button == MouseButton::Left
                             {
                                 let _ = released.update(cx, |this, cx| {
-                                    if this.sidebar_drag.take().is_some() {
+                                    // A lifted row's release is its drop, not a click.
+                                    if this.release_workspace_drag(cx) {
+                                        cx.stop_propagation();
+                                    } else if this.sidebar_drag.take().is_some() {
                                         this.save_chrome();
                                         cx.stop_propagation();
                                         cx.notify();
