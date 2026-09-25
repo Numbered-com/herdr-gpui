@@ -561,9 +561,18 @@ fn workspace_dialog_sections_and_buttons_stay_inside_the_panel(cx: &mut gpui::Te
                 let path = cx.debug_bounds("dialog-path").unwrap();
                 (path, path)
             };
+            // The name comes first, on the same edge as the branch it names.
+            let name = (action == WorkspaceAction::NewWorktree)
+                .then(|| cx.debug_bounds("worktree-name").unwrap());
+            if let Some(name) = name {
+                assert!(name.bottom() <= field.top());
+                assert_eq!(name.left(), field.left());
+                assert_eq!(name.right(), field.right());
+            }
             let parts: Vec<_> = [field, subject, cancel, submit, error]
                 .into_iter()
                 .chain(waiting)
+                .chain(name)
                 .collect();
             for part in &parts {
                 assert!(
@@ -581,7 +590,11 @@ fn workspace_dialog_sections_and_buttons_stay_inside_the_panel(cx: &mut gpui::Te
                 }
             }
             // One gutter on both sides, and a trailing button row.
-            assert_eq!(field.left() - panel.left(), panel.right() - field.right());
+            assert_eq!(
+                subject.left() - panel.left(),
+                panel.right() - subject.right()
+            );
+            assert_eq!(field.right(), subject.right());
             assert!(cancel.right() <= submit.left());
             assert!(submit.right() < panel.right());
             assert!(error.bottom() <= cancel.top());
