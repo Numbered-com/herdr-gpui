@@ -458,6 +458,9 @@ impl Render for HerdrWindow {
             || self.live.error.is_some())
         .then(|| self.live.status_text(self.local_error.as_deref()));
         div()
+            .on_action(cx.listener(|this, action: &crate::actions::SetRowStyle, _, cx| {
+                this.set_row_style(action.rows, cx);
+            }))
             .on_action(cx.listener(|this, action: &RunCommand, window, cx| {
                 this.command(action.command, window, cx);
             }))

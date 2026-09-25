@@ -211,6 +211,31 @@ pub enum RowStyle {
     Minimal,
 }
 
+impl RowStyle {
+    /// Every layout, in the order menus list them.
+    pub const ALL: [Self; 4] = [Self::Herdr, Self::Superset, Self::Orca, Self::Minimal];
+
+    /// The config value that selects it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Herdr => "herdr",
+            Self::Superset => "superset",
+            Self::Orca => "orca",
+            Self::Minimal => "minimal",
+        }
+    }
+
+    /// How menus title it.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Herdr => "Herdr",
+            Self::Superset => "Superset",
+            Self::Orca => "Orca",
+            Self::Minimal => "Minimal",
+        }
+    }
+}
+
 /// How much the sidebar fits: spacing, indents, and which details show.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Density {
@@ -970,6 +995,48 @@ impl Config {
         result.map_err(|error| error.at_path(path))
     }
 
+    /// Persist only the sidebar's row layout as `[layout] rows`, retaining
+    /// the latest on-disk settings. A layout named by a plain string becomes
+    /// a table keeping that name as its `mode`, since a string holds no rows.
+    pub fn save_rows(rows: RowStyle) -> Result<()> {
+        let (_lock, local) = Self::prepare_files(&Self::path()?)?;
+        Self::save_rows_path(rows, &local)
+    }
+
+    fn save_rows_path(rows: RowStyle, path: &Path) -> Result<()> {
+        let result = (|| -> Result<()> {
+            let text = match fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(error) if error.kind() == ErrorKind::NotFound => LOCAL_CONFIG.into(),
+                Err(error) => return Err(error.into()),
+            };
+            let mut document = text.parse::<toml_edit::DocumentMut>()?;
+            let value = toml_edit::value(rows.name());
+            let named = document
+                .get("layout")
+                .and_then(toml_edit::Item::as_str)
+                .map(str::to_owned);
+            match document
+                .get_mut("layout")
+                .and_then(toml_edit::Item::as_table_like_mut)
+            {
+                Some(layout) => {
+                    layout.insert("rows", value);
+                }
+                None => {
+                    let mut layout = toml_edit::Table::new();
+                    if let Some(mode) = named {
+                        layout.insert("mode", toml_edit::value(mode));
+                    }
+                    layout.insert("rows", value);
+                    document.insert("layout", toml_edit::Item::Table(layout));
+                }
+            }
+            write_config(path, &document.to_string())
+        })();
+        result.map_err(|error| error.at_path(path))
+    }
+
     pub fn theme(&self) -> Result<Theme> {
         self.theme_with_directories(theme_directories)
     }
@@ -1682,6 +1749,78 @@ mod tests {
             Some("Iv1.fixture")
         );
         assert!(saved.contains("# no theme"));
+        Ok(())
+    }
+
+    #[test]
+    fn saving_rows_keeps_the_layout_mode_and_every_other_setting() -> anyhow::Result<()> {
+        let temp = TempDirectory::new()?;
+        let path = temp.0.join("config-gpui.local.toml");
+        let saved = |path: &Path| -> anyhow::Result<Layout> {
+            Ok(Config::parse(&fs::read_to_string(path)?)?.layout)
+        };
+
+        // A new install's overrides name the layout with a plain string.
+        Config::save_rows_path(RowStyle::Orca, &path)?;
+        let layout = saved(&path)?;
+        assert_eq!(layout.rows, RowStyle::Orca);
+        assert_eq!(
+            layout.mode,
+            LayoutMode::new(Density::Comfortable, Style::Rounded)
+        );
+        // Layered over the managed file, whose layout is a plain string too.
+        let merged = Config::parse_layers(
+            [DEFAULT_CONFIG, fs::read_to_string(&path)?.as_str()],
+            ClipboardToast::default(),
+        )?;
+        assert_eq!(merged.layout.rows, RowStyle::Orca);
+        assert_eq!(
+            merged.layout.mode,
+            LayoutMode::new(Density::Comfortable, Style::Rounded)
+        );
+
+        // A table keeps its gap and comments, and a second pick replaces the first.
+        fs::write(
+            &path,
+            "# mine
+theme = 'Nord'
+
+[layout] # sidebar
+mode = 'compact'
+sidebar_gap = 4
+",
+        )?;
+        for rows in [RowStyle::Superset, RowStyle::Minimal] {
+            Config::save_rows_path(rows, &path)?;
+            let layout = saved(&path)?;
+            assert_eq!(layout.rows, rows);
+            assert_eq!(layout.mode, LayoutMode::from(Density::Compact));
+            assert_eq!(layout.sidebar_gap, 4.);
+        }
+        let text = fs::read_to_string(&path)?;
+        assert!(
+            text.contains("# mine") && text.contains("# sidebar"),
+            "{text}"
+        );
+        assert_eq!(Config::parse(&text)?.theme, "Nord");
+
+        // Inline tables and files without a layout work too.
+        for (original, mode) in [
+            (
+                "layout = { mode = 'normal-rounded' }\n",
+                LayoutMode::new(Density::Normal, Style::Rounded),
+            ),
+            ("theme = 'Nord'\n", LayoutMode::default()),
+        ] {
+            fs::write(&path, original)?;
+            Config::save_rows_path(RowStyle::Herdr, &path)?;
+            let layout = saved(&path)?;
+            assert_eq!(
+                (layout.rows, layout.mode),
+                (RowStyle::Herdr, mode),
+                "{original}"
+            );
+        }
         Ok(())
     }
 

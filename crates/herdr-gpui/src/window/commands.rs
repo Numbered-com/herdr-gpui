@@ -4,7 +4,8 @@
 
 use super::HerdrWindow;
 use crate::{
-    config::{FONT_SIZE_RANGE, FONT_SIZE_STEP},
+    app::InitialAppearance,
+    config::{Config, FONT_SIZE_RANGE, FONT_SIZE_STEP, RowStyle},
     controls::{self, Command},
     log_window,
     navigation::{NavigationTarget, OwnedNavigationTarget},
@@ -14,6 +15,40 @@ use gpui::{Context, Window};
 use std::time::Duration;
 
 impl HerdrWindow {
+    /// Switches the sidebar's row layout here at once, then keeps it: the
+    /// choice is saved to the local overrides off the UI thread, and the
+    /// config watcher brings every other window along.
+    pub(crate) fn set_row_style(&mut self, rows: RowStyle, cx: &mut Context<Self>) {
+        self.set_row_style_with(rows, Config::save_rows, cx);
+    }
+
+    /// `save` persists the choice; tests pass one that leaves the real
+    /// config alone.
+    pub(crate) fn set_row_style_with(
+        &mut self,
+        rows: RowStyle,
+        save: impl FnOnce(RowStyle) -> crate::Result<()> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if self.config.layout.rows == rows {
+            return;
+        }
+        self.config.layout.rows = rows;
+        // The menu reads its checkmark from the latest config.
+        if cx.has_global::<InitialAppearance>() {
+            cx.global_mut::<InitialAppearance>().config.layout.rows = rows;
+        }
+        crate::menus::install(cx);
+        cx.notify();
+        let save = cx.background_executor().spawn(async move { save(rows) });
+        cx.spawn(async move |_, _| {
+            if let Err(error) = save.await {
+                tracing::warn!(%error, "Could not save the sidebar row layout");
+            }
+        })
+        .detach();
+    }
+
     pub(crate) fn navigate(
         &mut self,
         target: NavigationTarget<&str>,

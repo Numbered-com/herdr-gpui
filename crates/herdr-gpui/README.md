@@ -250,7 +250,10 @@ font sizes and terminal spacing are unchanged. Saved edits apply automatically;
 there is no UI toggle yet.
 
 Separately from density, `rows` in a `[layout]` table picks what each row
-shows and how it is arranged:
+shows and how it is arranged. **View > Rows** lists every row layout, checks the
+one in use, and switches to another at once; the choice is saved as
+`[layout] rows` in `config-gpui.local.toml` (a plain `layout = "..."` line there
+becomes a `[layout]` table keeping that name as its `mode`):
 
 ```toml
 [layout]

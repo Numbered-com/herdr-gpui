@@ -3,7 +3,8 @@
 
 use crate::{
     CheckForUpdates, Quit, RunCommand, ShowLogs,
-    actions::{Copy, Cut, Paste, SelectAll},
+    actions::{Copy, Cut, Paste, SelectAll, SetRowStyle},
+    config::RowStyle,
     controls::Command,
 };
 #[cfg(feature = "qa-menu")]
@@ -11,11 +12,22 @@ use crate::{
     PlaySound, ShowHerdrNotDetected, ShowUpdatePreview,
     actions::{ShowToastPreview, ShowUpdateDownloadPreview, ShowUpdateHomebrewPreview},
 };
-use gpui::{Menu, MenuItem, OsAction};
+use gpui::{App, Menu, MenuItem, OsAction};
 #[cfg(feature = "qa-menu")]
 use herdr_client::protocol::SemanticNotificationKind;
 
-pub(crate) fn menus() -> Vec<Menu> {
+/// Installs the menu bar, checking the row layout the latest config picked.
+pub(crate) fn install(cx: &mut App) {
+    let rows = cx
+        .try_global::<crate::app::InitialAppearance>()
+        .map_or_else(RowStyle::default, |appearance| {
+            appearance.config.layout.rows
+        });
+    cx.set_menus(menus(rows));
+}
+
+/// The menu bar, with `rows` checked under View > Rows.
+pub(crate) fn menus(rows: RowStyle) -> Vec<Menu> {
     vec![
         Menu {
             name: "Herdr".into(),
@@ -130,6 +142,11 @@ pub(crate) fn menus() -> Vec<Menu> {
                         command: Command::ResetFontSize,
                     },
                 ),
+                MenuItem::separator(),
+                MenuItem::submenu(Menu::new("Rows").items(RowStyle::ALL.map(|style| {
+                    MenuItem::action(style.label(), SetRowStyle { rows: style })
+                        .checked(style == rows)
+                }))),
             ],
         },
         Menu {
@@ -269,7 +286,7 @@ mod tests {
     #[test]
     #[cfg(feature = "qa-menu")]
     fn badge_preview_is_available_only_in_the_macos_qa_menu() {
-        let menus = menus();
+        let menus = menus(RowStyle::default());
         let qa = menus
             .iter()
             .find(|menu| menu.name.as_ref() == "QA")
@@ -294,7 +311,7 @@ mod tests {
     #[test]
     #[cfg(feature = "qa-menu")]
     fn qa_menu_carries_update_progress_previews() {
-        let menus = menus();
+        let menus = menus(RowStyle::default());
         let qa = menus
             .iter()
             .find(|menu| menu.name.as_ref() == "QA")
@@ -320,8 +337,42 @@ mod tests {
     }
 
     #[test]
+    fn view_menu_lists_every_row_layout_and_checks_the_current_one() {
+        for current in RowStyle::ALL {
+            let menus = menus(current);
+            let view = menus
+                .iter()
+                .find(|menu| menu.name.as_ref() == "View")
+                .unwrap();
+            let rows = view
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    MenuItem::Submenu(menu) if menu.name.as_ref() == "Rows" => Some(menu),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(rows.items.len(), RowStyle::ALL.len());
+            for (item, style) in rows.items.iter().zip(RowStyle::ALL) {
+                let MenuItem::Action {
+                    name,
+                    action,
+                    checked,
+                    ..
+                } = item
+                else {
+                    panic!("Rows lists actions only");
+                };
+                assert_eq!(name.as_ref(), style.label());
+                assert!(action.partial_eq(&SetRowStyle { rows: style }));
+                assert_eq!(*checked, style == current, "{current:?}");
+            }
+        }
+    }
+
+    #[test]
     fn qa_menu_requires_explicit_feature() {
-        let menus = menus();
+        let menus = menus(RowStyle::default());
         let names: Vec<_> = menus.iter().map(|menu| menu.name.as_ref()).collect();
         let mut expected = vec!["Herdr", "File", "Edit", "View", "Terminal", "Window"];
         if cfg!(feature = "qa-menu") {
@@ -331,7 +382,7 @@ mod tests {
     }
 
     fn edit_action(label: &str) -> Box<dyn gpui::Action> {
-        menus()
+        menus(RowStyle::default())
             .into_iter()
             .find(|menu| menu.name.as_ref() == "Edit")
             .unwrap()
@@ -348,7 +399,7 @@ mod tests {
     /// every macOS app shows, and labels that do not claim the keystrokes.
     #[gpui::test]
     fn edit_menu_carries_standard_items_and_shortcut_labels(cx: &mut gpui::TestAppContext) {
-        let items = &menus()
+        let items = &menus(RowStyle::default())
             .into_iter()
             .find(|menu| menu.name.as_ref() == "Edit")
             .unwrap()
@@ -483,7 +534,7 @@ mod tests {
     /// an action of its own.
     #[test]
     fn view_menu_carries_the_font_size_commands() {
-        let menus = menus();
+        let menus = menus(RowStyle::default());
         let view = menus
             .iter()
             .find(|menu| menu.name.as_ref() == "View")

@@ -4012,3 +4012,39 @@ fn orca_rows_lift_and_drop(cx: &mut gpui::TestAppContext) {
 fn minimal_rows_lift_and_drop(cx: &mut gpui::TestAppContext) {
     check_row_drag(crate::config::RowStyle::Minimal, cx);
 }
+
+#[gpui::test]
+fn choosing_a_row_layout_redraws_the_sidebar_and_saves_it(cx: &mut gpui::TestAppContext) {
+    use crate::config::RowStyle;
+    use std::sync::{Arc as SyncArc, Mutex};
+
+    let (view, cx) = cx.add_window_view(fixture_window);
+    cx.simulate_resize(size(px(800.), px(900.)));
+    cx.update(|window, cx| full_draw(window, cx).clear(cx));
+    assert!(cx.debug_bounds("icon-herdr").is_none());
+    let saved = SyncArc::new(Mutex::new(Vec::new()));
+    for rows in [RowStyle::Superset, RowStyle::Superset, RowStyle::Herdr] {
+        let record = saved.clone();
+        view.update(cx, |view, cx| {
+            view.set_row_style_with(
+                rows,
+                move |rows| {
+                    record.lock().unwrap().push(rows);
+                    Ok(())
+                },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| full_draw(window, cx).clear(cx));
+        view.read_with(cx, |view, _| assert_eq!(view.config.layout.rows, rows));
+        if rows == RowStyle::Superset {
+            assert!(cx.debug_bounds("icon-herdr").is_some());
+        }
+    }
+    // Only real changes are saved.
+    assert_eq!(
+        *saved.lock().unwrap(),
+        vec![RowStyle::Superset, RowStyle::Herdr]
+    );
+}

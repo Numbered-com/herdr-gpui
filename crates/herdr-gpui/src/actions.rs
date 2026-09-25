@@ -52,6 +52,13 @@ pub(crate) struct RunCommand {
     pub(crate) command: Command,
 }
 
+/// Picks the sidebar's row layout, from View > Rows.
+#[derive(Clone, PartialEq, serde::Deserialize, Action)]
+#[action(no_json)]
+pub(crate) struct SetRowStyle {
+    pub(crate) rows: crate::config::RowStyle,
+}
+
 #[derive(Clone, PartialEq, serde::Deserialize, Action)]
 #[action(no_json)]
 pub(crate) struct ShowToastPreview {
@@ -93,5 +100,5 @@ pub(crate) fn bind_keys(cx: &mut App) {
 pub(crate) fn rebind_keys(cx: &mut App) {
     cx.clear_key_bindings();
     bind_keys(cx);
-    cx.set_menus(crate::menus());
+    crate::menus::install(cx);
 }

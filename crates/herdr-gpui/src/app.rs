@@ -188,7 +188,7 @@ pub(crate) fn run() -> std::process::ExitCode {
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.on_action(|_: &ShowLogs, cx| log_window::open(cx));
             bind_keys(cx);
-            cx.set_menus(menus());
+            menus::install(cx);
             cx.on_window_closed(move |cx, _| {
                 if cx.windows().is_empty() {
                     #[cfg(feature = "integration-test")]
