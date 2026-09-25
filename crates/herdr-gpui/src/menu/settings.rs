@@ -54,7 +54,7 @@ impl HerdrWindow {
         search.update(cx, |input, cx| {
             input.set_placeholder("Search shortcuts...", cx);
             input.set_appearance(self.config.ui.clone(), self.theme.clone(), cx);
-            window.focus(&input.focus);
+            window.focus(&input.focus, cx);
         });
         self.menu._keybinds_subscription = Some(cx.subscribe(
             &search,

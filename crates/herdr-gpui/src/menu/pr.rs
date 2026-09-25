@@ -540,7 +540,7 @@ mod tests {
         for width in [320., 640., 1200.] {
             cx.simulate_resize(size(px(width), px(400.)));
             cx.update(|window, cx| {
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             });
             let panel = cx.debug_bounds("menu-panel").unwrap();
             let title = cx.debug_bounds("workspace-pr-title").unwrap();
@@ -581,7 +581,7 @@ mod tests {
             })
         });
         cx.update(|window, cx| {
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         let title = cx.debug_bounds("workspace-pr-title").unwrap().center();
         let rename = cx.debug_bounds("workspace-menu-Rename").unwrap().center();
@@ -621,7 +621,7 @@ mod tests {
         });
         cx.run_until_parked();
         cx.update(|window, cx| {
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         // GPUI retains removed debug selectors; measure the remaining action panel.
         // Five action rows and the target header: no PR section or stale metadata.

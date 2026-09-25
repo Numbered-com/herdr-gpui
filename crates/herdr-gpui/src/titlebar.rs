@@ -256,6 +256,7 @@ impl HerdrWindow {
                                             offset: point(px(0.), px(0.)),
                                             blur_radius: px(5.),
                                             spread_radius: px(1.),
+                                            inset: false,
                                         }])
                                     })
                                     .map(|circle| match image {

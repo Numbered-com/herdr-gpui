@@ -160,7 +160,7 @@ mod tests {
             view.update(cx, |view, cx| {
                 let mut button = view.github_button(Action::SignOut, "Sign out", cx);
                 assert_eq!(
-                    button.text_style().as_ref().unwrap().color,
+                    button.text_style().color,
                     Some(crate::menu::danger(&view.theme).into())
                 );
             })
@@ -180,7 +180,7 @@ mod tests {
                     view.github_fixture(false, window, cx);
                     view.menu.github = crate::github::Auth::connected_fixture();
                 });
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             });
             let panel = cx.debug_bounds("menu-panel").unwrap();
             assert!(panel.size.width <= gpui::px(400.));
