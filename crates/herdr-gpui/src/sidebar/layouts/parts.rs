@@ -71,7 +71,8 @@ impl<'a> Line<'a> {
         self
     }
 
-    /// An element that keeps `width` however short the line is.
+    /// An element that keeps `width` however short the line is. It is placed
+    /// as is, so it must already be `width` wide.
     pub(super) fn fixed(self, width: f32, element: impl IntoElement) -> Self {
         let content = Content::Element(element.into_any_element());
         self.push(div(), content, width, Fit::Fixed)
@@ -175,6 +176,12 @@ impl<'a> Line<'a> {
             .into_iter()
             .zip(widths)
             .fold(line, |line, (piece, width)| {
+                // A wrapper is one more element to lay out on every row, so
+                // fixed pieces, already sized, get none. Text keeps its pair:
+                // GPUI 0.2.2 only ellipsizes inside a parent of fixed width.
+                if let Content::Element(element) = piece.content {
+                    return line.child(element);
+                }
                 let shell = piece.shell.w(px(width)).flex_none().overflow_hidden();
                 line.child(match piece.content {
                     Content::Text(text, inset) => shell.px(px(inset)).child(
@@ -183,8 +190,7 @@ impl<'a> Line<'a> {
                             .truncate()
                             .child(label_text(&text)),
                     ),
-                    Content::Element(element) => shell.flex().items_center().child(element),
-                    Content::Shell => shell,
+                    Content::Element(_) | Content::Shell => shell,
                 })
             })
     }
