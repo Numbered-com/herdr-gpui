@@ -255,7 +255,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
         {
             use crate::config::{Density, LayoutMode, RowStyle, Style};
             let _ = cx.update(|cx| cx.set_global(sidebar::layout_tests::VerifyChildGeometry(false)));
-            for rows in [RowStyle::Superset, RowStyle::Orca] {
+            for rows in [RowStyle::Superset, RowStyle::Orca, RowStyle::Minimal] {
                 for density in [Density::Comfortable, Density::Normal, Density::Compact] {
                     for style in [Style::Flat, Style::Rounded] {
                         timer.timer(Duration::from_millis(100)).await;

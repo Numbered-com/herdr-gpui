@@ -162,5 +162,6 @@ pub(super) fn layout_for(style: RowStyle) -> &'static dyn RowLayout {
         RowStyle::Herdr => &super::layouts::Herdr,
         RowStyle::Superset => &super::layouts::Superset,
         RowStyle::Orca => &super::layouts::Orca,
+        RowStyle::Minimal => &super::layouts::Minimal,
     }
 }

@@ -1,11 +1,14 @@
-//! The row layouts the config can pick. Each one is a unit struct, so adding
-//! a layout is a new file and a `RowStyle` variant.
+//! The row layouts the config can pick. Each one is a unit struct assembled
+//! from the shared pieces in `parts`, so adding a layout is a new file and a
+//! `RowStyle` variant.
 
 mod herdr;
+mod minimal;
 mod orca;
+mod parts;
 mod superset;
 
-pub(super) use {herdr::Herdr, orca::Orca, superset::Superset};
+pub(super) use {herdr::Herdr, minimal::Minimal, orca::Orca, superset::Superset};
 
 use super::{cell::Fold, label_text};
 use crate::config::Theme;
@@ -35,9 +38,4 @@ impl Fold {
                 toggle(event, window, cx);
             })
     }
-}
-
-/// `color` at `alpha` out of 255, for washes laid over the sidebar surface.
-fn wash(color: u32, alpha: u8) -> Rgba {
-    rgba((color << 8) | u32::from(alpha))
 }

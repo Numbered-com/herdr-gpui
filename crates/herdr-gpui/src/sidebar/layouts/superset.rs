@@ -2,14 +2,16 @@
 //! the name, and the pull request's change counts on the right. The focused
 //! row is filled and marked with a stripe down its leading edge.
 
-use super::super::{
-    agents::status_style,
-    cell::{AgentRow, RowContext, RowLayout, RowState, WorkspaceRow},
-    glyph_width, label_text, line_height,
-    row::{RowIcon, RowTree, removing_indicator},
+use super::{
+    super::{
+        agents::status_style,
+        cell::{AgentRow, RowContext, RowLayout, RowState, WorkspaceRow},
+        line_height,
+        row::{RowIcon, RowTree, removing_indicator},
+    },
+    parts::{self, Line, glyph_at, wash},
 };
-use super::wash;
-use crate::config::{FontConfig, Theme};
+use crate::config::Theme;
 use gpui::{prelude::*, *};
 use herdr_client::protocol::AgentStatus;
 
@@ -21,74 +23,71 @@ const STRIPE: f32 = 2.;
 /// Geometry shared by both kinds of row, scaled from the sidebar font so a
 /// larger font grows the icon slot with the text.
 struct Metrics {
-    line: f32,
     icon: f32,
+    glyph: f32,
     gap: f32,
     small: f32,
 }
 
 impl Metrics {
     fn new(cx: &RowContext<'_>) -> Self {
-        let line = line_height(cx.font);
+        let small = (cx.font.size * 0.8).round();
         Self {
-            line,
-            icon: (cx.font.size * 1.5).round().max(line),
+            icon: (cx.font.size * 1.5).round().max(line_height(cx.font)),
+            glyph: glyph_at(cx.font, small),
             gap: cx.look.density.gap(),
-            small: (cx.font.size * 0.8).round(),
+            small,
         }
-    }
-
-    fn small_glyph(&self, font: &FontConfig) -> f32 {
-        glyph_width(font) * self.small / font.size
     }
 }
 
-/// The row shell: padding, the state fill, and the stripe. Content is laid
-/// out by the caller at the widths it measured.
-fn shell(key: &str, state: RowState, indent: f32, metrics: &Metrics, cx: &RowContext<'_>) -> Div {
+/// The row: padding, the state fill, the stripe, and one measured line.
+fn shell(key: &str, state: RowState, indent: f32, line: Line<'_>, cx: &RowContext<'_>) -> Div {
     let theme = cx.theme;
-    let (active, hover, stripe) = (theme.active, wash(theme.foreground, 0x0d), theme.foreground);
-    div()
+    let gap = cx.look.density.gap();
+    let row = div()
         .debug_selector(|| format!("row-{key}"))
         .relative()
         .w_full()
-        .min_w_0()
         .flex_none()
         .flex()
         .items_center()
-        .gap(px(metrics.gap))
-        .py(px(metrics.gap))
+        .py(px(gap))
         .pl(px(cx.look.content_x() + indent))
-        .pr(px(cx.look.content_x()))
-        .cursor_pointer()
-        .when(state.selected, |row| row.bg(rgb(active)))
-        .when(!state.selected && state.highlighted, |row| row.bg(hover))
-        .when(!state.selected, |row| {
-            row.hover(move |style| style.bg(hover))
-        })
-        .when(state.selected, |row| {
-            row.child(
-                div()
-                    .debug_selector(|| format!("highlight-{key}"))
-                    .absolute()
-                    .left_0()
-                    .top_0()
-                    .bottom_0()
-                    .w(px(STRIPE))
-                    .rounded_r(px(STRIPE))
-                    .bg(rgb(stripe)),
-            )
-        })
+        .cursor_pointer();
+    parts::mark(
+        row,
+        state.selected,
+        state.highlighted,
+        (rgb(theme.active), wash(theme.foreground, 0x0d)),
+    )
+    .when(state.selected, |row| {
+        row.child(
+            div()
+                .debug_selector(|| format!("highlight-{key}"))
+                .absolute()
+                .left_0()
+                .top_0()
+                .bottom_0()
+                .w(px(STRIPE))
+                .rounded_r(px(STRIPE))
+                .bg(rgb(theme.foreground)),
+        )
+    })
+    .child(line.into_div())
 }
 
-/// A status dot pinned to the icon slot's top right corner. Unknown draws
-/// nothing: the icon alone already says there is nothing to report.
-fn status_badge(status: AgentStatus, theme: &Theme) -> Option<Div> {
-    if status == AgentStatus::Unknown {
-        return None;
-    }
-    let (diameter, filled, color) = status_style(status);
-    Some(
+/// The icon slot, with the status as a dot pinned to its top right corner.
+/// Unknown draws no dot: there is nothing to report.
+fn slot(
+    key: &str,
+    glyph: impl IntoElement,
+    status: AgentStatus,
+    m: &Metrics,
+    theme: &Theme,
+) -> Div {
+    let dot = (status != AgentStatus::Unknown).then(|| {
+        let (diameter, filled, color) = status_style(status);
         div()
             .absolute()
             .top(px(-2.))
@@ -97,32 +96,25 @@ fn status_badge(status: AgentStatus, theme: &Theme) -> Option<Div> {
             .rounded_full()
             .border_1()
             .border_color(rgb(color))
-            .bg(rgb(if filled { color } else { theme.surface })),
-    )
-}
-
-fn icon_slot(key: &str, metrics: &Metrics) -> Div {
+            .bg(rgb(if filled { color } else { theme.surface }))
+    });
     div()
         .debug_selector(|| format!("icon-{key}"))
         .relative()
-        .size(px(metrics.icon))
-        .flex_none()
+        .size(px(m.icon))
         .flex()
         .items_center()
         .justify_center()
+        .child(glyph)
+        .children(dot)
 }
 
-fn truncated(text: &str, width: f32) -> Div {
-    div()
-        .w(px(width.max(0.)))
-        .flex_none()
-        .overflow_hidden()
-        .child(
-            div()
-                .w(px(width.max(0.)))
-                .truncate()
-                .child(label_text(text)),
-        )
+fn text_color(state: RowState, theme: &Theme) -> u32 {
+    if state.selected {
+        theme.foreground
+    } else {
+        theme.subtext()
+    }
 }
 
 impl RowLayout for Superset {
@@ -137,8 +129,8 @@ impl RowLayout for Superset {
             removing,
             ..
         } = row;
-        let (theme, font) = (cx.theme, cx.font);
-        let metrics = Metrics::new(cx);
+        let theme = cx.theme;
+        let m = Metrics::new(cx);
         let indent = if tree == RowTree::None {
             0.
         } else {
@@ -146,162 +138,88 @@ impl RowLayout for Superset {
         };
         let pr = badge.as_ref().and_then(|badge| badge.pr.as_ref());
         let dirty = badge.as_ref().is_some_and(|badge| badge.dirty);
-        let small_glyph = metrics.small_glyph(font);
-        // The right cluster is sized from its text so the name can take the
-        // rest at a fixed width, which is what GPUI 0.2.2 needs to ellipsize.
-        let dirty_size = (metrics.line * 0.75).round().min(15.);
-        let fold_width = if fold.is_some() {
-            metrics.icon * 0.6
-        } else {
-            0.
-        };
-        let available = cx.look.content_width(cx.width) - indent - metrics.icon - metrics.gap;
-        // Icons keep their size; the counts give way to them on a narrow
-        // sidebar and are clipped rather than pushed past the row's edge.
-        let icons = [if dirty { dirty_size } else { 0. }, fold_width]
-            .into_iter()
-            .filter(|width| *width > 0.)
-            .fold(0., |total, width| total + width + metrics.gap);
-        let stats_width = pr.map_or(0., |pr| {
-            // Both counts, and a glyph's gap between them.
-            let glyphs = pr.additions.chars().count() + pr.deletions.chars().count() + 1;
-            (glyphs as f32 * small_glyph)
-                .ceil()
-                .min((available - icons - metrics.gap).max(0.))
-        });
-        let cluster = icons
-            + if pr.is_some() {
-                stats_width + metrics.gap
-            } else {
-                0.
-            };
-        let name_width = (available - cluster).max(0.);
-        let muted = theme.muted;
+        let dirty_size = (line_height(cx.font) * 0.75).round().min(15.);
+        let size = m.icon * 0.7;
         let icon_color = if state.selected {
             theme.foreground
         } else {
-            muted
+            theme.muted
         };
-        let slot = icon_slot(label, &metrics);
+        // A pull request outranks the owner: its color is its state.
+        let glyph = match (pr, icon) {
+            (Some(pr), _) => parts::icon("icons/git-branch.svg", size, pr.color).into_any_element(),
+            (None, RowIcon::None) => {
+                parts::icon("icons/git-branch.svg", size, icon_color).into_any_element()
+            }
+            (None, icon) => div()
+                .size(px(size))
+                .child(icon.element(icon_color))
+                .into_any_element(),
+        };
         let slot = if removing {
-            slot.child(removing_indicator(theme))
+            slot(
+                label,
+                removing_indicator(theme),
+                AgentStatus::Unknown,
+                &m,
+                theme,
+            )
         } else {
-            // A pull request outranks the owner: its color is its state.
-            let glyph = match (pr, icon) {
-                (Some(pr), _) => branch_icon(pr.color, metrics.icon * 0.7).into_any_element(),
-                (None, RowIcon::None) => {
-                    branch_icon(icon_color, metrics.icon * 0.7).into_any_element()
-                }
-                (None, icon) => div()
-                    .size(px(metrics.icon * 0.7))
-                    .child(icon.element(icon_color))
-                    .into_any_element(),
-            };
-            slot.child(glyph).children(status_badge(status, theme))
+            slot(label, glyph, status, &m, theme)
         };
-        let (additions, deletions) = if state.selected {
+        let counts = if state.selected {
             (theme.palette[2], theme.palette[1])
         } else {
-            (muted, muted)
+            (theme.muted, theme.muted)
         };
-        shell(label, state, indent, &metrics, cx)
-            .child(slot)
-            .child(
-                truncated(label, name_width)
+        let line = Line::new(cx.look.content_width(cx.width) - indent, m.gap)
+            .fixed(m.icon, slot)
+            .fill(
+                div()
                     .debug_selector(|| format!("name-{label}"))
-                    .text_color(rgb(if state.selected {
-                        theme.foreground
-                    } else {
-                        theme.subtext()
-                    })),
+                    .text_color(rgb(text_color(state, theme))),
+                label,
             )
-            .when(dirty, |row| {
-                row.child(
-                    crate::icons::uncommitted(theme, dirty_size)
-                        .debug_selector(|| format!("dirty-{label}")),
-                )
+            .when(dirty, |line| {
+                line.fixed(dirty_size, parts::dirty(label, dirty_size, theme))
             })
-            .when_some(pr, |row, pr| {
-                row.child(
-                    div()
-                        .debug_selector(|| format!("pr-{label}"))
-                        .w(px(stats_width))
-                        .flex_none()
-                        .overflow_hidden()
-                        .flex()
-                        .justify_end()
-                        .gap(px(small_glyph))
-                        .text_size(px(metrics.small))
-                        .child(
-                            div()
-                                .text_color(rgb(additions))
-                                .child(label_text(&pr.additions)),
-                        )
-                        .child(
-                            div()
-                                .text_color(rgb(deletions))
-                                .child(label_text(&pr.deletions)),
-                        ),
-                )
+            .when_some(pr, |line, pr| {
+                let (width, counts) = parts::pr_counts(label, pr, m.glyph, counts);
+                line.shrink(width, counts.text_size(px(m.small)))
             })
-            .when_some(fold, |row, fold| {
-                row.child(fold.element(theme).w(px(fold_width)).text_size(px(14.)))
-            })
+            .when_some(fold, |line, fold| {
+                let width = m.icon * 0.6;
+                line.fixed(width, fold.element(theme).w(px(width)).text_size(px(14.)))
+            });
+        shell(label, state, indent, line, cx)
     }
 
     fn agent(&self, agent: AgentRow<'_>, state: RowState, cx: &RowContext<'_>) -> Div {
-        let (theme, font) = (cx.theme, cx.font);
-        let metrics = Metrics::new(cx);
+        let theme = cx.theme;
+        let m = Metrics::new(cx);
         let key = agent.key.as_str();
-        let available = cx.look.content_width(cx.width) - metrics.icon - metrics.gap;
-        // Where the agent runs trails its name in the smaller, muted face, and
-        // never takes more than half of the row.
-        let place = agent.place.map(|(workspace, _)| match cx.host {
-            Some(host) => format!("{host} \u{b7} {workspace}"),
-            None => workspace.to_owned(),
-        });
-        let place_width = place.as_ref().map_or(0., |place| {
-            (place.chars().count() as f32 * metrics.small_glyph(font))
-                .ceil()
-                .min(available / 2.)
-        });
-        let name_width = available - place_width - if place.is_some() { metrics.gap } else { 0. };
-        let color = if state.selected {
-            theme.foreground
-        } else {
-            theme.subtext()
-        };
-        shell(key, state, 0., &metrics, cx)
-            .child(
-                icon_slot(key, &metrics)
-                    .child(
-                        svg()
-                            .path(agent.icon.path())
-                            .size(px(metrics.icon * 0.7))
-                            .text_color(rgb(color)),
-                    )
-                    .children(status_badge(agent.status, theme)),
-            )
-            .child(
-                truncated(agent.name, name_width)
+        let color = text_color(state, theme);
+        let glyph = parts::icon(agent.icon.path(), m.icon * 0.7, color);
+        // Where the agent runs trails its name, never over half the row.
+        let line = Line::new(cx.look.content_width(cx.width), m.gap)
+            .fixed(m.icon, slot(key, glyph, agent.status, &m, theme))
+            .fill(
+                div()
                     .debug_selector(|| format!("name-{key}"))
                     .text_color(rgb(color)),
+                agent.name,
             )
-            .when_some(place, |row, place| {
-                row.child(
-                    truncated(&place, place_width)
+            .when_some(parts::agent_place(agent.place, cx.host), |line, place| {
+                line.label(
+                    div()
                         .debug_selector(|| format!("detail-{key}"))
-                        .text_size(px(metrics.small))
+                        .text_size(px(m.small))
                         .text_color(rgb(theme.muted)),
+                    place,
+                    m.glyph,
+                    0.5,
                 )
-            })
+            });
+        shell(key, state, 0., line, cx)
     }
-}
-
-fn branch_icon(color: u32, size: f32) -> Svg {
-    svg()
-        .path("icons/git-branch.svg")
-        .size(px(size))
-        .flex_none()
-        .text_color(rgb(color))
 }

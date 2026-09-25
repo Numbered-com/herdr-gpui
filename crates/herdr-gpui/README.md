@@ -266,11 +266,16 @@ rows = "superset"
 - `orca`: inset cards with a status column, the name and a `primary` mark on a
   repository's own checkout, then a meta line with the host, the branch when it
   differs from the name, and the pull request. Agents are single compact lines.
+- `minimal`: one line per row with only the status dot and the name, spaced
+  and highlighted by the density and style, for narrow sidebars or long lists.
 
 Density still sets the list's spacing and headings in every row layout. In
 code, a row layout implements `RowLayout` in `src/sidebar/layouts/`; render
 hands it typed row data and a shared per-frame `RowContext`, and marks each
-row with `Cell::selected` and `Cell::highlighted`.
+row with `Cell::selected` and `Cell::highlighted`. Layouts are assembled from
+the shared pieces in `layouts/parts.rs`: a `Line` gives fixed pieces (icons,
+status, fold) their size, lets labels shrink to a share of the row, and hands
+the rest to the name, so the whole `minimal` layout is under a hundred lines.
 
 Agent names have small theme-tinted icons for OpenCode, Claude Code, Codex
 (OpenAI), Gemini, Cursor, and GitHub Copilot, selected from the daemon's agent identity. Other

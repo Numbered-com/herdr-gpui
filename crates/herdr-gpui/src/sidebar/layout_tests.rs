@@ -644,17 +644,20 @@ fn check_row_style(style: crate::config::RowStyle, cx: &mut gpui::TestAppContext
                         "{context}: {name}"
                     );
                 }
-                let row = cx.debug_bounds("row-sidebar-child").unwrap();
-                let badge = cx.debug_bounds("pr-sidebar-child").unwrap();
-                assert!(
-                    badge.right() <= row.right(),
-                    "{context}: badge {badge:?} {row:?}"
-                );
-                assert!(
-                    badge.bottom() <= row.bottom(),
-                    "{context}: badge {badge:?} {row:?}"
-                );
-                assert!(cx.debug_bounds("dirty-sidebar-child").is_some());
+                // Minimal rows show no pull request or uncommitted work.
+                if style != crate::config::RowStyle::Minimal {
+                    let row = cx.debug_bounds("row-sidebar-child").unwrap();
+                    let badge = cx.debug_bounds("pr-sidebar-child").unwrap();
+                    assert!(
+                        badge.right() <= row.right(),
+                        "{context}: badge {badge:?} {row:?}"
+                    );
+                    assert!(
+                        badge.bottom() <= row.bottom(),
+                        "{context}: badge {badge:?} {row:?}"
+                    );
+                    assert!(cx.debug_bounds("dirty-sidebar-child").is_some());
+                }
                 // Only the focused workspace draws a selection mark in the
                 // layouts whose highlight exists only while selected.
                 assert!(
@@ -679,6 +682,11 @@ fn superset_rows_fit_every_layout_mode(cx: &mut gpui::TestAppContext) {
 #[gpui::test]
 fn orca_rows_fit_every_layout_mode(cx: &mut gpui::TestAppContext) {
     check_row_style(crate::config::RowStyle::Orca, cx);
+}
+
+#[gpui::test]
+fn minimal_rows_fit_every_layout_mode(cx: &mut gpui::TestAppContext) {
+    check_row_style(crate::config::RowStyle::Minimal, cx);
 }
 
 #[gpui::test]

@@ -207,6 +207,8 @@ pub enum RowStyle {
     Superset,
     /// Orca-style cards: the name with its status, then branch and host.
     Orca,
+    /// One line per row with only the status and the name.
+    Minimal,
 }
 
 /// How much the sidebar fits: spacing, indents, and which details show.
@@ -1835,6 +1837,7 @@ mod tests {
             ("herdr", RowStyle::Herdr),
             ("superset", RowStyle::Superset),
             ("orca", RowStyle::Orca),
+            ("minimal", RowStyle::Minimal),
         ] {
             let config = Config::parse(&format!(
                 "[layout]\nmode = 'compact-rounded'\nsidebar_gap = 4\nrows = '{name}'"

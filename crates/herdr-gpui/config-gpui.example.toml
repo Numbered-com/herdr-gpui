@@ -36,7 +36,8 @@ option_as_alt = "auto"
 # To also pick how rows are arranged, use a [layout] table instead:
 #   [layout]
 #   mode = "normal"
-#   rows = "herdr"   # "herdr", "superset" (single-line), or "orca" (cards)
+#   rows = "herdr"   # "herdr", "superset" (single-line), "orca" (cards),
+#                    # or "minimal" (status and name only)
 layout = "normal"
 
 [notifications]
