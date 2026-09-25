@@ -16,7 +16,7 @@ pub(crate) trait StyledFont: Styled + Sized {
         let Font {
             family, fallbacks, ..
         } = config.font();
-        let style = self.text_style().get_or_insert_with(Default::default);
+        let style = self.text_style();
         style.font_family = Some(family);
         style.font_fallbacks = fallbacks;
         self

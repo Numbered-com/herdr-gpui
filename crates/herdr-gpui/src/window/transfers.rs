@@ -653,7 +653,7 @@ mod tests {
         });
         cx.update(|window, cx| {
             window.refresh();
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         let track = cx.debug_bounds("file-transfer-track").unwrap();
         let progress = cx.debug_bounds("file-transfer-progress").unwrap();

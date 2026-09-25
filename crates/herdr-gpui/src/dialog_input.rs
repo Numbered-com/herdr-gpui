@@ -262,7 +262,14 @@ impl HerdrWindow {
                                         rgb(this.theme.muted),
                                     ));
                                 }
-                                let _ = line.paint(origin, bounds.size.height, window, cx);
+                                let _ = line.paint(
+                                    origin,
+                                    bounds.size.height,
+                                    TextAlign::Left,
+                                    None,
+                                    window,
+                                    cx,
+                                );
                                 window.paint_quad(fill(
                                     Bounds::new(
                                         point(origin.x + caret, bounds.top()),

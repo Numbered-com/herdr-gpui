@@ -126,7 +126,7 @@ fn close_dialog_blocks_submission_until_risks_are_explicitly_accepted(
             view.submit_workspace_dialog(window, cx);
             assert!(view.menu.error.is_none());
         });
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     let panel = cx.debug_bounds("menu-panel").unwrap();
     let warning = cx.debug_bounds("close-git-status").unwrap();
@@ -363,7 +363,7 @@ pub(crate) fn check_menu_interactions(
     for (position, selected) in [(second, Some(1)), (first, Some(0)), (outside, None)] {
         cx.simulate_mouse_move(position, None, Modifiers::default());
         cx.update(|window, cx| {
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
             assert_eq!(selection(view.read(cx)), selected);
         });
     }
@@ -378,36 +378,36 @@ pub(crate) fn check_menu_interactions(
     ] {
         cx.simulate_keystrokes(keys);
         cx.update(|window, cx| {
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
             assert_eq!(selection(view.read(cx)), Some(selected));
         });
     }
     cx.simulate_mouse_move(first, None, Modifiers::default());
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
         assert_eq!(selection(view.read(cx)), Some(0));
     });
     // Keyboard selection replaces hover even while the pointer stays on the first row.
     cx.simulate_keystrokes("down");
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
         assert_eq!(selection(view.read(cx)), Some(1));
     });
     cx.simulate_mouse_move(second, None, Modifiers::default());
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
         assert_eq!(selection(view.read(cx)), Some(1));
     });
     cx.simulate_mouse_move(outside, None, Modifiers::default());
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
         assert_eq!(selection(view.read(cx)), None);
     });
     cx.simulate_keystrokes("down");
     cx.update(|_, cx| assert_eq!(selection(view.read(cx)), Some(0)));
     cx.simulate_mouse_move(second, None, Modifiers::default());
     cx.update(|window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
         assert_eq!(selection(view.read(cx)), Some(1));
     });
     cx.simulate_keystrokes("enter");
@@ -434,7 +434,7 @@ pub(crate) fn check_menu_interactions(
             }
             assert_eq!(view.menu.selected, None);
         });
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
 }
 
@@ -465,7 +465,7 @@ fn workspace_dialogs_centre_on_the_window_rather_than_the_pointer(cx: &mut gpui:
                     };
                     view.open_workspace_menu(id, anchor, window, cx);
                 });
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             });
             // The menu itself still opens where the pointer asked for it.
             let menu = cx.debug_bounds("menu-panel").unwrap();
@@ -478,7 +478,7 @@ fn workspace_dialogs_centre_on_the_window_rather_than_the_pointer(cx: &mut gpui:
                 view.update(cx, |view, cx| {
                     view.open_workspace_dialog(action, window, cx)
                 });
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             });
             let panel = cx.debug_bounds("menu-panel").unwrap();
             let offset = panel.center() - centre;
@@ -538,7 +538,7 @@ fn workspace_dialog_sections_and_buttons_stay_inside_the_panel(cx: &mut gpui::Te
                     }
                     view.menu.error = Some("fixture error".into());
                 });
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             });
             let panel = cx.debug_bounds("menu-panel").unwrap();
             let cancel = cx.debug_bounds("dialog-cancel").unwrap();

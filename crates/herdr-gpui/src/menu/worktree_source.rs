@@ -393,21 +393,21 @@ impl HerdrWindow {
         let retry_branches = !source.branches.listed && !source.branches.loading;
         let list_checkouts = !source.checkouts.listed && source.checkouts.request.is_none();
         match tab {
-            Tab::New => window.focus(&self.menu.focus),
+            Tab::New => window.focus(&self.menu.focus, cx),
             Tab::Existing => {
                 if list_checkouts {
                     self.list_checkouts();
                 }
-                window.focus(&search.read(cx).focus);
+                window.focus(&search.read(cx).focus.clone(), cx);
             }
             Tab::Branches => {
                 if retry_branches {
                     self.list_branches(cx);
                 }
-                window.focus(&search.read(cx).focus);
+                window.focus(&search.read(cx).focus.clone(), cx);
             }
             Tab::Items(_) => {
-                window.focus(&search.read(cx).focus);
+                window.focus(&search.read(cx).focus.clone(), cx);
                 self.list_repo_items();
             }
         }

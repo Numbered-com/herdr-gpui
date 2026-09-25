@@ -337,7 +337,7 @@ mod tests {
         });
         cx.update(|window, cx| {
             window.refresh();
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         let origin = view.read_with(cx, |view, _| view.bounds.origin);
         let link = origin + point(px(1.), px(1.));
@@ -368,7 +368,7 @@ mod tests {
         });
         cx.update(|window, cx| {
             window.refresh();
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         let position = view.read_with(cx, |view, _| view.bounds.origin + point(px(1.), px(1.)));
         cx.update(|window, cx| {

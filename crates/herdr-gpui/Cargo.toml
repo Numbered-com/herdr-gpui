@@ -16,7 +16,8 @@ chrono.workspace               = true
 config_loader.workspace        = true
 ed25519-dalek.workspace        = true
 flate2.workspace               = true
-gpui                           = { features = ["runtime_shaders"], workspace = true }
+gpui.workspace                 = true
+gpui_platform                  = { features = ["runtime_shaders"], workspace = true }
 herdr-client.workspace         = true
 image                          = { features = ["bmp", "tiff"], workspace = true }
 rodio.workspace                = true

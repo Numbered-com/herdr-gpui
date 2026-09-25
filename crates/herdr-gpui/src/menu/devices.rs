@@ -355,7 +355,7 @@ impl HerdrWindow {
                 });
                 input
             });
-            window.focus(&fields[0].read(cx).focus);
+            window.focus(&fields[0].read(cx).focus.clone(), cx);
             self.menu.device_setup = Some(Setup {
                 fields,
                 launching: false,
@@ -567,7 +567,7 @@ impl HerdrWindow {
                             1
                         })
                         % 3;
-                    window.focus(&form.fields[next].read(cx).focus);
+                    window.focus(&form.fields[next].read(cx).focus.clone(), cx);
                 }
                 "enter" => self.submit_device_setup(cx),
                 "escape" => self.dismiss_menu(window, cx),

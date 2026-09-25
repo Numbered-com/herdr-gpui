@@ -341,6 +341,7 @@ fn text_paste_survives_a_settled_navigation(cx: &mut gpui::TestAppContext) {
     let paste = gpui::KeyDownEvent {
         keystroke: gpui::Keystroke::parse("cmd-v").unwrap(),
         is_held: false,
+        prefer_character_input: false,
     };
     let settled = |view: &HerdrWindow| crate::state::SurfaceActivation {
         request: "activate-1".into(),
@@ -411,6 +412,7 @@ fn connected_image_paste_captures_pane_before_immediate_text_and_enter(
     let enter = gpui::KeyDownEvent {
         keystroke: gpui::Keystroke::parse("enter").unwrap(),
         is_held: false,
+        prefer_character_input: false,
     };
     cx.update(|window, cx| {
         view.update(cx, |view, cx| {
@@ -801,6 +803,7 @@ fn connected_image_paste_key_down_ctrl_v_and_cmd_v(cx: &mut gpui::TestAppContext
                 let event = gpui::KeyDownEvent {
                     keystroke: gpui::Keystroke::parse(key).unwrap(),
                     is_held: false,
+                    prefer_character_input: false,
                 };
                 cx.update(|window, cx| {
                     view.update(cx, |view, cx| {
@@ -2089,7 +2092,7 @@ fn toast_navigation_queues_typed_targets_and_fences_input(cx: &mut gpui::TestApp
                 view.selected_endpoint = 1;
                 view.options = ConnectOptions::default();
                 view.reset_selected();
-                window.focus(&view.focus);
+                window.focus(&view.focus, cx);
                 view.marked = "composition".into();
                 assert!(view.input_ready());
                 view.tick_toasts(false, Instant::now());
@@ -2214,15 +2217,15 @@ fn toast_click_uses_origin_and_close_never_navigates(cx: &mut gpui::TestAppConte
     remote.toasts.receive([notice.clone(), notice]);
     cx.simulate_resize(size(px(1000.), px(600.)));
     cx.update(|window, cx| {
-        view.update(cx, |view, _| {
+        view.update(cx, |view, cx| {
             // The same IDs on Local must not win over the notification's origin.
             view.endpoints[0].live.snapshot = remote.live.snapshot.clone();
             view.endpoints[0].detached = true;
             view.endpoints.push(remote);
-            window.focus(&view.focus);
+            window.focus(&view.focus, cx);
             view.marked = "composition".into();
         });
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     let dismiss = cx.debug_bounds("toast-dismiss-ssh:toast-0").unwrap();
     cx.simulate_click(dismiss.center(), Default::default());
@@ -2234,7 +2237,7 @@ fn toast_click_uses_origin_and_close_never_navigates(cx: &mut gpui::TestAppConte
         assert!(view.focus.is_focused(window));
         assert_eq!(view.endpoints[1].toasts.entries.len(), 1);
     });
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     let card = cx.debug_bounds("toast-ssh:toast-1").unwrap();
     cx.simulate_click(card.center(), Default::default());
     view.update(cx, |view, _| {
@@ -2277,7 +2280,7 @@ fn toast_rendered_clicks_reject_replaced_removed_and_disabled_origins(
                 view.endpoints.truncate(1);
                 view.endpoints.push(remote);
             });
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         assert!(cx.debug_bounds("toast-ssh:toast-0").is_some());
         let (generation, inbox) = view.read_with(cx, |view, _| {
@@ -2916,8 +2919,8 @@ fn qa_play_sound_dispatches_without_daemon_or_pane(cx: &mut gpui::TestAppContext
         }
     });
     cx.update(|window, cx| {
-        view.read(cx).focus.focus(window);
-        window.draw(cx).clear();
+        view.read(cx).focus.clone().focus(window, cx);
+        window.draw(cx).clear(cx);
         let menus = crate::menus();
         let qa = menus
             .iter()
@@ -3164,6 +3167,7 @@ fn every_focus_changing_command_fences_immediate_input_until_ack_and_surface(
                 let key = |key: &str| gpui::KeyDownEvent {
                     keystroke: gpui::Keystroke::parse(key).unwrap(),
                     is_held: false,
+                    prefer_character_input: false,
                 };
                 match command {
                     Command::ClosePane | Command::CloseTab if confirm_close_tab => {
