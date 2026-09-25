@@ -87,7 +87,7 @@ fn open_dialog(view: &Entity<HerdrWindow>, cx: &mut VisualTestContext, connected
 fn draw(cx: &mut VisualTestContext) {
     for _ in 0..2 {
         cx.update(|window, cx| {
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
     }
 }
@@ -516,7 +516,7 @@ fn one_search_field_searches_every_tab(cx: &mut gpui::TestAppContext) {
     }
     assert!(cx.debug_bounds("worktree-tab-count-new").is_none());
 
-    cx.update(|window, cx| window.focus(&search.read(cx).focus));
+    cx.update(|window, cx| window.focus(&search.read(cx).focus.clone(), cx));
     cx.simulate_input("login");
     draw(cx);
     // The existing tab is the first that matched, so the dialog moved there.
@@ -587,7 +587,7 @@ fn shortcut_opens_the_dialog_for_the_focused_repository(cx: &mut gpui::TestAppCo
     cx.update(|_, cx| crate::bind_keys(cx));
     for (focused, expected) in [("w3", Some("w3")), ("w4", Some("w3")), ("w1", Some("w1"))] {
         cx.update(|window, cx| {
-            view.update(cx, |view, _| {
+            view.update(cx, |view, cx| {
                 let snapshot = std::sync::Arc::make_mut(view.live.snapshot.as_mut().unwrap());
                 snapshot.workspaces = sidebar::layout_tests::snapshot(7).workspaces;
                 snapshot.focused_workspace_id = Some(focused.into());
@@ -595,7 +595,7 @@ fn shortcut_opens_the_dialog_for_the_focused_repository(cx: &mut gpui::TestAppCo
                 view.live.local_daemon_peer = true;
                 view.menu.reset();
                 view.menu.github = Default::default();
-                window.focus(&view.focus);
+                window.focus(&view.focus, cx);
             });
         });
         draw(cx);
@@ -653,7 +653,7 @@ fn shortcut_opens_the_dialog_for_the_focused_repository(cx: &mut gpui::TestAppCo
     ];
     for (setup, reason) in cases {
         cx.update(|window, cx| {
-            view.update(cx, |view, _| {
+            view.update(cx, |view, cx| {
                 let snapshot = std::sync::Arc::make_mut(view.live.snapshot.as_mut().unwrap());
                 snapshot.workspaces = sidebar::layout_tests::snapshot(7).workspaces;
                 snapshot.focused_workspace_id = Some("w1".into());
@@ -661,7 +661,7 @@ fn shortcut_opens_the_dialog_for_the_focused_repository(cx: &mut gpui::TestAppCo
                 view.menu.reset();
                 view.flash = None;
                 setup(view);
-                window.focus(&view.focus);
+                window.focus(&view.focus, cx);
             });
         });
         draw(cx);

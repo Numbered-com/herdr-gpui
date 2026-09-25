@@ -299,7 +299,7 @@ mod tests {
         });
         for width in [800., 360.] {
             cx.simulate_resize(size(px(width), px(600.)));
-            cx.update(|window, cx| window.draw(cx).clear());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
             let button = cx.debug_bounds("new-tab").unwrap();
             let icon = cx.debug_bounds("new-tab-icon").unwrap();
             assert!(button.size.width >= px(34.));
@@ -315,7 +315,7 @@ mod tests {
             assert!((button.left() - last.right()).abs() <= px(1.), "{last:?}");
         }
         cx.simulate_resize(size(px(800.), px(600.)));
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let original_focus = view.read_with(cx, |view, _| {
             view.live.snapshot.as_ref().unwrap().focused_tab_id.clone()
         });
@@ -369,7 +369,7 @@ mod tests {
             }
             cx.simulate_keystrokes("enter");
             assert!(view.read_with(cx, |view, _| view.menu.page.is_none()));
-            cx.update(|window, cx| window.draw(cx).clear());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
         }
     }
 

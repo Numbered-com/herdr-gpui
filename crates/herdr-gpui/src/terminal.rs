@@ -956,6 +956,7 @@ mod tests {
                 &KeyDownEvent {
                     keystroke: Keystroke::parse(s).unwrap(),
                     is_held: false,
+                    prefer_character_input: false,
                 },
                 true,
             )

@@ -238,7 +238,7 @@ impl HerdrWindow {
         self.menu.page = Some(Page::Workspace);
         self.refresh_workspace_pr();
         self.marked.clear();
-        window.focus(&self.menu.focus);
+        window.focus(&self.menu.focus, cx);
         cx.notify();
     }
 

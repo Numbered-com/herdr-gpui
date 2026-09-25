@@ -208,7 +208,7 @@ impl HerdrWindow {
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
                     // Another field of the same dialog may hold focus.
-                    window.focus(&this.menu.focus);
+                    window.focus(&this.menu.focus, cx);
                     if let Some(input) = this.menu.input.as_mut()
                         && input.marked.is_none()
                         && let Some(index) = input.index_at(event.position)
@@ -267,7 +267,14 @@ impl HerdrWindow {
                                         rgb(this.theme.muted),
                                     ));
                                 }
-                                let _ = line.paint(origin, bounds.size.height, window, cx);
+                                let _ = line.paint(
+                                    origin,
+                                    bounds.size.height,
+                                    TextAlign::Left,
+                                    None,
+                                    window,
+                                    cx,
+                                );
                                 if focused {
                                     window.paint_quad(fill(
                                         Bounds::new(

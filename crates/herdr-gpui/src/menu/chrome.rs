@@ -50,7 +50,7 @@ impl HerdrWindow {
         );
         self.menu.page = Some(Page::Menu);
         self.marked.clear();
-        window.focus(&self.menu.focus);
+        window.focus(&self.menu.focus, cx);
         cx.notify();
         true
     }
@@ -64,13 +64,13 @@ impl HerdrWindow {
         self.hover_menu = None;
         self.update_preview = None;
         self.menu.reset();
-        window.focus(&self.focus);
+        window.focus(&self.focus, cx);
         cx.notify();
     }
 
-    pub(crate) fn restore_menu_focus(&self, window: &mut Window) {
+    pub(crate) fn restore_menu_focus(&self, window: &mut Window, cx: &mut App) {
         if self.menu.page.is_none() && self.menu.focus.is_focused(window) {
-            window.focus(&self.focus);
+            window.focus(&self.focus, cx);
         }
     }
 
