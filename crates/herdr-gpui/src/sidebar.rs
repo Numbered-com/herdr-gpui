@@ -6,6 +6,7 @@ mod hover;
 mod layout;
 mod metrics;
 mod render;
+mod reorder;
 mod row;
 mod view;
 mod workspaces;
@@ -23,6 +24,7 @@ pub(crate) use {
     agents::agent_name,
     hover::{HoverMenu, HoverRest},
     metrics::{ARROW_RESERVE, HOST_ARROW_WIDTH, HOST_GAP, ICON_RESERVE, LABEL_GAP},
+    reorder::WorkspaceDrag,
     row::{compact, github_mark, label_text},
     view::SidebarView,
     workspaces::workspace_label,
