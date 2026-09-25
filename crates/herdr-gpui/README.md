@@ -852,7 +852,9 @@ Windows setup) nothing is saved and the window says so.
   Both icons use the current theme's foreground tint.
 - Cmd-T creates and focuses a tab; Cmd-Shift-N creates and focuses
   a workspace. Cmd-N opens the New worktree dialog for the focused workspace
-  (for a linked worktree, its repository's main checkout). When there is none,
+  (for a linked worktree, its repository's main checkout). The dialog opens on
+  its Name field: left empty, the daemon picks the workspace name; anything
+  typed is sent as the new workspace's label. When there is none,
   because the workspace is not a Git repository, the main checkout is not open,
   nothing is focused, or the window is disconnected, a two-second flash in the
   clipboard toast's position says why.

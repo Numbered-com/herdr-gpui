@@ -118,6 +118,9 @@ pub(super) struct Branches {
 pub(crate) struct WorktreeSource {
     pub(super) tab: Tab,
     pub(super) search: Entity<SearchInput>,
+    /// The workspace name for a typed branch. Left empty, the daemon keeps its
+    /// own default label.
+    pub(super) name: Entity<SearchInput>,
     /// Indices into the open tab's listing, in listed order.
     pub(super) filtered: Vec<usize>,
     /// How many rows the search keeps in each tab, in `Tab::ALL` order.
@@ -296,6 +299,24 @@ impl HerdrWindow {
                 .is_some_and(|source| source.search.read(cx).focus.is_focused(window))
     }
 
+    /// Whether the branch form's name field has focus, so its typing, Enter
+    /// aside, never reaches the branch draft.
+    pub(crate) fn worktree_name_focused(&self, window: &gpui::Window, cx: &gpui::App) -> bool {
+        self.menu.page == Some(Page::Dialog(WorkspaceAction::NewWorktree))
+            && self
+                .menu
+                .worktree
+                .as_ref()
+                .is_some_and(|source| source.name.read(cx).focus.is_focused(window))
+    }
+
+    /// The trimmed name typed for the new workspace, when there is one.
+    pub(super) fn worktree_name(&self, cx: &gpui::App) -> Option<String> {
+        let source = self.menu.worktree.as_ref()?;
+        let name = source.name.read(cx).text().trim();
+        (!name.is_empty()).then(|| name.to_owned())
+    }
+
     pub(super) fn open_worktree_source(
         &mut self,
         window: &mut gpui::Window,
@@ -314,9 +335,17 @@ impl HerdrWindow {
                 this.search_worktree_sources(&text, window, cx);
             },
         );
+        let name = cx.new(SearchInput::new);
+        name.update(cx, |input, cx| {
+            input.set_placeholder("Default name", cx);
+            input.set_appearance(self.config.ui.clone(), self.theme.clone(), cx);
+        });
+        // The name is what most people change, so the form opens on it.
+        window.focus(&name.read(cx).focus.clone(), cx);
         self.menu.worktree = Some(WorktreeSource {
             tab: Tab::New,
             search,
+            name,
             filtered: Vec::new(),
             hits: Default::default(),
             selected: 0,
@@ -390,10 +419,11 @@ impl HerdrWindow {
         source.tab = tab;
         source.refresh();
         let search = source.search.clone();
+        let name = source.name.clone();
         let retry_branches = !source.branches.listed && !source.branches.loading;
         let list_checkouts = !source.checkouts.listed && source.checkouts.request.is_none();
         match tab {
-            Tab::New => window.focus(&self.menu.focus, cx),
+            Tab::New => window.focus(&name.read(cx).focus.clone(), cx),
             Tab::Existing => {
                 if list_checkouts {
                     self.list_checkouts();
