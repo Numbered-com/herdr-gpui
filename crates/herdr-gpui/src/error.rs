@@ -301,6 +301,10 @@ pub enum Error {
     },
     #[error("Saving the device timed out")]
     DeviceSetupTimeout,
+    #[error("This host and session are already saved as \u{201c}{0}\u{201d}.")]
+    DeviceExists(String),
+    #[error("This host is already being added.")]
+    DeviceAdding,
     #[error("preferences must be an object")]
     PreferencesNotObject,
     #[error("sidebar_width_px must be finite and positive, or null")]

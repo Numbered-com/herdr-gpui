@@ -15,6 +15,9 @@ pub(super) const MENU_WIDTH: f32 = 280.;
 pub(super) struct Setup {
     fields: [Entity<SearchInput>; 3],
     step: Step,
+    /// This process's claim on the host being added, from the first check
+    /// until the device is saved or the dialog closes.
+    claim: Option<setup::Claim>,
     task: Option<Task<()>>,
 }
 
@@ -29,6 +32,8 @@ enum Step {
     Saved(setup::Request),
     /// Setup needs prompts, so the user decides whether to run it locally.
     Confirm(setup::Request, Offer),
+    /// Checking the catalog on disk again before opening the setup workspace.
+    Verifying(setup::Request),
     /// Waiting for the local daemon to create the setup workspace.
     Opening(setup::Request, LocalSpace),
 }
@@ -426,6 +431,7 @@ impl HerdrWindow {
             self.menu.device_setup = Some(Setup {
                 fields,
                 step: Step::Form,
+                claim: None,
                 task: None,
             });
             self.menu.page = Some(Page::AddDevice);
@@ -539,6 +545,9 @@ impl HerdrWindow {
                 request.label()
             )),
             Step::Confirm(request, offer) => Some(offer.question(request.target())),
+            Step::Verifying(request) => {
+                Some(format!("Checking {} is not saved yet…", request.target()))
+            }
             Step::Opening(..) => Some("Opening a local workspace…".into()),
         };
         if let Some(status) = status {
@@ -610,6 +619,19 @@ impl HerdrWindow {
         view.child(body).child(footer)
     }
 
+    /// Refuse a host already in the catalog. Checked again before each step
+    /// that saves, since another window or the CLI can add it meanwhile.
+    fn ensure_new_device(&self, request: &setup::Request) -> crate::Result<()> {
+        match self
+            .endpoints
+            .iter()
+            .find(|endpoint| request.same_host(&endpoint.connection.target))
+        {
+            Some(endpoint) => Err(crate::Error::DeviceExists(endpoint.label.clone())),
+            None => Ok(()),
+        }
+    }
+
     fn submit_device_setup(&mut self, cx: &mut Context<Self>) {
         let Some(form) = &mut self.menu.device_setup else {
             return;
@@ -624,7 +646,10 @@ impl HerdrWindow {
             form.fields[1].read(cx).text(),
             form.fields[2].read(cx).text(),
         );
-        let request = match request {
+        let request = match request.and_then(|request| {
+            self.ensure_new_device(&request)?;
+            Ok(request)
+        }) {
             Ok(request) => request,
             Err(error) => {
                 self.menu.error = Some(error.to_string());
@@ -632,11 +657,17 @@ impl HerdrWindow {
                 return;
             }
         };
+        let Some(form) = &mut self.menu.device_setup else {
+            return;
+        };
         form.step = Step::Checking(request.clone());
         self.menu.error = None;
-        let background = cx
-            .background_executor()
-            .spawn(async move { request.probe() });
+        // Claim before probing: a second add of this host, from any window of
+        // this process, is refused from here on rather than after a slow probe.
+        let background = cx.background_executor().spawn(async move {
+            let claim = setup::claim(&request)?;
+            Ok::<_, crate::Error>((claim, request.probe()))
+        });
         form.task = Some(cx.spawn(async move |this, cx| {
             let result = background.await;
             let _ = this.update(cx, |this, cx| this.device_probed(result, cx));
@@ -644,20 +675,53 @@ impl HerdrWindow {
         cx.notify();
     }
 
-    fn device_probed(&mut self, result: crate::Result<HostProbe>, cx: &mut Context<Self>) {
-        let Some(form) = &mut self.menu.device_setup else {
-            return;
-        };
-        let Step::Checking(request) = &form.step else {
+    /// Return to the form when the host is already saved or being added:
+    /// offering a terminal would only add it again.
+    fn refuse_duplicate(&mut self, error: &crate::Error, cx: &mut Context<Self>) -> bool {
+        if !matches!(
+            error,
+            crate::Error::DeviceExists(_) | crate::Error::DeviceAdding
+        ) {
+            return false;
+        }
+        if let Some(form) = &mut self.menu.device_setup {
+            form.step = Step::Form;
+            form.claim = None;
+        }
+        self.menu.error = Some(error.to_string());
+        cx.notify();
+        true
+    }
+
+    fn device_probed(
+        &mut self,
+        result: crate::Result<(setup::Claim, crate::Result<HostProbe>)>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Setup {
+            step: Step::Checking(request),
+            ..
+        }) = &self.menu.device_setup
+        else {
             return;
         };
         let request = request.clone();
-        let offer = match result {
-            Ok(probe) => match Offer::for_probe(probe) {
-                None => {
-                    self.save_device(request, probe, cx);
-                    return;
+        let (claim, probe) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                if !self.refuse_duplicate(&error, cx) {
+                    self.menu.error = Some(format!("Check {}: {error}", request.target()));
+                    if let Some(form) = &mut self.menu.device_setup {
+                        form.step = Step::Confirm(request, Offer::Terminal);
+                    }
+                    cx.notify();
                 }
+                return;
+            }
+        };
+        let offer = match probe {
+            Ok(probe) => match Offer::for_probe(probe) {
+                None => return self.save_device(request, probe, claim, cx),
                 Some(offer) => offer,
             },
             Err(error) => {
@@ -665,43 +729,68 @@ impl HerdrWindow {
                 Offer::Terminal
             }
         };
-        form.step = Step::Confirm(request, offer);
+        if let Some(form) = &mut self.menu.device_setup {
+            form.step = Step::Confirm(request, offer);
+            form.claim = Some(claim);
+        }
         cx.notify();
     }
 
-    fn save_device(&mut self, request: setup::Request, probe: HostProbe, cx: &mut Context<Self>) {
+    fn save_device(
+        &mut self,
+        request: setup::Request,
+        probe: HostProbe,
+        claim: setup::Claim,
+        cx: &mut Context<Self>,
+    ) {
         let Some(form) = &mut self.menu.device_setup else {
             return;
         };
         form.step = Step::Saving(request.clone(), probe);
-        let background = cx
-            .background_executor()
-            .spawn(async move { setup::save(&request) });
+        // The claim travels with the save and comes back, so a failure that
+        // offers a terminal still holds the host.
+        let background = cx.background_executor().spawn(async move {
+            let result = setup::save(&request, &claim);
+            (result, claim)
+        });
         form.task = Some(cx.spawn(async move |this, cx| {
-            let result = background.await;
+            let (result, claim) = background.await;
             let _ = this.update(cx, |this, cx| {
-                let Some(form) = &mut this.menu.device_setup else {
-                    return;
-                };
-                let Step::Saving(request, _) = &form.step else {
+                let Some(Setup {
+                    step: Step::Saving(request, _),
+                    ..
+                }) = &this.menu.device_setup
+                else {
                     return;
                 };
                 let request = request.clone();
-                form.step = match result {
-                    Ok(()) => Step::Saved(request),
-                    Err(error) => {
-                        this.menu.error = Some(error.to_string());
-                        Step::Confirm(request, Offer::Terminal)
+                let error = match result {
+                    Ok(()) => {
+                        // Saved: the catalog now refuses this host by itself.
+                        if let Some(form) = &mut this.menu.device_setup {
+                            form.step = Step::Saved(request);
+                        }
+                        cx.notify();
+                        return;
                     }
+                    Err(error) => error,
                 };
+                if this.refuse_duplicate(&error, cx) {
+                    return;
+                }
+                this.menu.error = Some(error.to_string());
+                if let Some(form) = &mut this.menu.device_setup {
+                    form.step = Step::Confirm(request, Offer::Terminal);
+                    form.claim = Some(claim);
+                }
                 cx.notify();
             });
         }));
         cx.notify();
     }
 
-    /// Ask the local daemon for a workspace; its root pane runs the setup once
-    /// the daemon answers, in `poll_device_setup`.
+    /// Check the catalog on disk once more, then ask the local daemon for a
+    /// workspace whose root pane runs the setup (see `poll_device_setup`).
     fn open_setup_space(&mut self, cx: &mut Context<Self>) {
         let Some(form) = &mut self.menu.device_setup else {
             return;
@@ -710,6 +799,49 @@ impl HerdrWindow {
             return;
         };
         let request = request.clone();
+        let claim = form.claim.take();
+        form.step = Step::Verifying(request.clone());
+        self.menu.error = None;
+        let background = cx.background_executor().spawn(async move {
+            // A failed probe left no claim; take one now.
+            match claim {
+                Some(claim) => setup::verify_unsaved(&request, &claim).map(|()| claim),
+                None => setup::claim(&request),
+            }
+        });
+        form.task = Some(cx.spawn(async move |this, cx| {
+            let result = background.await;
+            let _ = this.update(cx, |this, cx| this.setup_space_verified(result, cx));
+        }));
+        cx.notify();
+    }
+
+    fn setup_space_verified(
+        &mut self,
+        result: crate::Result<setup::Claim>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Setup {
+            step: Step::Verifying(request),
+            ..
+        }) = &self.menu.device_setup
+        else {
+            return;
+        };
+        let request = request.clone();
+        let claim = match result {
+            Ok(claim) => claim,
+            Err(error) => {
+                if !self.refuse_duplicate(&error, cx) {
+                    self.menu.error = Some(format!("Open a local workspace: {error}"));
+                    if let Some(form) = &mut self.menu.device_setup {
+                        form.step = Step::Confirm(request, Offer::Terminal);
+                    }
+                    cx.notify();
+                }
+                return;
+            }
+        };
         let local = &self.endpoints[0];
         let result = (|| {
             let command = setup::terminal_command(&request)?;
@@ -731,12 +863,14 @@ impl HerdrWindow {
                 command,
             })
         })();
+        let Some(form) = &mut self.menu.device_setup else {
+            return;
+        };
+        form.claim = Some(claim);
         match result {
-            Ok(space) => {
-                self.menu.error = None;
-                form.step = Step::Opening(request, space);
-            }
+            Ok(space) => form.step = Step::Opening(request, space),
             Err(error) => {
+                form.step = Step::Confirm(request, Offer::Terminal);
                 self.menu.error = Some(format!("Open a local workspace: {error}"));
             }
         }
@@ -818,6 +952,16 @@ impl HerdrWindow {
             });
         if let Err(error) = sent {
             return fail(self, error.to_string(), cx);
+        }
+        // The terminal's `machine add` outlives this dialog; keep the host
+        // claimed so this process cannot start a second add meanwhile.
+        if let Some(claim) = self
+            .menu
+            .device_setup
+            .as_mut()
+            .and_then(|form| form.claim.take())
+        {
+            claim.hold();
         }
         let local = local.id.clone();
         self.dismiss_menu(window, cx);
@@ -931,6 +1075,7 @@ mod tests {
         view.menu.device_setup = Some(Setup {
             fields: std::array::from_fn(|_| cx.new(SearchInput::new)),
             step,
+            claim: None,
             task: None,
         });
         view.menu.page = Some(Page::AddDevice);
@@ -947,9 +1092,11 @@ mod tests {
             view.update(cx, |view, cx| {
                 let request = setup::Request::new("dev@box", "Box", "").unwrap();
                 view.endpoints[0].live.status = ConnectionStatus::Disconnected;
-                open_form(view, Step::Confirm(request, Offer::Install), cx);
-                view.open_setup_space(cx);
-                assert!(matches!(step(view), Step::Confirm(_, Offer::Install)));
+                open_form(view, Step::Verifying(request), cx);
+                view.setup_space_verified(Ok(setup::Claim::fixture("disconnected.test")), cx);
+                assert!(matches!(step(view), Step::Confirm(_, Offer::Terminal)));
+                // The claim stays with the dialog for a retry.
+                assert!(view.menu.device_setup.as_ref().unwrap().claim.is_some());
                 assert!(
                     view.menu
                         .error
@@ -957,6 +1104,53 @@ mod tests {
                         .unwrap()
                         .starts_with("Open a local workspace:")
                 );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn a_host_already_saved_or_being_added_returns_to_the_form(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(fixture_window);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.endpoints.push(crate::endpoint::Endpoint::new(
+                    "0123456789abcdef0123456789abcdef".into(),
+                    "m5max-ms".into(),
+                    herdr_client::ConnectTarget::Ssh {
+                        target: "penso@box".into(),
+                        session: "default".into(),
+                    },
+                    true,
+                ));
+                // The window's own list refuses the exact spelling at once.
+                let again = setup::Request::new("penso@box", "Again", "").unwrap();
+                assert!(matches!(
+                    view.ensure_new_device(&again),
+                    Err(crate::Error::DeviceExists(label)) if label == "m5max-ms"
+                ));
+                let other = setup::Request::new("penso@box", "Work", "work").unwrap();
+                assert!(view.ensure_new_device(&other).is_ok());
+
+                // Background checks catch other spellings and concurrent adds.
+                // Neither may fall through to offering a terminal.
+                for (error, message) in [
+                    (
+                        crate::Error::DeviceExists("m5max-ms".into()),
+                        "This host and session are already saved as \u{201c}m5max-ms\u{201d}.",
+                    ),
+                    (
+                        crate::Error::DeviceAdding,
+                        "This host is already being added.",
+                    ),
+                ] {
+                    open_form(view, Step::Checking(again.clone()), cx);
+                    view.device_probed(Err(error), cx);
+                    assert!(matches!(step(view), Step::Form));
+                    assert_eq!(view.menu.error.as_deref(), Some(message));
+                }
+                open_form(view, Step::Verifying(again.clone()), cx);
+                view.setup_space_verified(Err(crate::Error::DeviceExists("m5max-ms".into())), cx);
+                assert!(matches!(step(view), Step::Form));
             });
         });
     }

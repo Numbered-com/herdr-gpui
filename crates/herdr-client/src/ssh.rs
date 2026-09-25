@@ -197,6 +197,53 @@ fn origin_command(git_dir: &str) -> String {
     format!("/bin/sh -c {}", quote(&script))
 }
 
+/// Where an SSH target connects, as the local SSH configuration resolves it.
+/// Different spellings of one host (an alias, `user@address`, `ssh://`, or a
+/// config-supplied user or port) resolve to the same value.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Destination {
+    pub user: String,
+    pub host: String,
+    pub port: u16,
+}
+
+/// Resolve `target` with `ssh -G`, which reads configuration only and never
+/// connects. Blocks briefly: call it from a background thread.
+#[cfg(unix)]
+pub fn resolve_destination(target: &str) -> Result<Destination> {
+    validate_target(target)?;
+    let mut command = Command::new("ssh");
+    command.args(["-G", "--", target]);
+    let (status, output) = run(&mut command, Duration::from_secs(5), || false)?;
+    if !status.success() {
+        return Err(Error::RemoteCommand(status));
+    }
+    parse_destination(&output).ok_or(Error::RemoteOutput)
+}
+
+#[cfg(windows)]
+pub fn resolve_destination(target: &str) -> Result<Destination> {
+    validate_target(target)?;
+    Err(Error::SshUnsupported)
+}
+
+#[cfg(unix)]
+fn parse_destination(output: &[u8]) -> Option<Destination> {
+    let text = std::str::from_utf8(output).ok()?;
+    let value = |key: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(key)?.strip_prefix(' '))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    Some(Destination {
+        user: value("user")?.to_owned(),
+        // Host names are case-insensitive; addresses are unaffected.
+        host: value("hostname")?.to_ascii_lowercase(),
+        port: value("port")?.parse().ok()?,
+    })
+}
+
 /// Runs one noninteractive SSH command, keeping at most `PROBE_OUTPUT_LIMIT`
 /// bytes of stdout and never stderr, which can carry banners or secrets.
 #[cfg(unix)]
@@ -206,8 +253,19 @@ fn run_remote(
     timeout: Duration,
     cancelled: impl Fn() -> bool,
 ) -> Result<(std::process::ExitStatus, Vec<u8>)> {
+    run(&mut command(target, remote_command), timeout, cancelled)
+}
+
+/// Runs `command` with a deadline, keeping at most `PROBE_OUTPUT_LIMIT` bytes
+/// of stdout and discarding stderr.
+#[cfg(unix)]
+fn run(
+    command: &mut Command,
+    timeout: Duration,
+    cancelled: impl Fn() -> bool,
+) -> Result<(std::process::ExitStatus, Vec<u8>)> {
     let mut child = SshChild(
-        command(target, remote_command)
+        command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -599,6 +657,32 @@ esac
                 Duration::from_secs(1),
                 || false
             ),
+            Err(Error::InvalidSshTarget)
+        ));
+    }
+
+    #[test]
+    fn destinations_come_from_the_resolved_config_not_the_spelling() {
+        let parsed =
+            parse_destination(b"user penso\nhostname M5Max.Local\nport 2222\nhostkeyalias none\n")
+                .unwrap();
+        assert_eq!(
+            parsed,
+            Destination {
+                user: "penso".into(),
+                host: "m5max.local".into(),
+                port: 2222
+            }
+        );
+        // `hostkeyalias` must not satisfy the `hostname` key.
+        assert_eq!(parse_destination(b"user a\nhostnamex b\nport 22\n"), None);
+        assert_eq!(parse_destination(b"user a\nhostname b\nport x\n"), None);
+        // Spellings of one host agree through the real `ssh -G`.
+        let a = resolve_destination("penso@example.invalid").unwrap();
+        let b = resolve_destination("ssh://penso@EXAMPLE.invalid:22").unwrap();
+        assert_eq!(a, b);
+        assert!(matches!(
+            resolve_destination("-oProxyCommand=x"),
             Err(Error::InvalidSshTarget)
         ));
     }

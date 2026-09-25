@@ -128,7 +128,19 @@ to Local. The filter is window-local and starts at All Devices. The adjacent gea
 opens the existing Settings page (also available with `Cmd-,`).
 
 **Add Device…** accepts an SSH target, label, and optional remote session (default:
-`default`). **Add device** first checks the host over non-interactive SSH, using
+`default`). Herdr's `machine add` saves a new profile every time and takes no
+lock, so the dialog keeps a host from being saved twice itself. A host counts as
+already saved when a profile with the same session reaches the same user, host
+name, and port as `ssh -G` resolves them, so an SSH alias, `user@address`, and
+`ssh://` spellings of one machine all match. The host is claimed for this app
+before anything else, so a second add from any window is refused while the
+first runs. The catalog file is read again right before `machine add` runs and
+right after: if another client saved the same host in between, the profile added
+second is removed, so exactly one remains. A terminal setup keeps its claim for
+15 minutes, because the GUI cannot see when its `machine add` finishes; another
+client adding the host during that window can still create a duplicate.
+
+**Add device** first checks the host over non-interactive SSH, using
 the same executable search and compatibility rules as the connection bridge, and
 never installs or starts anything while checking:
 

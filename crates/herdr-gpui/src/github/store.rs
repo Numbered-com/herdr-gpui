@@ -39,11 +39,7 @@ impl Account {
     /// Catalog profile IDs are 32 lowercase hex digits, so they are safe in a
     /// Keychain account name and a file name. Anything else is refused.
     pub(crate) fn host(id: &str) -> Option<Self> {
-        (id.len() == 32
-            && id
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
-        .then(|| Self::Host(id.to_owned()))
+        herdr_client::valid_profile_id(id).then(|| Self::Host(id.to_owned()))
     }
 
     #[cfg(target_os = "macos")]
