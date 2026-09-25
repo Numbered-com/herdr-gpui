@@ -8,6 +8,9 @@ pub(crate) enum Page {
     Preferences,
     Devices,
     AddDevice,
+    /// A saved SSH device's context menu, from its sidebar host header.
+    Host,
+    RemoveDevice,
     Keybinds,
     Themes,
     Palette,

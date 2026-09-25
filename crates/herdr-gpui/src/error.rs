@@ -305,6 +305,11 @@ pub enum Error {
     DeviceExists(String),
     #[error("This host is already being added.")]
     DeviceAdding,
+    #[error("Removing the device failed ({status}){}", if detail.is_empty() { String::new() } else { format!(": {detail}") })]
+    DeviceRemove {
+        status: std::process::ExitStatus,
+        detail: String,
+    },
     #[error("preferences must be an object")]
     PreferencesNotObject,
     #[error("sidebar_width_px must be finite and positive, or null")]

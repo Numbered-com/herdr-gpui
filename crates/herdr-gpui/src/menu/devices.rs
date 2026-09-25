@@ -1,5 +1,8 @@
 //! Device scope is presentation state; connection ownership stays in `endpoint`.
+mod host_menu;
 mod setup;
+
+pub(crate) use host_menu::HostMenu;
 
 use super::Page;
 use crate::{Command, HerdrWindow, NavigationTarget, search_input::SearchInput};
@@ -115,7 +118,7 @@ impl HerdrWindow {
             .is_none_or(|filter| filter == id)
     }
 
-    fn device_setup_unavailable(&self) -> Option<&'static str> {
+    pub(super) fn device_setup_unavailable(&self) -> Option<&'static str> {
         match &self.endpoints[0].connection.target {
             ConnectTarget::Socket(_) => {
                 Some("Device setup is unavailable with an explicit socket.")

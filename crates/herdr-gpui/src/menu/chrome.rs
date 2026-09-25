@@ -202,6 +202,8 @@ impl HerdrWindow {
                 | Page::RenameTab
                 | Page::Pane
                 | Page::RenamePane
+                | Page::Host
+                | Page::RemoveDevice
                 | Page::Git
                 | Page::GitCommit
         );
@@ -294,12 +296,17 @@ impl HerdrWindow {
             .when(
                 matches!(
                     page,
-                    Page::Tab | Page::RenameTab | Page::Pane | Page::RenamePane
+                    Page::Tab
+                        | Page::RenameTab
+                        | Page::Pane
+                        | Page::RenamePane
+                        | Page::Host
+                        | Page::RemoveDevice
                 ),
                 |panel| {
                     panel
                         .w((viewport.width - px(24.)).max(px(0.)).min(px(
-                            if matches!(page, Page::Tab | Page::Pane) {
+                            if matches!(page, Page::Tab | Page::Pane | Page::Host) {
                                 180.
                             } else {
                                 360.
@@ -515,6 +522,8 @@ impl HerdrWindow {
             panel = panel.child(self.render_git_menu(cx));
         } else if page == Page::GitCommit {
             panel = panel.child(self.render_git_commit(cx));
+        } else if matches!(page, Page::Host | Page::RemoveDevice) {
+            panel = panel.child(self.render_host_menu(cx));
         } else if matches!(page, Page::Tab | Page::RenameTab) {
             panel = panel.child(self.render_tab_menu(cx));
         } else if matches!(page, Page::Pane | Page::RenamePane) {
@@ -709,6 +718,10 @@ impl HerdrWindow {
                 }
                 if this.menu.page == Some(Page::Git) {
                     this.git_key(event, window, cx);
+                    return;
+                }
+                if matches!(this.menu.page, Some(Page::Host | Page::RemoveDevice)) {
+                    this.host_menu_key(event, window, cx);
                     return;
                 }
                 if matches!(this.menu.page, Some(Page::Tab | Page::RenameTab)) {

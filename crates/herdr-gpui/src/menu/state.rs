@@ -39,6 +39,7 @@ pub(crate) struct MenuState {
     pub(crate) palette: Option<crate::palette::Palette>,
     pub(crate) close: Option<crate::close_modal::CloseConfirmation>,
     pub(crate) tab: Option<crate::tab_menu::TabMenu>,
+    pub(crate) host: Option<super::devices::HostMenu>,
     pub(crate) pane: Option<crate::pane_menu::PaneMenu>,
     /// The new worktree dialog's tabs and the GitHub listing behind them.
     pub(crate) worktree: Option<super::WorktreeSource>,
@@ -204,6 +205,7 @@ impl MenuState {
             github_scroll: ScrollHandle::new(),
             pr_connection: None,
             tab: None,
+            host: None,
             pane: None,
             worktree: None,
         }
@@ -214,6 +216,7 @@ impl MenuState {
         self.devices_scroll.set_offset(Point::default());
         self.opening_right_click = false;
         self.tab = None;
+        self.host = None;
         self.pane = None;
         self.github_selected = None;
         self.github_scroll.set_offset(Point::default());

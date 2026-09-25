@@ -75,6 +75,7 @@ impl HerdrWindow {
             if multi {
                 let collapse_id = endpoint_id.clone();
                 let select_id = endpoint_id.clone();
+                let menu_id = endpoint_id.clone();
                 spaces = spaces.child(
                     div()
                         .id(SharedString::from(format!("host-{endpoint_id}")))
@@ -97,6 +98,15 @@ impl HerdrWindow {
                             theme.muted
                         }))
                         .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.open_host_menu(&menu_id, event.position, window, cx);
+                                this.menu.opening_right_click =
+                                    this.menu.page == Some(crate::menu::Page::Host);
+                            }),
+                        )
                         .child(
                             div()
                                 .id(SharedString::from(format!("collapse-host-{endpoint_id}")))

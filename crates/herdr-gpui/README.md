@@ -140,6 +140,12 @@ second is removed, so exactly one remains. A terminal setup keeps its claim for
 15 minutes, because the GUI cannot see when its `machine add` finishes; another
 client adding the host during that window can still create a duplicate.
 
+Right-click a saved SSH device's header in the Spaces list and choose **Remove
+device…** to forget it. Removal runs the installed `herdr machine remove`, which
+edits only the local catalog: the host's own Herdr keeps running. When the
+device has its own GitHub sign-in, the confirmation also offers to delete it,
+since its account panel goes away with the device. Local has no such menu.
+
 **Add device** first checks the host over non-interactive SSH, using
 the same executable search and compatibility rules as the connection bridge, and
 never installs or starts anything while checking:

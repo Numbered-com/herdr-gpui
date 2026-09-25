@@ -15,6 +15,8 @@ use std::{
 const SAVE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Enough for the CLI's final error line without retaining remote output.
 const SAVE_STDERR_LIMIT: u64 = 8 * 1024;
+/// `machine remove` edits one local file.
+const REMOVE_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long a claim keeps this process from adding its host again after a
 /// terminal setup starts: that setup can take this long to finish its prompts.
 const CLAIM_TTL: Duration = Duration::from_secs(15 * 60);
@@ -99,6 +101,34 @@ pub(super) fn claim(request: &Request) -> Result<Claim> {
     let claim = Claim::acquire(destination, &request.session, Instant::now())?;
     ensure_unsaved(request, &claim, &load_catalog()?, resolve)?;
     Ok(claim)
+}
+
+/// Claim a saved host while it is removed, so an add of the same host from
+/// this process cannot run at the same time. Blocks on `ssh -G`.
+pub(super) fn claim_saved(target: &str, session: &str) -> Result<Claim> {
+    let destination = herdr_client::resolve_destination(target)?;
+    Claim::acquire(destination, session, Instant::now())
+}
+
+/// Forget a saved device with `herdr machine remove`. The CLI only edits the
+/// local catalog; it never connects, so the host's own Herdr keeps running.
+/// Blocks on a process: call it from the background executor.
+pub(super) fn remove(id: &str) -> Result<()> {
+    remove_with(crate::daemon::executable().as_os_str(), id)
+}
+
+fn remove_with(executable: &std::ffi::OsStr, id: &str) -> Result<()> {
+    if !herdr_client::valid_profile_id(id) {
+        return Err(Error::DeviceSetupInput("This device has no saved profile."));
+    }
+    let (status, _, stderr) = run_cli(executable, &["machine", "remove", id], REMOVE_TIMEOUT)?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(Error::DeviceRemove {
+        status,
+        detail: last_line(&stderr),
+    })
 }
 
 /// Check the catalog on disk again, right before a step that saves.
@@ -297,17 +327,7 @@ fn save_with(
     let hosts = load()?;
     match first_saved(request, claim, &hosts, resolve) {
         Some(first) if first.id != id => {
-            let (status, _, stderr) = run_cli(
-                executable,
-                &["machine", "remove", &id],
-                Duration::from_secs(15),
-            )?;
-            if !status.success() {
-                return Err(Error::DeviceSetup {
-                    status,
-                    detail: last_line(&stderr),
-                });
-            }
+            remove_with(executable, &id)?;
             Err(Error::DeviceExists(first.label.clone()))
         }
         _ => Ok(()),
