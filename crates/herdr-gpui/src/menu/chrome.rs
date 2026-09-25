@@ -335,6 +335,7 @@ impl HerdrWindow {
                         | Page::AppUpdate
                         | Page::GitHub
                         | Page::AddDevice
+                        | Page::RenameDevice
                 ),
                 |panel| {
                     // Dialogs draw their own full-bleed header and footer rules,
@@ -372,9 +373,10 @@ impl HerdrWindow {
                     .w((viewport.width - px(24.)).max(px(0.)).min(px(420.)))
                     .max_h((viewport.height - px(24.)).max(px(0.)))
             })
-            .when(matches!(page, Page::AppUpdate | Page::AddDevice), |panel| {
-                panel.flex().flex_col().overflow_hidden().shadow_lg()
-            })
+            .when(
+                matches!(page, Page::AppUpdate | Page::AddDevice | Page::RenameDevice),
+                |panel| panel.flex().flex_col().overflow_hidden().shadow_lg(),
+            )
             .when(page == Page::About, |panel| {
                 panel.w((viewport.width - px(24.)).max(px(0.)).min(px(340.)))
             })
@@ -522,7 +524,7 @@ impl HerdrWindow {
             panel = panel.child(self.render_git_menu(cx));
         } else if page == Page::GitCommit {
             panel = panel.child(self.render_git_commit(cx));
-        } else if matches!(page, Page::Host | Page::RemoveDevice) {
+        } else if matches!(page, Page::Host | Page::RenameDevice | Page::RemoveDevice) {
             panel = panel.child(self.render_host_menu(cx));
         } else if matches!(page, Page::Tab | Page::RenameTab) {
             panel = panel.child(self.render_tab_menu(cx));
@@ -733,7 +735,10 @@ impl HerdrWindow {
                     this.git_key(event, window, cx);
                     return;
                 }
-                if matches!(this.menu.page, Some(Page::Host | Page::RemoveDevice)) {
+                if matches!(
+                    this.menu.page,
+                    Some(Page::Host | Page::RenameDevice | Page::RemoveDevice)
+                ) {
                     this.host_menu_key(event, window, cx);
                     return;
                 }

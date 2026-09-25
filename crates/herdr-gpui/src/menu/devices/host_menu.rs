@@ -1,16 +1,20 @@
 //! The sidebar host header's context menu. Only saved SSH devices have one:
 //! Local is always present, and an explicit socket is not in the catalog.
 use super::setup;
-use crate::{HerdrWindow, github::Account, menu::Page};
+use crate::{HerdrWindow, github::Account, menu::Page, search_input::SearchInput};
 use gpui::{prelude::*, *};
 use herdr_client::ConnectTarget;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
+    Rename,
     Remove,
 }
 
-const ACTIONS: [(Action, &str); 1] = [(Action::Remove, "Remove device…")];
+const ACTIONS: [(Action, &str); 2] = [
+    (Action::Rename, "Rename…"),
+    (Action::Remove, "Remove device…"),
+];
 
 pub(crate) struct HostMenu {
     /// The endpoint, as the window and its account slots key it.
@@ -24,6 +28,10 @@ pub(crate) struct HostMenu {
     /// Also delete the device's own GitHub sign-in. Offered only when it has
     /// one, since its account panel disappears with the device.
     forget_github: bool,
+    /// The new name while renaming.
+    input: Option<Entity<SearchInput>>,
+    renaming: bool,
+    error: Option<String>,
 }
 
 impl HerdrWindow {
@@ -56,6 +64,9 @@ impl HerdrWindow {
             session: session.clone(),
             selected: None,
             forget_github: true,
+            input: None,
+            renaming: false,
+            error: None,
         };
         if !self.open_menu(window, cx) {
             return;
@@ -73,10 +84,84 @@ impl HerdrWindow {
             .is_some_and(|auth| auth.can_sign_out())
     }
 
-    fn activate_host_menu(&mut self, action: Action, cx: &mut Context<Self>) {
+    fn activate_host_menu(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
         match action {
+            Action::Rename => {
+                let Some(host) = &self.menu.host else {
+                    return;
+                };
+                let (label, target) = (host.label.clone(), host.target.clone());
+                let input = cx.new(SearchInput::new);
+                input.update(cx, |input, cx| {
+                    input.set_appearance(self.config.ui.clone(), self.theme.clone(), cx);
+                    // An empty name falls back to the target, as when adding.
+                    input.set_placeholder(&target, cx);
+                    input.set_text_selected(&label, cx);
+                    window.focus(&input.focus, cx);
+                });
+                if let Some(host) = &mut self.menu.host {
+                    host.input = Some(input);
+                    host.error = None;
+                }
+                self.menu.page = Some(Page::RenameDevice);
+            }
             Action::Remove => self.menu.page = Some(Page::RemoveDevice),
         }
+        cx.notify();
+    }
+
+    /// Rename in the background and close once the catalog has the new name;
+    /// the sidebar and picker pick it up from there.
+    fn submit_rename_device(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(host) = &mut self.menu.host else {
+            return;
+        };
+        let Some(input) = &host.input else {
+            return;
+        };
+        if host.renaming || input.read(cx).is_composing() {
+            return;
+        }
+        let label = match setup::device_label(input.read(cx).text(), &host.target) {
+            Ok(label) => label,
+            Err(error) => {
+                host.error = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        let (id, profile) = (host.id.clone(), host.profile.clone());
+        host.renaming = true;
+        host.error = None;
+        let background = cx
+            .background_executor()
+            .spawn(async move { setup::rename(&profile, &label) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = background.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                // The menu may have closed or moved to another device meanwhile.
+                let Some(host) = this
+                    .menu
+                    .host
+                    .as_mut()
+                    .filter(|host| host.id == id && host.renaming)
+                else {
+                    return;
+                };
+                host.renaming = false;
+                match result {
+                    Ok(()) => this.dismiss_menu(window, cx),
+                    Err(error) => {
+                        host.error = Some(error.to_string());
+                        if let Some(input) = &host.input {
+                            window.focus(&input.read(cx).focus.clone(), cx);
+                        }
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -168,10 +253,26 @@ impl HerdrWindow {
         let Some(host) = &mut self.menu.host else {
             return;
         };
+        let key = event.keystroke.key.as_str();
+        // The name field owns typing and composition; only its submit and
+        // cancel keys belong to the menu.
+        if self.menu.page == Some(Page::RenameDevice)
+            && !host.renaming
+            && (host
+                .input
+                .as_ref()
+                .is_some_and(|input| input.read(cx).is_composing())
+                || !matches!(key, "escape" | "enter"))
+        {
+            return;
+        }
         cx.stop_propagation();
         window.prevent_default();
-        match event.keystroke.key.as_str() {
+        match key {
             "escape" => self.dismiss_menu(window, cx),
+            "enter" if self.menu.page == Some(Page::RenameDevice) => {
+                self.submit_rename_device(window, cx)
+            }
             "enter" if self.menu.page == Some(Page::RemoveDevice) => {
                 self.confirm_remove_device(window, cx)
             }
@@ -190,7 +291,7 @@ impl HerdrWindow {
             }
             "enter" => {
                 if let Some(index) = host.selected {
-                    self.activate_host_menu(ACTIONS[index].0, cx);
+                    self.activate_host_menu(ACTIONS[index].0, window, cx);
                 }
             }
             _ => {}
@@ -239,7 +340,9 @@ impl HerdrWindow {
                         .flex()
                         .items_center()
                         .cursor_pointer()
-                        .text_color(crate::menu::danger(theme))
+                        .when(action == Action::Remove, |row| {
+                            row.text_color(crate::menu::danger(theme))
+                        })
                         .when(host.selected == Some(index), |row| {
                             row.bg(rgb(theme.active))
                         })
@@ -251,12 +354,15 @@ impl HerdrWindow {
                                 cx.notify();
                             }
                         }))
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.activate_host_menu(action, cx)),
-                        ),
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.activate_host_menu(action, window, cx)
+                        })),
                 );
             }
             return body;
+        }
+        if self.menu.page == Some(Page::RenameDevice) {
+            return self.render_rename_device(host, cx);
         }
         let github = self.host_has_github(&host.id);
         body = body
@@ -321,6 +427,100 @@ impl HerdrWindow {
                     ),
             );
         body
+    }
+
+    /// A centered modal like Add Device: header with the title and Close,
+    /// the name field in the body, and the action in the footer.
+    fn render_rename_device(&self, host: &HostMenu, cx: &mut Context<Self>) -> Div {
+        let theme = &self.theme;
+        let header = div()
+            .debug_selector(|| "rename-device-header".into())
+            .flex_none()
+            .p(px(16.))
+            .border_b_1()
+            .border_color(rgb(theme.active))
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(self.config.ui.size * 1.35))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Rename device"),
+            )
+            .child(
+                div()
+                    .id("rename-device-close")
+                    .debug_selector(|| "rename-device-close".into())
+                    .px_2()
+                    .py_1()
+                    .cursor_pointer()
+                    .rounded(px(crate::config::corners::CONTROL))
+                    .hover(|s| s.bg(rgb(theme.active)))
+                    .child("Close")
+                    .on_click(cx.listener(|this, _, window, cx| this.dismiss_menu(window, cx))),
+            );
+        let body = div()
+            .debug_selector(|| "rename-device".into())
+            .min_h_0()
+            .p(px(16.))
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .child(
+                div()
+                    .text_color(rgb(theme.muted))
+                    .child(format!("{} · {}", host.target, host.session)),
+            )
+            .child(div().flex().flex_col().gap(px(6.)).child("Name").when_some(
+                host.input.clone(),
+                |field, input| {
+                    if host.renaming {
+                        field.child(div().child(input.read(cx).text().to_owned()))
+                    } else {
+                        field.child(input)
+                    }
+                },
+            ))
+            .when_some(host.error.clone(), |body, error| {
+                body.child(div().text_color(crate::menu::danger(theme)).child(error))
+            });
+        let ready = !host.renaming;
+        let footer = div()
+            .debug_selector(|| "rename-device-footer".into())
+            .flex_none()
+            .p(px(16.))
+            .border_t_1()
+            .border_color(rgb(theme.active))
+            .flex()
+            .justify_end()
+            .child(
+                div()
+                    .id("rename-device-submit")
+                    .debug_selector(|| "rename-device-submit".into())
+                    .p(px(8.))
+                    .rounded(px(crate::config::corners::CONTROL))
+                    .bg(rgb(theme.active))
+                    .when(ready, |button| {
+                        button.cursor_pointer().hover(|s| {
+                            s.bg(rgb(theme.active).blend(rgba((theme.foreground << 8) | 0x20)))
+                        })
+                    })
+                    .when(!ready, |button| button.text_color(rgb(theme.muted)))
+                    .child(if ready { "Rename" } else { "Renaming…" })
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.submit_rename_device(window, cx)),
+                    ),
+            );
+        div()
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .child(header)
+            .child(body)
+            .child(footer)
     }
 }
 
@@ -387,7 +587,8 @@ mod tests {
         cx.update(|window, cx| crate::sidebar::layout_tests::full_draw(window, cx).clear(cx));
         let header = cx.debug_bounds("host-menu-header").unwrap();
         assert!(header.bottom() <= cx.debug_bounds("host-menu-0").unwrap().top());
-        cx.simulate_keystrokes("down enter");
+        // Rename comes first; Remove is last, in the danger color.
+        cx.simulate_keystrokes("down down enter");
         assert!(view.read_with(cx, |view, _| view.menu.page == Some(Page::RemoveDevice)));
         cx.update(|window, cx| crate::sidebar::layout_tests::full_draw(window, cx).clear(cx));
         assert!(cx.debug_bounds("remove-device").is_some());
@@ -408,7 +609,7 @@ mod tests {
                     .insert(HOST.into(), crate::github::Auth::connected_fixture());
                 view.open_host_menu(HOST, point(px(10.), px(10.)), window, cx);
                 if !cfg!(windows) {
-                    view.activate_host_menu(Action::Remove, cx);
+                    view.activate_host_menu(Action::Remove, window, cx);
                 }
             });
             crate::sidebar::layout_tests::full_draw(window, cx).clear(cx);
@@ -484,5 +685,64 @@ mod tests {
                 assert!(view.menu.removing_devices.is_empty());
             });
         });
+    }
+
+    #[gpui::test]
+    fn renaming_edits_the_name_in_place_and_keeps_typing_in_the_field(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            crate::bind_keys(cx);
+            let mut view = fixture_window(window, cx);
+            add_host(&mut view);
+            view
+        });
+        cx.simulate_resize(size(px(800.), px(600.)));
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.open_host_menu(HOST, point(px(10.), px(10.)), window, cx)
+            });
+        });
+        if cfg!(windows) {
+            assert!(view.read_with(cx, |view, _| view.menu.page.is_none()));
+            return;
+        }
+        cx.simulate_keystrokes("down enter");
+        let input = view.read_with(cx, |view, _| {
+            assert_eq!(view.menu.page, Some(Page::RenameDevice));
+            host(view).input.clone().unwrap()
+        });
+        cx.update(|window, cx| {
+            // The current name is selected, so typing replaces it.
+            assert_eq!(input.read(cx).text(), "m5max-ms");
+            crate::sidebar::layout_tests::full_draw(window, cx).clear(cx);
+        });
+        // A modal like Add Device: header above the field, footer below it.
+        let header = cx.debug_bounds("rename-device-header").unwrap();
+        let body = cx.debug_bounds("rename-device").unwrap();
+        let footer = cx.debug_bounds("rename-device-footer").unwrap();
+        assert!(header.bottom() <= body.top() && body.bottom() <= footer.top());
+        assert!(cx.debug_bounds("rename-device-close").is_some());
+        // Centered over the window rather than at the pointer.
+        let panel = cx.debug_bounds("menu-panel").unwrap();
+        assert!((panel.center().x - px(400.)).abs() <= px(2.));
+        // Letters, including the menu's own row keys, go to the field.
+        cx.simulate_input("down");
+        cx.update(|_, cx| assert_eq!(input.read(cx).text(), "down"));
+        assert!(view.read_with(cx, |view, _| view.menu.page == Some(Page::RenameDevice)));
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| input.set_text_selected("bad\u{7}name", cx))
+        });
+        cx.simulate_keystrokes("enter");
+        view.read_with(cx, |view, _| {
+            assert!(!host(view).renaming);
+            assert!(
+                host(view)
+                    .error
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("Device names are")
+            );
+        });
+        cx.simulate_keystrokes("escape");
+        assert!(view.read_with(cx, |view, _| view.menu.page.is_none()));
     }
 }

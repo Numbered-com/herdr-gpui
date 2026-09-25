@@ -15,7 +15,7 @@ use std::{
 const SAVE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Enough for the CLI's final error line without retaining remote output.
 const SAVE_STDERR_LIMIT: u64 = 8 * 1024;
-/// `machine remove` edits one local file.
+/// `machine remove` and `machine rename` edit one local file.
 const REMOVE_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long a claim keeps this process from adding its host again after a
 /// terminal setup starts: that setup can take this long to finish its prompts.
@@ -126,6 +126,31 @@ fn remove_with(executable: &std::ffi::OsStr, id: &str) -> Result<()> {
         return Ok(());
     }
     Err(Error::DeviceRemove {
+        status,
+        detail: last_line(&stderr),
+    })
+}
+
+/// Rename a saved device with `herdr machine rename`, which edits only the
+/// local catalog. Blocks on a process: call it from the background executor.
+pub(super) fn rename(id: &str, label: &str) -> Result<()> {
+    rename_with(crate::daemon::executable().as_os_str(), id, label)
+}
+
+fn rename_with(executable: &std::ffi::OsStr, id: &str, label: &str) -> Result<()> {
+    if !herdr_client::valid_profile_id(id) {
+        return Err(Error::DeviceSetupInput("This device has no saved profile."));
+    }
+    // The `=` form keeps a label that starts with `-` from reading as a flag.
+    let (status, _, stderr) = run_cli(
+        executable,
+        &["machine", "rename", id, &format!("--label={label}")],
+        REMOVE_TIMEOUT,
+    )?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(Error::DeviceRename {
         status,
         detail: last_line(&stderr),
     })
@@ -690,6 +715,36 @@ mod tests {
         assert!(label.len() <= LABEL_LIMIT && long.starts_with(&label));
         assert!(device_label("bad\u{7}", "box").is_err());
         assert!(device_label(&"x".repeat(129), "box").is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_passes_the_label_as_one_value_even_when_it_looks_like_a_flag() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("herdr-device-rename-{}", std::process::id()));
+        std::fs::create_dir_all(&root)?;
+        let binary = root.join("herdr");
+        let log = root.join("log");
+        std::fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\nprintf '%s|' \"$@\" > '{}'\n[ \"$3\" = missing ] && {{ echo 'machine profile missing was not found' >&2; exit 1; }}\nexit 0\n",
+                log.display()
+            ),
+        )?;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))?;
+        let id = "0123456789abcdef0123456789abcdef";
+        rename_with(binary.as_os_str(), id, "--work = box")?;
+        assert_eq!(
+            std::fs::read_to_string(&log)?,
+            format!("machine|rename|{id}|--label=--work = box|")
+        );
+        assert!(matches!(
+            rename_with(binary.as_os_str(), "../x", "x"),
+            Err(Error::DeviceSetupInput(_))
+        ));
+        std::fs::remove_dir_all(&root)?;
         Ok(())
     }
 
