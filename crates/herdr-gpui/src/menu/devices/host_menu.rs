@@ -24,9 +24,6 @@ pub(crate) struct HostMenu {
     /// Also delete the device's own GitHub sign-in. Offered only when it has
     /// one, since its account panel disappears with the device.
     forget_github: bool,
-    removing: bool,
-    error: Option<String>,
-    task: Option<Task<()>>,
 }
 
 impl HerdrWindow {
@@ -38,7 +35,8 @@ impl HerdrWindow {
         cx: &mut Context<Self>,
     ) {
         // The CLI edits the default catalog, the one device setup also uses.
-        if self.device_setup_unavailable().is_some() {
+        // A device already being removed has nothing left to offer.
+        if self.device_setup_unavailable().is_some() || self.menu.removing_devices.contains(id) {
             return;
         }
         let Some(endpoint) = self.endpoints.iter().find(|endpoint| endpoint.id == id) else {
@@ -58,9 +56,6 @@ impl HerdrWindow {
             session: session.clone(),
             selected: None,
             forget_github: true,
-            removing: false,
-            error: None,
-            task: None,
         };
         if !self.open_menu(window, cx) {
             return;
@@ -80,33 +75,31 @@ impl HerdrWindow {
 
     fn activate_host_menu(&mut self, action: Action, cx: &mut Context<Self>) {
         match action {
-            Action::Remove => {
-                if let Some(host) = &mut self.menu.host {
-                    host.error = None;
-                }
-                self.menu.page = Some(Page::RemoveDevice);
-            }
+            Action::Remove => self.menu.page = Some(Page::RemoveDevice),
         }
         cx.notify();
     }
 
+    /// Close the confirmation at once and remove in the background. Until the
+    /// catalog drops the device, its sidebar header pulses the way a worktree
+    /// row does while it is removed; a failure is reported in the status bar.
     fn confirm_remove_device(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(host) = &self.menu.host else {
+        let Some(host) = self.menu.host.take() else {
             return;
         };
-        if host.removing {
-            return;
-        }
         let forget = host.forget_github && self.host_has_github(&host.id);
         let store = self.menu.github_hosts.get(&host.id).map_or_else(
             || crate::github::Store::select(&self.config),
             |auth| auth.store(),
         );
-        let (profile, target, session) = (
-            host.profile.clone(),
-            host.target.clone(),
-            host.session.clone(),
-        );
+        let HostMenu {
+            id,
+            profile,
+            label,
+            target,
+            session,
+            ..
+        } = host;
         // The outer result is the removal itself; the inner one, the GitHub
         // credential that only matters once the device is gone.
         let background = cx.background_executor().spawn(async move {
@@ -117,49 +110,53 @@ impl HerdrWindow {
                 None => Ok(()),
             })
         });
-        let task = cx.spawn_in(window, async move |this, cx| {
+        self.menu.removing_devices.insert(id.clone());
+        self.dismiss_menu(window, cx);
+        cx.spawn(async move |this, cx| {
             let result = background.await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.device_removed(result, window, cx)
+            let _ = this.update(cx, |this, cx| {
+                this.device_removed(&id, &label, forget, result, cx)
             });
-        });
-        if let Some(host) = &mut self.menu.host {
-            host.removing = true;
-            host.error = None;
-            host.task = Some(task);
-        }
-        cx.notify();
+        })
+        .detach();
     }
 
     fn device_removed(
         &mut self,
+        id: &str,
+        label: &str,
+        forget: bool,
         result: crate::Result<crate::Result<()>>,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(host) = &mut self.menu.host else {
-            return;
-        };
-        host.removing = false;
         match result {
-            Err(error) => host.error = Some(error.to_string()),
+            Err(error) => {
+                self.menu.removing_devices.remove(id);
+                self.local_error = Some(format!("Remove {label}: {error}"));
+            }
+            // The catalog watcher drops the device, and a filter or selection
+            // on it falls back to Local, as for any removal. The header keeps
+            // pulsing until then; `prune_device_removals` clears the mark.
             Ok(forgotten) => {
-                // The catalog watcher drops the device, and a filter or
-                // selection on it falls back to Local, as for any removal.
-                if host.forget_github {
-                    self.menu.github_hosts.remove(&host.id);
+                if forget {
+                    self.menu.github_hosts.remove(id);
                 }
-                match forgotten {
-                    Ok(()) => return self.dismiss_menu(window, cx),
-                    Err(error) => {
-                        host.error = Some(format!(
-                            "Removed the device, but could not delete its GitHub sign-in: {error}"
-                        ));
-                    }
+                if let Err(error) = forgotten {
+                    self.local_error = Some(format!(
+                        "Removed {label}, but could not delete its GitHub sign-in: {error}"
+                    ));
                 }
             }
         }
         cx.notify();
+    }
+
+    /// Forget removal marks for devices the catalog no longer lists.
+    pub(crate) fn prune_device_removals(&mut self) {
+        let endpoints = &self.endpoints;
+        self.menu
+            .removing_devices
+            .retain(|id| endpoints.iter().any(|endpoint| &endpoint.id == id));
     }
 
     pub(in crate::menu) fn host_menu_key(
@@ -174,11 +171,11 @@ impl HerdrWindow {
         cx.stop_propagation();
         window.prevent_default();
         match event.keystroke.key.as_str() {
-            "escape" if !host.removing => self.dismiss_menu(window, cx),
+            "escape" => self.dismiss_menu(window, cx),
             "enter" if self.menu.page == Some(Page::RemoveDevice) => {
                 self.confirm_remove_device(window, cx)
             }
-            "space" if self.menu.page == Some(Page::RemoveDevice) && !host.removing => {
+            "space" if self.menu.page == Some(Page::RemoveDevice) => {
                 host.forget_github = !host.forget_github;
                 cx.notify();
             }
@@ -286,9 +283,7 @@ impl HerdrWindow {
                         .child(if host.forget_github { "☑" } else { "☐" })
                         .child("Also delete its GitHub sign-in from this computer")
                         .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(host) = &mut this.menu.host
-                                && !host.removing
-                            {
+                            if let Some(host) = &mut this.menu.host {
                                 host.forget_github = !host.forget_github;
                                 cx.notify();
                             }
@@ -306,11 +301,9 @@ impl HerdrWindow {
                             .p(px(6.))
                             .cursor_pointer()
                             .child("Cancel")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if this.menu.host.as_ref().is_some_and(|host| !host.removing) {
-                                    this.dismiss_menu(window, cx);
-                                }
-                            })),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.dismiss_menu(window, cx)),
+                            ),
                     )
                     .child(
                         div()
@@ -321,19 +314,13 @@ impl HerdrWindow {
                             .bg(rgb(theme.active))
                             .text_color(crate::menu::danger(theme))
                             .cursor_pointer()
-                            .child(if host.removing {
-                                "Removing…"
-                            } else {
-                                "Remove"
-                            })
+                            .child("Remove")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.confirm_remove_device(window, cx)
                             })),
                     ),
             );
-        body.when_some(host.error.clone(), |body, error| {
-            body.child(div().text_color(crate::menu::danger(theme)).child(error))
-        })
+        body
     }
 }
 
@@ -386,6 +373,11 @@ mod tests {
         let remote = cx.debug_bounds(HOST_HEADER).unwrap();
         cx.simulate_mouse_down(remote.center(), MouseButton::Right, Modifiers::default());
         cx.simulate_mouse_up(remote.center(), MouseButton::Right, Modifiers::default());
+        // Saved SSH devices are unavailable on Windows, so there is nothing to remove.
+        if cfg!(windows) {
+            assert!(view.read_with(cx, |view, _| view.menu.page.is_none()));
+            return;
+        }
         view.read_with(cx, |view, _| {
             assert_eq!(view.menu.page, Some(Page::Host));
             assert_eq!(host(view).target, "penso@box");
@@ -415,37 +407,81 @@ mod tests {
                     .github_hosts
                     .insert(HOST.into(), crate::github::Auth::connected_fixture());
                 view.open_host_menu(HOST, point(px(10.), px(10.)), window, cx);
-                view.activate_host_menu(Action::Remove, cx);
+                if !cfg!(windows) {
+                    view.activate_host_menu(Action::Remove, cx);
+                }
             });
             crate::sidebar::layout_tests::full_draw(window, cx).clear(cx);
         });
+        if cfg!(windows) {
+            assert!(view.read_with(cx, |view, _| view.menu.page.is_none()));
+            return;
+        }
         assert!(cx.debug_bounds("remove-device-github").is_some());
         cx.simulate_keystrokes("space");
         assert!(view.read_with(cx, |view, _| !host(view).forget_github));
         cx.simulate_keystrokes("space");
+    }
+
+    #[gpui::test]
+    fn a_removal_pulses_the_host_header_until_the_device_leaves(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(fixture_window);
+        cx.simulate_resize(size(px(800.), px(600.)));
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
-                // A failed removal keeps the dialog open with its reason.
-                view.device_removed(Err(crate::Error::DeviceAdding), window, cx);
-                assert_eq!(view.menu.page, Some(Page::RemoveDevice));
+                add_host(view);
+                view.menu
+                    .github_hosts
+                    .insert(HOST.into(), crate::github::Auth::connected_fixture());
+                // As confirming does: the dialog is gone, the device marked.
+                view.menu.removing_devices.insert(HOST.into());
+                cx.notify();
+            });
+            crate::sidebar::layout_tests::full_draw(window, cx).clear(cx);
+        });
+        let dot = cx.debug_bounds("host-removing").unwrap();
+        assert!(
+            cx.debug_bounds(HOST_HEADER)
+                .unwrap()
+                .contains(&dot.center())
+        );
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                // No second removal while one is running.
+                view.open_host_menu(HOST, point(px(10.), px(10.)), window, cx);
+                assert!(view.menu.page.is_none());
+
+                // A failure clears the mark and says why in the status bar.
+                view.device_removed(HOST, "m5max-ms", true, Err(crate::Error::DeviceAdding), cx);
+                assert!(view.menu.removing_devices.is_empty());
                 assert_eq!(
-                    host(view).error.as_deref(),
-                    Some("This host is already being added.")
+                    view.local_error.as_deref(),
+                    Some("Remove m5max-ms: This host is already being added.")
                 );
-                // The device is gone even when its credential could not be.
-                view.device_removed(Ok(Err(crate::Error::CredentialPolicy)), window, cx);
+                assert!(view.menu.github_hosts.contains_key(HOST));
+
+                // Success keeps the mark until the catalog drops the device,
+                // even when its GitHub credential could not be deleted.
+                view.menu.removing_devices.insert(HOST.into());
+                view.device_removed(
+                    HOST,
+                    "m5max-ms",
+                    true,
+                    Ok(Err(crate::Error::CredentialPolicy)),
+                    cx,
+                );
                 assert!(!view.menu.github_hosts.contains_key(HOST));
                 assert!(
-                    host(view)
-                        .error
+                    view.local_error
                         .as_deref()
                         .unwrap()
-                        .starts_with("Removed the device, but")
+                        .starts_with("Removed m5max-ms, but could not delete its GitHub sign-in")
                 );
-                view.device_removed(Ok(Ok(())), window, cx);
-                assert!(view.menu.page.is_none());
-                assert!(view.menu.host.is_none());
-                assert!(view.focus.is_focused(window));
+                view.prune_device_removals();
+                assert!(view.menu.removing_devices.contains(HOST));
+                view.endpoints.truncate(1);
+                view.prune_device_removals();
+                assert!(view.menu.removing_devices.is_empty());
             });
         });
     }

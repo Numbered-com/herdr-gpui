@@ -3,14 +3,14 @@
 //! caches only.
 
 use super::{
-    ARROW_RESERVE, DEVICE_FOOTER_HEIGHT, HOST_ARROW_WIDTH, HOST_GAP, SidebarDrag,
+    ARROW_RESERVE, DEVICE_FOOTER_HEIGHT, HOST_ARROW_WIDTH, HOST_GAP, STATUS_WIDTH, SidebarDrag,
     agents::agent_labels,
     agents_sort, label_text,
     layout::{self, SidebarLook},
     line_height,
     reorder::{self, Plan},
     row::first_text,
-    row::{RowIcon, RowKind, RowLift, RowTree, row},
+    row::{RowIcon, RowKind, RowLift, RowTree, removing_dot, row},
     sidebar_width, sorted_agents, visible_workspace_entries,
     workspaces::{workspace_badge, workspace_label},
 };
@@ -84,6 +84,13 @@ impl HerdrWindow {
                 let collapse_id = endpoint_id.clone();
                 let select_id = endpoint_id.clone();
                 let menu_id = endpoint_id.clone();
+                let removing = self.menu.removing_devices.contains(&endpoint.id);
+                // The dot takes its room from the label, not from the status.
+                let label_width = if removing {
+                    (host_label_width - STATUS_WIDTH - HOST_GAP).max(0.)
+                } else {
+                    host_label_width
+                };
                 spaces = spaces.child(
                     div()
                         .id(SharedString::from(format!("host-{endpoint_id}")))
@@ -135,15 +142,18 @@ impl HerdrWindow {
                                     cx.notify();
                                 })),
                         )
+                        .when(removing, |row| {
+                            row.child(removing_dot("host-removing", theme))
+                        })
                         .child(
                             div()
                                 // As with workspace labels, avoid zero-basis text measurement.
-                                .w(px(host_label_width))
+                                .w(px(label_width))
                                 .flex_none()
                                 .overflow_hidden()
                                 .child(
                                     div()
-                                        .w(px(host_label_width))
+                                        .w(px(label_width))
                                         .truncate()
                                         .child(label_text(&endpoint.label)),
                                 ),
@@ -156,7 +166,11 @@ impl HerdrWindow {
                                     .text_right()
                                     .text_size(px(font.size * 0.75))
                                     .text_color(rgb(theme.muted))
-                                    .child(endpoint.status()),
+                                    .child(if removing {
+                                        "removing"
+                                    } else {
+                                        endpoint.status()
+                                    }),
                             )
                         })
                         .on_click(cx.listener(move |this, _, window, cx| {

@@ -342,6 +342,7 @@ impl HerdrWindow {
 
     pub(crate) fn poll_github(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_github_hosts();
+        self.prune_device_removals();
         let connected = self.github_auth().connected();
         let mut changed = self.menu.github.poll();
         for auth in self.menu.github_hosts.values_mut() {

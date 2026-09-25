@@ -53,6 +53,10 @@ pub(crate) struct MenuState {
     /// Saved SSH devices' own accounts, keyed by endpoint ID. A device without
     /// one signed in looks up pull requests with `github`.
     pub(crate) github_hosts: std::collections::HashMap<String, crate::github::Auth>,
+    /// Saved devices whose removal is running, by endpoint ID. Kept after
+    /// success until the catalog drops the device, so its header pulses
+    /// until it disappears; the confirmation closes as soon as it starts.
+    pub(crate) removing_devices: std::collections::HashSet<String>,
     pub(super) github_selected: Option<github::Action>,
     pub(super) github_scroll: ScrollHandle,
     pub(super) pr_connection: Option<std::sync::Weak<std::sync::Mutex<crate::state::LiveState>>>,
@@ -201,6 +205,7 @@ impl MenuState {
             pr_snapshot: None,
             github: Default::default(),
             github_hosts: Default::default(),
+            removing_devices: Default::default(),
             github_selected: None,
             github_scroll: ScrollHandle::new(),
             pr_connection: None,
