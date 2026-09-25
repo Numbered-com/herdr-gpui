@@ -176,6 +176,21 @@ impl Endpoint {
         self.live = self.connection.take_update().unwrap_or_default();
     }
 
+    /// The SSH target and session this device was saved with. The sessions list
+    /// may have pointed the live connection at another of the host's sessions,
+    /// so whatever speaks for the saved device (duplicate checks, the device's
+    /// own menu) reads this instead. One never reconciled against the catalog
+    /// has only its live target to go on.
+    pub(crate) fn saved_ssh(&self) -> Option<(&str, &str)> {
+        if let Some(host) = &self.saved_host {
+            return Some((&host.target, &host.session));
+        }
+        match &self.connection.target {
+            ConnectTarget::Ssh { target, session } => Some((target, session)),
+            _ => None,
+        }
+    }
+
     /// Point this endpoint at another target, retiring the old transport. The
     /// endpoint keeps its identity, label, and sidebar state; nothing the old
     /// connection produced survives it.
@@ -879,7 +894,7 @@ impl HerdrWindow {
         }
     }
 
-    fn reconcile_catalog(&mut self, hosts: Vec<SavedHost>, cx: &mut Context<Self>) {
+    pub(super) fn reconcile_catalog(&mut self, hosts: Vec<SavedHost>, cx: &mut Context<Self>) {
         let selected = &self.endpoints[self.selected_endpoint];
         let selected_id = selected.id.clone();
         let selected_retired = self.selected_endpoint != 0

@@ -671,13 +671,15 @@ impl HerdrWindow {
     }
 
     /// Refuse a host already in the catalog. Checked again before each step
-    /// that saves, since another window or the CLI can add it meanwhile.
+    /// that saves, since another window or the CLI can add it meanwhile. A
+    /// device is matched by its saved entry: the sessions list may have attached
+    /// it to another session, and that does not add one to the catalog.
     fn ensure_new_device(&self, request: &setup::Request) -> crate::Result<()> {
-        match self
-            .endpoints
-            .iter()
-            .find(|endpoint| request.same_host(&endpoint.connection.target))
-        {
+        match self.endpoints.iter().find(|endpoint| {
+            endpoint
+                .saved_ssh()
+                .is_some_and(|(target, session)| request.same_host(target, session))
+        }) {
             Some(endpoint) => Err(crate::Error::DeviceExists(endpoint.label.clone())),
             None => Ok(()),
         }
@@ -1180,6 +1182,42 @@ mod tests {
                         .unwrap()
                         .starts_with("Open a local workspace:")
                 );
+            });
+        });
+    }
+
+    /// The sessions list can attach a saved device to another of its sessions.
+    /// The catalog still holds the entry it was saved with, so adding that entry
+    /// again is refused, and the session it now shows was never saved.
+    #[gpui::test]
+    fn a_device_on_another_session_is_still_matched_by_its_saved_entry(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(fixture_window);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.reconcile_catalog(
+                    vec![herdr_client::SavedHost {
+                        id: "0123456789abcdef0123456789abcdef".into(),
+                        label: "m5max-ms".into(),
+                        target: "penso@box".into(),
+                        session: "default".into(),
+                        enabled: true,
+                    }],
+                    cx,
+                );
+                // What choosing another session from the list does to the target.
+                view.endpoints[1].connection.target = herdr_client::ConnectTarget::Ssh {
+                    target: "penso@box".into(),
+                    session: "work".into(),
+                };
+                let saved = setup::Request::new("penso@box", "Again", "").unwrap();
+                assert!(matches!(
+                    view.ensure_new_device(&saved),
+                    Err(crate::Error::DeviceExists(label)) if label == "m5max-ms"
+                ));
+                let work = setup::Request::new("penso@box", "Work", "work").unwrap();
+                assert!(view.ensure_new_device(&work).is_ok());
             });
         });
     }
