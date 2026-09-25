@@ -340,7 +340,7 @@ mod tests {
             view
         });
         cx.simulate_resize(size(px(800.), px(600.)));
-        cx.update(|window, cx| crate::sidebar::layout_tests::full_draw(window, cx).clear());
+        cx.update(|window, cx| crate::sidebar::layout_tests::full_draw(window, cx).clear(cx));
         let local = cx.debug_bounds(LOCAL_HEADER).unwrap();
         cx.simulate_mouse_down(local.center(), MouseButton::Right, Modifiers::default());
         cx.simulate_mouse_up(local.center(), MouseButton::Right, Modifiers::default());
@@ -355,7 +355,7 @@ mod tests {
         });
         cx.simulate_keystrokes("down enter");
         assert!(view.read_with(cx, |view, _| view.menu.page == Some(Page::RemoveDevice)));
-        cx.update(|window, cx| crate::sidebar::layout_tests::full_draw(window, cx).clear());
+        cx.update(|window, cx| crate::sidebar::layout_tests::full_draw(window, cx).clear(cx));
         assert!(cx.debug_bounds("remove-device").is_some());
         // Without a GitHub sign-in of its own, there is nothing else to delete.
         assert!(cx.debug_bounds("remove-device-github").is_none());
@@ -375,7 +375,7 @@ mod tests {
                 view.open_host_menu(HOST, point(px(10.), px(10.)), window, cx);
                 view.activate_host_menu(Action::Remove, cx);
             });
-            crate::sidebar::layout_tests::full_draw(window, cx).clear();
+            crate::sidebar::layout_tests::full_draw(window, cx).clear(cx);
         });
         assert!(cx.debug_bounds("remove-device-github").is_some());
         cx.simulate_keystrokes("space");

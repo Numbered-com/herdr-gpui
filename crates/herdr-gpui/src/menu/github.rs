@@ -123,7 +123,7 @@ mod tests {
                 view.github_fixture(false, window, cx);
                 view.menu.github = crate::github::Auth::connected_fixture();
             });
-            crate::sidebar::layout_tests::full_draw(window, cx).clear();
+            crate::sidebar::layout_tests::full_draw(window, cx).clear(cx);
         });
         assert!(cx.debug_bounds("github-host-note").is_none());
         cx.update(|window, cx| {
@@ -131,7 +131,7 @@ mod tests {
                 select_host(view, crate::github::Auth::default());
                 cx.notify();
             });
-            crate::sidebar::layout_tests::full_draw(window, cx).clear();
+            crate::sidebar::layout_tests::full_draw(window, cx).clear(cx);
         });
         assert!(cx.debug_bounds("github-host-note").is_some());
     }
