@@ -217,14 +217,16 @@ already waiting in a connection inbox from the disabled period are discarded too
 Failed reloads preserve current settings. QA
 previews remain available regardless of delivery settings.
 
-Choose sidebar density with a top-level setting in `config-gpui.local.toml`
-(before any table headers):
+Choose the sidebar layout from **View > Layout**, which lists every layout,
+checks the one in use, switches at once, and saves the choice to
+`config-gpui.local.toml`. The same setting can be written by hand as a
+top-level line there (before any table headers):
 
 ```toml
 layout = "compact"
 ```
 
-Three densities are available:
+Three densities of Herdr's own rows are available:
 
 - `normal` (managed default): TUI-like spacing, with branch lines beneath root workspaces,
   single-line worktree children, and two-line agents. Modest horizontal and heading
@@ -239,29 +241,13 @@ and title-case section headings. Rounded rows are a little taller, and worktree
 children keep their indent without tree guides, which would break across the
 gaps between rows.
 
-New installs start with `comfortable-rounded`: the first launch writes it into
-the new `config-gpui.local.toml`. Existing override files and migrated personal
-configs are left alone, so current users keep the managed `normal` default.
-Remove that line to follow the managed default.
-
 Normal and Compact show PR numbers without change counts. Status indicators and
-agent-name lines remain visible in every mode, and flat modes keep tree guides;
-font sizes and terminal spacing are unchanged. Saved edits apply automatically;
-there is no UI toggle yet.
+agent-name lines remain visible in every density, and flat ones keep tree guides;
+font sizes and terminal spacing are unchanged. Saved edits apply automatically.
 
-Separately from density, `rows` in a `[layout]` table picks what each row
-shows and how it is arranged. **View > Rows** lists every row layout, checks the
-one in use, and switches to another at once; the choice is saved as
-`[layout] rows` in `config-gpui.local.toml` (a plain `layout = "..."` line there
-becomes a `[layout]` table keeping that name as its `mode`):
+Three more layouts draw rows with a design of their own, each with fixed
+spacing:
 
-```toml
-[layout]
-mode = "comfortable-rounded"
-rows = "superset"
-```
-
-- `herdr` (default): the rows described above.
 - `superset`: one line per row. An icon slot carries the pull request's state
   or the repository owner, with the activity status as a dot on its corner; the
   PR's change counts sit on the right, and the focused row is filled with a
@@ -269,14 +255,19 @@ rows = "superset"
 - `orca`: inset cards with a status column, the name and a `primary` mark on a
   repository's own checkout, then a meta line with the host, the branch when it
   differs from the name, and the pull request. Agents are single compact lines.
-- `minimal`: one line per row with only the status dot and the name, spaced
-  and highlighted by the density and style, for narrow sidebars or long lists.
+- `minimal`: one line per row with only the status dot and the name, for narrow
+  sidebars or long lists.
 
-Density still sets the list's spacing and headings in every row layout. In
-code, a row layout implements `RowLayout` in `src/sidebar/layouts/`; render
-hands it typed row data and a shared per-frame `RowContext`, and marks each
-row with `Cell::selected`, `Cell::highlighted`, and `Cell::lift`, which says
-which row a workspace drag carries so each layout draws its own lifted card. Layouts are assembled from
+New installs start with `comfortable-rounded`: the first launch writes it into
+the new `config-gpui.local.toml`. Existing override files and migrated personal
+configs are left alone, so current users keep the managed `normal` default.
+Remove that line to follow the managed default.
+
+In code, each layout maps to a `RowLayout` in `src/sidebar/layouts/` and the
+spacing around it. Render hands the layout typed row data and a shared
+per-frame `RowContext`, and marks each row with `Cell::selected`,
+`Cell::highlighted`, and `Cell::lift`, which says which row a workspace drag
+carries so each layout draws its own lifted card. Layouts are assembled from
 the shared pieces in `layouts/parts.rs`: a `Line` gives fixed pieces (icons,
 status, fold) their size, lets labels shrink to a share of the row, and hands
 the rest to the name, so the whole `minimal` layout is under a hundred lines.

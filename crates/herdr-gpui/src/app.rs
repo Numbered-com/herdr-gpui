@@ -341,7 +341,7 @@ mod tests {
             // around it: a third of the density's gap, each, twice.
             assert_eq!(
                 row.size.height,
-                px(match (mode.density, mode.style) {
+                px(match (mode.density(), mode.style()) {
                     (Density::Compact, Style::Flat) => 16.,
                     (Density::Normal, Style::Flat) => 32.,
                     (Density::Comfortable, Style::Flat) => 40.,

@@ -253,13 +253,10 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
         // held to what every layout owes: shaped glyphs match the text they
         // were given, and none is cropped or wider than its box.
         {
-            use crate::config::{Density, LayoutMode, RowStyle, Style};
+            use crate::config::LayoutMode;
             cx.update(|cx| cx.set_global(sidebar::layout_tests::VerifyChildGeometry(false)));
-            for rows in [RowStyle::Superset, RowStyle::Orca, RowStyle::Minimal] {
-                for density in [Density::Comfortable, Density::Normal, Density::Compact] {
-                    for style in [Style::Flat, Style::Rounded] {
+            for mode in [LayoutMode::Superset, LayoutMode::Orca, LayoutMode::Minimal] {
                         timer.timer(Duration::from_millis(100)).await;
-                        let mode = LayoutMode::new(density, style);
                         let result = AnyWindowHandle::from(handle).update(
                             cx,
                             |root, window, cx| -> Result<()> {
@@ -268,7 +265,6 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                                 root.downcast::<HerdrWindow>()
                                     .map_err(|_| anyhow!("unexpected root"))?
                                     .update(cx, |view, cx| {
-                                        view.config.layout.rows = rows;
                                         view.config.layout.mode = mode;
                                         cx.notify();
                                     });
@@ -281,7 +277,7 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                                 const LONG: &str =
                                     "herdr-gpui-sidebar-rendering-regression-investigation";
                                 if !probes.get(LONG).is_some_and(|p| p.glyph_text.ends_with('\u{2026}')) {
-                                    bail!("{rows:?} {mode}: {LONG:?} was not ellipsized");
+                                    bail!("{mode}: {LONG:?} was not ellipsized");
                                 }
                                 for input in ["herdr", "Claude Code", LONG] {
                                     let p = probes
@@ -298,10 +294,10 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                                         || p.clipped
                                         || p.width > p.bounds.size.width
                                     {
-                                        bail!("{rows:?} {mode}: bad paint {input:?} {p:?}");
+                                        bail!("{mode}: bad paint {input:?} {p:?}");
                                     }
                                 }
-                                eprintln!("SIDEBAR verified rows={rows:?} mode={mode}");
+                                eprintln!("SIDEBAR verified layout={mode}");
                                 Ok(())
                             },
                         );
@@ -309,12 +305,9 @@ pub fn start_sidebar(handle: WindowHandle<HerdrWindow>, cx: &mut App) {
                             eprintln!("SIDEBAR native FAIL: {result:?}");
                             std::process::exit(1);
                         }
-                    }
-                }
             }
         }
         let _ = handle.update(cx, |view, _, cx| {
-            view.config.layout.rows = crate::config::RowStyle::Herdr;
             // Later fixtures add PR badges and dialogs that change label budgets.
             cx.set_global(sidebar::layout_tests::VerifyChildGeometry(false));
             view.config.layout.mode = crate::config::LayoutMode::from(crate::config::Density::Comfortable);

@@ -5,7 +5,7 @@
 use super::HerdrWindow;
 use crate::{
     app::InitialAppearance,
-    config::{Config, FONT_SIZE_RANGE, FONT_SIZE_STEP, RowStyle},
+    config::{Config, FONT_SIZE_RANGE, FONT_SIZE_STEP, LayoutMode},
     controls::{self, Command},
     log_window,
     navigation::{NavigationTarget, OwnedNavigationTarget},
@@ -15,35 +15,35 @@ use gpui::{Context, Window};
 use std::time::Duration;
 
 impl HerdrWindow {
-    /// Switches the sidebar's row layout here at once, then keeps it: the
-    /// choice is saved to the local overrides off the UI thread, and the
-    /// config watcher brings every other window along.
-    pub(crate) fn set_row_style(&mut self, rows: RowStyle, cx: &mut Context<Self>) {
-        self.set_row_style_with(rows, Config::save_rows, cx);
+    /// Switches the sidebar layout here at once, then keeps it: the choice is
+    /// saved to the local overrides off the UI thread, and the config watcher
+    /// brings every other window along.
+    pub(crate) fn set_layout(&mut self, mode: LayoutMode, cx: &mut Context<Self>) {
+        self.set_layout_with(mode, Config::save_layout, cx);
     }
 
     /// `save` persists the choice; tests pass one that leaves the real
     /// config alone.
-    pub(crate) fn set_row_style_with(
+    pub(crate) fn set_layout_with(
         &mut self,
-        rows: RowStyle,
-        save: impl FnOnce(RowStyle) -> crate::Result<()> + Send + 'static,
+        mode: LayoutMode,
+        save: impl FnOnce(LayoutMode) -> crate::Result<()> + Send + 'static,
         cx: &mut Context<Self>,
     ) {
-        if self.config.layout.rows == rows {
+        if self.config.layout.mode == mode {
             return;
         }
-        self.config.layout.rows = rows;
+        self.config.layout.mode = mode;
         // The menu reads its checkmark from the latest config.
         if cx.has_global::<InitialAppearance>() {
-            cx.global_mut::<InitialAppearance>().config.layout.rows = rows;
+            cx.global_mut::<InitialAppearance>().config.layout.mode = mode;
         }
         crate::menus::install(cx);
         cx.notify();
-        let save = cx.background_executor().spawn(async move { save(rows) });
+        let save = cx.background_executor().spawn(async move { save(mode) });
         cx.spawn(async move |_, _| {
             if let Err(error) = save.await {
-                tracing::warn!(%error, "Could not save the sidebar row layout");
+                tracing::warn!(%error, "Could not save the sidebar layout");
             }
         })
         .detach();

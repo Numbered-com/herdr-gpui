@@ -16,7 +16,7 @@ use super::{
     row::{RowBadge, RowIcon, RowLift, RowTree},
 };
 use crate::{
-    config::{FontConfig, RowStyle, Theme},
+    config::{FontConfig, LayoutMode, Theme},
     icons::AgentIcon,
 };
 use gpui::{App, ClickEvent, Div, ElementId, Window};
@@ -166,12 +166,12 @@ impl<'a> Cell<'a> {
     }
 }
 
-/// The layout a config name selects.
-pub(super) fn layout_for(style: RowStyle) -> &'static dyn RowLayout {
-    match style {
-        RowStyle::Herdr => &super::layouts::Herdr,
-        RowStyle::Superset => &super::layouts::Superset,
-        RowStyle::Orca => &super::layouts::Orca,
-        RowStyle::Minimal => &super::layouts::Minimal,
+/// The rows a layout draws: Herdr's for every density, or a design of its own.
+pub(super) fn layout_for(mode: LayoutMode) -> &'static dyn RowLayout {
+    match mode {
+        LayoutMode::Classic { .. } => &super::layouts::Herdr,
+        LayoutMode::Superset => &super::layouts::Superset,
+        LayoutMode::Orca => &super::layouts::Orca,
+        LayoutMode::Minimal => &super::layouts::Minimal,
     }
 }

@@ -379,12 +379,12 @@ const LIFT_RADIUS: f32 = 4.;
 
 pub(super) fn for_mode(mode: LayoutMode) -> SidebarLook {
     SidebarLook {
-        density: match mode.density {
+        density: match mode.density() {
             Density::Normal => &Normal,
             Density::Compact => &Compact,
             Density::Comfortable => &Comfortable,
         },
-        style: match mode.style {
+        style: match mode.style() {
             Style::Flat => &Flat,
             Style::Rounded => &Rounded,
         },
