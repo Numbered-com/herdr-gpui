@@ -3581,6 +3581,37 @@ fn split_request(server: &mut Server) -> serde_json::Value {
     request
 }
 
+/// Another host changing redraws the window but leaves the selected host's
+/// window state alone: a split request the window is still waiting on must
+/// not vanish because a different endpoint had news, and the selected host's
+/// own news still arrives.
+#[gpui::test]
+fn another_endpoint_changing_keeps_the_selected_window_state(cx: &mut gpui::TestAppContext) {
+    let (fixture, cx) = cx.add_window_view(|window, cx| {
+        Fixture(cx.new(|cx| crate::sidebar::layout_tests::fixture_window(window, cx)))
+    });
+    let view = fixture.update(cx, |fixture, _| fixture.0.clone());
+    let (selected, _server) = connected_endpoint("ssh:selected");
+    let (other, _other_server) = connected_endpoint("ssh:other");
+    cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            prepare_mouse(view, selected);
+            view.endpoints.push(other);
+            view.poll_endpoints(cx);
+            view.live.drag_request = Some("gpui-pending".into());
+
+            view.endpoints[2].connection.inbox.lock().unwrap().dirty = true;
+            view.poll_endpoints(cx);
+            assert_eq!(view.live.drag_request.as_deref(), Some("gpui-pending"));
+
+            view.endpoints[1].connection.inbox.lock().unwrap().error = Some("news".into());
+            view.endpoints[1].connection.inbox.lock().unwrap().dirty = true;
+            view.poll_endpoints(cx);
+            assert_eq!(view.live.error.as_deref(), Some("news"));
+        });
+    });
+}
+
 #[gpui::test]
 fn connected_split_drag_sends_coalesced_ratios_and_stops_on_layout_change(
     cx: &mut gpui::TestAppContext,
