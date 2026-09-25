@@ -202,6 +202,8 @@ impl HerdrWindow {
                 | Page::RenameTab
                 | Page::Pane
                 | Page::RenamePane
+                | Page::Host
+                | Page::RemoveDevice
                 | Page::Git
                 | Page::GitCommit
         );
@@ -294,12 +296,17 @@ impl HerdrWindow {
             .when(
                 matches!(
                     page,
-                    Page::Tab | Page::RenameTab | Page::Pane | Page::RenamePane
+                    Page::Tab
+                        | Page::RenameTab
+                        | Page::Pane
+                        | Page::RenamePane
+                        | Page::Host
+                        | Page::RemoveDevice
                 ),
                 |panel| {
                     panel
                         .w((viewport.width - px(24.)).max(px(0.)).min(px(
-                            if matches!(page, Page::Tab | Page::Pane) {
+                            if matches!(page, Page::Tab | Page::Pane | Page::Host) {
                                 180.
                             } else {
                                 360.
@@ -328,6 +335,7 @@ impl HerdrWindow {
                         | Page::AppUpdate
                         | Page::GitHub
                         | Page::AddDevice
+                        | Page::RenameDevice
                 ),
                 |panel| {
                     // Dialogs draw their own full-bleed header and footer rules,
@@ -365,9 +373,10 @@ impl HerdrWindow {
                     .w((viewport.width - px(24.)).max(px(0.)).min(px(420.)))
                     .max_h((viewport.height - px(24.)).max(px(0.)))
             })
-            .when(matches!(page, Page::AppUpdate | Page::AddDevice), |panel| {
-                panel.flex().flex_col().overflow_hidden().shadow_lg()
-            })
+            .when(
+                matches!(page, Page::AppUpdate | Page::AddDevice | Page::RenameDevice),
+                |panel| panel.flex().flex_col().overflow_hidden().shadow_lg(),
+            )
             .when(page == Page::About, |panel| {
                 panel.w((viewport.width - px(24.)).max(px(0.)).min(px(340.)))
             })
@@ -503,7 +512,7 @@ impl HerdrWindow {
                         })),
                 );
             }
-            if self.menu.github.connected() {
+            if self.pr_profile().is_some() {
                 panel = panel.child(self.render_workspace_pr(
                     (px(340.).min((viewport.width - px(24.)).max(px(0.))) - px(30.)).max(px(0.)),
                     cx,
@@ -515,6 +524,8 @@ impl HerdrWindow {
             panel = panel.child(self.render_git_menu(cx));
         } else if page == Page::GitCommit {
             panel = panel.child(self.render_git_commit(cx));
+        } else if matches!(page, Page::Host | Page::RenameDevice | Page::RemoveDevice) {
+            panel = panel.child(self.render_host_menu(cx));
         } else if matches!(page, Page::Tab | Page::RenameTab) {
             panel = panel.child(self.render_tab_menu(cx));
         } else if matches!(page, Page::Pane | Page::RenamePane) {
@@ -722,6 +733,13 @@ impl HerdrWindow {
                 }
                 if this.menu.page == Some(Page::Git) {
                     this.git_key(event, window, cx);
+                    return;
+                }
+                if matches!(
+                    this.menu.page,
+                    Some(Page::Host | Page::RenameDevice | Page::RemoveDevice)
+                ) {
+                    this.host_menu_key(event, window, cx);
                     return;
                 }
                 if matches!(this.menu.page, Some(Page::Tab | Page::RenameTab)) {
