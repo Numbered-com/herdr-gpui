@@ -39,27 +39,70 @@ pub(super) fn quote(value: &str) -> String {
 
 #[cfg(unix)]
 fn bridge_command(session: &str) -> String {
-    // PATH first, excluding mise shims, followed by upstream's known install roots.
-    // Keep paths in shell variables: discovered executable names are never eval'd.
-    let script = format!(
+    // Every candidate is checked with `status client --json` before it runs, so a
+    // stale or capability-less install never wins the probe.
+    shell(&herdr_discovery(&format!(
+        r#"status=$("$path" status client --json </dev/null) || continue
+printf '%s\n' "$status"
+printf '\n%s\n' 'herdr-remote-output-ready:1'
+IFS= read -r choice || exit 1
+case "$choice" in
+    accept) exec "$path" --session {session} remote-client-bridge;;
+    accept-idle) exec "$path" --session {session} remote-client-bridge --idle-timeout-v1;;
+esac"#,
+        session = quote(session)
+    )))
+}
+
+/// The candidates a remote Herdr may be, in probe order, as `/bin/sh` words: the
+/// `command -v` result first, then the install roots a non-interactive SSH `PATH`
+/// rarely carries. Shared with the remote session listing on purpose: two
+/// hand-copied lists drift, and then one API finds a Herdr the other reports as
+/// absent. `$HOME` and `$USER` are deliberately kept as variables, already
+/// double-quoted, so the remote shell expands them; a discovered name is never eval'd.
+#[cfg(unix)]
+pub(super) const HERDR_CANDIDATES: &[&str] = &[
+    "\"$candidate\"",
+    "\"$HOME/.local/bin/herdr\"",
+    "/opt/homebrew/bin/herdr",
+    "/usr/local/bin/herdr",
+    "/home/linuxbrew/.linuxbrew/bin/herdr",
+    "\"$HOME/.nix-profile/bin/herdr\"",
+    "\"/etc/profiles/per-user/$USER/bin/herdr\"",
+    "/nix/var/nix/profiles/default/bin/herdr",
+    "/run/current-system/sw/bin/herdr",
+];
+
+/// A `/bin/sh` loop that binds `$path` to the first Herdr a POSIX host can offer,
+/// walking [`HERDR_CANDIDATES`] in order. The `command -v` result is cleared first
+/// when it is a mise shim, because a shim is not the binary. `script` is the loop
+/// body — shell text that runs with `$path` set, where `continue` moves on to the
+/// next candidate — and needs no indentation of its own. The loop always ends `exit 127`, so every caller reports
+/// a host with no usable Herdr the same way.
+#[cfg(unix)]
+pub(super) fn herdr_discovery(script: &str) -> String {
+    let mut body = String::new();
+    for line in script.trim().lines() {
+        body.push_str("        ");
+        body.push_str(line);
+        body.push('\n');
+    }
+    let candidates = HERDR_CANDIDATES.join(" ");
+    format!(
         r#"candidate=$(command -v herdr 2>/dev/null || :)
 case "$candidate" in /*/mise/shims/herdr) candidate=;; /*) ;; *) candidate=;; esac
-for path in "$candidate" "$HOME/.local/bin/herdr" /opt/homebrew/bin/herdr /usr/local/bin/herdr /home/linuxbrew/.linuxbrew/bin/herdr "$HOME/.nix-profile/bin/herdr" "/etc/profiles/per-user/$USER/bin/herdr" /nix/var/nix/profiles/default/bin/herdr /run/current-system/sw/bin/herdr; do
+for path in {candidates}; do
     if [ -n "$path" ] && [ -x "$path" ]; then
-        status=$("$path" status client --json </dev/null) || continue
-        printf '%s\n' "$status"
-        printf '\n%s\n' 'herdr-remote-output-ready:1'
-        IFS= read -r choice || exit 1
-        case "$choice" in
-            accept) exec "$path" --session {session} remote-client-bridge;;
-            accept-idle) exec "$path" --session {session} remote-client-bridge --idle-timeout-v1;;
-        esac
-    fi
+{body}    fi
 done
-exit 127"#,
-        session = quote(session)
-    );
-    format!("/bin/sh -c {}", quote(&script))
+exit 127"#
+    )
+}
+
+/// Wrap a `/bin/sh` script as the single argument the SSH child is handed.
+#[cfg(unix)]
+pub(super) fn shell(script: &str) -> String {
+    format!("/bin/sh -c {}", quote(script))
 }
 
 /// Agent forwarding and connection sharing follow the user's SSH config, as

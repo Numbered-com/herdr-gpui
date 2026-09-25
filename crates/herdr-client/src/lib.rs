@@ -16,6 +16,7 @@ mod method;
 mod options;
 mod queue;
 mod session;
+mod sessions;
 mod ssh;
 mod transport;
 mod upload;
@@ -40,5 +41,8 @@ pub use event::ClientEvent;
 pub use handle::{Client, ClientHandle};
 pub use method::Method;
 pub use options::ConnectOptions;
+pub use sessions::{
+    LocalSession, RemoteSession, SessionState, list_local_sessions, list_remote_sessions,
+};
 pub use transport::Stream;
 pub use upload::{remove_uploaded_files, upload_files};

@@ -7,6 +7,8 @@ pub(crate) enum Page {
     About,
     Preferences,
     Devices,
+    /// Local sessions and remote devices, with the state of each.
+    Sessions,
     AddDevice,
     Keybinds,
     Themes,

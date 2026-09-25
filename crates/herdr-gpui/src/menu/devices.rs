@@ -1,13 +1,24 @@
 //! Device scope is presentation state; connection ownership stays in `endpoint`.
 mod setup;
 
-use super::Page;
+use super::{Page, colors};
 use crate::{Command, HerdrWindow, search_input::SearchInput};
 use gpui::{prelude::*, *};
 use herdr_client::ConnectTarget;
 
 pub(super) const MENU_GAP: f32 = 12.;
 pub(super) const MENU_WIDTH: f32 = 280.;
+
+/// How tall an anchored list above the sidebar footer may be, measured from the
+/// origin of the button that opened it. The device picker and the session list
+/// clamp at the same place, so neither grows over the terminal.
+pub(super) fn list_height(anchor_y: Pixels) -> Pixels {
+    let chrome = crate::titlebar::HEIGHT
+        + crate::worktree_banner::reserved(env!("HERDR_BUILD_WORKTREE") == "1");
+    (anchor_y - px(chrome + MENU_GAP + super::MENU_MARGIN + 12.))
+        .max(px(48.))
+        .min(px(420.))
+}
 
 pub(super) struct Setup {
     fields: [Entity<SearchInput>; 3],
@@ -59,6 +70,9 @@ impl HerdrWindow {
     pub(crate) fn render_device_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let button_bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::<Pixels>::default()));
         let painted_bounds = button_bounds.clone();
+        // The window owns this cell, so the shortcut and the click anchor the
+        // list in the same place and it outlives this frame's rebuild.
+        let painted_sessions = self.sessions_anchor.clone();
         let hint: SharedString = self
             .config
             .keybindings
@@ -118,7 +132,7 @@ impl HerdrWindow {
                             .flex_none()
                             .rounded_full()
                             .bg(rgb(if connected {
-                                0x63c68b
+                                colors::ONLINE
                             } else {
                                 self.theme.muted
                             })),
@@ -149,6 +163,48 @@ impl HerdrWindow {
                             this.menu.page = Some(Page::Devices);
                             this.menu.selected = Some(0);
                         }
+                    })),
+            )
+            .child(
+                div()
+                    .id("device-sessions")
+                    .relative()
+                    .debug_selector(|| "device-sessions".into())
+                    .size(px(28.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(crate::config::corners::CONTROL))
+                    .cursor_pointer()
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| SettingsHint {
+                            text: "Sessions".into(),
+                            foreground,
+                            surface,
+                        })
+                        .into()
+                    })
+                    .hover(|s| s.bg(rgb(self.theme.active)))
+                    .child(
+                        svg()
+                            .path("icons/sessions.svg")
+                            .size(px(18.))
+                            .text_color(rgb(self.theme.foreground)),
+                    )
+                    .child(
+                        canvas(
+                            |_, _, _| (),
+                            move |bounds, _, _, _| {
+                                painted_sessions.set(bounds.origin);
+                            },
+                        )
+                        .absolute()
+                        .inset_0()
+                        .size_full(),
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.open_sessions(this.sessions_anchor.get(), window, cx);
                     })),
             )
             .child(
@@ -221,15 +277,9 @@ impl HerdrWindow {
             false,
             self.device_setup_unavailable().is_none(),
         ));
-        let chrome = crate::titlebar::HEIGHT
-            + crate::worktree_banner::reserved(env!("HERDR_BUILD_WORKTREE") == "1");
         let mut view = div()
             .id("devices-list")
-            .max_h(
-                (self.menu.anchor.y - px(chrome + MENU_GAP + super::MENU_MARGIN + 12.))
-                    .max(px(48.))
-                    .min(px(420.)),
-            )
+            .max_h(list_height(self.menu.anchor.y))
             .overflow_y_scroll()
             .track_scroll(&self.menu.devices_scroll)
             .flex()
@@ -311,7 +361,7 @@ impl HerdrWindow {
                                 .flex_none()
                                 .rounded_full()
                                 .bg(rgb(if endpoint.live.status.is_connected() {
-                                    0x63c68b
+                                    colors::ONLINE
                                 } else {
                                     self.theme.muted
                                 })),

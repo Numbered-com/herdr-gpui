@@ -187,6 +187,8 @@ pub enum Error {
     ProfileId,
     #[error("invalid endpoint label")]
     ProfileLabel,
+    #[error("too many sessions to list")]
+    SessionLimit,
 }
 
 impl Error {
